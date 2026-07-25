@@ -122,29 +122,37 @@ Without it a task that cannot pass would be picked up again on every run, foreve
 The container holds exactly one credential and cannot reach a git host. Everything
 durable — the queue, the credentials, the push — lives on the host.
 
+Arrow styles carry meaning: a solid arrow is an allowed path, **an ✕ arrowhead is a
+refusal**, and a dotted arrow is a permitted but read-only path. (These were previously
+both dotted, which made a wall look like a doorway.)
+
 ```mermaid
 flowchart LR
-  subgraph HOST["Host — holds every credential"]
-    R["Runner<br/>timers, budgets, kill switch"]
+  subgraph HOST["Your PC"]
+    direction TB
+    R["Runner — timers, budgets, kill switch"]
     GH["git push + gh pr create"]
-    BD[("Beads queue")]
+    BD[("Task list")]
   end
-  subgraph NET["pipeline-net — internal, no route out"]
-    T["Task container<br/>agent + verifier"]
+  subgraph NET["Sandbox — no route out"]
+    direction TB
+    T["Task container — agent + verifier"]
     PX["Allowlist proxy"]
-    REG["SLOT 3 registry<br/>advisor charters ride in<br/>the read-only /pipeline mount"]
+    REG["SLOT 3 registry, read-only"]
   end
   R -->|"fresh clone + issue.md"| T
-  REG -.->|"read-only"| T
-  T -->|"all egress"| PX
-  PX -->|"allowed"| AN["api · console · statsig<br/>.anthropic.com"]
-  PX -.->|"refused"| BL["github.com · npm · pypi<br/>everything else"]
-  T -->|"commits land on host disk"| R
+  T -->|"commits land on your disk"| R
+  T -->|"every request"| PX
+  PX -->|"allowed"| AN["The three anthropic.com endpoints"]
+  PX --x BL["Refused — github.com, npm, everything else"]
+  REG -.-> T
   R --> GH
   R --> BD
 
   classDef specialist fill:#fdf4e3,stroke:#a86c17,stroke-width:1.5px,stroke-dasharray:5 3,color:#14181d
+  classDef blocked fill:#f7e2df,stroke:#9d3a2f,stroke-width:2px,color:#14181d
   class REG specialist
+  class BL blocked
 ```
 
 A specialist that needs a different model or a different tool changes nothing structural:

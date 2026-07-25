@@ -19,11 +19,17 @@
     --line: #6b7480;
     --spec-fill: #f6e3bd;
     --spec-stroke: #9a6210;
-    --agent-fill: #dceee9;  --agent-stroke: #23705f;
-    --script-fill: #e7eaec;  --script-stroke: #6a747d;
-    --human-fill: #dfe2f4;   --human-stroke: #4a55a0;
-    --store-fill: #eef0f1;   --store-stroke: #8a939b;
-    --ext-fill: #f4f5f6;     --ext-stroke: #9aa3aa;
+    --agent-fill: #dceee9;
+    --agent-stroke: #23705f;
+    --script-fill: #e7eaec;
+    --script-stroke: #6a747d;
+    --human-fill: #dfe2f4;
+    --human-stroke: #4a55a0;
+    --store-fill: #eef0f1;
+    --store-stroke: #8a939b;
+    --ext-fill: #f4f5f6;
+    --ext-stroke: #9aa3aa;
+    --blocked-fill: #f7e2df;
 
     --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
     --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -50,16 +56,17 @@
       --line: #8a95a0;
       --spec-fill: #40331a;
       --spec-stroke: #e0a94a;
-    --agent-fill: #17322e;  --agent-stroke: #63b8a8;
-    --script-fill: #232a30;  --script-stroke: #93a0aa;
-    --human-fill: #1f2440;   --human-stroke: #8b95d8;
-    --store-fill: #1b2126;   --store-stroke: #7f8a93;
-    --ext-fill: #171c20;     --ext-stroke: #6d767e;
-      --agent-fill: #17322e;  --agent-stroke: #63b8a8;
-      --script-fill: #232a30;  --script-stroke: #93a0aa;
-      --human-fill: #1f2440;   --human-stroke: #8b95d8;
-      --store-fill: #1b2126;   --store-stroke: #7f8a93;
-      --ext-fill: #171c20;     --ext-stroke: #6d767e;
+      --agent-fill: #17322e;
+      --agent-stroke: #63b8a8;
+      --script-fill: #232a30;
+      --script-stroke: #93a0aa;
+      --human-fill: #1f2440;
+      --human-stroke: #8b95d8;
+      --store-fill: #1b2126;
+      --store-stroke: #7f8a93;
+      --ext-fill: #171c20;
+      --ext-stroke: #6d767e;
+      --blocked-fill: #33201d;
     }
   }
   :root[data-theme="dark"] {
@@ -80,6 +87,17 @@
     --line: #8a95a0;
     --spec-fill: #40331a;
     --spec-stroke: #e0a94a;
+    --agent-fill: #17322e;
+    --agent-stroke: #63b8a8;
+    --script-fill: #232a30;
+    --script-stroke: #93a0aa;
+    --human-fill: #1f2440;
+    --human-stroke: #8b95d8;
+    --store-fill: #1b2126;
+    --store-stroke: #7f8a93;
+    --ext-fill: #171c20;
+    --ext-stroke: #6d767e;
+    --blocked-fill: #33201d;
   }
   :root[data-theme="light"] {
     --ink: #14181d;
@@ -99,11 +117,17 @@
     --line: #6b7480;
     --spec-fill: #f6e3bd;
     --spec-stroke: #9a6210;
-    --agent-fill: #dceee9;  --agent-stroke: #23705f;
-    --script-fill: #e7eaec;  --script-stroke: #6a747d;
-    --human-fill: #dfe2f4;   --human-stroke: #4a55a0;
-    --store-fill: #eef0f1;   --store-stroke: #8a939b;
-    --ext-fill: #f4f5f6;     --ext-stroke: #9aa3aa;
+    --agent-fill: #dceee9;
+    --agent-stroke: #23705f;
+    --script-fill: #e7eaec;
+    --script-stroke: #6a747d;
+    --human-fill: #dfe2f4;
+    --human-stroke: #4a55a0;
+    --store-fill: #eef0f1;
+    --store-stroke: #8a939b;
+    --ext-fill: #f4f5f6;
+    --ext-stroke: #9aa3aa;
+    --blocked-fill: #f7e2df;
   }
 
   body {
@@ -334,6 +358,15 @@
   .key .sw.external { background: var(--ext-fill); border: 1.25px dotted var(--ext-stroke); }
   .key b { color: var(--ink); font-weight: 600; font-size: 0.88rem; }
 
+  .plate svg .blocked rect, .plate svg .blocked polygon, .plate svg .blocked path,
+  .plate svg .blocked .label-container, .plate svg rect.blocked {
+    fill: var(--blocked-fill) !important; stroke: var(--refuse) !important; stroke-width: 2px !important;
+  }
+  .plate svg .blocked .nodeLabel, .plate svg .blocked text {
+    color: var(--node-text) !important; fill: var(--node-text) !important;
+  }
+  .key .sw.blocked { background: var(--blocked-fill); border: 2px solid var(--refuse); }
+
   .tablewrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 3px; background: var(--surface); }
   table { border-collapse: collapse; width: 100%; font-size: 0.88rem; font-variant-numeric: tabular-nums; }
   th, td { text-align: left; padding: 0.6rem 0.85rem; border-bottom: 1px solid var(--rule); white-space: nowrap; }
@@ -393,7 +426,8 @@
       <li><span class="sw human"></span><span><b>You</b> — a decision only you make. Diamonds are decision points.</span></li>
       <li><span class="sw store"></span><span><b>Data</b> — the task list. Cylinders are stored state, not steps.</span></li>
       <li><span class="sw slot"></span><span><b>Specialist slot</b> — where a domain agent plugs in. Dashed = not built yet.</span></li>
-      <li><span class="sw external"></span><span><b>Outside your machine</b> — dotted = beyond the sandbox wall.</span></li>
+      <li><span class="sw external"></span><span><b>Outside your machine</b> — beyond the sandbox wall.</span></li>
+      <li><span class="sw blocked"></span><span><b>Refused</b> — the proxy turns it away. An <b>—✕</b> arrow means blocked; a dotted arrow means read-only.</span></li>
     </ul>
   </header>
 
@@ -550,22 +584,24 @@ PR: https://github.com/Chadleewalker/Hallertau/pull/2</pre>
     <div class="plate">
 <pre class="mermaid">
 flowchart LR
-  subgraph HOST["Host — holds every credential"]
+  subgraph HOST["Your PC"]
+    direction TB
     R["Runner — timers and budgets"]
     GH["git push and gh pr create"]
     BD[("Task list")]
   end
-  subgraph NET["pipeline-net — internal, no route out"]
+  subgraph NET["Sandbox — no route out"]
+    direction TB
     T["Task container — agent and verifier"]
     PX["Allowlist proxy"]
-    REG["SLOT 3 registry in the /pipeline mount"]
+    REG["SLOT 3 registry, read-only"]
   end
   R -->|"clone + issue.md"| T
-  REG -.->|"read-only"| T
-  T -->|"all egress"| PX
-  PX -->|"allowed"| AN["the three anthropic.com endpoints"]
-  PX -.->|"refused"| BL["github.com, npm, everything else"]
-  T -->|"commits on host disk"| R
+  T -->|"commits land on your disk"| R
+  T -->|"every request"| PX
+  PX -->|"allowed"| AN["The three anthropic.com endpoints"]
+  PX --x BL["Refused — github.com, npm, everything else"]
+  REG -.-> T
   R --> GH
   R --> BD
 
@@ -573,10 +609,12 @@ flowchart LR
   classDef store stroke-width:1.25px
   classDef slot stroke-dasharray:5 3,stroke-width:1.5px
   classDef external stroke-width:1.25px,stroke-dasharray:2 2
+  classDef blocked stroke-width:2px
   class R,GH,T,PX script
   class BD store
   class REG slot
-  class AN,BL external
+  class AN external
+  class BL blocked
 </pre>
     </div>
   </section>
