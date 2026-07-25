@@ -37,7 +37,14 @@ function prepare(cfg, issueId, issueMarkdown, log, traceId) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `pipeline-${issueId}-`));
 
   // Fresh clone from the remote every task (§4.2): canonical main, no stale local state.
-  const clone = spawnSync('git', ['clone', '--quiet', cfg.targetRepoRemote, dir], { encoding: 'utf8' });
+  // Force LF: this workspace exists only to be bind-mounted into a Linux container, and
+  // a Windows host's autocrlf would make every file differ from its blob inside the
+  // container — which the verifier's tamper diff would (correctly) read as tampering.
+  const clone = spawnSync(
+    'git',
+    ['-c', 'core.autocrlf=false', '-c', 'core.eol=lf', 'clone', '--quiet', cfg.targetRepoRemote, dir],
+    { encoding: 'utf8' }
+  );
   if (clone.status !== 0) {
     return { ok: false, reason: `clone failed: ${(clone.stderr || '').trim()}` };
   }

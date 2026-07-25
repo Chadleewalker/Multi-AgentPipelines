@@ -24,6 +24,11 @@ cd "$WS" 2>/dev/null || die30 "workspace $WS missing"
 [ -f "$RUN/issue.md" ] || die30 "issue file $RUN/issue.md missing"
 mkdir -p "$RUN"
 
+# The workspace is a bind mount owned by the host user, so git's dubious-ownership
+# guard would block every git call (and thus the verifier). The container is
+# disposable and single-purpose, so trusting this one path is safe.
+git config --global --add safe.directory "$WS" 2>/dev/null || true
+
 # Contract artifacts never enter commits (defense in depth; the runner also excludes).
 grep -qxF '.run/' .git/info/exclude 2>/dev/null || echo '.run/' >> .git/info/exclude
 # The container has no identity of its own; commits are the pipeline's.

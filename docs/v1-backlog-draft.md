@@ -123,12 +123,20 @@ a real bare remote). design-ref: §4.2, §4.10
 - [x] Issue exported to the workspace's `.run/issue.md`; frozen tests present from main (verifier baseline exists)
 - [x] Artifacts (`status.json`, `verify.json`, agent logs) collected into `runs/<runId>/tasks/<issue>/` before the workspace is discarded; outcome derived from the collected `verify.json`; `hasCommits` computed for T16's push decision; clone failure fails the task, not the run
 
-## T14: Runner container launch + wall-clock kill — hard — depends: T13, T5, T8
+## T14: Runner container launch + wall-clock kill — hard — depends: T13, T5, T8 — **DONE 2026-07-25**
+`runner/container.js` + async task loop; checks `scripts/test-runner-container.sh`
+(21/21 pass with REAL containers running the REAL entrypoint on the closed network;
+agent behavior stubbed in-container via `agentCommand`, so no subscription burn).
 design-ref: §4.1, §4.6, §4.10, §4.11, §6
-- [ ] One container per task: `/workspace` rw mount, scaffolding ro at `/pipeline` (container command = entrypoint there), closed-network attach, env per §4.10 (`ISSUE_ID`, `PIPELINE_AGENT_CMD`, token, proxy vars)
-- [ ] Token only at `docker run`; no git credentials inside
-- [ ] Active-time budget (default 4h) tracked host-side; breach → `docker kill`, outcome failed + timeout note, status file best-effort
-- [ ] Exit code mapped via the §4.11 table; writes the per-task record into `runs/<ts>/run.json` (schema `run.schema.json`, owned by the runner)
+- [x] One container per task, named `task-<issue>-<runId>`: `/workspace` rw, `/pipeline` **ro**, command `bash /pipeline/entrypoint.sh`, `--network` closed net, env exactly per §4.10 (`ISSUE_ID`, `WORKSPACE`, `PIPELINE_DIR`, proxy vars, optional `PIPELINE_AGENT_CMD`)
+- [x] Token passed **by name** at `docker run` (value from the runner's env, never in an arg list, log, or image layer — log-scan check confirms); no git credentials inside
+- [x] Active-time budget tracked host-side by a Node timer + `docker kill` (no platform `timeout`); breach → outcome `failed`, container confirmed stopped, status file treated as best-effort
+- [x] Full round trip proven end to end: real verify pass → done + committed work; unsatisfiable task → exactly 3 in-container attempts → stuck/blocked with stuck state; every outcome mapped via the §4.11 table
+- [ ] `run.json` manifest (schema `run.schema.json`) — moved to T16/T17, where PR URLs and final statuses exist
+
+**Two real bugs this task caught** (both would have broken every production run):
+1. Bind-mounted workspaces are owned by the host user → git's dubious-ownership guard blocked every git call → verifier `error`. Fixed: entrypoint marks `$WS` a safe directory.
+2. Host clone on Windows wrote CRLF → the Linux container's git saw every file as modified → verifier reported **tampered** on clean checkouts. Fixed: workspace clones with `core.autocrlf=false`, `core.eol=lf`.
 
 ## T15: Rate-limit pause/resume — hard — depends: T14, T10
 design-ref: §4.7, §4.11
