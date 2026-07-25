@@ -167,11 +167,19 @@ runner); checks `scripts/test-report.sh` (21/21 pass). design-ref: §4.9, §4.11
 - [x] Per task: outcome label spelling out its meaning, branch, PR link (or "review the branch directly" / "not pushed — no commits"), attempts, rate-limit pauses, active time, diff size, change summary, verification evidence, stuck state, attempt notes
 - [x] Order: tampered > stuck > partial > failed > done-with-retries > done-first-try, ties by attempt count then diff size — verified end to end, and the manifest is stored in the same order
 
-## T18: Fixture repository on GitHub — medium — depends: T1, T2, T4
-design-ref: §7, §3.4, §3.1
-- [ ] Dedicated repo: `main`, `pipeline.config.json` (verifyCommand + manifest), thin Dockerfile `FROM` base; manifest↔Dockerfile cross-check passes
-- [ ] Per-project image builds
-- [ ] Three issues (success / bail / tamper) with frozen acceptance tests on `main`
+## T18: Fixture repository on GitHub — medium — depends: T1, T2, T4 — **DONE 2026-07-25**
+**`github.com/<private fixture repo>` (private)**, working copy at
+`<projects dir>\pipeline-fixture`; runner config `run.config.fixture.json`; checks
+`scripts/test-fixture.sh` (20/20 pass). design-ref: §7, §3.4, §3.1
+- [x] Real GitHub repo with `main` pushed and local==origin (so the freeze baseline is the remote's); `.gitattributes` forces LF so Windows checkouts can't commit CRLF blobs into a Linux-container project
+- [x] `pipeline.config.json`: `verifyCommand`, `regressionCommand` (exercises the evidence path), `frozenPaths` (the acceptance runner itself), package-manager-keyed `dependencies`
+- [x] Thin `Dockerfile` FROM the pinned base; image `pipeline-fixture:local` builds; manifest↔Dockerfile cross-check passes (no drift)
+- [x] Three Beads issues with all five spec fields — **fix-a2z** (success: add shout mode), **fix-znz** (bail: unsatisfiable), **fix-djl** (tamper) — each with frozen acceptance tests committed to `origin/main`
+- [x] Scenario behaviour verified on a clean checkout: success fails until implemented (real work), bail is unsatisfiable by construction, tamper fails until its frozen test is wrongly edited; regression suite green; all three issues ready
+
+**Bug found:** `scripts/new-issue.sh` was broken on the Windows host — its container
+fallback didn't guard against MSYS path conversion (`-w /repo` → `C:/Program Files/Git/repo`).
+It had only ever run *inside* a container before. Fixed with `cygpath` + `MSYS_NO_PATHCONV`.
 
 ## T19: Deterministic agent stubs — trivial — depends: T8
 design-ref: §7, §4.3

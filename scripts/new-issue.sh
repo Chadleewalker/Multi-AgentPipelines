@@ -27,10 +27,14 @@ $DESC
 $CONSTRAINTS"
 
 # bd from the host when available; otherwise via the base image against the repo dir.
+# On Git Bash, MSYS rewrites container-side paths (/repo -> C:/Program Files/Git/repo),
+# so mount sources go through cygpath and the docker call runs with MSYS_NO_PATHCONV=1.
 if command -v bd >/dev/null 2>&1; then
   BD=(bd -C "$DIR")
 else
-  BD=(docker run --rm -i -v "$(cd "$DIR" && pwd):/repo" -w /repo pipeline-base:local bd)
+  SRC="$(cd "$DIR" && pwd)"
+  command -v cygpath >/dev/null 2>&1 && SRC="$(cygpath -m "$SRC")"
+  BD=(env MSYS_NO_PATHCONV=1 docker run --rm -i -v "$SRC:/repo" -w /repo pipeline-base:local bd)
 fi
 
 ARGS=(create "$TITLE" --stdin --acceptance "$ACCEPT" --design "design-ref: $REF" -p "$PRIO" --silent)
