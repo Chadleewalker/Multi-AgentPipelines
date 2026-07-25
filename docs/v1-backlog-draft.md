@@ -113,12 +113,15 @@ T13/T14. design-ref: §4.10, §4.11, §4.12
 - [x] Sole Beads writer: attempt notes composed from the container's status file and appended host-side; issue exported to `issue.md` for the container; `pipeline/` provably never invokes `bd`
 - [x] Blocked issues never re-picked (loop-termination proven); `results.json` per run records every task outcome
 
-## T13: Runner per-task clone/branch/workspace — medium — depends: T11
-design-ref: §4.2, §4.10
-- [ ] Fresh clone from the GitHub remote per task; branch `task/<issue-id>` off canonical `main`
-- [ ] Remote-collision → `-r2`, `-r3` suffix; never force-push
-- [ ] `.git/info/exclude` entry for `.run/` at clone time
-- [ ] Issue exported read-only to `/workspace/.run/issue.md`
+## T13: Runner per-task clone/branch/workspace — medium — depends: T11 — **DONE 2026-07-25**
+`runner/workspace.js` (prepare, chooseBranch, hasCommits, collectArtifacts, discard),
+wired into the task loop; checks `scripts/test-runner-workspace.sh` (20/20 pass against
+a real bare remote). design-ref: §4.2, §4.10
+- [x] Fresh clone from the remote per task into a host temp dir; branch `task/<issue-id>` off `origin/main` — fork point proven identical to remote main
+- [x] Remote-collision → `-r2` suffix (proven with a pre-existing remote branch, which stayed intact); runner provably contains no force-push
+- [x] `.git/info/exclude` entry for `.run/` at clone time; commits proven free of `.run/`
+- [x] Issue exported to the workspace's `.run/issue.md`; frozen tests present from main (verifier baseline exists)
+- [x] Artifacts (`status.json`, `verify.json`, agent logs) collected into `runs/<runId>/tasks/<issue>/` before the workspace is discarded; outcome derived from the collected `verify.json`; `hasCommits` computed for T16's push decision; clone failure fails the task, not the run
 
 ## T14: Runner container launch + wall-clock kill — hard — depends: T13, T5, T8
 design-ref: §4.1, §4.6, §4.10, §4.11, §6
