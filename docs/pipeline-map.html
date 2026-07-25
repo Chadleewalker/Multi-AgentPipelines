@@ -367,6 +367,18 @@
   }
   .key .sw.blocked { background: var(--blocked-fill); border: 2px solid var(--refuse); }
 
+  .plate svg .cluster-label { text-anchor: start !important; }
+  .plate svg .cluster-label foreignObject { overflow: visible !important; }
+  .plate svg .cluster-label div,
+  .plate svg .cluster-label span,
+  .plate svg .cluster-label p {
+    text-align: left !important;
+    font-weight: 600 !important;
+    background: var(--plate) !important;
+    padding: 0 0.35em !important;
+    white-space: nowrap !important;
+  }
+
   .tablewrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 3px; background: var(--surface); }
   table { border-collapse: collapse; width: 100%; font-size: 0.88rem; font-variant-numeric: tabular-nums; }
   th, td { text-align: left; padding: 0.6rem 0.85rem; border-bottom: 1px solid var(--rule); white-space: nowrap; }
@@ -579,31 +591,33 @@ PR: <private repo> PR #2</pre>
     <p>
       The container is disposable and nearly powerless: no git credentials, no package
       registries, no route to the internet except three named Anthropic hosts through a
-      proxy. Everything durable stays on the host.
+      proxy. Work flows one way — your PC hands in a fresh copy of the code, and the
+      container's commits land in a folder shared with your PC, so killing it never loses
+      anything. A solid arrow is an allowed path, an <b>✕</b> arrowhead is a refusal, and a
+      dotted arrow is read-only.
     </p>
     <div class="plate">
 <pre class="mermaid">
 flowchart LR
   subgraph HOST["Your PC"]
     direction TB
-    R["Runner — timers and budgets"]
-    GH["git push and gh pr create"]
     BD[("Task list")]
+    R["Runner — timers, budgets, kill switch"]
+    GH["git push and gh pr create"]
   end
-  subgraph NET["Sandbox — no route out"]
+  subgraph NET["Sandbox"]
     direction TB
+    REG["SLOT 3 registry, read-only"]
     T["Task container — agent and verifier"]
     PX["Allowlist proxy"]
-    REG["SLOT 3 registry, read-only"]
   end
-  R -->|"clone + issue.md"| T
-  T -->|"commits land on your disk"| R
+  BD --> R
+  R --> GH
+  R -->|"fresh clone + issue.md"| T
+  REG -.-> T
   T -->|"every request"| PX
   PX -->|"allowed"| AN["The three anthropic.com endpoints"]
   PX --x BL["Refused — github.com, npm, everything else"]
-  REG -.-> T
-  R --> GH
-  R --> BD
 
   classDef script stroke-width:1.25px
   classDef store stroke-width:1.25px
