@@ -19,13 +19,14 @@ Built at `docker/base/Dockerfile`, image `pipeline-base:local`; checks in
 - [ ] `FROM`-able by a thin per-project layer (proven by T18 — still pending)
 - [x] No credential in any layer (`CLAUDE_CODE_OAUTH_TOKEN` absent from history and env)
 
-## T2: Beads setup + issue template — medium — depends: —
-Initialize Beads in the target repo's host working copy; five-field issue template with a
-round-trip check. design-ref: §3.1, §4.12, §7 item 1, §9
-- [ ] `bd` initialized in the host working copy at the configured target-repo path
-- [ ] Template carries the five spec fields as structured markdown, native Beads fields where they exist
-- [ ] Check script proves all five fields round-trip through a `bd` dump
-- [ ] Status vocabulary maps to open / in-progress / blocked / closed; ready = open + unblocked + deps satisfied
+## T2: Beads setup + issue template — medium — depends: — — **DONE 2026-07-25**
+Mapping finalized in `beads/issue-template.md`; creation wrapper `scripts/new-issue.sh`
+(design-ref mandatory); checks `scripts/test-beads-roundtrip.sh` (14/14 pass).
+design-ref: §3.1, §4.12, §7 item 1, §9
+- [x] `bd init` proven in a fresh repo (the real target-repo init lands with T18's fixture)
+- [x] Five spec fields mapped: description + constraints as `## sections` in the native description; acceptance → `--acceptance`; design-ref → `--design`; attempt log → `bd note` (native notes)
+- [x] Check script proves all five round-trip through `bd show --json`, and that a missing design-ref is refused
+- [x] Status vocabulary verified (open/in_progress/blocked/deferred/closed); `bd ready` is blocker-aware: deps gate it, in_progress/blocked excluded, closing a dep unlocks
 
 ## T3: `status.schema.json` — trivial — depends: —
 The status-file schema, checked into this repo, frozen contract for runner + report.
