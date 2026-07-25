@@ -19,6 +19,11 @@
     --line: #6b7480;
     --spec-fill: #f6e3bd;
     --spec-stroke: #9a6210;
+    --agent-fill: #dceee9;  --agent-stroke: #23705f;
+    --script-fill: #e7eaec;  --script-stroke: #6a747d;
+    --human-fill: #dfe2f4;   --human-stroke: #4a55a0;
+    --store-fill: #eef0f1;   --store-stroke: #8a939b;
+    --ext-fill: #f4f5f6;     --ext-stroke: #9aa3aa;
 
     --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
     --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -45,6 +50,16 @@
       --line: #8a95a0;
       --spec-fill: #40331a;
       --spec-stroke: #e0a94a;
+    --agent-fill: #17322e;  --agent-stroke: #63b8a8;
+    --script-fill: #232a30;  --script-stroke: #93a0aa;
+    --human-fill: #1f2440;   --human-stroke: #8b95d8;
+    --store-fill: #1b2126;   --store-stroke: #7f8a93;
+    --ext-fill: #171c20;     --ext-stroke: #6d767e;
+      --agent-fill: #17322e;  --agent-stroke: #63b8a8;
+      --script-fill: #232a30;  --script-stroke: #93a0aa;
+      --human-fill: #1f2440;   --human-stroke: #8b95d8;
+      --store-fill: #1b2126;   --store-stroke: #7f8a93;
+      --ext-fill: #171c20;     --ext-stroke: #6d767e;
     }
   }
   :root[data-theme="dark"] {
@@ -84,6 +99,11 @@
     --line: #6b7480;
     --spec-fill: #f6e3bd;
     --spec-stroke: #9a6210;
+    --agent-fill: #dceee9;  --agent-stroke: #23705f;
+    --script-fill: #e7eaec;  --script-stroke: #6a747d;
+    --human-fill: #dfe2f4;   --human-stroke: #4a55a0;
+    --store-fill: #eef0f1;   --store-stroke: #8a939b;
+    --ext-fill: #f4f5f6;     --ext-stroke: #9aa3aa;
   }
 
   body {
@@ -267,6 +287,53 @@
     color: var(--muted);
   }
 
+  /* Shape and colour encode WHAT a box is, not decoration:
+     agent = an AI judgment call · scaffolding = deterministic script ·
+     you = a human decision · slot = specialist plug-in, not built · store = data. */
+  .plate svg .agent rect, .plate svg .agent polygon, .plate svg .agent path,
+  .plate svg .agent .label-container, .plate svg rect.agent, .plate svg polygon.agent {
+    fill: var(--agent-fill) !important; stroke: var(--agent-stroke) !important; stroke-width: 1.75px !important;
+  }
+  .plate svg .script rect, .plate svg .script polygon, .plate svg .script path,
+  .plate svg .script .label-container, .plate svg rect.script, .plate svg polygon.script {
+    fill: var(--script-fill) !important; stroke: var(--script-stroke) !important; stroke-width: 1.25px !important;
+  }
+  .plate svg .human rect, .plate svg .human polygon, .plate svg .human path,
+  .plate svg .human .label-container, .plate svg rect.human, .plate svg polygon.human {
+    fill: var(--human-fill) !important; stroke: var(--human-stroke) !important; stroke-width: 2px !important;
+  }
+  .plate svg .store rect, .plate svg .store polygon, .plate svg .store path,
+  .plate svg .store .label-container, .plate svg rect.store, .plate svg path.store {
+    fill: var(--store-fill) !important; stroke: var(--store-stroke) !important; stroke-width: 1.25px !important;
+  }
+  .plate svg .external rect, .plate svg .external polygon, .plate svg .external path,
+  .plate svg .external .label-container, .plate svg rect.external {
+    fill: var(--ext-fill) !important; stroke: var(--ext-stroke) !important;
+    stroke-width: 1.25px !important; stroke-dasharray: 2 2 !important;
+  }
+  .plate svg .slot rect, .plate svg .slot polygon, .plate svg .slot path,
+  .plate svg .slot .label-container, .plate svg rect.slot, .plate svg polygon.slot {
+    fill: var(--spec-fill) !important; stroke: var(--spec-stroke) !important;
+    stroke-width: 1.5px !important; stroke-dasharray: 5 3 !important;
+  }
+  .plate svg .agent .nodeLabel, .plate svg .script .nodeLabel, .plate svg .human .nodeLabel,
+  .plate svg .store .nodeLabel, .plate svg .external .nodeLabel, .plate svg .slot .nodeLabel,
+  .plate svg .agent text, .plate svg .script text, .plate svg .human text,
+  .plate svg .store text, .plate svg .external text, .plate svg .slot text {
+    color: var(--node-text) !important; fill: var(--node-text) !important;
+  }
+
+  .key { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 0.6rem 1.5rem; margin: 0; padding: 0; list-style: none; }
+  .key li { display: flex; align-items: flex-start; gap: 0.55rem; font-size: 0.88rem; color: var(--muted); }
+  .key .sw { flex: 0 0 auto; width: 1.7rem; height: 1rem; border-radius: 2px; margin-top: 0.15rem; }
+  .key .sw.agent { background: var(--agent-fill); border: 1.75px solid var(--agent-stroke); }
+  .key .sw.script { background: var(--script-fill); border: 1.25px solid var(--script-stroke); }
+  .key .sw.human { background: var(--human-fill); border: 2px solid var(--human-stroke); }
+  .key .sw.store { background: var(--store-fill); border: 1.25px solid var(--store-stroke); border-radius: 8px; }
+  .key .sw.slot { background: var(--spec-fill); border: 1.5px dashed var(--spec-stroke); }
+  .key .sw.external { background: var(--ext-fill); border: 1.25px dotted var(--ext-stroke); }
+  .key b { color: var(--ink); font-weight: 600; font-size: 0.88rem; }
+
   .tablewrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 3px; background: var(--surface); }
   table { border-collapse: collapse; width: 100%; font-size: 0.88rem; font-variant-numeric: tabular-nums; }
   th, td { text-align: left; padding: 0.6rem 0.85rem; border-bottom: 1px solid var(--rule); white-space: nowrap; }
@@ -320,11 +387,14 @@
       everything between runs unattended, in a container that cannot reach a git host
       and holds exactly one credential.
     </p>
-    <p class="legend">
-      <span class="swatch built"></span> built and running today
-      <span class="swatch slot"></span> specialist slot — where a domain agent plugs in
-      <span class="legend-note">Slots 1 and 2 need no pipeline code; slot 3 is the one still to build. None of them can fail a task.</span>
-    </p>
+    <ul class="key">
+      <li><span class="sw agent"></span><span><b>Agent</b> — an AI call. Judgment, non-deterministic. There are only four in the whole system.</span></li>
+      <li><span class="sw script"></span><span><b>Scaffolding</b> — a plain script. Same input, same output, every time. Most of the pipeline.</span></li>
+      <li><span class="sw human"></span><span><b>You</b> — a decision only you make. Diamonds are decision points.</span></li>
+      <li><span class="sw store"></span><span><b>Data</b> — the task list. Cylinders are stored state, not steps.</span></li>
+      <li><span class="sw slot"></span><span><b>Specialist slot</b> — where a domain agent plugs in. Dashed = not built yet.</span></li>
+      <li><span class="sw external"></span><span><b>Outside your machine</b> — dotted = beyond the sandbox wall.</span></li>
+    </ul>
   </header>
 
   <section>
@@ -336,8 +406,8 @@
     <div class="plate">
 <pre class="mermaid">
 flowchart TB
-  A["Design doc — DESIGN.md"] --> B["Decompose into task-sized specs"]
-  B --> C["Critics, sized to difficulty"]
+  A["Design doc — what you want built"] --> B["Decompose into task-sized specs"]
+  B --> C["Critics attack each spec"]
   SP1["SLOT 1 — domain critic on the spec"] -.-> C
   C --> D["Write acceptance tests first"]
   SP2["SLOT 2 — domain test author"] -.-> D
@@ -349,11 +419,20 @@ flowchart TB
   H --> I["Runner takes the next task, in order"]
   I --> J["Fresh sandbox per task, then destroyed"]
   J --> K["Run report and pull requests"]
-  K --> L{"Merge, or send back"}
+  K --> L{"You merge, or send back"}
   L -->|"send back"| B
 
-  classDef specialist stroke:#9a6210,stroke-width:1.5px,stroke-dasharray:5 3
-  class SP1,SP2 specialist
+  classDef agent stroke-width:1.5px
+  classDef script stroke-width:1.25px
+  classDef human stroke-width:2px
+  classDef slot stroke-dasharray:5 3,stroke-width:1.5px
+  classDef store stroke-width:1.25px
+  class B,C,D,E agent
+  class G,I,J,K script
+  class F,L human
+  class SP1,SP2 slot
+  class H store
+  class A human
 </pre>
     </div>
     <div class="gloss">
@@ -389,8 +468,12 @@ flowchart TB
   ADV --> DP["Docs phase — change summary"]
   DP --> OK["exit 0 — verified"]
 
-  classDef specialist stroke:#9a6210,stroke-width:1.5px,stroke-dasharray:5 3
-  class ADV specialist
+  classDef agent stroke-width:1.5px
+  classDef script stroke-width:1.25px
+  classDef slot stroke-dasharray:5 3,stroke-width:1.5px
+  class C1,DP agent
+  class S,V,FB,ST,TA,RL,OK script
+  class ADV slot
 </pre>
     </div>
   </section>
@@ -415,13 +498,18 @@ flowchart LR
     Q[("Task list")]
   end
   subgraph CONT["Container — no queue access"]
-    B["code · verify · docs"]
+    B["The task runs: code, verify, docs"]
   end
   A --> B
   B --> C
   C --> D
   A -.->|"write"| Q
   D -.->|"write"| Q
+
+  classDef script stroke-width:1.25px
+  classDef store stroke-width:1.25px
+  class A,C,D,B script
+  class Q store
 </pre>
     </div>
     <div class="plate">
@@ -465,19 +553,30 @@ flowchart LR
   subgraph HOST["Host — holds every credential"]
     R["Runner — timers and budgets"]
     GH["git push and gh pr create"]
-    BD[("Beads queue")]
+    BD[("Task list")]
   end
   subgraph NET["pipeline-net — internal, no route out"]
     T["Task container — agent and verifier"]
     PX["Allowlist proxy"]
+    REG["SLOT 3 registry in the /pipeline mount"]
   end
   R -->|"clone + issue.md"| T
+  REG -.->|"read-only"| T
   T -->|"all egress"| PX
   PX -->|"allowed"| AN["the three anthropic.com endpoints"]
   PX -.->|"refused"| BL["github.com, npm, everything else"]
   T -->|"commits on host disk"| R
   R --> GH
   R --> BD
+
+  classDef script stroke-width:1.25px
+  classDef store stroke-width:1.25px
+  classDef slot stroke-dasharray:5 3,stroke-width:1.5px
+  classDef external stroke-width:1.25px,stroke-dasharray:2 2
+  class R,GH,T,PX script
+  class BD store
+  class REG slot
+  class AN,BL external
 </pre>
     </div>
   </section>
