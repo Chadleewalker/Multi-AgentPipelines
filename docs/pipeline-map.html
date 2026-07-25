@@ -254,6 +254,19 @@
   .swatch.slot { background: var(--spec-fill); border: 1.5px dashed var(--spec-stroke); }
   .legend-note { flex-basis: 100%; }
 
+  .trail {
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    line-height: 1.5;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 0.9rem 1rem;
+    margin: 0;
+    overflow-x: auto;
+    color: var(--muted);
+  }
+
   .tablewrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 3px; background: var(--surface); }
   table { border-collapse: collapse; width: 100%; font-size: 0.88rem; font-variant-numeric: tabular-nums; }
   th, td { text-align: left; padding: 0.6rem 0.85rem; border-bottom: 1px solid var(--rule); white-space: nowrap; }
@@ -380,6 +393,63 @@ flowchart TB
   class ADV specialist
 </pre>
     </div>
+  </section>
+
+  <section>
+    <h2><span class="phase p-impl">Queue</span> How a task moves through the list</h2>
+    <p>
+      Nothing is ever deleted. A task is claimed, then closed or blocked, and every run
+      appends to its notes — so a stuck task reaches you carrying its own history.
+      <strong>The host is the only writer.</strong> The container has no queue access at
+      all; it reports outcomes purely through its exit code and status file. If it wrote
+      to the queue, those writes would land on a task branch that might never merge, and
+      the work list would fork along with the code.
+    </p>
+    <div class="plate">
+<pre class="mermaid">
+flowchart LR
+  subgraph HOST["Host — the only writer"]
+    A["1 · Claim<br/>status → in progress"]
+    C["2 · Collect<br/>exit code + status file"]
+    D["3 · Finish<br/>append notes,<br/>close or block"]
+    Q[("Task list")]
+  end
+  subgraph CONT["Container — no queue access"]
+    B["code · verify · docs"]
+  end
+  A --> B
+  B --> C
+  C --> D
+  A -.->|"write"| Q
+  D -.->|"write"| Q
+</pre>
+    </div>
+    <div class="plate">
+<pre class="mermaid">
+stateDiagram-v2
+  [*] --> open: planning creates the task
+  open --> in_progress: runner claims it
+  in_progress --> closed: done or partial
+  in_progress --> blocked: stuck · tampered · failed
+  in_progress --> in_progress: rate limit — parked, resumed
+  blocked --> open: you fix the spec and unblock
+  closed --> [*]
+</pre>
+    </div>
+    <p class="note">
+      <strong>Claiming stops double-picking</strong>, and it is why a crashed run leaves
+      tasks stranded in progress — the next run sweeps those back to open before starting.
+      <strong>Blocking is what ends the loop</strong>: without it, a task that cannot pass
+      would be picked up again on every run, forever.
+    </p>
+    <p>A real task’s notes after two runs — this is the whole audit trail:</p>
+    <pre class="trail">run shadow-01-<task id>: outcome done
+  attempt 1: fail at 2026-07-25T21:44:02Z
+  attempt 2: pass at 2026-07-25T21:45:26Z
+PR: <private repo> PR #1
+run shadow-02-<task id>: outcome done
+  attempt 1: pass at 2026-07-25T22:03:14Z
+PR: <private repo> PR #2</pre>
   </section>
 
   <section>
