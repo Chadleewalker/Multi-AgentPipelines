@@ -14,11 +14,13 @@ trap cleanup EXIT
 
 echo "== T12 checks =="
 
-# --- Target repo with Beads and a mixed-priority, dependency-gated queue ---
-TGT="$TMP/target"; mkdir -p "$TGT"; cd "$TGT"
-git init -q -b main . && git config user.email t@test.local && git config user.name tester
-echo x > f.txt && git add -A && git commit -qm init
-TGTW="$TGT"; command -v cygpath >/dev/null 2>&1 && TGTW="$(cygpath -m "$TGT")"
+# --- Bare remote + target working copy with Beads, mixed-priority gated queue ---
+REMOTE="$TMP/remote.git"; git init -q --bare -b main "$REMOTE"
+TGT="$TMP/target"; git clone -q "$REMOTE" "$TGT"; cd "$TGT"
+git config user.email t@test.local && git config user.name tester
+echo x > f.txt && git add -A && git commit -qm init && git push -q origin main
+TGTW="$TGT"; REMOTEW="$REMOTE"
+if command -v cygpath >/dev/null 2>&1; then TGTW="$(cygpath -m "$TGT")"; REMOTEW="$(cygpath -m "$REMOTE")"; fi
 BD=(docker run --rm -v "$TGTW:/repo" -w /repo pipeline-base:local bd)
 bdq() { MSYS_NO_PATHCONV=1 "${BD[@]}" "$@" 2>/dev/null | tr -d '\r'; }
 bdq init >/dev/null
@@ -31,29 +33,30 @@ D=$(bdq create "mid prio task"  -d "second" --acceptance ok --design "design-ref
 cd "$ROOT"
 
 CFG="$TMP/run.config.json"
-printf '{"targetRepoPath":"%s","targetRepoRemote":"https://example.invalid/r.git","image":"pipeline-base:local"}\n' "$TGTW" > "$CFG"
+printf '{"targetRepoPath":"%s","targetRepoRemote":"%s","image":"pipeline-base:local"}\n' "$TGTW" "$REMOTEW" > "$CFG"
 
 # --- Stubs standing in for the container (T13/T14 will make these real) ---
+# Artifacts go where the container writes them: the workspace's .run/ (T13 collects).
 cat > "$TMP/stub-success.sh" <<'EOF'
-cat > "$TASK_DIR/status.json" <<JSON
-{"issueId":"$ISSUE_ID","attempts":[{"number":1,"verifierResult":"pass","timestamp":"2026-07-25T12:00:00Z"}],"changeSummary":"did the thing"}
-JSON
-cat > "$TASK_DIR/verify.json" <<JSON
-{"issueId":"$ISSUE_ID","timestamp":"2026-07-25T12:00:00Z","acceptance":"pass","regressions":"pass"}
-JSON
+mkdir -p "$RUN_DIR"
+printf '{"issueId":"%s","attempts":[{"number":1,"verifierResult":"pass","timestamp":"2026-07-25T12:00:00Z"}],"changeSummary":"did the thing"}\n' "$ISSUE_ID" > "$RUN_DIR/status.json"
+printf '{"issueId":"%s","timestamp":"2026-07-25T12:00:00Z","acceptance":"pass","regressions":"pass"}\n' "$ISSUE_ID" > "$RUN_DIR/verify.json"
 exit 0
 EOF
 cat > "$TMP/stub-partial.sh" <<'EOF'
-printf '{"issueId":"%s","attempts":[{"number":1,"verifierResult":"pass","timestamp":"2026-07-25T12:00:00Z"}]}\n' "$ISSUE_ID" > "$TASK_DIR/status.json"
-printf '{"issueId":"%s","timestamp":"2026-07-25T12:00:00Z","acceptance":"pass","regressions":"fail"}\n' "$ISSUE_ID" > "$TASK_DIR/verify.json"
+mkdir -p "$RUN_DIR"
+printf '{"issueId":"%s","attempts":[{"number":1,"verifierResult":"pass","timestamp":"2026-07-25T12:00:00Z"}]}\n' "$ISSUE_ID" > "$RUN_DIR/status.json"
+printf '{"issueId":"%s","timestamp":"2026-07-25T12:00:00Z","acceptance":"pass","regressions":"fail"}\n' "$ISSUE_ID" > "$RUN_DIR/verify.json"
 exit 0
 EOF
 cat > "$TMP/stub-stuck.sh" <<'EOF'
-printf '{"issueId":"%s","attempts":[{"number":1,"verifierResult":"fail","timestamp":"2026-07-25T12:00:00Z"},{"number":2,"verifierResult":"fail","timestamp":"2026-07-25T12:05:00Z"},{"number":3,"verifierResult":"fail","timestamp":"2026-07-25T12:10:00Z"}],"stuckState":"bailed after 3"}\n' "$ISSUE_ID" > "$TASK_DIR/status.json"
+mkdir -p "$RUN_DIR"
+printf '{"issueId":"%s","attempts":[{"number":1,"verifierResult":"fail","timestamp":"2026-07-25T12:00:00Z"},{"number":2,"verifierResult":"fail","timestamp":"2026-07-25T12:05:00Z"},{"number":3,"verifierResult":"fail","timestamp":"2026-07-25T12:10:00Z"}],"stuckState":"bailed after 3"}\n' "$ISSUE_ID" > "$RUN_DIR/status.json"
 exit 10
 EOF
 cat > "$TMP/stub-paused.sh" <<'EOF'
-printf '{"issueId":"%s","attempts":[],"rateLimitResetAt":"2026-07-26T00:00:00Z"}\n' "$ISSUE_ID" > "$TASK_DIR/status.json"
+mkdir -p "$RUN_DIR"
+printf '{"issueId":"%s","attempts":[],"rateLimitResetAt":"2026-07-26T00:00:00Z"}\n' "$ISSUE_ID" > "$RUN_DIR/status.json"
 exit 20
 EOF
 

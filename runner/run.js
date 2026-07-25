@@ -15,6 +15,7 @@ const { loadConfig, loadToken } = require('./config');
 const { startRun } = require('./log');
 const { preflight, networkDown } = require('./preflight');
 const { readyQueue, claim, exportIssue, finish, outcomeFor, attemptNotes } = require('./queue');
+const { prepare, hasCommits, collectArtifacts, discard } = require('./workspace');
 
 const REPO_ROOT = path.join(__dirname, '..');
 
@@ -30,21 +31,28 @@ function parseArgs(argv) {
 // Placeholder task execution until T13/T14 land. PIPELINE_EXEC_STUB names a script
 // whose exit code stands in for the container's, and which may write status.json /
 // verify.json into the task's log dir — enough to exercise every §4.11 transition.
-function executeTask(cfg, issue, taskDir, log, traceId) {
+function executeTask(cfg, issue, taskDir, log, traceId, ws) {
   const stub = process.env.PIPELINE_EXEC_STUB;
   if (!stub) {
-    log.error(traceId, 'task execution not implemented yet (T13/T14) — reporting internal error');
+    // T14 launches the container here, against the workspace T13 prepared.
+    log.error(traceId, 'container launch not implemented yet (T14) — reporting internal error');
     return { exitCode: 30, status: null, verify: null };
   }
+  // Test seam: the stub stands in for the container and works inside the real
+  // workspace, so clone/branch/exclude behavior is exercised for real.
   const r = require('child_process').spawnSync('bash', [stub], {
     encoding: 'utf8',
-    env: { ...process.env, ISSUE_ID: issue.id, TASK_DIR: taskDir },
+    cwd: ws ? ws.dir : undefined,
+    env: {
+      ...process.env,
+      ISSUE_ID: issue.id,
+      TASK_DIR: taskDir,
+      WORKSPACE: ws ? ws.dir : '',
+      RUN_DIR: ws ? path.join(ws.dir, '.run') : '',
+    },
   });
-  const read = (f) => {
-    try { return JSON.parse(fs.readFileSync(path.join(taskDir, f), 'utf8')); } catch { return null; }
-  };
   log.info(traceId, `exec stub exited ${r.status}`);
-  return { exitCode: r.status === 124 ? 'killed' : r.status, status: read('status.json'), verify: read('verify.json') };
+  return { exitCode: r.status === 124 ? 'killed' : r.status };
 }
 
 function main() {
@@ -113,16 +121,39 @@ function main() {
     }
     fs.writeFileSync(path.join(taskDir, 'issue.md'), exported.markdown);
 
-    // Task execution (clone, branch, container, wall-clock) arrives in T13/T14. Until
-    // then the loop runs end to end against a stub so ordering, claiming, transitions,
-    // and write-back are all live and testable. PIPELINE_EXEC_STUB is a test seam:
-    // a script whose exit code stands in for the container's.
-    const exec = executeTask(cfg, issue, taskDir, log, tr);
-    const outcome = outcomeFor(exec.exitCode, exec.verify);
-    finish(cfg, issue.id, outcome, attemptNotes(log.runId, outcome, exec.status));
+    // ---- per-task workspace: fresh clone, task branch, issue mounted (§4.2, T13) ----
+    const ws = prepare(cfg, issue.id, exported.markdown, log, tr);
+    if (!ws.ok) {
+      log.error(tr, `workspace preparation failed: ${ws.reason}`);
+      finish(cfg, issue.id, { status: 'failed', beads: 'blocked' },
+        [`run ${log.runId}: workspace preparation failed — ${ws.reason}`]);
+      results.push({ issueId: issue.id, outcome: 'failed' });
+      continue;
+    }
+
+    // T14 replaces this with the container launch + wall-clock kill.
+    const exec = executeTask(cfg, issue, taskDir, log, tr, ws);
+
+    // Collect the container's contract artifacts before the workspace is discarded.
+    const artifacts = collectArtifacts(ws.dir, taskDir);
+    const outcome = outcomeFor(exec.exitCode, artifacts.verify);
+    const commits = hasCommits(ws.dir, ws.forkPoint);
+    log.info(tr, `branch ${ws.branch}: ${commits ? 'has commits (push candidate)' : 'no commits (nothing to push)'}`);
+
+    finish(cfg, issue.id, outcome, attemptNotes(log.runId, outcome, artifacts.status));
     log.info(tr, `task finished: exit ${exec.exitCode} -> ${outcome.status}` +
       (outcome.beads ? ` (issue ${outcome.beads})` : ' (issue stays in_progress)'));
-    results.push({ issueId: issue.id, outcome: outcome.status });
+    results.push({
+      issueId: issue.id,
+      outcome: outcome.status,
+      branch: ws.branch,
+      exitCode: exec.exitCode,
+      hasCommits: commits,
+    });
+
+    // T16 pushes here (before discard). Until then the workspace is disposable.
+    if (process.env.PIPELINE_KEEP_WORKSPACE) log.info(tr, `workspace kept at ${ws.dir}`);
+    else discard(ws.dir);
   }
 
   fs.writeFileSync(path.join(log.dir, 'results.json'), JSON.stringify(results, null, 2) + '\n');
