@@ -53,11 +53,13 @@ checks `scripts/test-egress.sh` (12/12 pass). design-ref: §4.8, §7 item 3
 - [x] Live headless `claude -p` completed through the proxy on subscription auth (token read from git-ignored `.env.pipeline`)
 - [x] github.com + registry.npmjs.org blocked via proxy; zero direct egress without proxy vars
 
-## T6: Pre-run egress check — medium — depends: T5
-Throwaway-container proof the policy holds. design-ref: §4.8
-- [ ] Verifies allowed endpoint reachable + ≥2 non-allowlisted hosts unreachable
-- [ ] Bounded under 60 seconds
-- [ ] Non-zero exit on any failure so the runner aborts the run
+## T6: Pre-run egress check — medium — depends: T5 — **DONE 2026-07-25**
+`scripts/egress-check.sh` (the runner's per-run gate; ~0.75s in practice); checks
+`scripts/test-egress-check.sh` (5/5 pass, incl. permissive-allowlist tamper case).
+design-ref: §4.8
+- [x] One throwaway container: allowed endpoint reachable via proxy + github.com and registry.npmjs.org blocked + zero direct egress
+- [x] Bounded under 60 seconds (coreutils `timeout` + per-curl `-m` limits; measured <1s)
+- [x] Non-zero exit on any failure — proven for both failure directions: sidecar down AND allowlist made permissive (the dangerous one)
 
 ## T7: Verifier scaffolding — medium — depends: T1
 Non-agent verifier: freeze-diff tamper check, acceptance run, regression evidence.
