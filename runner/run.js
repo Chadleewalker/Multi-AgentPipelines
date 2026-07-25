@@ -17,6 +17,7 @@ const { preflight, networkDown } = require('./preflight');
 const { readyQueue, claim, exportIssue, finish, outcomeFor, attemptNotes } = require('./queue');
 const { prepare, hasCommits, collectArtifacts, discard } = require('./workspace');
 const { runTask } = require('./container');
+const { waitForWindow } = require('./pause');
 
 const REPO_ROOT = path.join(__dirname, '..');
 
@@ -35,7 +36,7 @@ function parseArgs(argv) {
 // One task container (§4.10). PIPELINE_EXEC_STUB replaces the container with a local
 // script — used by the runner's own test suites to exercise outcome paths cheaply;
 // real runs always take the docker path.
-async function executeTask(cfg, issue, taskDir, log, traceId, ws, token) {
+async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClockMinutes) {
   const stub = process.env.PIPELINE_EXEC_STUB;
   if (stub) {
     const r = require('child_process').spawnSync('bash', [stub], {
@@ -46,14 +47,16 @@ async function executeTask(cfg, issue, taskDir, log, traceId, ws, token) {
     log.info(traceId, `exec stub exited ${r.status}`);
     return { exitCode: r.status === 124 ? 'killed' : r.status };
   }
+  // Container names must be unique across relaunches (§4.7 resume).
+  const attempt = (executeTask.counter = (executeTask.counter || 0) + 1);
   return runTask(cfg, {
-    containerName: `task-${issue.id}-${log.runId}`.replace(/[^A-Za-z0-9_.-]/g, '-'),
+    containerName: `task-${issue.id}-${log.runId}-${attempt}`.replace(/[^A-Za-z0-9_.-]/g, '-'),
     workspaceDir: ws.dir,
     pipelineDir: path.join(REPO_ROOT, 'pipeline'),
     issueId: issue.id,
     taskDir,
     token,
-    wallClockMinutes: cfg.wallClockMinutes,
+    wallClockMinutes: wallClockMinutes || cfg.wallClockMinutes,
   }, log, traceId);
 }
 
@@ -134,13 +137,40 @@ async function main() {
       continue;
     }
 
-    const exec = await executeTask(cfg, issue, taskDir, log, tr, ws, token);
-    if (exec.durationMs !== undefined) {
-      log.info(tr, `container ran ${Math.round(exec.durationMs / 1000)}s${exec.killed ? ' (killed at budget)' : ''}`);
-    }
+    // ---- run the task, pausing and resuming across usage windows (§4.7) ----
+    // Active time accumulates across relaunches; paused time never counts (§4.6).
+    let exec;
+    let artifacts;
+    let activeMs = 0;
+    let pauses = 0;
+    for (;;) {
+      const remainingMinutes = cfg.wallClockMinutes - activeMs / 60000;
+      if (remainingMinutes <= 0) {
+        log.error(tr, 'active wall-clock budget exhausted across relaunches');
+        exec = { exitCode: 'killed', killed: true, durationMs: 0 };
+        artifacts = collectArtifacts(ws.dir, taskDir);
+        break;
+      }
+      exec = await executeTask(cfg, issue, taskDir, log, tr, ws, token, remainingMinutes);
+      activeMs += exec.durationMs || 0;
+      if (exec.durationMs !== undefined) {
+        log.info(tr, `container ran ${Math.round(exec.durationMs / 1000)}s` +
+          `${exec.killed ? ' (killed at budget)' : ''}; active total ${Math.round(activeMs / 1000)}s`);
+      }
+      artifacts = collectArtifacts(ws.dir, taskDir);
 
-    // Collect the container's contract artifacts before the workspace is discarded.
-    const artifacts = collectArtifacts(ws.dir, taskDir);
+      if (exec.exitCode !== 20) break;                       // not a rate limit — done
+
+      pauses += 1;
+      log.info(tr, `rate limit hit (pause ${pauses}) — parking the task; issue stays in_progress`);
+      const waited = await waitForWindow(cfg, artifacts.status, log, tr, { token });
+      if (!waited.resumed) {
+        log.error(tr, `giving up on the pause: ${waited.reason}`);
+        break;                                               // stays exit 20 -> paused
+      }
+      log.info(tr, 'relaunching in a fresh container against the same workspace (attempt counter carries over)');
+    }
+    if (pauses) log.info(tr, `task resumed across ${pauses} usage-window pause(s)`);
     const outcome = outcomeFor(exec.exitCode, artifacts.verify);
     const commits = hasCommits(ws.dir, ws.forkPoint);
     log.info(tr, `branch ${ws.branch}: ${commits ? 'has commits (push candidate)' : 'no commits (nothing to push)'}`);

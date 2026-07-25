@@ -138,12 +138,16 @@ design-ref: §4.1, §4.6, §4.10, §4.11, §6
 1. Bind-mounted workspaces are owned by the host user → git's dubious-ownership guard blocked every git call → verifier `error`. Fixed: entrypoint marks `$WS` a safe directory.
 2. Host clone on Windows wrote CRLF → the Linux container's git saw every file as modified → verifier reported **tampered** on clean checkouts. Fixed: workspace clones with `core.autocrlf=false`, `core.eol=lf`.
 
-## T15: Rate-limit pause/resume — hard — depends: T14, T10
-design-ref: §4.7, §4.11
-- [ ] Exit 20 → issue stays in-progress, pause logged, no push/PR yet
-- [ ] Waits for reset time, or probes host-side `claude -p` on the configured interval
-- [ ] Relaunch = fresh container, same host clone; `.run/` persists so attempt count carries over
-- [ ] Pre-pause active time counts against wall-clock; paused time never; never recorded as failure
+## T15: Rate-limit pause/resume — hard — depends: T14, T10 — **DONE 2026-07-25**
+`runner/pause.js` + pause loop in the task loop; checks `scripts/test-runner-pause.sh`
+(21/21 pass with REAL containers across REAL pause/resume cycles; in-container agent is
+a state machine that fails once, then reports a usage limit, then succeeds — which is
+what proves carry-over). design-ref: §4.7, §4.11
+- [x] Exit 20 → pause logged, issue parked in_progress (never a terminal status), no push/PR
+- [x] Waits until the container-reported reset time when present; otherwise probes on the configured interval and keeps waiting while the probe reports a limit (`PIPELINE_PROBE_CMD` test seam mirrors `PIPELINE_AGENT_CMD`)
+- [x] Relaunch is a fresh container against the **same workspace**, so `.run/status.json` survives: proven by attempts `[1: fail, 2: pass]` spanning two containers, numbered continuously
+- [x] **Paused time excluded from the budget — proven**: a run outlived its 18s wall clock (25s elapsed) and still succeeded, because only 4s was active container time; active time accumulates across relaunches and a genuine active-budget breach still kills
+- [x] Give-up guard: after `maxPauses` cycles the task stays `paused` rather than looping forever
 
 ## T16: Runner outcome handling — hard — depends: T14, T12, T7
 Push-always, PR-per-table, Beads transitions. design-ref: §4.5, §4.11
