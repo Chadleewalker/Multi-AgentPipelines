@@ -1,0 +1,433 @@
+# Multi-Agent Pipelines — Design
+
+> **Status: READY v1.0 (2026-07-25)** — this doc has passed its readiness bar (section 11)
+> and is approved to drive development. Three critic-review + dry-run-decomposition rounds
+> converged ~20 → ~7 → 4 findings; round 3 produced no decision requiring the user, only
+> sentence-sized contract fixes (applied in v0.4), and a complete 21-task V1 backlog. The
+> user approved intent and the pragmatic readiness rule on 2026-07-25.
+
+This document is the project's constitution: what we're building, the decisions already made
+and why, and what's out of scope. Task-level specs are derived from it (as Beads issues) and
+cite it — they don't repeat it. When reality disagrees with this doc, the doc gets amended
+(see "Change Protocol"), never silently ignored.
+
+Predecessor document: `<private handoff note>` (in the Harness repo). This doc
+supersedes it, merging the execution architecture it defined with the spec-layer design
+agreed on 2026-07-25.
+
+## 1. Goal
+
+The user queues development tasks whenever it suits them. The pipeline then works through
+the queue autonomously — unattended, for hours at a time — using headless Claude Code, each
+task in its own locked-down Docker container. When the run finishes, completed work is
+waiting as GitHub pull requests plus a run report, ordered by how much scrutiny each item
+needs. The user's time goes into two high-leverage moments — approving intent before a run,
+reviewing results after — and nothing in between.
+
+The pipeline's own code (runner, image, entrypoint, verifier, playbook, schemas) lives in
+**this repository** (`Multi-AgentPipelines`). Target projects are separate repositories the
+pipeline operates on.
+
+## 2. The Three Phases
+
+The system moves through three phases, joined by the Beads work queue:
+
+```
+PLANNING (interactive)              IMPLEMENTATION (autonomous)         REVIEW (interactive)
+──────────────────────────          ───────────────────────────         ────────────────────
+Design doc session                  Runner loops the Beads queue        Run report, ordered
+  → decompose into task specs         → fresh container per task        by scrutiny needed
+  → critics attack each spec          → code → verify → retry loop      PRs approved, merged,
+  → acceptance tests written          → local commit on success         or sent back with
+    and frozen                        → host pushes branch, opens PR    notes as new tasks
+  → user approves intent            Report generated at run end
+  → specs become Beads issues
+```
+
+**Planning is always interactive; implementation is always autonomous.** Specs and tests are
+written with the user before a run starts; nothing during implementation can change what
+"done" means. A run can happen overnight, over a lunch break, or while the user does other
+work — the design doesn't care when.
+
+## 3. The Planning Phase (the spec layer)
+
+### 3.1 Three levels, one owner each
+
+| Level | What it holds | Canonical home | Frozen? |
+|---|---|---|---|
+| Design doc | Project intent, architecture, decisions + why | `DESIGN.md` in the project's repo | Amendable via change protocol |
+| Task spec | One bounded task: description, constraints, "Done means" criteria, attempt log | A Beads issue | Frozen at approval |
+| Acceptance tests | Machine-checkable proof of each criterion | `tests/acceptance/<issue-id>/` in the repo | Frozen at approval (verifier `git diff`-checks them) |
+
+One canonical home per artifact; everything else (PR descriptions, the run report) is a
+generated copy, never edited by hand. Each Beads issue carries a `design-ref` naming the
+design-doc section it implements — this makes two checks cheap: doc sections with no issue
+(coverage gap) and issues citing nothing (scope creep).
+
+**Issue fields.** The five spec fields (description, constraints, acceptance criteria,
+`design-ref`, attempt log) are stored as structured markdown sections in the issue
+description, using Beads' native fields wherever one exists (status, dependencies,
+priority). The exact mapping is finalized by the Beads setup task; the rule that matters at
+doc level is: all five fields must round-trip through a `bd` dump so scripts can check them.
+
+**Test freeze mechanism.** "Frozen" means: the acceptance test paths as they exist at the
+task branch's fork point from `main` (`git merge-base main <branch>`). The verifier diffs
+the test paths against that fork point; any difference is tampering, regardless of test
+results.
+
+### 3.2 The pipeline for producing specs
+
+1. **Design doc session.** Bounded interview (3–5 batched questions), draft, then doc-level
+   critics simulate the questions development will ask. Unresolved unknowns become explicit
+   assumptions the user approves with the doc. The readiness test is a dry-run decomposition.
+2. **Decomposition.** An agent slices the approved doc into task-sized specs with a
+   dependency order, labeling each task trivial / medium / hard. One spec = one issue = one
+   container run = one PR the user can review in a few minutes; the decomposer splits
+   anything bigger.
+3. **Per-spec pipeline.** Draft → critics sized to the difficulty label (none for trivial,
+   light for medium, full panel for hard: ambiguity, testability, scope) → the pipeline
+   writes the acceptance tests → a coverage check pairs every "Done means" item with a test
+   and every test with an item; orphans on either side are spec bugs.
+4. **Approval and freeze.** The user approves intent at the design-doc level once; the
+   decomposed backlog is reviewed as a single list pass (checking the slicing, not
+   re-litigating intent). On approval: tests committed and frozen, Beads issues created,
+   new dependencies declared (see 3.4) for the image rebuild.
+
+Small standalone chores may skip the doc layer and enter at step 3 with just a spec — but
+large, doc-first projects are the default path.
+
+**V1 deliverable.** In V1 the planning session is a written playbook — `PLANNING.md` in
+this repo — that the user and Claude follow interactively: draft spec + tests, approve
+intent, commit/freeze tests, create the issue, declare dependencies, rebuild the image if
+needed. No planning tooling is built in V1; V2 packages the playbook as the `/spec` skill.
+The playbook's acceptance bar is structural (every step above present, the conventions in
+3.1/3.4 stated correctly); whether it is *followable* is proven by the shadow-mode trial,
+not by a script.
+
+### 3.3 Approval model and change protocol
+
+- The user is the check on **what** gets built (plain-English intent); the AI owns **how
+  it's verified** (it writes better tests). This division is the heart of the design.
+- The approval gate reopens only when a spec must deviate from the doc.
+- Drift flows upward: an agent reporting "the spec is wrong" is a first-class result, not a
+  failure. It can trigger a spec fix (re-approve, re-freeze tests) or, when the cause is
+  architectural, a doc amendment. Both the doc and each issue keep a change log.
+
+### 3.4 Per-project pipeline config
+
+Each target project carries a `pipeline.config.json` in its repo root, written once during
+planning and read by the scaffolding:
+
+- `verifyCommand` — the verifier invokes it with the test directory appended as the final
+  argument: `<verifyCommand> tests/acceptance/<issue-id>/`.
+- `regressionCommand` (optional) — the project's standard test suite. Its *presence* is
+  what "a standard suite exists" means; there is no auto-detection. See 4.4 for how its
+  result is used.
+- `dependencies` — the declared-dependency manifest: package lists keyed by package
+  manager (e.g. `{"apt": [...], "npm": [...]}`). **No arbitrary install commands.** The
+  per-project image layer is a hand-written thin Dockerfile living in the target repo
+  beside this config; the playbook (and the E2E pass) cross-check the Dockerfile against
+  the manifest so they cannot silently drift. Rebuilding the image is a manual pre-run
+  step in the playbook; the runner only asserts the image exists and fails fast otherwise.
+
+## 4. The Implementation Phase (the execution layer)
+
+Carried over from v3, amended over two critic-review rounds; this section is the single
+source of truth.
+
+1. **One orchestrator, on the host, outside every container.** A deterministic runner
+   script — not an LLM. It enforces timeouts and kill switches; the enforcer cannot live
+   inside the thing it may need to kill.
+2. **One fresh container per task, repo supplied by the host.** For each Beads issue the
+   runner clones the target repo fresh **from the GitHub remote** (so every branch forks
+   from the canonical `main`) into a per-task temp directory on the host, creates branch
+   `task/<issue-id>`, and bind-mounts the clone read-write at `/workspace` in the
+   container. If a branch of that name already exists on the remote (the issue was re-run
+   after a spec fix), the runner suffixes a run counter — `task/<issue-id>-r2`, `-r3` —
+   and **never force-pushes**, so earlier attempts survive. The container never talks to a
+   git host (see network policy); its local commits land on the host filesystem and
+   therefore survive container teardown. Fresh container + fresh clone every time;
+   everything inside the container is disposable, so "kill the container" is always safe.
+3. **Inside the container, agents are ephemeral headless invocations** (`claude -p`,
+   run with permissions bypassed — acceptable *only* because the container has a closed
+   network, a disposable filesystem, and no credentials) in a fixed sequence driven by the
+   entrypoint script: **code → verify → (retry, max 3 attempts total) → docs → commit**.
+   The agent command is read from the `PIPELINE_AGENT_CMD` environment variable,
+   defaulting to the headless `claude -p` invocation when unset — this is the deliberate
+   test seam that lets the E2E pass substitute deterministic stubs (see section 7). The docs phase is one agent invocation
+   that writes the change summary into the status file and updates in-repo docs the change
+   affects; if the docs phase itself errors after verification has passed, the success
+   stands (docs failure is logged, never fatal). Phases of a task are scaffolding, not an
+   LLM decision. No leader agent inside.
+4. **The verifier is scaffolding, not an agent.** Mounted read-only (a container-side test
+   asserts it cannot be written), it receives the issue id via the `ISSUE_ID` environment
+   variable and executes `<verifyCommand> tests/acceptance/<issue-id>/`; its pass/fail is
+   authoritative — "the agent says it's done" counts for nothing. Before every check it
+   `git diff`s **all of `tests/acceptance/`** (every frozen test, not just this issue's
+   directory — during a run no acceptance test anywhere may change) against the fork
+   point (3.1); any difference is the dedicated "tampered" outcome. When
+   `regressionCommand` is present it runs that too, as **recorded evidence, not a gate**:
+   acceptance tests decide pass/fail, and a passing task with failing regressions is
+   reported as "partial," never "done." The verifier writes machine-readable results to
+   `/workspace/.run/verify.json` — schema `verify.schema.json`, checked into this repo,
+   owned by the verifier task and cited as a frozen input by the runner and report tasks
+   (mirroring `status.schema.json`) — and its output is fed into the next coding attempt
+   as feedback.
+5. **Git isolation; the host pushes everything that exists, PRs only what passed.** Every
+   task gets a fresh branch off `main`; nothing touches `main`. After the container exits,
+   the runner pushes the task branch **whenever it has commits — including WIP commits
+   from stuck, tampered, or failed tasks** — so no committed work is ever destroyed and
+   the review phase can inspect failures. (Uncommitted work in a killed container is
+   discarded by design — that is what "kill is always safe" costs, and the entrypoint
+   commits at every meaningful boundary to keep the loss window small.) A pull request is
+   opened for **every exit-0 task — "done" and "partial" alike** (a partial PR is flagged
+   with its failing regression evidence and sorts to the top of the report); stuck,
+   tampered, and failed branches are linked from the run report and the issue instead.
+   The container holds no git credentials (a test asserts `git push` from inside fails).
+   The PR body is assembled by the host from the issue spec, the change summary in the
+   status file, and `verify.json` — nothing parses free-form agent prose.
+6. **Budgets and hard exits — time and attempts, not money.** Two budgets only: max
+   **active** wall-clock per task (host-enforced, default 4 hours, pause time excluded —
+   see next item) and max 3 verify attempts per task (entrypoint-enforced, counted in the
+   status file). After the third failed attempt: write the stuck-state to the status file,
+   commit clearly-labeled WIP (message prefix `WIP:`), exit with the "stuck" code. On
+   detected tampering the entrypoint likewise commits WIP first (evidence survives) and
+   exits with the "tampered" code. One task failing must never block the next. There is
+   **no cost ceiling**: consumption is naturally bounded by finite queue × 3 attempts ×
+   wall-clock cap, and the subscription window itself is the spending limit — see next
+   item.
+7. **Rate limits are pauses, not failures — and the only "billing" mechanism.** The
+   pipeline runs on a Claude subscription. When a `claude -p` call fails with a
+   usage-limit error, the entrypoint exits immediately with the "rate-limited" code,
+   recording the window-reset time in the status file when the error reports one. The
+   runner parks the task — the pause is an attempt-log note; the issue simply stays
+   in-progress — waits until the reset time or, if none was reported, probes on a fixed
+   interval (default 15 minutes) with a minimal `claude -p` call **run directly on the
+   host** (the host has the CLI and token; see section 6). It then relaunches a **fresh
+   container reusing the same host-side clone and workspace**: `/workspace/.run/` persists
+   across the relaunch, so the entrypoint reads the prior attempt count from the status
+   file and continues it — the 3-attempt cap is a per-task invariant, never reset by a
+   pause. Active time before the pause counts against the wall-clock budget (host-tracked);
+   paused time never does. A run may span multiple usage windows. A rate limit is never
+   recorded as a task failure, and an interrupted attempt is not a failed attempt.
+8. **Closed network.** Container egress is allowlisted to **the Anthropic-operated
+   endpoints headless Claude Code requires to function** (API plus auth/token refresh),
+   enumerated explicitly in the proxy configuration — and nothing else: no git hosts, no
+   package registries, no third-party hosts. Mechanism: an internal no-egress Docker
+   network plus an HTTP CONNECT proxy sidecar with a domain allowlist (TLS passed through,
+   not intercepted), reached by the CLI via standard proxy environment variables. The
+   *mechanism* may be revisited at implementation; the *policy* — Anthropic endpoints
+   only, each one listed in config — may not. The starting allowlist is
+   `api.anthropic.com` plus whatever auth endpoints empirical testing of headless
+   `claude -p` shows are required; the enumeration is finalized (within the policy) by the
+   network task. A **pre-run egress check** (throwaway container: allowed endpoint
+   reachable, at least two non-allowlisted hosts unreachable, bounded under 60 seconds)
+   runs before every run and **aborts the run** on failure. Dependencies are baked into
+   the image at planning time (see 3.4). Knowledge gaps are mitigated in the repo
+   (vendored docs, `CLAUDE.md` conventions, API details attached to the issue at planning
+   time). Tasks needing live internet research belong in the interactive queue, not the
+   autonomous one.
+9. **The run report is a first-class deliverable.** Generated at the end of every run from
+   the run manifest + Beads + git (see 4.12) into the run's log folder, as markdown,
+   regeneration-idempotent, never hand-edited. Per task: report status (see the 4.11 table), branch, what changed,
+   verification evidence, attempt notes. Ordered by scrutiny needed:
+   **tampered > stuck > partial > failed > done-with-retries > done-first-try**, ties
+   broken by attempt count then diff size. "Paused" appears in a final report only if the
+   operator stopped the run before a window reset; otherwise the run ends only when the
+   queue is drained. Recurring "didn't know the current API" failures mean vendor those
+   docs, not open the network.
+10. **Workers are stateless; hierarchy is flat; the host owns all durable state.** The
+    container's inputs are exactly: the `/workspace` mount; the pipeline scaffolding
+    (entrypoint + verifier) bind-mounted **read-only at `/pipeline` by the runner from
+    this repo** — the base image stays scaffolding-free, so scaffolding changes never
+    require an image rebuild; the issue exported to a read-only file mounted at
+    `/workspace/.run/issue.md`; and the environment variables `ISSUE_ID`,
+    `PIPELINE_AGENT_CMD` (normally unset — see 4.3), the OAuth token, and proxy
+    variables. The container command is the entrypoint at its `/pipeline` path. The
+    entrypoint composes the coding prompt from the issue file; the runner writes a
+    `.git/info/exclude` entry for `.run/` at clone time so contract artifacts never end
+    up in commits. Every spec,
+    verifier run, and result is logged with trace IDs back to the issue. "I couldn't
+    because X" is a result type, not an error. **The host runner is the sole Beads
+    writer**: attempt notes travel back via the status file and the runner appends them to
+    the issue after exit. Beads data never rides task branches.
+11. **The outcome taxonomy — one table, cited by every component.** The contract between
+    entrypoint, runner, and report generator:
+
+    | Outcome | Exit code | Report status | Beads status after | Branch pushed? | PR? |
+    |---|---|---|---|---|---|
+    | Acceptance pass, regressions pass or absent | 0 | done | closed | yes | yes |
+    | Acceptance pass, regressions fail | 0 | partial | closed | yes | yes, flagged |
+    | Bailed after 3 attempts | 10 | stuck | blocked | yes (WIP) | no |
+    | Test tampering detected | 11 | tampered | blocked | yes (WIP) | no |
+    | Usage limit hit | 20 | paused (transient) | in-progress (runner parks it) | not yet | not yet |
+    | Internal error | 30 | failed | blocked | if commits exist | no |
+    | Wall-clock kill (host `docker kill`, no exit code) | — | failed, timeout noted | blocked | if commits exist | no |
+
+    The runner distinguishes done from partial by reading `verify.json`. The runner sets
+    an issue in-progress when its task starts; **blocked** is what takes failed work out
+    of the ready queue (it needs a human decision in review — fix the spec, fix the doc,
+    or drop it), so the run loop can never re-pick a failed issue. Timeout kills treat
+    the status file as best-effort (it may be half-written). Alongside the codes, the
+    entrypoint maintains `/workspace/.run/status.json` — attempt summaries (number,
+    verifier result, timestamp), the docs-phase change summary, the rate-limit reset time
+    when known. Its schema is `status.schema.json`, checked into this repo, owned by the
+    entrypoint task and cited as a frozen input by the runner and report tasks.
+12. **Runner configuration, lifecycle ownership, and logs.** The runner reads
+    `run.config.json` in this repo: target repo path and remote, image name, wall-clock
+    default, probe interval, network/proxy identifiers, and an optional `agentCommand`
+    override (passed into containers as `PIPELINE_AGENT_CMD` — how the E2E pass injects
+    its stubs). **The runner owns the run lifecycle end to end:** at run start it creates
+    the internal network and proxy sidecar, invokes the pre-run egress check (aborting on
+    failure), and resets any issue left in-progress by an abnormal earlier end (operator
+    stop, crash) back to open with an attempt-log note; at run end it tears the network
+    and sidecar down. Task order: Beads' ready queue (open, unblocked, dependencies
+    satisfied), ranked by Beads priority, first-in-first-out within the same priority.
+    The Beads database's canonical home is the working copy at the configured
+    target-repo path on the host; the runner runs `bd` against it, and in V1 (single
+    machine) its state is not pushed anywhere. **The runner writes a per-run manifest**
+    — `runs/<run-timestamp>/run.json`, schema `run.schema.json` checked into this repo,
+    owned by the runner task — recording per task: issue id, branch, exit code (or
+    `killed`), the derived 4.11 outcome, attempt count, and PR URL if any. The report
+    generator reads the manifest (plus Beads + git) as a frozen input; Beads alone
+    cannot reconstruct report statuses, since stuck/tampered/failed all map to blocked.
+    Per-run logs, trace IDs, collected status files, the manifest, and the run report
+    live under `runs/<run-timestamp>/` in this repo on the host, git-ignored. The
+    container-side isolation assertions (no `git push`, read-only verifier, no
+    non-allowlisted egress) live in this repo and run as part of the E2E pass and on
+    demand.
+
+## 5. The Review Phase
+
+The user reads the run report and works through the PRs it points at, most-scrutiny-first.
+Each PR carries everything needed to judge it without archaeology: the spec, the change
+summary, and the verification evidence. Outcomes per PR: merge it, or send it back — and
+"send it back" means writing feedback that becomes a new task through the normal planning
+phase, not editing the branch by hand. Stuck, tampered, and failed tasks arrive as pushed
+WIP branches linked from the report, with their full attempt history on the issue and a
+**blocked** status that keeps them out of future runs until the review decides: fix the
+spec (re-approve, re-freeze, unblock), fix the doc, or drop the task.
+
+## 6. Environment and Constraints
+
+- **First target: the reference workstation** (Windows 11, Docker Desktop). The second environment's <another container workflow>
+  environment is a later port (see Phasing); nothing in V1 may hard-require it, but nothing
+  is built for it yet either.
+- **Host prerequisites:** Docker Desktop, Git Bash, Node, the `gh` CLI (authenticated to
+  GitHub), and the Claude Code CLI with `CLAUDE_CODE_OAUTH_TOKEN` available on the host —
+  the host itself makes the minimal rate-limit probe calls (4.7).
+- **Review happens as GitHub PRs.** Projects fed through the pipeline must have a GitHub
+  remote. (The work-PC port will need a local-branch review mode — its repos live on a
+  network share with no PR host. Out of scope for V1.)
+- **Docker on this machine runs from Git Bash**, not WSL (known issue: the WSL distro has
+  no Docker Desktop integration). The runner must not assume WSL.
+- **Auth:** `CLAUDE_CODE_OAUTH_TOKEN` is passed to containers as an environment variable
+  at `docker run` — never baked into an image layer. Headless `claude -p` honors it;
+  interactive `claude` does not (known issue) — the pipeline is headless-only anyway.
+- **Runner implementation: Node.js.** Decision, per harness cross-platform rules: `node` is
+  the same command on Windows and Linux (no `python` vs `python3` split), handles JSON
+  natively for Beads/Claude output, and can enforce wall-clock timeouts with timers +
+  `docker kill` without relying on a platform `timeout` command. Plain JavaScript, no
+  framework.
+- **Image strategy: shared base + thin per-project layer.** The base image (Node, git,
+  the Claude Code CLI, `bd` — **no pipeline scaffolding**; the entrypoint and verifier
+  are mounted at runtime per 4.10) is maintained in this repo; each target project gets
+  a thin hand-written Dockerfile (`FROM` the base, plus its `pipeline.config.json`
+  dependencies — see 3.4 for the drift cross-check). Versions of the base OS, Node, and
+  the CLI are pinned in the base Dockerfile.
+
+## 7. Phasing
+
+**V1 — the implementation loop** (this project's first autonomous run):
+1. Beads set up in the target repo; issue template per 3.1.
+2. `PLANNING.md` playbook (see 3.2, "V1 deliverable").
+3. Base image + per-project layer, allowlist network + proxy sidecar, pre-run egress check.
+4. Runner: config, ready-queue loop, host-side clone + bind-mount per task, timeouts,
+   rate-limit pause/resume, push-always/PR-per-table, per-run logs.
+5. Entrypoint + verifier scaffolding per sections 4.3–4.4 and the 4.11 contract.
+6. Run report generator.
+
+V1 is proven by a scripted end-to-end pass against a **dedicated fixture repository on
+GitHub** (created as part of this work): one task that succeeds, one that bails, one that
+tampers — ending with the expected PR, WIP branches, and report, with zero interactive
+input. **Determinism comes from the 4.3 agent-command seam:** the bail and tamper scenarios
+substitute scripted stubs for the coding agent (a stub that never satisfies the tests; a
+stub that edits a frozen test file), so the E2E pass does not depend on model behavior or
+burn the usage window; the success scenario may run either a stub or the real model.
+
+**Shadow-mode trial:** V1 then runs on tasks from an existing project the user would have
+done anyway (project to be named when the trial starts); after each run the output is
+graded against the user's own judgment. This calibrates the verification gates before the
+pipeline gets real responsibility — and its failure notes become the requirements list for
+the V2 critics.
+
+**V2 — the spec pipeline:** the design-doc session harness, doc-level critics, dry-run
+decomposition, sized per-spec critic panels, and the coverage check — packaged as a
+`/spec` skill in the harness plugin, sibling to `/scaffold`, informed by shadow-trial data.
+
+**V3 — the second environment port:** <another container workflow> containers, network-share repos, local-branch
+review mode. Machine specifics stay in `<untracked local notes>`, per harness rules.
+
+## 8. Out of Scope (agreed)
+
+- Parallel task execution — sequential is fine; resilience matters more than throughput.
+- An LLM orchestrator, nested orchestrators, or a leader agent inside containers.
+  Orchestrator intelligence (re-planning, cross-task learning) waits until the dumb loop
+  has proven itself.
+- Autonomous planning or autonomous spec changes during a run — ever.
+- Opening the container network beyond the enumerated Anthropic endpoints.
+- Cost accounting. There is no spend ceiling by design (see 4.6–4.7); real cost tracking
+  is a possible V2+ addition if the pipeline ever moves to metered API billing.
+- The work-PC/<another container workflow> environment, until V3.
+
+## 9. Assumptions (approved with this doc)
+
+- One pipeline instance runs at a time on one machine; no multi-machine coordination.
+- Target projects are git repos with a GitHub remote; their test framework choices are
+  recorded in `pipeline.config.json` at planning time.
+- Beads (`bd`) is adopted as the work database from day one, even though V1 barely
+  exercises it — it keeps the door open to richer orchestration later. Its native
+  status vocabulary is assumed to include (or representably map to) open, in-progress,
+  blocked, and closed, with ready = open + unblocked + dependencies satisfied.
+- Run capacity is whatever the Claude subscription allows; runs may span multiple usage
+  windows, finishing later rather than doing less.
+- Headless `claude -p` reports usage-limit errors distinguishably from other failures, and
+  honors standard proxy environment variables. (If either proves false at implementation
+  time, that's a doc amendment, not a workaround.)
+
+## 10. Open Questions
+
+None currently — both review rounds' questions were resolved into decisions on 2026-07-25
+(see Change Log). Details explicitly delegated to implementation tasks, within the rules
+this doc sets: the exact Beads field mapping (within the 3.1 round-trip rule); the specific
+proxy sidecar software and the empirical completion of the endpoint enumeration (within the
+4.8 policy); and pure naming/layout details with no cross-component reach — config key
+spellings, timestamp and trace-ID formats, report and Dockerfile file names, fixture-repo
+name, probe host choices. Anything touching **two or more separately-built components** is
+decided in this doc (the 4.11 table, `status.schema.json`, `verify.schema.json`,
+`run.schema.json`, the 4.10 input contract incl. the `/pipeline` mount and
+`PIPELINE_AGENT_CMD`, the 3.4 config schema) — that is the dividing line.
+
+## 11. Readiness Bar
+
+This doc is ready to drive development when a review round (critic review + dry-run
+decomposition) produces **no blocker findings and no decision requiring the user** — every
+remaining finding must be implementer-level, with an obvious default inside rules this doc
+already sets. Critics asymptote toward zero but rarely reach it; demanding literal silence
+buys diminishing returns, so "no blockers, nothing for the user" is the bar, not "dry."
+(Adopted after three rounds converged ~20 → ~7 → 4 findings; the same rule applies to the
+V2 spec pipeline's own doc reviews.)
+
+A dry-run decomposition must still succeed in full: every V1 task with a fillable
+"Done means" list and a `design-ref`. Gaps found by either check are fixed here first;
+development starts only after.
+
+## 12. Change Log
+
+| Date | What changed | Why |
+| ---- | ------------ | --- |
+| 2026-07-25 | Initial draft, merging v3 handoff + spec-layer design session | — |
+| 2026-07-25 | v0.2: resolved first review round — host-side clone + bind-mount transport; push-always/PR-on-success; 3-attempt cap (dropped "same error" rule); exit-code + status-file contract; host as sole Beads writer; rate-limit pause mechanics; **no cost ceiling** (user decision: subscription window is the cap; pause and resume across windows); `pipeline.config.json` (verify command + deps); PLANNING.md as V1 planning deliverable; freeze = fork-point diff; branch naming; report location/ordering; allowlist policy wording; base+layer image strategy; permissions-bypass posture; runner config/log locations; regression suite as evidence not gate; fixture-repo E2E for V1 | Critic review + dry-run decomposition round 1 found 2 contradictions and ~20 undecided points |
+| 2026-07-25 | v0.3: resolved second review round — unified outcome taxonomy table (exit codes ↔ report statuses ↔ Beads transitions ↔ push/PR, incl. "stuck"/"tampered"/timeout); blocked-status loop termination; partial gets a flagged PR; rate-limit resume reuses workspace so the attempt counter and active-time budget carry over; container input contract (issue file mount, `ISSUE_ID`, prompt composition, `.run/` git-exclude); `verifyCommand` invocation convention; optional `regressionCommand`; dependencies manifest schema + hand-written thin Dockerfile with drift cross-check; agent-command env seam for deterministic E2E stubs; branch-collision run suffix, never force-push; clone from remote; canonical Beads home + host probe location; `status.schema.json` ownership; docs-phase failure non-fatal; priority-then-FIFO ordering; scrutiny order incl. tampered; delegation dividing line stated in §10 | Round 2: no contradictions, but ~7 cross-component contracts still undecided |
+| 2026-07-25 | v0.4: resolved third review round — `verify.schema.json` pinned (owner: verifier task); `PIPELINE_AGENT_CMD` named, added to the 4.10 input list and as `run.config.json`'s `agentCommand` override; scaffolding delivered as a runner-supplied read-only `/pipeline` mount (base image scaffolding-free); per-run manifest `run.json` + `run.schema.json` as the report's outcome source (Beads collapses failure flavors to blocked); tamper diff widened to all of `tests/acceptance/`; runner owns network/sidecar lifecycle + stale in-progress recovery at run start | Round 3: findings narrowed to 4 convergent cross-component contract gaps + 3 minors |
+| 2026-07-25 | v1.0: readiness bar changed from "critics come up dry" to the pragmatic rule (no blockers, no user-level decision, remainder implementer-level); status flipped to READY under that rule | User decision after 3-round convergence showed critics asymptote but never fully silence |
