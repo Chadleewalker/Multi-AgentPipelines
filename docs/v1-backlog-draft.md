@@ -70,14 +70,15 @@ scenarios + 8 schema validations + no-LLM grep). design-ref: §4.4, §3.1, §3.4
 - [x] `regressionCommand` runs as evidence only (acceptance pass + regression fail → exit 0 with the partial signal recorded; absent → "absent")
 - [x] Writes `/workspace/.run/verify.json`; all 8 scenario outputs validate against `verify.schema.json`
 
-## T8: Entrypoint core loop — hard — depends: T3, T7
-code → verify → retry (≤3 total) with WIP discipline and exit codes 0/10/11/30.
-design-ref: §4.3, §4.6, §4.10, §4.11
-- [ ] Max 3 verify attempts total, counted in `status.json`; after relaunch, continues the prior count (never resets)
-- [ ] Coding prompt composed from `/workspace/.run/issue.md`; agent command from `PIPELINE_AGENT_CMD`, defaulting to headless `claude -p` with permissions bypassed
-- [ ] `verify.json` output fed into the next attempt as feedback
-- [ ] Third failed attempt: stuck state to status file, `WIP:` commit, exit 10
-- [ ] Tampered: WIP commit first (evidence survives), exit 11; internal error → exit 30
+## T8: Entrypoint core loop — hard — depends: T3, T7 — **DONE 2026-07-25**
+`pipeline/entrypoint.sh` + `pipeline/status.js` (sole in-container status.json writer);
+checks `scripts/test-entrypoint.sh` (26 assertions pass: scenarios + schema validation
+of every status file + host greps). design-ref: §4.3, §4.6, §4.10, §4.11
+- [x] Max 3 verify attempts total in `status.json`; carry-over proven (pre-seeded 2 attempts → exactly 1 more, then bail)
+- [x] Prompt = header + `.run/issue.md` + prior feedback, piped on stdin to `PIPELINE_AGENT_CMD` (default `claude -p --dangerously-skip-permissions`); `.run/` git-excluded; pipeline git identity
+- [x] `verify.json` acceptanceOutput fed into attempt N+1's prompt (proven: failure text appears in next prompt) and recorded per-attempt
+- [x] Bail: stuckState + `WIP:` commit preserving partial work, exit 10 (decided: no empty WIP commit when the agent produced nothing)
+- [x] Tamper → WIP evidence commit, exit 11; agent crash → exit 30; success → verified commit excl. `.run/`, exit 0; `main` untouched across all scenarios
 
 ## T9: Entrypoint docs phase + commit discipline — medium — depends: T8
 design-ref: §4.3
