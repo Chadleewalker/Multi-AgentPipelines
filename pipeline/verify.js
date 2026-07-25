@@ -40,9 +40,26 @@ if (!result.issueId) {
   writeResult(result, 4);
 }
 
+// The integration branch varies by project (main vs master). Read it from the working
+// config only to LOCATE the fork point; everything authoritative still comes from the
+// fork-point commit itself, so this cannot be used to weaken verification.
+function integrationBranch() {
+  try {
+    const c = JSON.parse(fs.readFileSync(path.join(WS, 'pipeline.config.json'), 'utf8'));
+    if (c.defaultBranch) return c.defaultBranch;
+  } catch { /* fall through */ }
+  for (const candidate of ['main', 'master']) {
+    try {
+      execSync(`git rev-parse --verify ${candidate}`, { cwd: WS, stdio: 'ignore' });
+      return candidate;
+    } catch { /* try the next one */ }
+  }
+  return 'main';
+}
+
 let forkPoint, config;
 try {
-  forkPoint = git('merge-base main HEAD').trim();
+  forkPoint = git(`merge-base ${integrationBranch()} HEAD`).trim();
   config = JSON.parse(git(`show ${forkPoint}:pipeline.config.json`));
   if (!config.verifyCommand) throw new Error('verifyCommand missing from fork-point pipeline.config.json');
 } catch (e) {

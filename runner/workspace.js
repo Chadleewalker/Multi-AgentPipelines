@@ -11,6 +11,22 @@ const { spawnSync } = require('child_process');
 const git = (cwd, args, opts = {}) =>
   spawnSync('git', args, { cwd, encoding: 'utf8', ...opts });
 
+// The project's integration branch (§4.2). Explicit `defaultBranch` in
+// pipeline.config.json wins; otherwise ask the remote what its HEAD is (repos are
+// `master` as often as `main`); "main" only as a last resort.
+function detectDefaultBranch(dir) {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(dir, 'pipeline.config.json'), 'utf8'));
+    if (cfg.defaultBranch) return cfg.defaultBranch;
+  } catch { /* no config, or not readable yet */ }
+  const r = git(dir, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
+  if (r.status === 0) {
+    const name = (r.stdout || '').trim().replace(/^origin\//, '');
+    if (name) return name;
+  }
+  return 'main';
+}
+
 // Branch naming (§4.2): task/<issue-id>, suffixed -r2, -r3, … when the branch already
 // exists on the remote (a re-run after a spec fix). Never force-push, so earlier
 // attempts survive.
@@ -59,10 +75,12 @@ function prepare(cfg, issueId, issueMarkdown, log, traceId) {
     log.info(traceId, `branch task/${issueId} exists on the remote; using ${branch} (never force-pushing)`);
   }
 
-  const co = git(dir, ['checkout', '-q', '-b', branch, 'origin/main']);
+  const defaultBranch = detectDefaultBranch(dir);
+  const co = git(dir, ['checkout', '-q', '-b', branch, `origin/${defaultBranch}`]);
   if (co.status !== 0) {
-    return { ok: false, reason: `branch creation failed: ${(co.stderr || '').trim()}` };
+    return { ok: false, reason: `branch creation failed off origin/${defaultBranch}: ${(co.stderr || '').trim()}` };
   }
+  log.info(traceId, `integration branch: ${defaultBranch}`);
 
   // Contract artifacts never enter commits (§4.10). The entrypoint also does this;
   // belt and braces, because a leaked .run/ would pollute every PR.
@@ -76,7 +94,7 @@ function prepare(cfg, issueId, issueMarkdown, log, traceId) {
 
   const forkPoint = git(dir, ['rev-parse', 'HEAD']).stdout.trim();
   log.info(traceId, `workspace ready: ${dir} on ${branch} (fork point ${forkPoint.slice(0, 8)})`);
-  return { ok: true, dir, branch, forkPoint };
+  return { ok: true, dir, branch, forkPoint, defaultBranch };
 }
 
 // Does the branch have commits beyond the fork point? (§4.5: push only what exists.)
