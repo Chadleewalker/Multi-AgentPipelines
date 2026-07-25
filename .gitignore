@@ -1,0 +1,7 @@
+# Per-run logs, manifests, and reports (DESIGN.md §4.12) — host-only, never committed.
+runs/
+
+node_modules/
+.env
+.env.*
+!.env.Project
