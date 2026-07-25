@@ -314,8 +314,10 @@ spec (re-approve, re-freeze, unblock), fix the doc, or drop the task.
   environment is a later port (see Phasing); nothing in V1 may hard-require it, but nothing
   is built for it yet either.
 - **Host prerequisites:** Docker Desktop, Git Bash, Node, the `gh` CLI (authenticated to
-  GitHub), and the Claude Code CLI with `CLAUDE_CODE_OAUTH_TOKEN` available on the host —
-  the host itself makes the minimal rate-limit probe calls (4.7).
+  GitHub), `bd` (the runner is the sole Beads writer and runs it host-side — 4.12; until
+  it's installed, scripts fall back to running `bd` in the base image), and the Claude
+  Code CLI with `CLAUDE_CODE_OAUTH_TOKEN` available on the host — the host itself makes
+  the minimal rate-limit probe calls (4.7).
 - **Review happens as GitHub PRs.** Projects fed through the pipeline must have a GitHub
   remote. (The work-PC port will need a local-branch review mode — its repos live on a
   network share with no PR host. Out of scope for V1.)
@@ -431,3 +433,4 @@ development starts only after.
 | 2026-07-25 | v0.3: resolved second review round — unified outcome taxonomy table (exit codes ↔ report statuses ↔ Beads transitions ↔ push/PR, incl. "stuck"/"tampered"/timeout); blocked-status loop termination; partial gets a flagged PR; rate-limit resume reuses workspace so the attempt counter and active-time budget carry over; container input contract (issue file mount, `ISSUE_ID`, prompt composition, `.run/` git-exclude); `verifyCommand` invocation convention; optional `regressionCommand`; dependencies manifest schema + hand-written thin Dockerfile with drift cross-check; agent-command env seam for deterministic E2E stubs; branch-collision run suffix, never force-push; clone from remote; canonical Beads home + host probe location; `status.schema.json` ownership; docs-phase failure non-fatal; priority-then-FIFO ordering; scrutiny order incl. tampered; delegation dividing line stated in §10 | Round 2: no contradictions, but ~7 cross-component contracts still undecided |
 | 2026-07-25 | v0.4: resolved third review round — `verify.schema.json` pinned (owner: verifier task); `PIPELINE_AGENT_CMD` named, added to the 4.10 input list and as `run.config.json`'s `agentCommand` override; scaffolding delivered as a runner-supplied read-only `/pipeline` mount (base image scaffolding-free); per-run manifest `run.json` + `run.schema.json` as the report's outcome source (Beads collapses failure flavors to blocked); tamper diff widened to all of `tests/acceptance/`; runner owns network/sidecar lifecycle + stale in-progress recovery at run start | Round 3: findings narrowed to 4 convergent cross-component contract gaps + 3 minors |
 | 2026-07-25 | v1.0: readiness bar changed from "critics come up dry" to the pragmatic rule (no blockers, no user-level decision, remainder implementer-level); status flipped to READY under that rule | User decision after 3-round convergence showed critics asymptote but never fully silence |
+| 2026-07-25 | v1.0.1: added `bd` to §6 host prerequisites (found during T2 — §4.12 already required host-side `bd`) | Build-time drift fix via the change protocol |
