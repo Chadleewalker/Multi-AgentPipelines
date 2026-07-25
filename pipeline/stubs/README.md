@@ -3,6 +3,12 @@
 Scripted stand-ins for the coding agent, substituted through the `PIPELINE_AGENT_CMD`
 seam (DESIGN.md §4.3) — set as `agentCommand` in a run config, or exported directly.
 
+They live under `pipeline/` because that directory is the scaffolding the runner
+bind-mounts read-only at `/pipeline` in every task container (§4.10). That is the only
+way a stub can be reachable from inside without inventing a new mount and widening the
+container's input contract. They are inert: nothing runs them unless the agent command
+explicitly points at one.
+
 They exist because the end-to-end pass (§7) must be **deterministic**: a real model
 cannot be relied upon to fail three times in a row, or to tamper with a frozen test on
 cue, and burning subscription window to find out is wasteful. Each stub makes **zero
@@ -24,7 +30,7 @@ Usage:
 
 ```bash
 # in a run config
-"agentCommand": "sh /pipeline-repo/stubs/success.sh"
+"agentCommand": "sh /pipeline/stubs/success.sh"
 
 # or ad hoc
 PIPELINE_AGENT_CMD="sh stubs/bail.sh" node runner/run.js --config run.config.fixture.json

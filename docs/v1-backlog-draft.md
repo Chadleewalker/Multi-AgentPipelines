@@ -197,10 +197,12 @@ configures one (14/14 pass). design-ref: §4.12, §4.4, §4.5, §4.8
 - [x] Allowlisted Anthropic endpoint reachable; `github.com`, `registry.npmjs.org`, `pypi.org` all blocked; zero direct egress when the proxy is bypassed
 - [x] Minimum-necessary secrets: exactly one credential (the Anthropic token), no AWS/Azure/SSH/npm/Docker credentials; workspace still writable so tasks can work
 
-## T21: Scripted end-to-end pass — hard — depends: T9, T15, T16, T17, T18, T19, T20
-design-ref: §7, §4.11, §4.12
-- [ ] Zero-interaction run against the fixture repo; stubs for bail/tamper (no model dependence)
-- [ ] Success: exit 0, branch pushed, PR opened, issue closed, report "done"
-- [ ] Bail: exit 10, `WIP:` commit pushed, no PR, blocked, report "stuck"
-- [ ] Tamper: exit 11, WIP evidence pushed, no PR, blocked, report "tampered"
-- [ ] Report in `runs/<ts>/` ordered tampered > stuck > done; T20 assertions pass during the run
+## T21: Scripted end-to-end pass — hard — **DONE 2026-07-25 — V1 PROVEN**
+`scripts/e2e.sh` (`--keep` to leave branches/PRs for inspection). **32/32 assertions
+pass against live GitHub.** design-ref: §7, §4.11, §4.12
+- [x] Zero-interaction run against `<private fixture repo>`; all three scenarios driven by `pipeline/stubs/` through the `agentCommand` seam — no model dependence, no usage burn
+- [x] **Success**: exit 0 → done, branch pushed, **real PR opened** (`pull/2`), issue closed; live PR body verified to carry spec + change summary + verifier evidence; diff contains the implementation, leaves frozen tests untouched, and leaks no `.run/` artifacts
+- [x] **Bail**: exactly 3 attempts → exit 10 → stuck; WIP branch pushed with the `WIP:` marker on the remote; no PR; issue blocked; stuck state on the issue
+- [x] **Tamper**: exit 11 → tampered; verifier named the modified frozen path; no PR; issue blocked
+- [x] Report + schema-valid manifest generated, tampered outcome labelled; T20 isolation assertions run as part of the pass; fixture `main` never moved; no interactive prompts anywhere
+- [x] Self-cleaning: resets the fixture to its planning state before each pass and removes remote branches/PRs afterwards (unless `--keep`)
