@@ -16,6 +16,7 @@ const { startRun } = require('./log');
 const { preflight, networkDown } = require('./preflight');
 const { readyQueue, claim, exportIssue, finish, outcomeFor, attemptNotes } = require('./queue');
 const { prepare, hasCommits, collectArtifacts, discard } = require('./workspace');
+const { runTask } = require('./container');
 
 const REPO_ROOT = path.join(__dirname, '..');
 
@@ -31,31 +32,32 @@ function parseArgs(argv) {
 // Placeholder task execution until T13/T14 land. PIPELINE_EXEC_STUB names a script
 // whose exit code stands in for the container's, and which may write status.json /
 // verify.json into the task's log dir — enough to exercise every §4.11 transition.
-function executeTask(cfg, issue, taskDir, log, traceId, ws) {
+// One task container (§4.10). PIPELINE_EXEC_STUB replaces the container with a local
+// script — used by the runner's own test suites to exercise outcome paths cheaply;
+// real runs always take the docker path.
+async function executeTask(cfg, issue, taskDir, log, traceId, ws, token) {
   const stub = process.env.PIPELINE_EXEC_STUB;
-  if (!stub) {
-    // T14 launches the container here, against the workspace T13 prepared.
-    log.error(traceId, 'container launch not implemented yet (T14) — reporting internal error');
-    return { exitCode: 30, status: null, verify: null };
+  if (stub) {
+    const r = require('child_process').spawnSync('bash', [stub], {
+      encoding: 'utf8',
+      cwd: ws.dir,
+      env: { ...process.env, ISSUE_ID: issue.id, TASK_DIR: taskDir, WORKSPACE: ws.dir, RUN_DIR: path.join(ws.dir, '.run') },
+    });
+    log.info(traceId, `exec stub exited ${r.status}`);
+    return { exitCode: r.status === 124 ? 'killed' : r.status };
   }
-  // Test seam: the stub stands in for the container and works inside the real
-  // workspace, so clone/branch/exclude behavior is exercised for real.
-  const r = require('child_process').spawnSync('bash', [stub], {
-    encoding: 'utf8',
-    cwd: ws ? ws.dir : undefined,
-    env: {
-      ...process.env,
-      ISSUE_ID: issue.id,
-      TASK_DIR: taskDir,
-      WORKSPACE: ws ? ws.dir : '',
-      RUN_DIR: ws ? path.join(ws.dir, '.run') : '',
-    },
-  });
-  log.info(traceId, `exec stub exited ${r.status}`);
-  return { exitCode: r.status === 124 ? 'killed' : r.status };
+  return runTask(cfg, {
+    containerName: `task-${issue.id}-${log.runId}`.replace(/[^A-Za-z0-9_.-]/g, '-'),
+    workspaceDir: ws.dir,
+    pipelineDir: path.join(REPO_ROOT, 'pipeline'),
+    issueId: issue.id,
+    taskDir,
+    token,
+    wallClockMinutes: cfg.wallClockMinutes,
+  }, log, traceId);
 }
 
-function main() {
+async function main() {
   const args = parseArgs(process.argv);
 
   let cfg;
@@ -71,7 +73,8 @@ function main() {
   log.info(t, `run started (config: ${cfg.configPath})`);
   log.info(t, `target: ${cfg.targetRepoPath} -> ${cfg.targetRepoRemote}`);
 
-  if (!loadToken(REPO_ROOT)) {
+  const token = loadToken(REPO_ROOT);
+  if (!token) {
     log.error(t, 'no CLAUDE_CODE_OAUTH_TOKEN (.env.pipeline or environment) — tasks cannot authenticate');
     process.exit(2);
   }
@@ -131,8 +134,10 @@ function main() {
       continue;
     }
 
-    // T14 replaces this with the container launch + wall-clock kill.
-    const exec = executeTask(cfg, issue, taskDir, log, tr, ws);
+    const exec = await executeTask(cfg, issue, taskDir, log, tr, ws, token);
+    if (exec.durationMs !== undefined) {
+      log.info(tr, `container ran ${Math.round(exec.durationMs / 1000)}s${exec.killed ? ' (killed at budget)' : ''}`);
+    }
 
     // Collect the container's contract artifacts before the workspace is discarded.
     const artifacts = collectArtifacts(ws.dir, taskDir);
@@ -163,4 +168,7 @@ function main() {
   log.info(t, `run finished; artifacts in ${log.dir}`);
 }
 
-main();
+main().catch((e) => {
+  console.error(`runner: unexpected failure — ${e && e.stack ? e.stack : e}`);
+  process.exit(3);
+});
