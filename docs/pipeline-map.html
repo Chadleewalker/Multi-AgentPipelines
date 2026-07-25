@@ -668,3 +668,65 @@ flowchart LR
     Companion to DESIGN.md · diagrams also in docs/pipeline-diagram.md
   </footer>
 </div>
+
+<script>
+  // Mermaid centres each cluster title on the box's top edge and hugs the contents
+  // tightly. Both are baked into transform/geometry attributes, so CSS cannot move
+  // them — this adjusts the rendered SVG instead. If it never runs, the diagram is
+  // simply the mermaid default: still correct, just tighter and centre-titled.
+  (function () {
+    var PAD = 18;      // breathing room added inside each zone box
+    var INSET = 12;    // how far the title sits in from the box corner
+
+    function layoutClusters() {
+      document.querySelectorAll(".plate svg").forEach(function (svg) {
+        var clusters = svg.querySelectorAll("g.cluster");
+        if (!clusters.length) return;
+
+        clusters.forEach(function (c) {
+          var rect = c.querySelector("rect");
+          if (!rect || rect.getAttribute("data-laidout")) return;
+
+          var x = parseFloat(rect.getAttribute("x")) || 0;
+          var y = parseFloat(rect.getAttribute("y")) || 0;
+          var w = parseFloat(rect.getAttribute("width")) || 0;
+          var h = parseFloat(rect.getAttribute("height")) || 0;
+
+          rect.setAttribute("x", x - PAD);
+          rect.setAttribute("y", y - PAD);
+          rect.setAttribute("width", w + PAD * 2);
+          rect.setAttribute("height", h + PAD * 2);
+          rect.setAttribute("data-laidout", "1");
+
+          // Title to the box's top-left, inside the border.
+          var label = c.querySelector(".cluster-label");
+          if (label) {
+            var fo = label.querySelector("foreignObject");
+            if (fo) { fo.setAttribute("x", 0); fo.setAttribute("y", 0); }
+            label.setAttribute("transform",
+              "translate(" + (x - PAD + INSET) + "," + (y - PAD + 4) + ")");
+            label.setAttribute("text-anchor", "start");
+          }
+        });
+
+        // Give the enlarged boxes room so nothing clips at the edges.
+        if (!svg.getAttribute("data-vb")) {
+          var vb = (svg.getAttribute("viewBox") || "").split(/[ ,]+/).map(Number);
+          if (vb.length === 4 && vb.every(function (n) { return !isNaN(n); })) {
+            svg.setAttribute("viewBox",
+              (vb[0] - PAD) + " " + (vb[1] - PAD) + " " +
+              (vb[2] + PAD * 2) + " " + (vb[3] + PAD * 2));
+            svg.setAttribute("data-vb", "1");
+          }
+        }
+      });
+    }
+
+    // Mermaid renders asynchronously and may re-render on a theme change.
+    new MutationObserver(layoutClusters).observe(document.documentElement, {
+      childList: true, subtree: true
+    });
+    [0, 200, 600, 1500, 3000].forEach(function (t) { setTimeout(layoutClusters, t); });
+    document.addEventListener("DOMContentLoaded", layoutClusters);
+  })();
+</script>
