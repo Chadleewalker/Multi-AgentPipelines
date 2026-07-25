@@ -159,12 +159,13 @@ bare remote, `gh` captured through the `PIPELINE_GH_CMD` seam). design-ref: §4.
 - [x] PR body assembled host-side from structured artifacts only — issue spec + `status.json` change summary + `verify.json` evidence (collapsible output), marked generated; no free-form agent prose parsed
 - [x] Write-back: PR URL recorded on the issue for PR'd tasks, branch link recorded for pushed-but-unPR'd ones; per-task `results.json` gains branch, pushed, prUrl, attempts, pauses, active seconds
 
-## T17: Run report generator — medium — depends: T16, T3
-design-ref: §4.9, §4.11, §4.12
-- [ ] Markdown report into `runs/<ts>/` from **run manifest** + Beads + git; byte-identical on regeneration
-- [ ] Per task: §4.11 report status, branch, what changed, verification evidence, attempt notes; failed branches linked
-- [ ] Order: tampered > stuck > partial > failed > done-with-retries > done-first-try; ties by attempt count then diff size
-- [ ] "Paused" only when the operator stopped the run early
+## T17: Run report generator — medium — depends: T16, T3 — **DONE 2026-07-25**
+`runner/report.js` + `schemas/run.schema.json` (the third contract schema, owned by the
+runner); checks `scripts/test-report.sh` (21/21 pass). design-ref: §4.9, §4.11, §4.12
+- [x] `runs/<runId>/run.json` manifest (schema-validated) + `report.md` rendered from it — Beads can't reconstruct statuses (stuck/tampered/failed all map to blocked), so the manifest is the frozen source
+- [x] Regeneration byte-identical for both manifest and report; report marked "never edit by hand"; no LLM in the generator
+- [x] Per task: outcome label spelling out its meaning, branch, PR link (or "review the branch directly" / "not pushed — no commits"), attempts, rate-limit pauses, active time, diff size, change summary, verification evidence, stuck state, attempt notes
+- [x] Order: tampered > stuck > partial > failed > done-with-retries > done-first-try, ties by attempt count then diff size — verified end to end, and the manifest is stored in the same order
 
 ## T18: Fixture repository on GitHub — medium — depends: T1, T2, T4
 design-ref: §7, §3.4, §3.1

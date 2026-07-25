@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "run.schema.json",
+  "title": "Per-run manifest (runs/<run-id>/run.json)",
+  "description": "Written by the runner (owner: the runner task, T14/T16 - DESIGN.md 4.12). Frozen input to the report generator: Beads alone cannot reconstruct report statuses, because stuck/tampered/failed all map to 'blocked' and done/partial both map to 'closed'.",
+  "type": "object",
+  "required": ["runId", "startedAt", "finishedAt", "tasks"],
+  "additionalProperties": false,
+  "properties": {
+    "runId": { "type": "string" },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "finishedAt": { "type": "string", "format": "date-time" },
+    "targetRepo": { "type": "string" },
+    "abortedReason": {
+      "description": "Present when the run ended before draining the queue (preflight failure, operator stop).",
+      "type": "string"
+    },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["issueId", "outcome"],
+        "additionalProperties": false,
+        "properties": {
+          "issueId": { "type": "string" },
+          "title": { "type": "string" },
+          "outcome": {
+            "description": "Report status from the 4.11 table.",
+            "enum": ["done", "partial", "stuck", "tampered", "failed", "paused"]
+          },
+          "exitCode": {
+            "description": "Container exit code, or 'killed' for a host wall-clock kill (which produces no code).",
+            "type": ["integer", "string"]
+          },
+          "branch": { "type": "string" },
+          "pushed": { "type": "boolean" },
+          "prUrl": { "type": ["string", "null"] },
+          "attempts": { "type": "integer", "minimum": 0 },
+          "pauses": { "type": "integer", "minimum": 0 },
+          "activeSeconds": { "type": "number", "minimum": 0 },
+          "diffLines": {
+            "description": "Lines changed on the branch - the report's tie-breaker after attempt count.",
+            "type": "integer",
+            "minimum": 0
+          },
+          "changeSummary": { "type": "string" },
+          "verification": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "acceptance": { "enum": ["pass", "fail", "tampered", "error"] },
+              "regressions": { "enum": ["pass", "fail", "absent"] },
+              "evidence": { "type": "string" }
+            }
+          },
+          "attemptNotes": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "stuckState": { "type": "string" },
+          "error": { "type": "string" }
+        }
+      }
+    }
+  }
+}

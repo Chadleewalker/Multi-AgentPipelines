@@ -19,6 +19,16 @@ const { prepare, hasCommits, collectArtifacts, discard } = require('./workspace'
 const { runTask } = require('./container');
 const { waitForWindow } = require('./pause');
 const { publish } = require('./publish');
+const { writeManifest, writeReport } = require('./report');
+
+// Diff size on the branch — the report's final tie-breaker (§4.9).
+function diffLines(dir, forkPoint) {
+  const r = require('child_process').spawnSync('git', ['diff', '--shortstat', `${forkPoint}..HEAD`],
+    { cwd: dir, encoding: 'utf8' });
+  const m = /(\d+) insertion[^,]*(?:, (\d+) deletion)?/.exec(r.stdout || '');
+  if (!m) return 0;
+  return Number(m[1] || 0) + Number(m[2] || 0);
+}
 
 const REPO_ROOT = path.join(__dirname, '..');
 
@@ -73,6 +83,7 @@ async function main() {
   }
 
   const log = startRun(REPO_ROOT, process.env.RUN_ID);
+  const startedAt = new Date().toISOString();
   const t = `${log.runId}/preflight`;
   log.info(t, `run started (config: ${cfg.configPath})`);
   log.info(t, `target: ${cfg.targetRepoPath} -> ${cfg.targetRepoRemote}`);
@@ -195,26 +206,47 @@ async function main() {
 
     log.info(tr, `task finished: exit ${exec.exitCode} -> ${outcome.status}` +
       (outcome.beads ? ` (issue ${outcome.beads})` : ' (issue stays in_progress)'));
+    const v = artifacts.verify;
     results.push({
       issueId: issue.id,
       title: issue.title || '',
       outcome: outcome.status,
-      branch: ws.branch,
       exitCode: exec.exitCode,
-      hasCommits: commits,
+      branch: ws.branch,
       pushed: published.pushed,
-      prUrl: published.prUrl,
+      prUrl: published.prUrl || null,
       attempts: ((artifacts.status && artifacts.status.attempts) || []).length,
       pauses,
       activeSeconds: Math.round(activeMs / 1000),
+      diffLines: diffLines(ws.dir, ws.forkPoint),
+      ...(artifacts.status && artifacts.status.changeSummary ? { changeSummary: artifacts.status.changeSummary } : {}),
+      ...(v ? {
+        verification: {
+          acceptance: v.acceptance,
+          regressions: v.regressions,
+          ...(v.acceptanceOutput ? { evidence: String(v.acceptanceOutput).slice(-1500) } : {}),
+        },
+      } : {}),
+      ...(artifacts.status && artifacts.status.stuckState ? { stuckState: artifacts.status.stuckState } : {}),
+      attemptNotes: notes,
     });
 
     if (process.env.PIPELINE_KEEP_WORKSPACE) log.info(tr, `workspace kept at ${ws.dir}`);
     else discard(ws.dir);
   }
 
-  fs.writeFileSync(path.join(log.dir, 'results.json'), JSON.stringify(results, null, 2) + '\n');
   log.info(t, `queue drained: ${results.map((r) => `${r.issueId}=${r.outcome}`).join(', ') || '(nothing ran)'}`);
+
+  // ---- manifest + report (§4.9, §4.12) ----
+  const { manifest } = writeManifest(log.dir, {
+    runId: log.runId,
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    targetRepo: cfg.targetRepoRemote,
+    tasks: results,
+  });
+  const reportFile = writeReport(log.dir, manifest);
+  log.info(t, `run report: ${reportFile}`);
 
   networkDown(REPO_ROOT);
   log.info(t, `run finished; artifacts in ${log.dir}`);
