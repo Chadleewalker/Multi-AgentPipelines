@@ -1,0 +1,7 @@
+{
+  "issueId": "fix-42",
+  "attempts": [
+    { "number": 0, "verifierResult": "maybe" }
+  ],
+  "surpriseField": true
+}

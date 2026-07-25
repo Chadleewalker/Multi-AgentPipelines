@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "status.schema.json",
+  "title": "Pipeline task status file (/workspace/.run/status.json)",
+  "description": "Written by the container entrypoint, read by the runner and report generator. DESIGN.md 4.11: owned by the entrypoint task; a frozen input to the runner and report tasks. Persists across a rate-limit relaunch (4.7), so the attempt counter carries over.",
+  "type": "object",
+  "required": ["issueId", "attempts"],
+  "additionalProperties": false,
+  "properties": {
+    "issueId": {
+      "description": "The Beads issue this task run belongs to (matches ISSUE_ID).",
+      "type": "string",
+      "minLength": 1
+    },
+    "attempts": {
+      "description": "Attempt summaries, append-only, one per verify attempt (max 3 per DESIGN.md 4.6). A rate-limit interruption is NOT an attempt (4.7).",
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "required": ["number", "verifierResult", "timestamp"],
+        "additionalProperties": false,
+        "properties": {
+          "number": { "type": "integer", "minimum": 1, "maximum": 3 },
+          "verifierResult": {
+            "description": "The verifier's authoritative outcome for this attempt.",
+            "enum": ["pass", "fail", "tampered", "error"]
+          },
+          "timestamp": { "type": "string", "format": "date-time" },
+          "feedback": {
+            "description": "Short verifier-failure digest fed into the next attempt (4.4).",
+            "type": "string"
+          }
+        }
+      }
+    },
+    "changeSummary": {
+      "description": "Written by the docs phase after a passing verify (4.3); the host assembles the PR body from it (4.5). Absent on non-success paths.",
+      "type": "string"
+    },
+    "stuckState": {
+      "description": "Why the task bailed, written before the WIP commit on exit 10 (4.6).",
+      "type": "string"
+    },
+    "rateLimitResetAt": {
+      "description": "Usage-limit window reset time when the error reported one (4.7); the runner waits until then. Absent when unknown (runner falls back to probing).",
+      "type": "string",
+      "format": "date-time"
+    },
+    "docsPhaseError": {
+      "description": "Set when the docs phase errored after a passed verify - non-fatal, success stands (4.3).",
+      "type": "string"
+    }
+  }
+}

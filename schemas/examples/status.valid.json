@@ -1,0 +1,17 @@
+{
+  "issueId": "fix-42",
+  "attempts": [
+    {
+      "number": 1,
+      "verifierResult": "fail",
+      "timestamp": "2026-07-25T02:14:09Z",
+      "feedback": "2 acceptance tests red: rename not applied to config output"
+    },
+    {
+      "number": 2,
+      "verifierResult": "pass",
+      "timestamp": "2026-07-25T02:31:44Z"
+    }
+  ],
+  "changeSummary": "Renamed the widget across src/ and updated README usage examples."
+}

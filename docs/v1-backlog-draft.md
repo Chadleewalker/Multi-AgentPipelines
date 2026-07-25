@@ -28,12 +28,13 @@ design-ref: §3.1, §4.12, §7 item 1, §9
 - [x] Check script proves all five round-trip through `bd show --json`, and that a missing design-ref is refused
 - [x] Status vocabulary verified (open/in_progress/blocked/deferred/closed); `bd ready` is blocker-aware: deps gate it, in_progress/blocked excluded, closing a dep unlocks
 
-## T3: `status.schema.json` — trivial — depends: —
-The status-file schema, checked into this repo, frozen contract for runner + report.
+## T3: `status.schema.json` — trivial — depends: — — **DONE 2026-07-25**
+At `schemas/status.schema.json` (draft 2020-12, additionalProperties: false) with
+examples in `schemas/examples/`; checks `scripts/test-status-schema.sh` (8/8 pass).
 design-ref: §4.11
-- [ ] `status.schema.json` exists in this repo
-- [ ] Covers attempt summaries (number, verifier result, timestamp), docs-phase change summary, optional reset time
-- [ ] Valid example validates; invalid example fails
+- [x] `status.schema.json` exists in this repo
+- [x] Covers attempt summaries (number 1–3, verifierResult pass/fail/tampered/error, timestamp, optional feedback), changeSummary, optional rateLimitResetAt — plus stuckState (§4.6) and docsPhaseError (§4.3)
+- [x] Valid example validates; invalid example fails (via npx ajv-cli + ajv-formats)
 
 ## T4: `PLANNING.md` playbook — medium — depends: T2 (soft)
 The V1 interactive planning playbook. design-ref: §3.2, §3.1, §3.4
