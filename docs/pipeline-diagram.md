@@ -71,6 +71,52 @@ one a gate would void the three-attempt cap and produce unactionable 2 AM failur
 the time an advisor runs, the task has already passed or failed on deterministic
 grounds; the advisor only annotates.
 
+## How a task moves through the queue
+
+Nothing is ever deleted. A task is claimed, then closed or blocked, and every run
+appends to its notes — so a stuck task arrives in review carrying its own history.
+
+**The host is the only writer.** The container has no queue access at all: it reports
+outcomes purely through its exit code and `status.json`. If the container wrote to the
+queue, those writes would land on a task branch that might never merge, and the work
+queue would fork along with the code.
+
+```mermaid
+flowchart LR
+  subgraph HOST["Host — the only writer"]
+    A["1 · Claim<br/>status → in progress"]
+    C["2 · Collect<br/>exit code + status.json"]
+    D["3 · Finish<br/>append notes,<br/>then close or block"]
+    Q[("Task list")]
+  end
+  subgraph CONT["Container — no queue access"]
+    B["code · verify · docs"]
+  end
+  A --> B
+  B --> C
+  C --> D
+  A -.->|"write"| Q
+  D -.->|"write"| Q
+```
+
+The claim in step 1 is what stops a task being picked twice, and it is why a crashed run
+leaves issues stranded `in progress` — the next run's preflight sweeps those back to
+`open`.
+
+```mermaid
+stateDiagram-v2
+  [*] --> open: planning creates the task
+  open --> in_progress: runner claims it
+  in_progress --> closed: done or partial
+  in_progress --> blocked: stuck · tampered · failed
+  in_progress --> in_progress: rate limit — parked, then resumed
+  blocked --> open: you fix the spec and unblock it
+  closed --> [*]
+```
+
+`blocked` is doing quiet but critical work: it removes failed work from the ready queue.
+Without it a task that cannot pass would be picked up again on every run, forever.
+
 ## Where the walls are
 
 The container holds exactly one credential and cannot reach a git host. Everything
