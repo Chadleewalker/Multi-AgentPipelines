@@ -68,9 +68,10 @@ function buildPrBody({ issueMarkdown, status, verify, outcome, branch, runId }) 
 
 // `gh` is the documented host tool (§6). PIPELINE_GH_CMD is a test seam so suites can
 // verify PR assembly against a local bare remote without touching a live GitHub.
-function openPr(dir, { branch, title, body, log, traceId }) {
+function openPr(dir, { branch, title, body, baseBranch, log, traceId }) {
   const ghCmd = process.env.PIPELINE_GH_CMD;
-  const args = ['pr', 'create', '--base', 'main', '--head', branch, '--title', title, '--body', body];
+  const base = baseBranch || 'main';
+  const args = ['pr', 'create', '--base', base, '--head', branch, '--title', title, '--body', body];
   const r = ghCmd
     ? spawnSync('sh', ['-c', ghCmd], {
       cwd: dir,
@@ -114,7 +115,7 @@ function publish(cfg, ctx, log, traceId) {
 
   const title = `${issue.id}: ${issue.title || 'pipeline task'}${outcome.status === 'partial' ? ' [PARTIAL]' : ''}`;
   const body = buildPrBody({ issueMarkdown, status, verify, outcome, branch: ws.branch, runId });
-  const pr = openPr(ws.dir, { branch: ws.branch, title, body, log, traceId });
+  const pr = openPr(ws.dir, { branch: ws.branch, title, body, baseBranch: ws.defaultBranch, log, traceId });
   if (pr.ok) result.prUrl = pr.url;
   else result.prError = pr.error;
   return result;

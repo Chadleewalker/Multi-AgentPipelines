@@ -1,0 +1,12 @@
+{
+  "targetRepoPath": "C:/Code/Projects/Hallertau",
+  "targetRepoRemote": "https://github.com/Chadleewalker/Hallertau.git",
+  "image": "pipeline-hallertau:local",
+
+  "network": "pipeline-net",
+  "proxyName": "pipeline-proxy",
+  "proxyPort": 3128,
+  "wallClockMinutes": 60,
+  "probeIntervalMinutes": 15,
+  "agentCommand": null
+}

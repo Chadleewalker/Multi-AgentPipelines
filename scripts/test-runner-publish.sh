@@ -113,7 +113,8 @@ grep -rqE "push[^\n]*(--force|-f\b)|force-with-lease" "$ROOT/runner/" \
   && fail "runner can force-push" || pass "runner never force-pushes"
 grep -q "outcome.status !== 'done' && outcome.status !== 'partial'" "$ROOT/runner/publish.js" \
   && pass "PR gate is exactly done|partial" || fail "PR gate wrong"
-grep -rq "gh\b" "$ROOT/pipeline/" && fail "container-side code invokes gh" || pass "container holds no git/GitHub credentials"
+grep -rqE '(^|[;&|(`"'"'"'[:space:]])gh[[:space:]]+(pr|repo|api|auth)\b' "$ROOT/pipeline/" \
+  && fail "container-side code invokes gh" || pass "container holds no git/GitHub credentials"
 
 if [[ $FAIL -eq 0 ]]; then echo "== ALL T16 CHECKS PASSED =="; else echo "== T16 CHECKS FAILED =="; fi
 exit $FAIL

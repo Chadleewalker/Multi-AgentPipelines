@@ -71,7 +71,7 @@ priority). The exact mapping is finalized by the Beads setup task; the rule that
 doc level is: all five fields must round-trip through a `bd` dump so scripts can check them.
 
 **Test freeze mechanism.** "Frozen" means: the acceptance test paths as they exist at the
-task branch's fork point from `main` (`git merge-base main <branch>`). The verifier diffs
+task branch's fork point from the integration branch (`git merge-base <defaultBranch> <branch>`, see 3.4). The verifier diffs
 the test paths against that fork point; any difference is tampering, regardless of test
 results.
 
@@ -123,6 +123,10 @@ planning and read by the scaffolding:
 - `regressionCommand` (optional) — the project's standard test suite. Its *presence* is
   what "a standard suite exists" means; there is no auto-detection. See 4.4 for how its
   result is used.
+- `defaultBranch` (optional) — the project's integration branch. Real repositories are
+  `master` as often as `main`, so the pipeline never assumes: this value wins, else the
+  runner asks the remote for its HEAD, else `main`. It is what task branches fork from,
+  what the freeze baseline is measured against, and what pull requests target.
 - `frozenPaths` (optional) — repo paths beyond `tests/acceptance/` that the verifier's
   tamper diff must also cover (e.g. a test-runner script that `verifyCommand` invokes).
   Anything `verifyCommand` executes from the repo belongs in this list.
@@ -502,4 +506,5 @@ development starts only after.
 | 2026-07-25 | v1.0: readiness bar changed from "critics come up dry" to the pragmatic rule (no blockers, no user-level decision, remainder implementer-level); status flipped to READY under that rule | User decision after 3-round convergence showed critics asymptote but never fully silence |
 | 2026-07-25 | v1.0.1: added `bd` to §6 host prerequisites (found during T2 — §4.12 already required host-side `bd`) | Build-time drift fix via the change protocol |
 | 2026-07-25 | v1.0.2: verifier reads `pipeline.config.json` from the fork-point commit, and tamper scope extends to the config's new optional `frozenPaths` (§3.4, §4.4) | Found during T7: worktree config or a repo helper script invoked by `verifyCommand` were agent-editable — a failing task could be made to "pass" |
+| 2026-07-25 | v1.2: `defaultBranch` in `pipeline.config.json` (§3.4) — task branches, the freeze baseline, and PR targets all follow the project's integration branch instead of assuming `main` | Shadow-trial finding: the first real project (Hallertau) uses `master`; the pipeline hardcoded `main` in three separately-built components |
 | 2026-07-25 | v1.1: added §3.5 domain specialists — three slots (planning critic / test author / run-time advisor), specialists are never gates, registry + per-task selection + schema'd output, escalation ladder toward determinism; V2 phasing | User goal: pluggable domain agents (physics, aesthetics). Shape decided now because the advisor slot spans three separately-built components and the frozen schemas would otherwise need a breaking change |
