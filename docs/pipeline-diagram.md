@@ -2,6 +2,10 @@
 
 Visual companion to `DESIGN.md`. The doc is authoritative; these are views of it.
 
+**Dashed amber nodes are the domain-specialist slots from §3.5.** Two of them work today
+with no code (they are planning-session moves); the third needs a build. Nothing dashed
+is a gate — a specialist can never fail a task.
+
 ## End to end
 
 Planning is interactive, implementation is autonomous, review is interactive. The
@@ -11,7 +15,9 @@ Beads queue is the join between them.
 flowchart TB
   A["Design doc — DESIGN.md"] --> B["Decompose into task-sized specs"]
   B --> C["Critics, sized to difficulty<br/>none · light · full panel"]
+  SP1["SLOT 1 — domain critic<br/>physics · aesthetic · security<br/>attacks the spec, finds the holes"] -.-> C
   C --> D["Write acceptance tests<br/>before any code exists"]
+  SP2["SLOT 2 — domain test author<br/>writes the domain's own checks<br/>energy conserved · contrast ratio"] -.-> D
   D --> E["Coverage check<br/>every criterion has a test"]
   E --> F{"You approve intent"}
   F -->|"needs changes"| B
@@ -22,7 +28,15 @@ flowchart TB
   J --> K["Run report + pull requests<br/>ordered by scrutiny needed"]
   K --> L{"Merge, or send back"}
   L -->|"send back as a new task"| B
+
+  classDef specialist fill:#fdf4e3,stroke:#a86c17,stroke-width:1.5px,stroke-dasharray:5 3,color:#14181d
+  class SP1,SP2 specialist
 ```
+
+Slots 1 and 2 need **no pipeline code**: they are prompts you run during a planning
+session, before anything is frozen. Slot 2 is the higher-leverage of the two — a domain
+check that becomes a frozen test steers the retry loop on every attempt, whereas a
+review only complains once.
 
 ## Inside one task container
 
@@ -38,9 +52,24 @@ flowchart TB
   V -->|"fail, attempts &lt; 3"| FB["Commit the attempt<br/>feed failure output forward"]
   FB --> C1
   V -->|"fail on the 3rd attempt"| ST["Commit WIP + stuck state<br/>exit 10 — stuck"]
-  V -->|"pass"| DP["Docs phase<br/>writes the change summary"]
+  V -->|"pass"| ADV["SLOT 3 — declared advisors<br/>inspect the finished change<br/>notes only, cannot fail the task"]
+  ADV --> DP["Docs phase<br/>writes the change summary"]
   DP --> OK["exit 0 — verified"]
+
+  classDef specialist fill:#fdf4e3,stroke:#a86c17,stroke-width:1.5px,stroke-dasharray:5 3,color:#14181d
+  class ADV specialist
 ```
+
+Slot 3 is the one that needs building, and the sockets are already in place: the
+`advisories` array exists in `status.schema.json` (typed, and documented as evidence
+that can never change the exit code), advisor definitions would ride in the existing
+read-only `/pipeline` mount, and `pipeline.config.json` already is the per-project
+selection file. What is missing is the loop itself plus rendering in the report and PR.
+
+**Why it sits after the verifier, not before:** an LLM judge cannot be frozen, so making
+one a gate would void the three-attempt cap and produce unactionable 2 AM failures. By
+the time an advisor runs, the task has already passed or failed on deterministic
+grounds; the advisor only annotates.
 
 ## Where the walls are
 
@@ -57,15 +86,26 @@ flowchart LR
   subgraph NET["pipeline-net — internal, no route out"]
     T["Task container<br/>agent + verifier"]
     PX["Allowlist proxy"]
+    REG["SLOT 3 registry<br/>advisor charters ride in<br/>the read-only /pipeline mount"]
   end
   R -->|"fresh clone + issue.md"| T
+  REG -.->|"read-only"| T
   T -->|"all egress"| PX
-  PX -->|"allowed"| AN(("api · console · statsig<br/>.anthropic.com"))
+  PX -->|"allowed"| AN["api · console · statsig<br/>.anthropic.com"]
   PX -.->|"refused"| BL["github.com · npm · pypi<br/>everything else"]
   T -->|"commits land on host disk"| R
   R --> GH
   R --> BD
+
+  classDef specialist fill:#fdf4e3,stroke:#a86c17,stroke-width:1.5px,stroke-dasharray:5 3,color:#14181d
+  class REG specialist
 ```
+
+A specialist that needs a different model or a different tool changes nothing structural:
+the coding agent is already swappable through `agentCommand` → `PIPELINE_AGENT_CMD`, and
+the contract is only "a shell command that reads a prompt on stdin and edits files." A
+non-Anthropic tool would additionally need its domain added to the allowlist — the one
+place the closed-network policy would have to be revisited deliberately.
 
 ## What each outcome does
 
@@ -80,4 +120,6 @@ flowchart LR
 | Wall-clock kill | — | failed | blocked | if commits exist | no |
 
 `blocked` is what takes failed work out of the ready queue: it needs a human decision
-in review, so the loop can never re-pick it.
+in review, so the loop can never re-pick it. **No advisor verdict appears in this table** —
+that is the point. Advisory notes ride along in the PR body and the run report as
+evidence for you, and change none of these outcomes.
