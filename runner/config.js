@@ -11,6 +11,12 @@ const DEFAULTS = {
   wallClockMinutes: 240,        // §4.6 default 4 hours of ACTIVE time
   probeIntervalMinutes: 15,     // §4.7 rate-limit probe cadence
   agentCommand: null,           // optional override -> PIPELINE_AGENT_CMD (§4.3 seam)
+  // "opus" is an alias the CLI resolves to the CURRENT latest Opus, so the pipeline
+  // follows model releases without edits here. The entrypoint records the RESOLVED
+  // id (e.g. claude-opus-5) in the status file, so provenance stays exact even
+  // though the request is an alias (§4.3). Pin a concrete id instead when a run must
+  // be byte-reproducible against one specific model.
+  model: 'opus',
 };
 const REQUIRED = ['targetRepoPath', 'targetRepoRemote', 'image'];
 

@@ -2,11 +2,11 @@
   "targetRepoPath": "C:/Code/Projects/pipeline-fixture",
   "targetRepoRemote": "https://github.com/Chadleewalker/pipeline-fixture.git",
   "image": "pipeline-fixture:local",
-
   "network": "pipeline-net",
   "proxyName": "pipeline-proxy",
   "proxyPort": 3128,
   "wallClockMinutes": 20,
   "probeIntervalMinutes": 15,
-  "agentCommand": null
+  "agentCommand": null,
+  "model": "opus"
 }

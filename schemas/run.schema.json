@@ -44,6 +44,7 @@
             "minimum": 0
           },
           "changeSummary": { "type": "string" },
+          "model": { "description": "Model the agent phases ran on (4.3).", "type": "string" },
           "verification": {
             "type": "object",
             "additionalProperties": false,

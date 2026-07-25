@@ -41,7 +41,7 @@ switch (cmd) {
     break;
   }
   case 'set': {
-    const allowed = ['changeSummary', 'stuckState', 'rateLimitResetAt', 'docsPhaseError'];
+    const allowed = ['changeSummary', 'stuckState', 'rateLimitResetAt', 'docsPhaseError', 'model'];
     if (!allowed.includes(args[0])) { console.error(`status.js: key '${args[0]}' not in schema`); process.exit(2); }
     const o = load();
     o[args[0]] = args[1];

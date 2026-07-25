@@ -220,6 +220,7 @@ async function main() {
       activeSeconds: Math.round(activeMs / 1000),
       diffLines: diffLines(ws.dir, ws.forkPoint),
       ...(artifacts.status && artifacts.status.changeSummary ? { changeSummary: artifacts.status.changeSummary } : {}),
+      ...(artifacts.status && artifacts.status.model ? { model: artifacts.status.model } : {}),
       ...(v ? {
         verification: {
           acceptance: v.acceptance,

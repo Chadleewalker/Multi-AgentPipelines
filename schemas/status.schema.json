@@ -51,6 +51,10 @@
       "description": "Set when the docs phase errored after a passed verify - non-fatal, success stands (4.3).",
       "type": "string"
     },
+    "model": {
+      "description": "The model the agent phases ran on, pinned by the runner (4.3). Recorded so a run is reproducible and so review can tell what built a change.",
+      "type": "string"
+    },
     "advisories": {
       "description": "Domain-specialist notes (DESIGN.md 3.5, slot 3). Recorded evidence for the PR body and run report - NEVER a gate; nothing here can change the exit code. Empty/absent in V1, which builds no advisors.",
       "type": "array",
