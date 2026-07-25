@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "verify.schema.json",
+  "title": "Verifier result file (/workspace/.run/verify.json)",
+  "description": "Written by pipeline/verify.js (owner: the verifier task, T7 - DESIGN.md 4.4). Frozen input to the runner (done-vs-partial decision, PR body) and the report generator. The runner maps: acceptance=pass + regressions in {pass, absent} -> done; acceptance=pass + regressions=fail -> partial (4.11).",
+  "type": "object",
+  "required": ["issueId", "timestamp", "acceptance", "regressions"],
+  "additionalProperties": false,
+  "properties": {
+    "issueId": { "type": "string" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "acceptance": {
+      "description": "The authoritative gate: the frozen acceptance tests' verdict.",
+      "enum": ["pass", "fail", "tampered", "error"]
+    },
+    "regressions": {
+      "description": "The project suite's verdict - recorded evidence, never the gate. 'absent' = no regressionCommand in the frozen config.",
+      "enum": ["pass", "fail", "absent"]
+    },
+    "tamperedPaths": {
+      "description": "Frozen paths that differ from the fork point (present iff acceptance=tampered).",
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1
+    },
+    "acceptanceOutput": {
+      "description": "Tail of the acceptance run's output - the feedback fed into the next coding attempt and the PR's verification evidence.",
+      "type": "string"
+    },
+    "regressionOutput": { "type": "string" },
+    "error": {
+      "description": "Present iff acceptance=error (missing ISSUE_ID, unreadable frozen config).",
+      "type": "string"
+    }
+  }
+}

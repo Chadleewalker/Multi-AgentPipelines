@@ -123,6 +123,9 @@ planning and read by the scaffolding:
 - `regressionCommand` (optional) — the project's standard test suite. Its *presence* is
   what "a standard suite exists" means; there is no auto-detection. See 4.4 for how its
   result is used.
+- `frozenPaths` (optional) — repo paths beyond `tests/acceptance/` that the verifier's
+  tamper diff must also cover (e.g. a test-runner script that `verifyCommand` invokes).
+  Anything `verifyCommand` executes from the repo belongs in this list.
 - `dependencies` — the declared-dependency manifest: package lists keyed by package
   manager (e.g. `{"apt": [...], "npm": [...]}`). **No arbitrary install commands.** The
   per-project image layer is a hand-written thin Dockerfile living in the target repo
@@ -162,10 +165,13 @@ source of truth.
 4. **The verifier is scaffolding, not an agent.** Mounted read-only (a container-side test
    asserts it cannot be written), it receives the issue id via the `ISSUE_ID` environment
    variable and executes `<verifyCommand> tests/acceptance/<issue-id>/`; its pass/fail is
-   authoritative — "the agent says it's done" counts for nothing. Before every check it
-   `git diff`s **all of `tests/acceptance/`** (every frozen test, not just this issue's
-   directory — during a run no acceptance test anywhere may change) against the fork
-   point (3.1); any difference is the dedicated "tampered" outcome. When
+   authoritative — "the agent says it's done" counts for nothing. It reads
+   `pipeline.config.json` **from the fork-point commit, never from the working tree** —
+   otherwise the coding agent could simply edit `verifyCommand` — and before every check
+   it `git diff`s **all of `tests/acceptance/` plus the config's `frozenPaths`** (every
+   frozen test and frozen helper, not just this issue's directory — during a run none of
+   them may change, and untracked additions count) against the fork point (3.1); any
+   difference is the dedicated "tampered" outcome. When
    `regressionCommand` is present it runs that too, as **recorded evidence, not a gate**:
    acceptance tests decide pass/fail, and a passing task with failing regressions is
    reported as "partial," never "done." The verifier writes machine-readable results to
@@ -434,3 +440,4 @@ development starts only after.
 | 2026-07-25 | v0.4: resolved third review round — `verify.schema.json` pinned (owner: verifier task); `PIPELINE_AGENT_CMD` named, added to the 4.10 input list and as `run.config.json`'s `agentCommand` override; scaffolding delivered as a runner-supplied read-only `/pipeline` mount (base image scaffolding-free); per-run manifest `run.json` + `run.schema.json` as the report's outcome source (Beads collapses failure flavors to blocked); tamper diff widened to all of `tests/acceptance/`; runner owns network/sidecar lifecycle + stale in-progress recovery at run start | Round 3: findings narrowed to 4 convergent cross-component contract gaps + 3 minors |
 | 2026-07-25 | v1.0: readiness bar changed from "critics come up dry" to the pragmatic rule (no blockers, no user-level decision, remainder implementer-level); status flipped to READY under that rule | User decision after 3-round convergence showed critics asymptote but never fully silence |
 | 2026-07-25 | v1.0.1: added `bd` to §6 host prerequisites (found during T2 — §4.12 already required host-side `bd`) | Build-time drift fix via the change protocol |
+| 2026-07-25 | v1.0.2: verifier reads `pipeline.config.json` from the fork-point commit, and tamper scope extends to the config's new optional `frozenPaths` (§3.4, §4.4) | Found during T7: worktree config or a repo helper script invoked by `verifyCommand` were agent-editable — a failing task could be made to "pass" |
