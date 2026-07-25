@@ -80,17 +80,18 @@ of every status file + host greps). design-ref: §4.3, §4.6, §4.10, §4.11
 - [x] Bail: stuckState + `WIP:` commit preserving partial work, exit 10 (decided: no empty WIP commit when the agent produced nothing)
 - [x] Tamper → WIP evidence commit, exit 11; agent crash → exit 30; success → verified commit excl. `.run/`, exit 0; `main` untouched across all scenarios
 
-## T9: Entrypoint docs phase + commit discipline — medium — depends: T8
-design-ref: §4.3
-- [ ] On verify pass, one docs invocation writes the change summary into `status.json` and updates affected in-repo docs; final commit follows
-- [ ] Docs-phase error after a passed verify is non-fatal: logged, exit stays 0
-- [ ] Commits at every meaningful phase boundary (small kill-loss window)
+## T9: Entrypoint docs phase + commit discipline — medium — depends: T8 — **DONE 2026-07-25**
+In `pipeline/entrypoint.sh`; scenarios 7–8 in `scripts/entrypoint-checks.sh`. design-ref: §4.3
+- [x] On verify pass: implementation commit first, then one docs invocation → changeSummary into `status.json` + README/docs updates committed separately; never runs on fail/tamper/rate-limit paths (checked)
+- [x] Docs-phase error after a passed verify is non-fatal: `docsPhaseError` recorded, exit stays 0
+- [x] Boundary commits: each failed attempt's state committed (`attempt N (verification failed)`) — kill-loss window is one attempt; bail tip is an allow-empty `WIP:` marker
 
-## T10: Entrypoint rate-limit exit — medium — depends: T8
-design-ref: §4.7, §4.11
-- [ ] Usage-limit error → immediate exit 20
-- [ ] Window-reset time recorded in `status.json` when reported
-- [ ] Interrupted attempt not counted as a failed attempt
+## T10: Entrypoint rate-limit exit — medium — depends: T8 — **DONE 2026-07-25**
+In `pipeline/entrypoint.sh` (detection on agent non-zero exit + log signature);
+scenarios 9–10 in `scripts/entrypoint-checks.sh`. design-ref: §4.7, §4.11
+- [x] Usage-limit signature in the agent log → immediate exit 20, no retry, no WIP-as-failure
+- [x] `usage limit reached|<epoch>` parsed → ISO `rateLimitResetAt` in `status.json`; absent when not reported (both schema-valid)
+- [x] `attempts` array untouched — an interrupted attempt is never a failed attempt
 
 ## T11: Runner bootstrap — medium — depends: T6
 Config, image assert, egress gate, per-run logs. design-ref: §4.12, §4.8, §3.4, §6

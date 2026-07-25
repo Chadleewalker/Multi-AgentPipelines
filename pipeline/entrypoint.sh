@@ -54,7 +54,16 @@ while :; do
     fi
   } > "$RUN/prompt-$N.md"
   if ! sh -c "$AGENT_CMD" < "$RUN/prompt-$N.md" > "$RUN/agent-$N.log" 2>&1; then
-    die30 "agent command failed on attempt $N (see agent-$N.log)"   # T10: rate-limit detect goes here
+    # ---- rate-limit detection (§4.7, T10): a pause, never a failed attempt ----
+    if grep -qiE 'usage limit|rate.?limit' "$RUN/agent-$N.log"; then
+      EPOCH=$(grep -oiE 'usage limit reached\|[0-9]+' "$RUN/agent-$N.log" | grep -oE '[0-9]+$' | head -1)
+      if [ -n "${EPOCH:-}" ]; then
+        RESET=$(node -e "console.log(new Date($EPOCH*1000).toISOString())")
+        node "$PIPE/status.js" set rateLimitResetAt "$RESET"
+      fi
+      exit 20   # runner parks the task; attempts[] untouched — interrupted ≠ failed
+    fi
+    die30 "agent command failed on attempt $N (see agent-$N.log)"
   fi
 
   # ---- verify phase: the authoritative gate (§4.4) ----
@@ -65,10 +74,32 @@ while :; do
       node "$PIPE/status.js" append pass
       git add -A
       git commit -qm "Task $ISSUE_ID: implementation (verified on attempt $N)" || true
+      # ---- docs phase (§4.3, T9): one agent invocation, non-fatal after success ----
+      {
+        echo "Verification for task $ISSUE_ID just passed. Two jobs:"
+        echo "1. Update any in-repo documentation affected by the change (README, docs/)."
+        echo "   NEVER touch tests/acceptance/ or any frozen path."
+        echo "2. Your final output must be ONLY a concise change summary (2-4 sentences)"
+        echo "   of what the implementation changed - it becomes the PR body."
+        echo
+        echo "--- TASK SPEC ---"
+        cat "$RUN/issue.md"
+      } > "$RUN/prompt-docs.md"
+      if sh -c "$AGENT_CMD" < "$RUN/prompt-docs.md" > "$RUN/docs-out.txt" 2>&1; then
+        SUMMARY=$(tail -c 2000 "$RUN/docs-out.txt")
+        [ -n "$SUMMARY" ] && node "$PIPE/status.js" set changeSummary "$SUMMARY"
+        git add -A
+        git commit -qm "Task $ISSUE_ID: docs" || true
+      else
+        node "$PIPE/status.js" set docsPhaseError "docs agent failed (see docs-out.txt); success stands"
+      fi
       exit 0 ;;
     1)
       node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('$RUN/verify.json','utf8')).acceptanceOutput||'')" > "$RUN/feedback.txt"
-      node "$PIPE/status.js" append fail "$RUN/feedback.txt" ;;
+      node "$PIPE/status.js" append fail "$RUN/feedback.txt"
+      # Boundary commit (§4.3, T9): each attempt's state survives a later kill.
+      git add -A
+      git commit -qm "Task $ISSUE_ID: attempt $N (verification failed)" || true ;;
     3)
       node "$PIPE/status.js" append tampered
       git add -A
@@ -81,7 +112,9 @@ while :; do
 done
 
 # ---- bail: three failed attempts (§4.6) ----
+# Attempt work is already committed at each boundary; this marker (allow-empty)
+# labels the outcome at the branch tip.
 node "$PIPE/status.js" set stuckState "bailed after $MAX_ATTEMPTS failed verification attempts; per-attempt feedback in attempts[]"
 git add -A
-git commit -qm "WIP: task $ISSUE_ID bailed after $MAX_ATTEMPTS failed verification attempts" || true
+git commit --allow-empty -qm "WIP: task $ISSUE_ID bailed after $MAX_ATTEMPTS failed verification attempts"
 exit 10
