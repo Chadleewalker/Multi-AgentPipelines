@@ -36,12 +36,13 @@ design-ref: §4.11
 - [x] Covers attempt summaries (number 1–3, verifierResult pass/fail/tampered/error, timestamp, optional feedback), changeSummary, optional rateLimitResetAt — plus stuckState (§4.6) and docsPhaseError (§4.3)
 - [x] Valid example validates; invalid example fails (via npx ajv-cli + ajv-formats)
 
-## T4: `PLANNING.md` playbook — medium — depends: T2 (soft)
-The V1 interactive planning playbook. design-ref: §3.2, §3.1, §3.4
-- [ ] Contains every §3.2 step: draft spec + tests, sized critics, coverage check, approve intent, commit/freeze, create issue, declare deps, rebuild image
-- [ ] States §3.1 conventions: five fields, `tests/acceptance/<issue-id>/`, freeze = `git merge-base` fork-point diff
-- [ ] States §3.4: manifest keyed by package manager, no arbitrary commands, Dockerfile cross-check, manual rebuild
-- [ ] Acceptance bar is structural (followability is the shadow trial's job)
+## T4: `PLANNING.md` playbook — medium — depends: T2 (soft) — **DONE 2026-07-25**
+At repo root; checks `scripts/test-planning-playbook.sh` (23/23 pass).
+design-ref: §3.2, §3.1, §3.4
+- [x] Contains every §3.2 step: draft spec (five fields + difficulty label), sized critics (none/light/full panel), tests-before-code, coverage check, approve intent, freeze, create issue via new-issue.sh, declare deps, manual rebuild, pre-run checklist
+- [x] States §3.1 conventions: five fields, `tests/acceptance/<issue-id>/`, freeze = `git merge-base` fork-point (tests must be on `main` pre-run), tamper scope = whole acceptance tree
+- [x] States §3.4: manifest keyed by package manager, no arbitrary commands, Dockerfile cross-check, manual rebuild, runner-only-asserts
+- [x] Acceptance bar stated as structural; followability deferred to the shadow trial
 
 ## T5: No-egress network + proxy sidecar — hard — depends: T1
 Internal Docker network + HTTP CONNECT proxy with the Anthropic-only allowlist.
