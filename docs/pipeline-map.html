@@ -336,19 +336,19 @@
     <div class="plate">
 <pre class="mermaid">
 flowchart TB
-  A["Design doc — DESIGN.md"] --> B["Decompose into<br/>task-sized specs"]
-  B --> C["Critics, sized<br/>to difficulty"]
-  SP1["SLOT 1 — domain critic<br/>attacks the spec"] -.-> C
-  C --> D["Write acceptance tests<br/>before any code"]
-  SP2["SLOT 2 — domain test author<br/>writes the domain checks"] -.-> D
-  D --> E["Coverage check<br/>criterion ↔ test"]
+  A["Design doc — DESIGN.md"] --> B["Decompose into task-sized specs"]
+  B --> C["Critics, sized to difficulty"]
+  SP1["SLOT 1 — domain critic on the spec"] -.-> C
+  C --> D["Write acceptance tests first"]
+  SP2["SLOT 2 — domain test author"] -.-> D
+  D --> E["Coverage check — criterion to test"]
   E --> F{"You approve intent"}
   F -->|"needs changes"| B
-  F -->|"approved"| G["Freeze — tests<br/>committed to main"]
-  G --> H[("Task list<br/>one issue per task")]
-  H --> I["Runner takes the next<br/>unblocked task, in order"]
-  I --> J["Fresh sandbox per task<br/>destroyed when it ends"]
-  J --> K["Run report<br/>+ pull requests"]
+  F -->|"approved"| G["Freeze the tests on the main branch"]
+  G --> H[("Task list, one issue per task")]
+  H --> I["Runner takes the next task, in order"]
+  I --> J["Fresh sandbox per task, then destroyed"]
+  J --> K["Run report and pull requests"]
   K --> L{"Merge, or send back"}
   L -->|"send back"| B
 
@@ -378,15 +378,15 @@ flowchart TB
     <div class="plate">
 <pre class="mermaid">
 flowchart TB
-  S(["Container starts<br/>fresh clone, task branch"]) --> C1["Code phase<br/>headless agent"]
-  C1 -->|"usage limit"| RL["exit 20 — pause<br/>no attempt used"]
-  C1 --> V{"Verifier<br/>tamper diff, tests"}
+  S(["Container starts on a fresh clone"]) --> C1["Code phase — the agent writes code"]
+  C1 -->|"usage limit"| RL["exit 20 — paused, no attempt used"]
+  C1 --> V{"Verifier — tamper diff, then tests"}
   V -->|"frozen paths changed"| TA["exit 11 — tampered"]
-  V -->|"fail, under 3"| FB["Commit attempt<br/>feed failure forward"]
+  V -->|"fail, under 3"| FB["Commit attempt, feed failure forward"]
   FB --> C1
-  V -->|"third failure"| ST["Commit WIP<br/>exit 10 — stuck"]
-  V -->|"pass"| ADV["SLOT 3 — advisors<br/>notes only, never a gate"]
-  ADV --> DP["Docs phase<br/>change summary"]
+  V -->|"third failure"| ST["Commit WIP — exit 10, stuck"]
+  V -->|"pass"| ADV["SLOT 3 — advisors, notes only"]
+  ADV --> DP["Docs phase — change summary"]
   DP --> OK["exit 0 — verified"]
 
   classDef specialist stroke:#9a6210,stroke-width:1.5px,stroke-dasharray:5 3
@@ -409,9 +409,9 @@ flowchart TB
 <pre class="mermaid">
 flowchart LR
   subgraph HOST["Host — the only writer"]
-    A["1 · Claim<br/>status → in progress"]
-    C["2 · Collect<br/>exit code + status file"]
-    D["3 · Finish<br/>append notes,<br/>close or block"]
+    A["1. Claim — status becomes in progress"]
+    C["2. Collect the exit code and status file"]
+    D["3. Finish — append notes, close or block"]
     Q[("Task list")]
   end
   subgraph CONT["Container — no queue access"]
@@ -463,18 +463,18 @@ PR: https://github.com/Chadleewalker/Hallertau/pull/2</pre>
 <pre class="mermaid">
 flowchart LR
   subgraph HOST["Host — holds every credential"]
-    R["Runner<br/>timers, budgets"]
-    GH["git push<br/>gh pr create"]
+    R["Runner — timers and budgets"]
+    GH["git push and gh pr create"]
     BD[("Beads queue")]
   end
   subgraph NET["pipeline-net — internal, no route out"]
-    T["Task container<br/>agent + verifier"]
+    T["Task container — agent and verifier"]
     PX["Allowlist proxy"]
   end
   R -->|"clone + issue.md"| T
   T -->|"all egress"| PX
-  PX -->|"allowed"| AN["api · console · statsig<br/>.anthropic.com"]
-  PX -.->|"refused"| BL["github.com · npm<br/>everything else"]
+  PX -->|"allowed"| AN["the three anthropic.com endpoints"]
+  PX -.->|"refused"| BL["github.com, npm, everything else"]
   T -->|"commits on host disk"| R
   R --> GH
   R --> BD
