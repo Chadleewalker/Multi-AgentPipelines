@@ -18,6 +18,7 @@ const { readyQueue, claim, exportIssue, finish, outcomeFor, attemptNotes } = req
 const { prepare, hasCommits, collectArtifacts, discard } = require('./workspace');
 const { runTask } = require('./container');
 const { waitForWindow } = require('./pause');
+const { publish } = require('./publish');
 
 const REPO_ROOT = path.join(__dirname, '..');
 
@@ -175,18 +176,39 @@ async function main() {
     const commits = hasCommits(ws.dir, ws.forkPoint);
     log.info(tr, `branch ${ws.branch}: ${commits ? 'has commits (push candidate)' : 'no commits (nothing to push)'}`);
 
-    finish(cfg, issue.id, outcome, attemptNotes(log.runId, outcome, artifacts.status));
+    // ---- publish: push what exists, PR what passed (§4.5, T16) ----
+    const published = publish(cfg, {
+      ws,
+      outcome,
+      hasCommits: commits,
+      issueMarkdown: exported.markdown,
+      status: artifacts.status,
+      verify: artifacts.verify,
+      issue,
+      runId: log.runId,
+    }, log, tr);
+
+    const notes = attemptNotes(log.runId, outcome, artifacts.status);
+    if (published.prUrl) notes.push(`PR: ${published.prUrl}`);
+    else if (published.pushed) notes.push(`branch pushed for review: ${ws.branch} (no PR — ${outcome.status})`);
+    finish(cfg, issue.id, outcome, notes);
+
     log.info(tr, `task finished: exit ${exec.exitCode} -> ${outcome.status}` +
       (outcome.beads ? ` (issue ${outcome.beads})` : ' (issue stays in_progress)'));
     results.push({
       issueId: issue.id,
+      title: issue.title || '',
       outcome: outcome.status,
       branch: ws.branch,
       exitCode: exec.exitCode,
       hasCommits: commits,
+      pushed: published.pushed,
+      prUrl: published.prUrl,
+      attempts: ((artifacts.status && artifacts.status.attempts) || []).length,
+      pauses,
+      activeSeconds: Math.round(activeMs / 1000),
     });
 
-    // T16 pushes here (before discard). Until then the workspace is disposable.
     if (process.env.PIPELINE_KEEP_WORKSPACE) log.info(tr, `workspace kept at ${ws.dir}`);
     else discard(ws.dir);
   }
