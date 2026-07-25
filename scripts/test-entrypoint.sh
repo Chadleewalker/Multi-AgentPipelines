@@ -30,8 +30,8 @@ for f in "$OUT"/*.json; do
     echo "FAIL  schema: $(basename "$f") does not validate"; FAIL=1
   fi
 done
-[ "$N" -ge 4 ] && echo "PASS  all $N scenario status files schema-checked" \
-               || { echo "FAIL  expected >=4 status files, found $N"; FAIL=1; }
+[ "$N" -ge 8 ] && echo "PASS  all $N scenario status files schema-checked" \
+               || { echo "FAIL  expected >=8 status files, found $N"; FAIL=1; }
 
 # 4.3: default agent command is headless claude with permissions bypassed; the
 # override seam is the PIPELINE_AGENT_CMD env var.

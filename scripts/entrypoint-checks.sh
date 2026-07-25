@@ -43,6 +43,34 @@ cat > /tmp/stub-crash.sh  <<'EOF'
 cat > /dev/null
 exit 7
 EOF
+# Smart stub: code phase satisfies the tests; docs phase updates README and
+# prints the change summary (distinguished by the docs prompt's wording).
+cat > /tmp/stub-smart.sh  <<'EOF'
+PROMPT=$(cat)
+case "$PROMPT" in
+  *"change summary"*) echo "docs updated" >> README.md
+                      printf 'Created out.txt with the done marker; README updated.' ;;
+  *)                  echo done > out.txt ;;
+esac
+EOF
+# Docs-fail stub: code phase succeeds, docs phase errors.
+cat > /tmp/stub-docsfail.sh <<'EOF'
+PROMPT=$(cat)
+case "$PROMPT" in
+  *"change summary"*) exit 1 ;;
+  *)                  echo done > out.txt ;;
+esac
+EOF
+cat > /tmp/stub-ratelimit.sh <<'EOF'
+cat > /dev/null
+echo "Claude AI usage limit reached|1753500000"
+exit 1
+EOF
+cat > /tmp/stub-ratelimit-noreset.sh <<'EOF'
+cat > /dev/null
+echo "Error: usage limit reached - try again later"
+exit 1
+EOF
 
 new_ws() { # new_ws <dir> — fresh clone on a task branch with the issue mounted
   rm -rf "$1"; git clone -q /tmp/src "$1"; cd "$1"; git checkout -qb task/T-3
@@ -81,8 +109,13 @@ cp /tmp/ws2/.run/status.json /out/e2-bail.json 2>/dev/null
 grep -q '"stuckState"' /out/e2-bail.json && pass "bail: stuckState written" || fail "bail: no stuckState"
 (cd /tmp/ws2 && git log -1 --format=%s | grep -q "^WIP: task T-3 bailed") \
   && pass "bail: WIP commit labeled" || fail "bail: WIP commit missing"
-(cd /tmp/ws2 && git show --stat HEAD | grep -q notes.txt) \
-  && pass "bail: partial work preserved in WIP commit" || fail "bail: partial work lost"
+(cd /tmp/ws2 && git log --stat | grep -q notes.txt) \
+  && pass "bail: partial work preserved in boundary commits" || fail "bail: partial work lost"
+[ "$(cd /tmp/ws2 && git log --format=%s | grep -c 'verification failed')" = 3 ] \
+  && pass "bail: per-attempt boundary commits (kill-loss window = one attempt)" \
+  || fail "bail: boundary commits missing"
+grep -q '"changeSummary"' /out/e2-bail.json \
+  && fail "bail: docs phase ran on a failed path" || pass "bail: no docs phase on failure"
 grep -q "out.txt missing" /tmp/last-prompt.txt && grep -q "TASK SPEC" /tmp/last-prompt.txt \
   && pass "bail: verifier feedback fed into next attempt's prompt" \
   || fail "bail: feedback loop broken"
@@ -120,6 +153,40 @@ cp /tmp/ws4/.run/status.json /out/e4-carryover.json 2>/dev/null
 # 5. Agent command crashes -> exit 30 (internal error).
 new_ws /tmp/ws5; run_ep /tmp/ws5 /tmp/stub-crash.sh
 [ "$RC" = 30 ] && pass "crash: exit 30" || fail "crash: rc=$RC"
+
+# 7. Docs phase (T9): summary into status.json, docs committed, success stands.
+new_ws /tmp/ws7; run_ep /tmp/ws7 /tmp/stub-smart.sh
+cp /tmp/ws7/.run/status.json /out/e7-docs.json 2>/dev/null
+[ "$RC" = 0 ] && pass "docs: exit 0" || fail "docs: rc=$RC"
+grep -q '"changeSummary": "Created out.txt' /out/e7-docs.json \
+  && pass "docs: change summary in status.json" || fail "docs: summary missing"
+(cd /tmp/ws7 && git log --format=%s | grep -q "^Task T-3: docs$") \
+  && pass "docs: docs commit after implementation commit" || fail "docs: commit missing"
+(cd /tmp/ws7 && git show --stat HEAD | grep -q README.md) \
+  && pass "docs: README update committed" || fail "docs: README not committed"
+
+# 8. Docs phase errors after verified success (T9): non-fatal, exit stays 0.
+new_ws /tmp/ws8; run_ep /tmp/ws8 /tmp/stub-docsfail.sh
+cp /tmp/ws8/.run/status.json /out/e8-docsfail.json 2>/dev/null
+[ "$RC" = 0 ] && pass "docs-fail: exit still 0 (success stands)" || fail "docs-fail: rc=$RC"
+grep -q '"docsPhaseError"' /out/e8-docsfail.json \
+  && pass "docs-fail: docsPhaseError recorded" || fail "docs-fail: error not recorded"
+
+# 9. Rate limit with reset time (T10): exit 20, reset recorded, zero attempts consumed.
+new_ws /tmp/ws9; run_ep /tmp/ws9 /tmp/stub-ratelimit.sh
+cp /tmp/ws9/.run/status.json /out/e9-ratelimit.json 2>/dev/null
+[ "$RC" = 20 ] && pass "rate-limit: exit 20" || fail "rate-limit: rc=$RC"
+grep -q '"rateLimitResetAt": "2025-07-26T' /out/e9-ratelimit.json \
+  && pass "rate-limit: reset time recorded (epoch converted)" || fail "rate-limit: reset missing"
+grep -q '"attempts": \[\]' /out/e9-ratelimit.json \
+  && pass "rate-limit: no attempt consumed" || fail "rate-limit: attempt wrongly consumed"
+
+# 10. Rate limit without a reset time (T10): exit 20, no reset field, still schema-valid.
+new_ws /tmp/ws10; run_ep /tmp/ws10 /tmp/stub-ratelimit-noreset.sh
+cp /tmp/ws10/.run/status.json /out/e10-ratelimit-noreset.json 2>/dev/null
+[ "$RC" = 20 ] && pass "rate-limit-noreset: exit 20" || fail "rate-limit-noreset: rc=$RC"
+grep -q '"rateLimitResetAt"' /out/e10-ratelimit-noreset.json \
+  && fail "rate-limit-noreset: spurious reset time" || pass "rate-limit-noreset: no reset field"
 
 # 6. main is untouched by every scenario.
 MAIN_AFTER=$(cd /tmp/src && git rev-parse main)
