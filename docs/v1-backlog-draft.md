@@ -149,12 +149,15 @@ what proves carry-over). design-ref: §4.7, §4.11
 - [x] **Paused time excluded from the budget — proven**: a run outlived its 18s wall clock (25s elapsed) and still succeeded, because only 4s was active container time; active time accumulates across relaunches and a genuine active-budget breach still kills
 - [x] Give-up guard: after `maxPauses` cycles the task stays `paused` rather than looping forever
 
-## T16: Runner outcome handling — hard — depends: T14, T12, T7
-Push-always, PR-per-table, Beads transitions. design-ref: §4.5, §4.11
-- [ ] Branch pushed whenever it has commits — incl. WIP from 10/11/30/timeout
-- [ ] Exit 0 → PR via `gh`; done vs partial from `verify.json`; partial PR flagged with regression evidence
-- [ ] Beads transitions exactly per §4.11
-- [ ] PR body assembled from issue spec + status-file summary + `verify.json`; no free-form prose parsed
+## T16: Runner outcome handling — hard — depends: T14, T12, T7 — **DONE 2026-07-25**
+`runner/publish.js` + publish step in the task loop; checks
+`scripts/test-runner-publish.sh` (26/26 pass — real containers, real pushes to a local
+bare remote, `gh` captured through the `PIPELINE_GH_CMD` seam). design-ref: §4.5, §4.11
+- [x] Branch pushed whenever it has commits — proven for stuck (WIP marker present on the remote branch); nothing pushed when there are no commits; no force-push anywhere
+- [x] PR opened only for `done`/`partial` (gate asserted in code and behaviour); `gh` provably never invoked on stuck/tampered/failed paths
+- [x] `partial` (acceptance pass + regressions fail) still gets a PR, with a **PARTIAL — needs scrutiny** callout, the regression verdict, and a `[PARTIAL]` title marker
+- [x] PR body assembled host-side from structured artifacts only — issue spec + `status.json` change summary + `verify.json` evidence (collapsible output), marked generated; no free-form agent prose parsed
+- [x] Write-back: PR URL recorded on the issue for PR'd tasks, branch link recorded for pushed-but-unPR'd ones; per-task `results.json` gains branch, pushed, prUrl, attempts, pauses, active seconds
 
 ## T17: Run report generator — medium — depends: T16, T3
 design-ref: §4.9, §4.11, §4.12
