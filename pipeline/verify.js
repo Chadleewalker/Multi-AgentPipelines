@@ -1,0 +1,83 @@
+#!/usr/bin/env node
+// The verifier — DESIGN.md §4.4, built by T7. Deterministic scaffolding, no LLM.
+// Runs inside the task container, mounted read-only at /pipeline (§4.10).
+//
+// Sequence:
+//   1. Read pipeline.config.json FROM THE FORK-POINT COMMIT (git merge-base main HEAD)
+//      — never from the working tree, which the coding agent can edit (v1.0.2).
+//   2. Tamper check: diff tests/acceptance/ + config.frozenPaths against the fork
+//      point; untracked additions count. Any difference → "tampered", tests not run.
+//   3. Run `<verifyCommand> tests/acceptance/<ISSUE_ID>/` — the authoritative gate.
+//   4. Run regressionCommand when present — recorded evidence only, never the gate.
+//   5. Write /workspace/.run/verify.json (schema: schemas/verify.schema.json).
+//
+// Exit codes (the entrypoint maps these to its §4.11 codes):
+//   0 = acceptance pass   1 = acceptance fail   3 = tampered   4 = config/internal error
+'use strict';
+const { execSync, spawnSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+
+const WS = process.env.WORKSPACE || '/workspace';
+const OUT_DIR = path.join(WS, '.run');
+const TAIL = (s, n) => (s || '').slice(-n);
+
+function writeResult(obj, code) {
+  fs.mkdirSync(OUT_DIR, { recursive: true });
+  fs.writeFileSync(path.join(OUT_DIR, 'verify.json'), JSON.stringify(obj, null, 2) + '\n');
+  process.exit(code);
+}
+const git = (args) => execSync(`git ${args}`, { cwd: WS, encoding: 'utf8' });
+
+const result = {
+  issueId: process.env.ISSUE_ID || '',
+  timestamp: new Date().toISOString(),
+  acceptance: 'error',
+  regressions: 'absent',
+};
+if (!result.issueId) {
+  result.error = 'ISSUE_ID environment variable not set';
+  writeResult(result, 4);
+}
+
+let forkPoint, config;
+try {
+  forkPoint = git('merge-base main HEAD').trim();
+  config = JSON.parse(git(`show ${forkPoint}:pipeline.config.json`));
+  if (!config.verifyCommand) throw new Error('verifyCommand missing from fork-point pipeline.config.json');
+} catch (e) {
+  result.error = `cannot load frozen config: ${e.message}`;
+  writeResult(result, 4);
+}
+
+// --- Tamper check: frozen paths vs fork point, untracked additions included. ---
+const frozen = ['tests/acceptance/', ...(config.frozenPaths || [])];
+const tampered = new Set();
+for (const p of frozen) {
+  git(`diff --name-only ${forkPoint} -- "${p}"`).split('\n').filter(Boolean)
+    .forEach((f) => tampered.add(f));
+  git(`status --porcelain -- "${p}"`).split('\n').filter((l) => l.startsWith('??'))
+    .forEach((l) => tampered.add(l.slice(3).trim()));
+}
+if (tampered.size > 0) {
+  result.acceptance = 'tampered';
+  result.tamperedPaths = [...tampered].sort();
+  writeResult(result, 3);
+}
+
+// --- Acceptance run: the authoritative gate. ---
+const testDir = `tests/acceptance/${result.issueId}/`;
+const acc = spawnSync('sh', ['-c', `${config.verifyCommand} ${testDir}`],
+  { cwd: WS, encoding: 'utf8', timeout: 15 * 60 * 1000 });
+result.acceptance = acc.status === 0 ? 'pass' : 'fail';
+result.acceptanceOutput = TAIL((acc.stdout || '') + (acc.stderr || ''), 4000);
+
+// --- Regression run: evidence only (§4.4) — result never changes the exit code. ---
+if (config.regressionCommand) {
+  const reg = spawnSync('sh', ['-c', config.regressionCommand],
+    { cwd: WS, encoding: 'utf8', timeout: 15 * 60 * 1000 });
+  result.regressions = reg.status === 0 ? 'pass' : 'fail';
+  result.regressionOutput = TAIL((reg.stdout || '') + (reg.stderr || ''), 2000);
+}
+
+writeResult(result, result.acceptance === 'pass' ? 0 : 1);

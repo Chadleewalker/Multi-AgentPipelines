@@ -61,13 +61,14 @@ design-ref: §4.8
 - [x] Bounded under 60 seconds (coreutils `timeout` + per-curl `-m` limits; measured <1s)
 - [x] Non-zero exit on any failure — proven for both failure directions: sidecar down AND allowlist made permissive (the dangerous one)
 
-## T7: Verifier scaffolding — medium — depends: T1
-Non-agent verifier: freeze-diff tamper check, acceptance run, regression evidence.
-design-ref: §4.4, §3.1, §3.4
-- [ ] Reads `ISSUE_ID` env var; executes `<verifyCommand> tests/acceptance/<issue-id>/` from `pipeline.config.json`
-- [ ] Diffs **all of `tests/acceptance/`** against `git merge-base main <branch>` before every check; any difference → tampered outcome regardless of results
-- [ ] `regressionCommand` (when present) runs as evidence only — never changes acceptance pass/fail
-- [ ] Writes `/workspace/.run/verify.json` conforming to `verify.schema.json` (owned by this task; frozen input to runner + report)
+## T7: Verifier scaffolding — medium — depends: T1 — **DONE 2026-07-25**
+`pipeline/verify.js` (Node, no LLM; exit 0 pass / 1 fail / 3 tampered / 4 error) +
+`schemas/verify.schema.json`; checks `scripts/test-verifier.sh` (19/19 pass: 9
+scenarios + 8 schema validations + no-LLM grep). design-ref: §4.4, §3.1, §3.4, v1.0.2
+- [x] Reads `ISSUE_ID`; executes `<verifyCommand> tests/acceptance/<issue-id>/` — with the config read **from the fork-point commit** (v1.0.2: worktree config edits are ignored — proven by the config-edit scenario)
+- [x] Tamper diff covers all of `tests/acceptance/` **plus config `frozenPaths`** vs `git merge-base main HEAD`, untracked additions included — proven for modify, untracked-add, and helper-script-edit scenarios; tests never run on tamper
+- [x] `regressionCommand` runs as evidence only (acceptance pass + regression fail → exit 0 with the partial signal recorded; absent → "absent")
+- [x] Writes `/workspace/.run/verify.json`; all 8 scenario outputs validate against `verify.schema.json`
 
 ## T8: Entrypoint core loop — hard — depends: T3, T7
 code → verify → retry (≤3 total) with WIP discipline and exit codes 0/10/11/30.
