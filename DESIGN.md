@@ -133,6 +133,64 @@ planning and read by the scaffolding:
   the manifest so they cannot silently drift. Rebuilding the image is a manual pre-run
   step in the playbook; the runner only asserts the image exists and fails fast otherwise.
 
+### 3.5 Domain specialists (physics, aesthetics, security, …)
+
+Projects need domain judgment the general pipeline doesn't have: is the simulation
+physically consistent, is the interface visually coherent, does this touch an auth path.
+Specialists supply it. The governing rule:
+
+> **Judgment happens at planning time; run time stays deterministic.** An LLM judge
+> cannot be frozen — it may pass a task on one attempt and fail identical code on the
+> next. A fuzzy gate would destroy the retry loop's steering signal, void the 3-attempt
+> invariant, and produce unactionable failures. Therefore **no specialist is ever a
+> gate.** The frozen acceptance tests remain the only authority (4.4).
+
+Specialists occupy three slots, in descending order of leverage:
+
+1. **Planning critic.** A specialist joins the sized critic panel (3.2) and attacks the
+   draft spec through its lens: "nothing here checks conservation of momentum," "the
+   spacing scale is never pinned." Cheapest slot, no run-time cost, and it improves the
+   artifact everything downstream depends on.
+2. **Test author.** The specialist writes the acceptance tests for its domain — the
+   approval model (3.3) applied to a narrower lens. Most domain judgment reduces to
+   deterministic checks: energy conserved within a tolerance, dimensional analysis,
+   contrast ratios, spacing-scale adherence, no hardcoded colors outside the token file.
+   A test steers the retry loop; a review does not. **Prefer this slot whenever the
+   domain admits it.**
+3. **Run-time advisor.** Only for judgment that genuinely resists determinism ("does this
+   screen feel like the same product?"). After verification passes, a declared advisor
+   inspects the change and writes a structured note — carried into the PR body and run
+   report as **recorded evidence, never a gate**, exactly like the regression suite
+   (4.4). It cannot change the exit code.
+
+**Escalation ladder.** An advisor that keeps flagging the same thing is a signal to
+convert that check into a deterministic test or lint rule — the same reflex as 4.9's
+"recurring API-ignorance failures mean vendor the docs." Judgment migrates leftward into
+frozen tests over time, so the pipeline sharpens instead of accumulating noise.
+
+**How specialists plug in — data, not control flow.** The phase sequence stays fixed
+scaffolding (4.3); only a declared list varies, so the orchestrator stays dumb:
+- **Registry:** each specialist is a definition file in this repo (`advisors/<name>.md`)
+  stating its lens, what it checks, and the structured output it must return. Versioned,
+  reusable across projects.
+- **Selection:** `pipeline.config.json` lists the project's specialists; an issue field
+  names the ones that apply to that task. Opt-in per task, never blanket — each advisor
+  is another `claude -p` call against the subscription window.
+- **Contract:** advisor output is schema-checked like every other artifact (an
+  `advisories` array in the status file), so PR assembly and the report never parse
+  free-form prose (4.11).
+- **Slot:** the entrypoint sequence becomes code → verify → **[declared advisors]** →
+  docs → commit. One new fixed slot, populated from data.
+
+**Phasing.** V1 builds none of this — the dumb loop must prove itself first (8), and the
+shadow trial is the experiment that reveals which specialists are actually wanted (every
+"I wish something had checked X" during PR review is an advisor request with evidence).
+The shape is decided here because the advisor slot spans three separately-built
+components (entrypoint, PR assembly, report) — §10's dividing line — and because the
+frozen schemas would otherwise need a breaking change later. Specialist critics and test
+authors (slots 1–2) arrive with the V2 `/spec` skill; run-time advisors (slot 3) follow
+only if the trial shows something that genuinely cannot be made deterministic.
+
 ## 4. The Implementation Phase (the execution layer)
 
 Carried over from v3, amended over two critic-review rounds; this section is the single
@@ -371,7 +429,10 @@ the V2 critics.
 
 **V2 — the spec pipeline:** the design-doc session harness, doc-level critics, dry-run
 decomposition, sized per-spec critic panels, and the coverage check — packaged as a
-`/spec` skill in the harness plugin, sibling to `/scaffold`, informed by shadow-trial data.
+`/spec` skill in the harness plugin, sibling to `/scaffold`, informed by shadow-trial
+data. Includes the specialist registry and slots 1–2 of 3.5 (domain critics and domain
+test authors); run-time advisors (slot 3) only if the trial proves something resists
+determinism.
 
 **V3 — the work PC port:** yolo_docker containers, network-share repos, local-branch
 review mode. Machine specifics stay in `machine.local.md`, per harness rules.
@@ -441,3 +502,4 @@ development starts only after.
 | 2026-07-25 | v1.0: readiness bar changed from "critics come up dry" to the pragmatic rule (no blockers, no user-level decision, remainder implementer-level); status flipped to READY under that rule | User decision after 3-round convergence showed critics asymptote but never fully silence |
 | 2026-07-25 | v1.0.1: added `bd` to §6 host prerequisites (found during T2 — §4.12 already required host-side `bd`) | Build-time drift fix via the change protocol |
 | 2026-07-25 | v1.0.2: verifier reads `pipeline.config.json` from the fork-point commit, and tamper scope extends to the config's new optional `frozenPaths` (§3.4, §4.4) | Found during T7: worktree config or a repo helper script invoked by `verifyCommand` were agent-editable — a failing task could be made to "pass" |
+| 2026-07-25 | v1.1: added §3.5 domain specialists — three slots (planning critic / test author / run-time advisor), specialists are never gates, registry + per-task selection + schema'd output, escalation ladder toward determinism; V2 phasing | User goal: pluggable domain agents (physics, aesthetics). Shape decided now because the advisor slot spans three separately-built components and the frozen schemas would otherwise need a breaking change |

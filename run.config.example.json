@@ -1,0 +1,12 @@
+{
+  "targetRepoPath": "C:/Code/Projects/SomeProject",
+  "targetRepoRemote": "https://github.com/you/some-project.git",
+  "image": "pipeline-someproject:local",
+
+  "network": "pipeline-net",
+  "proxyName": "pipeline-proxy",
+  "proxyPort": 3128,
+  "wallClockMinutes": 240,
+  "probeIntervalMinutes": 15,
+  "agentCommand": null
+}

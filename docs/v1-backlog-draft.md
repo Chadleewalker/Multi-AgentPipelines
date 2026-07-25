@@ -94,19 +94,24 @@ scenarios 9–10 in `scripts/entrypoint-checks.sh`. design-ref: §4.7, §4.11
 - [x] `attempts` array untouched — an interrupted attempt is never a failed attempt
 
 ## T11: Runner bootstrap — medium — depends: T6
-Config, image assert, egress gate, per-run logs. design-ref: §4.12, §4.8, §3.4, §6
-- [ ] Plain-JS Node runner reads `run.config.json` (repo path/remote, image, wall-clock default, probe interval, network/proxy ids, optional `agentCommand`)
-- [ ] Asserts image exists (fail fast); runs egress check and aborts run on failure
-- [ ] Creates git-ignored `runs/<run-timestamp>/` with logs + trace IDs linking to issues
-- [ ] Owns network/sidecar lifecycle: up at run start, down at run end; resets stale in-progress issues to open with an attempt-log note
-- [ ] Works from Git Bash on Windows; no WSL, no platform `timeout`
+**DONE 2026-07-25** — `runner/` (run.js, config.js, log.js, preflight.js, bd.js) +
+`run.config.example.json`; checks `scripts/test-runner-bootstrap.sh` (19/19 pass,
+against real Docker and real Beads). design-ref: §4.12, §4.8, §3.4, §6
+- [x] Plain-JS Node runner (zero deps) reads `run.config.json`; required fields validated by name; malformed/absent config → exit 2 before any side effect; defaults for network/proxy/wall-clock/probe/agentCommand
+- [x] Asserts image exists (fail fast, never builds); egress gate runs before any task and aborts the run on failure
+- [x] Creates git-ignored `runs/<run-id>/run.log`; every line carries a `<runId>/<issueId>` trace ID
+- [x] Owns lifecycle end to end: network+sidecar up at start, down at end; stale `in_progress` issues reset to open with an attempt-log note (proven against real Beads)
+- [x] Runs from Git Bash on Windows; no WSL invocation, no platform `timeout`, no LLM; token from git-ignored `.env.pipeline`
+- [x] `runner/bd.js`: host `bd` when installed, else containerized `bd` fallback — the host stays the sole Beads writer either way
 
-## T12: Runner ↔ Beads queue integration — medium — depends: T2, T11
-design-ref: §4.10, §4.11, §4.12
-- [ ] Picks from the ready queue, priority-ranked, FIFO within ties, via `bd` against the host working copy
-- [ ] Sets in-progress at start; applies §4.11 transitions after exit (closed / blocked / stays in-progress)
-- [ ] Sole Beads writer; attempt notes appended from the status file; Beads data never on task branches
-- [ ] Blocked issues never re-picked; loop ends when queue drains
+## T12: Runner ↔ Beads queue integration — medium — depends: T2, T11 — **DONE 2026-07-25**
+`runner/queue.js` + task loop in `runner/run.js`; checks `scripts/test-runner-queue.sh`
+(22/22 pass against real Beads). Task execution stubbed via `PIPELINE_EXEC_STUB` until
+T13/T14. design-ref: §4.10, §4.11, §4.12
+- [x] Ready queue via `bd ready` (blocker-aware), sorted priority-first then FIFO by creation — proven with a mixed-priority, dependency-gated queue (blocked task excluded; unlocked once its dependency closed)
+- [x] Claims each issue `in_progress` at start; applies the §4.11 table after exit — verified for done (closed), partial (closed, derived from `verify.json` regressions), stuck (blocked), paused (stays in_progress)
+- [x] Sole Beads writer: attempt notes composed from the container's status file and appended host-side; issue exported to `issue.md` for the container; `pipeline/` provably never invokes `bd`
+- [x] Blocked issues never re-picked (loop-termination proven); `results.json` per run records every task outcome
 
 ## T13: Runner per-task clone/branch/workspace — medium — depends: T11
 design-ref: §4.2, §4.10
