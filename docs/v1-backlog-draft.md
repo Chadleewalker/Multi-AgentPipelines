@@ -181,15 +181,21 @@ runner); checks `scripts/test-report.sh` (21/21 pass). design-ref: §4.9, §4.11
 fallback didn't guard against MSYS path conversion (`-w /repo` → `C:/Program Files/Git/repo`).
 It had only ever run *inside* a container before. Fixed with `cygpath` + `MSYS_NO_PATHCONV`.
 
-## T19: Deterministic agent stubs — trivial — depends: T8
-design-ref: §7, §4.3
-- [ ] Bail stub never satisfies tests; tamper stub edits a frozen test; optional success stub passes
-- [ ] Substitutable via `PIPELINE_AGENT_CMD` (through `run.config.json` `agentCommand`); zero model calls
+## T19: Deterministic agent stubs — trivial — depends: T8 — **DONE 2026-07-25**
+`stubs/` (`success.sh`, `bail.sh`, `tamper.sh`, `ratelimit.sh`) + `stubs/README.md`,
+extracted from the inline stubs the T8–T16 suites had grown. design-ref: §7, §4.3
+- [x] `bail.sh` never satisfies the tests (writes notes each attempt so the WIP commit has content); `tamper.sh` neuters the task's frozen test using `ISSUE_ID`; `success.sh` implements the fixture's shout mode and branches on the docs prompt to emit a change summary; `ratelimit.sh` reports a usage limit once (with a reset epoch) then succeeds
+- [x] Substitutable via `PIPELINE_AGENT_CMD` / `agentCommand`; zero model calls
+- [x] Verified live against the fixture: `success.sh` makes `fix-a2z`'s frozen acceptance test pass and produces a real change summary
 
-## T20: Container-side isolation assertions — medium — depends: T5, T7, T14
-design-ref: §4.12, §4.4, §4.5, §4.8
-- [ ] Live in this repo; on demand + invoked by the E2E pass
-- [ ] `git push` from inside fails; verifier mount unwritable; non-allowlisted egress fails
+## T20: Container-side isolation assertions — medium — depends: T5, T7, T14 — **DONE 2026-07-25**
+`scripts/test-isolation.sh` — runs a container configured **exactly** as the runner
+configures one (14/14 pass). design-ref: §4.12, §4.4, §4.5, §4.8
+- [x] Lives in this repo; runnable on demand and wired into the E2E pass (T21)
+- [x] `git push` from inside fails; no credential helper, no GitHub/git tokens in the container env
+- [x] `/pipeline` mount is read-only: writing to `verify.js` and deleting `entrypoint.sh` both fail, while reads still work
+- [x] Allowlisted Anthropic endpoint reachable; `github.com`, `registry.npmjs.org`, `pypi.org` all blocked; zero direct egress when the proxy is bypassed
+- [x] Minimum-necessary secrets: exactly one credential (the Anthropic token), no AWS/Azure/SSH/npm/Docker credentials; workspace still writable so tasks can work
 
 ## T21: Scripted end-to-end pass — hard — depends: T9, T15, T16, T17, T18, T19, T20
 design-ref: §7, §4.11, §4.12
