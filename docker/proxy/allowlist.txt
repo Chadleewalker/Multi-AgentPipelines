@@ -1,0 +1,8 @@
+# Egress allowlist (DESIGN.md 4.8): the Anthropic-operated endpoints headless
+# Claude Code requires - and nothing else. Concrete domains only; no wildcards.
+# Policy (frozen): Anthropic endpoints only. Enumeration (delegated): finalized
+# empirically - api is the model API; console serves OAuth/token refresh;
+# statsig.anthropic.com is the CLI's Anthropic-hosted config/flags endpoint.
+api.anthropic.com
+console.anthropic.com
+statsig.anthropic.com

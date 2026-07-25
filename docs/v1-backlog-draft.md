@@ -44,13 +44,14 @@ design-ref: §3.2, §3.1, §3.4
 - [x] States §3.4: manifest keyed by package manager, no arbitrary commands, Dockerfile cross-check, manual rebuild, runner-only-asserts
 - [x] Acceptance bar stated as structural; followability deferred to the shadow trial
 
-## T5: No-egress network + proxy sidecar — hard — depends: T1
-Internal Docker network + HTTP CONNECT proxy with the Anthropic-only allowlist.
-design-ref: §4.8, §7 item 3
-- [ ] Internal no-egress network + sidecar with domain allowlist; TLS passed through
-- [ ] Allowlist enumerated explicitly: `api.anthropic.com` + empirically-found auth endpoints, nothing else
-- [ ] Container on the network completes a headless `claude -p` via standard proxy env vars
-- [ ] Requests to non-allowlisted hosts fail
+## T5: No-egress network + proxy sidecar — hard — depends: T1 — **DONE 2026-07-25 (all checks, incl. live)**
+Squid 6.6 sidecar (`docker/proxy/`, pinned ubuntu/squid:6.6-24.04_edge), lifecycle
+`scripts/pipeline-net.sh up|down` (net `pipeline-net`, proxy `pipeline-proxy:3128`),
+checks `scripts/test-egress.sh` (12/12 pass). design-ref: §4.8, §7 item 3
+- [x] Internal (`--internal`) network + dual-homed CONNECT-only sidecar; TLS passthrough (no ssl_bump, no CA); deny-by-default
+- [x] Allowlist enumerated concretely: api/console/statsig.anthropic.com, nothing else — empirically confirmed sufficient
+- [x] Live headless `claude -p` completed through the proxy on subscription auth (token read from git-ignored `.env.pipeline`)
+- [x] github.com + registry.npmjs.org blocked via proxy; zero direct egress without proxy vars
 
 ## T6: Pre-run egress check — medium — depends: T5
 Throwaway-container proof the policy holds. design-ref: §4.8

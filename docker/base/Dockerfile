@@ -12,8 +12,9 @@ FROM node:22.23.1-bookworm-slim
 
 # git: workspace operations inside the container (commits stay local; no push — §4.5).
 # ca-certificates: TLS through the allowlist proxy sidecar (§4.8).
+# curl: in-container probes for the egress checks and isolation assertions (§4.8, §4.12).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates \
+    && apt-get install -y --no-install-recommends git ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g --no-fund --no-audit \
