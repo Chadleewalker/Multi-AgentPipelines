@@ -74,6 +74,7 @@ function renderReport(manifest) {
     if (t.pauses) facts.push(`Rate-limit pauses: ${t.pauses}`);
     if (t.activeSeconds !== undefined) facts.push(`Active time: ${t.activeSeconds}s`);
     if (t.diffLines !== undefined) facts.push(`Diff: ${t.diffLines} lines`);
+    if (t.model) facts.push(`Model: ${t.model}`);
     for (const f of facts) L.push(`- ${f}`);
     L.push('');
 

@@ -32,6 +32,9 @@ function buildArgs(cfg, opts) {
   // appears in an argument list, a log line, or an image layer (§6).
   if (token) args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN');
   if (cfg.agentCommand) args.push('-e', `PIPELINE_AGENT_CMD=${cfg.agentCommand}`);
+  // The entrypoint appends --model to its default headless invocation; an explicit
+  // agentCommand (stubs, overrides) owns its own flags and ignores this.
+  if (cfg.model) args.push('-e', `PIPELINE_MODEL=${cfg.model}`);
   args.push(cfg.image, 'bash', '/pipeline/entrypoint.sh');
   return args;
 }

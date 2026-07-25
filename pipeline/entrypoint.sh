@@ -14,7 +14,18 @@ set -u
 WS="${WORKSPACE:-/workspace}"
 RUN="$WS/.run"
 PIPE="${PIPELINE_DIR:-/pipeline}"
-AGENT_CMD="${PIPELINE_AGENT_CMD:-claude -p --dangerously-skip-permissions}"
+# The model is pinned by the runner (§4.3) so runs are reproducible and quality cannot
+# drift when the account default changes. An explicit PIPELINE_AGENT_CMD owns its flags.
+MODEL_ARG=""
+[ -n "${PIPELINE_MODEL:-}" ] && MODEL_ARG=" --model ${PIPELINE_MODEL}"
+AGENT_CMD="${PIPELINE_AGENT_CMD:-claude -p --dangerously-skip-permissions${MODEL_ARG}}"
+
+# When we own the invocation, ask the code phase for JSON so the RESOLVED model id can
+# be recorded (a `--model opus` alias hides which Opus actually ran). The human-readable
+# text is extracted back out below, so agent logs stay readable. A caller-supplied
+# PIPELINE_AGENT_CMD (stubs, overrides) owns its own flags and gets none of this.
+CODE_FORMAT=""
+[ -z "${PIPELINE_AGENT_CMD:-}" ] && CODE_FORMAT="--output-format json"
 MAX_ATTEMPTS=3
 
 die30() { echo "entrypoint: $1" >&2; exit 30; }
@@ -35,6 +46,7 @@ grep -qxF '.run/' .git/info/exclude 2>/dev/null || echo '.run/' >> .git/info/exc
 git config user.email >/dev/null 2>&1 || { git config user.email pipeline@localhost; git config user.name pipeline; }
 
 node "$PIPE/status.js" init "$ISSUE_ID" || die30 "status init failed"
+# (resolved model is recorded after the first agent call, below)
 
 while :; do
   DONE=$(node "$PIPE/status.js" attempts) || die30 "status read failed"
@@ -58,7 +70,7 @@ while :; do
       cat "$RUN/feedback.txt"
     fi
   } > "$RUN/prompt-$N.md"
-  if ! sh -c "$AGENT_CMD" < "$RUN/prompt-$N.md" > "$RUN/agent-$N.log" 2>&1; then
+  if ! sh -c "$AGENT_CMD $CODE_FORMAT" < "$RUN/prompt-$N.md" > "$RUN/agent-$N.log" 2>&1; then
     # ---- rate-limit detection (§4.7, T10): a pause, never a failed attempt ----
     if grep -qiE 'usage limit|rate.?limit' "$RUN/agent-$N.log"; then
       EPOCH=$(grep -oiE 'usage limit reached\|[0-9]+' "$RUN/agent-$N.log" | grep -oE '[0-9]+$' | head -1)
@@ -69,6 +81,26 @@ while :; do
       exit 20   # runner parks the task; attempts[] untouched — interrupted ≠ failed
     fi
     die30 "agent command failed on attempt $N (see agent-$N.log)"
+  fi
+
+  # Record the resolved model once, and flatten the JSON envelope back to plain text
+  # so agent-N.log stays readable for debugging. Fail-safe: if the shape ever changes,
+  # the log is left as-is and no model is recorded.
+  if [ -n "$CODE_FORMAT" ]; then
+    node -e '
+      const fs = require("fs");
+      const f = process.argv[1];
+      try {
+        const j = JSON.parse(fs.readFileSync(f, "utf8"));
+        const resolved = Object.keys(j.modelUsage || {})[0];
+        if (resolved) fs.writeFileSync(f + ".model", resolved);
+        if (typeof j.result === "string") fs.writeFileSync(f, j.result);
+      } catch { /* not JSON (e.g. an error page) — leave the log untouched */ }
+    ' "$RUN/agent-$N.log" 2>/dev/null || true
+    if [ -f "$RUN/agent-$N.log.model" ]; then
+      node "$PIPE/status.js" set model "$(cat "$RUN/agent-$N.log.model")" 2>/dev/null || true
+      rm -f "$RUN/agent-$N.log.model"
+    fi
   fi
 
   # ---- verify phase: the authoritative gate (§4.4) ----
