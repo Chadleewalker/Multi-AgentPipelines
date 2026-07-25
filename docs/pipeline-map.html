@@ -1,0 +1,449 @@
+<title>Pipeline map — how a task becomes a pull request</title>
+
+<style>
+  :root {
+    --ink: #14181d;
+    --paper: #f2f4f5;
+    --surface: #ffffff;
+    --rule: #dde2e4;
+    --muted: #59626c;
+    --flow: #2c7a6f;
+    --gate: #a86c17;
+    --refuse: #9d3a2f;
+    --plate: #ffffff;
+    --plate-rule: #e3e8e9;
+    --node-fill: #eef2f1;
+    --node-stroke: #2c7a6f;
+    --node-text: #14181d;
+    --cluster-fill: #f6f8f8;
+    --line: #6b7480;
+    --spec-fill: #f6e3bd;
+    --spec-stroke: #9a6210;
+
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+
+    --step: clamp(1rem, 0.9rem + 0.4vw, 1.0625rem);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ink: #e6eaec;
+      --paper: #101417;
+      --surface: #161b1f;
+      --rule: #262d32;
+      --muted: #949ea6;
+      --flow: #5fb3a5;
+      --gate: #d39a3f;
+      --refuse: #d0705f;
+      --plate: #12171a;
+      --plate-rule: #262d32;
+      --node-fill: #1d262b;
+      --node-stroke: #5fb3a5;
+      --node-text: #eaeef0;
+      --cluster-fill: #171e22;
+      --line: #8a95a0;
+      --spec-fill: #40331a;
+      --spec-stroke: #e0a94a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink: #e6eaec;
+    --paper: #101417;
+    --surface: #161b1f;
+    --rule: #262d32;
+    --muted: #949ea6;
+    --flow: #5fb3a5;
+    --gate: #d39a3f;
+    --refuse: #d0705f;
+    --plate: #12171a;
+    --plate-rule: #262d32;
+    --node-fill: #1d262b;
+    --node-stroke: #5fb3a5;
+    --node-text: #eaeef0;
+    --cluster-fill: #171e22;
+    --line: #8a95a0;
+    --spec-fill: #40331a;
+    --spec-stroke: #e0a94a;
+  }
+  :root[data-theme="light"] {
+    --ink: #14181d;
+    --paper: #f2f4f5;
+    --surface: #ffffff;
+    --rule: #dde2e4;
+    --muted: #59626c;
+    --flow: #2c7a6f;
+    --gate: #a86c17;
+    --refuse: #9d3a2f;
+    --plate: #ffffff;
+    --plate-rule: #e3e8e9;
+    --node-fill: #eef2f1;
+    --node-stroke: #2c7a6f;
+    --node-text: #14181d;
+    --cluster-fill: #f6f8f8;
+    --line: #6b7480;
+    --spec-fill: #f6e3bd;
+    --spec-stroke: #9a6210;
+  }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: var(--step);
+    line-height: 1.6;
+    margin: 0;
+    padding: clamp(1.5rem, 4vw, 4rem) 1.25rem 5rem;
+  }
+
+  .wrap {
+    max-width: 62rem;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 3.25rem;
+  }
+
+  header { display: flex; flex-direction: column; gap: 0.75rem; }
+
+  .kicker {
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--flow);
+  }
+
+  h1 {
+    font-family: var(--mono);
+    font-size: clamp(1.6rem, 1.2rem + 1.8vw, 2.4rem);
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    line-height: 1.15;
+    text-wrap: balance;
+    margin: 0;
+  }
+
+  .lede { max-width: 60ch; color: var(--muted); margin: 0; }
+
+  section { display: flex; flex-direction: column; gap: 1rem; }
+
+  h2 {
+    font-family: var(--mono);
+    font-size: 1.0625rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    margin: 0;
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+  }
+
+  h2 .phase {
+    font-size: 0.68rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    padding: 0.15rem 0.45rem;
+    border: 1px solid currentColor;
+    border-radius: 2px;
+    font-weight: 500;
+  }
+  .p-plan { color: var(--gate); }
+  .p-impl { color: var(--flow); }
+  .p-walls { color: var(--refuse); }
+
+  section > p { max-width: 62ch; margin: 0; color: var(--muted); }
+
+  .plate {
+    background: var(--plate);
+    border: 1px solid var(--plate-rule);
+    border-radius: 3px;
+    padding: 1.25rem 1rem;
+    overflow-x: auto;
+  }
+  .plate pre.mermaid { margin: 0; background: none; }
+  .plate svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+
+  /* Mermaid's own theming is unreliable across runtimes, so contrast is enforced
+     here on the rendered SVG instead of being left to its defaults. */
+  .plate svg .node rect,
+  .plate svg .node polygon,
+  .plate svg .node circle,
+  .plate svg .node ellipse,
+  .plate svg .node path,
+  .plate svg .label-container {
+    fill: var(--node-fill) !important;
+    stroke: var(--node-stroke) !important;
+    stroke-width: 1.25px !important;
+  }
+  .plate svg .cluster rect {
+    fill: var(--cluster-fill) !important;
+    stroke: var(--plate-rule) !important;
+  }
+  /* Colour only — never the font. Mermaid measures each label with its own face and
+     sizes the box to match; swapping the family afterwards makes text outgrow the
+     box it was measured for, which is what clipped these labels the first time. */
+  .plate svg .nodeLabel,
+  .plate svg .nodeLabel p,
+  .plate svg .nodeLabel span,
+  .plate svg .cluster-label,
+  .plate svg .cluster-label p,
+  .plate svg text,
+  .plate svg tspan {
+    color: var(--node-text) !important;
+    fill: var(--node-text) !important;
+  }
+  /* Let long labels wrap rather than run past the shape. */
+  .plate svg foreignObject { overflow: visible; }
+  .plate svg foreignObject div,
+  .plate svg .nodeLabel p,
+  .plate svg .edgeLabel p {
+    white-space: normal !important;
+    overflow-wrap: break-word;
+    line-height: 1.35;
+  }
+  .plate svg .edgeLabel,
+  .plate svg .edgeLabel p,
+  .plate svg .edgeLabel span,
+  .plate svg .edgeLabel foreignObject div {
+    color: var(--muted) !important;
+    fill: var(--muted) !important;
+    background: var(--plate) !important;
+    background-color: var(--plate) !important;
+  }
+  .plate svg .edgeLabel rect,
+  .plate svg rect.background { fill: var(--plate) !important; opacity: 1 !important; }
+  .plate svg .edgePath path,
+  .plate svg path.flowchart-link,
+  .plate svg .flowchart-link { stroke: var(--line) !important; }
+  .plate svg marker path,
+  .plate svg .arrowheadPath,
+  .plate svg defs marker path { fill: var(--line) !important; stroke: var(--line) !important; }
+
+  .gloss { display: flex; flex-direction: column; gap: 0.5rem; max-width: 62ch; }
+  .gloss p { margin: 0; color: var(--muted); font-size: 0.92rem; }
+  .gloss strong { color: var(--ink); font-weight: 600; }
+
+  /* Specialist slots (DESIGN.md 3.5) — dashed amber, distinct from built machinery.
+     Mermaid may put a classDef class on the node group OR on the shape itself, so both
+     are targeted; each selector carries a class more than the generic .node rule. */
+  .plate svg .specialist rect,
+  .plate svg .specialist polygon,
+  .plate svg .specialist path,
+  .plate svg .specialist .label-container,
+  .plate svg rect.specialist,
+  .plate svg polygon.specialist,
+  .plate svg path.specialist {
+    fill: var(--spec-fill) !important;
+    stroke: var(--spec-stroke) !important;
+    stroke-width: 1.5px !important;
+    stroke-dasharray: 5 3 !important;
+  }
+  /* Text inside a slot stays the normal ink colour on that amber ground. */
+  .plate svg .specialist .nodeLabel,
+  .plate svg .specialist .nodeLabel p,
+  .plate svg .specialist text,
+  .plate svg .specialist tspan {
+    color: var(--node-text) !important;
+    fill: var(--node-text) !important;
+  }
+
+  .legend { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1.1rem; margin: 0.35rem 0 0; font-size: 0.85rem; color: var(--muted); }
+  .swatch { width: 1.6rem; height: 0.85rem; border-radius: 2px; display: inline-block; vertical-align: -1px; margin-right: 0.3rem; }
+  .swatch.built { background: var(--node-fill); border: 1.25px solid var(--node-stroke); }
+  .swatch.slot { background: var(--spec-fill); border: 1.5px dashed var(--spec-stroke); }
+  .legend-note { flex-basis: 100%; }
+
+  .tablewrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 3px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 0.6rem 0.85rem; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+  th {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 500;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.code { font-family: var(--mono); }
+  .tag { font-family: var(--mono); font-size: 0.82rem; }
+  .tag.ok { color: var(--flow); }
+  .tag.warn { color: var(--gate); }
+  .tag.bad { color: var(--refuse); }
+
+  .note {
+    border-left: 2px solid var(--flow);
+    padding: 0.1rem 0 0.1rem 1rem;
+    max-width: 62ch;
+    color: var(--muted);
+  }
+  .note strong { color: var(--ink); font-weight: 600; }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.9em;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 2px;
+    padding: 0.05em 0.3em;
+  }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    padding-top: 1rem;
+    color: var(--muted);
+    font-size: 0.85rem;
+    font-family: var(--mono);
+  }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="kicker">Multi-Agent Pipelines</div>
+    <h1>How a task becomes a pull request</h1>
+    <p class="lede">
+      Three phases joined by a work queue. You approve intent and review results;
+      everything between runs unattended, in a container that cannot reach a git host
+      and holds exactly one credential.
+    </p>
+    <p class="legend">
+      <span class="swatch built"></span> built and running today
+      <span class="swatch slot"></span> specialist slot — where a domain agent plugs in
+      <span class="legend-note">Slots 1 and 2 need no pipeline code; slot 3 is the one still to build. None of them can fail a task.</span>
+    </p>
+  </header>
+
+  <section>
+    <h2><span class="phase p-plan">Phase 1–3</span> End to end</h2>
+    <p>
+      Planning is always interactive. Implementation is always autonomous. Nothing during
+      a run can change what “done” means — the tests are frozen before the code exists.
+    </p>
+    <div class="plate">
+<pre class="mermaid">
+flowchart TB
+  A["Design doc — DESIGN.md"] --> B["Decompose into<br/>task-sized specs"]
+  B --> C["Critics, sized<br/>to difficulty"]
+  SP1["SLOT 1 — domain critic<br/>attacks the spec"] -.-> C
+  C --> D["Write acceptance tests<br/>before any code"]
+  SP2["SLOT 2 — domain test author<br/>writes the domain checks"] -.-> D
+  D --> E["Coverage check<br/>criterion ↔ test"]
+  E --> F{"You approve intent"}
+  F -->|"needs changes"| B
+  F -->|"approved"| G["Freeze — tests<br/>committed to main"]
+  G --> H[("Task list<br/>one issue per task")]
+  H --> I["Runner takes the next<br/>unblocked task, in order"]
+  I --> J["Fresh sandbox per task<br/>destroyed when it ends"]
+  J --> K["Run report<br/>+ pull requests"]
+  K --> L{"Merge, or send back"}
+  L -->|"send back"| B
+
+  classDef specialist stroke:#9a6210,stroke-width:1.5px,stroke-dasharray:5 3
+  class SP1,SP2 specialist
+</pre>
+    </div>
+    <div class="gloss">
+      <p><strong>The runner</strong> is a plain script on your PC — not an AI. It starts
+      containers, watches clocks, and can kill anything it started.</p>
+      <p><strong>Ready</strong> means a task is open, unclaimed, and everything it depends
+      on is finished. The runner works through them highest priority first, oldest first
+      within a tie, one at a time.</p>
+      <p><strong>A sandbox</strong> is a throwaway computer inside your PC. Each task gets
+      a brand new one with a fresh download of your code, and it is destroyed when the task
+      ends — so nothing leaks between tasks and killing one is always safe.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="phase p-impl">Implementation</span> Inside one task container</h2>
+    <p>
+      The phase order is scaffolding, not a decision the model makes. The verifier is the
+      only authority on whether the work is done — the agent never judges its own output,
+      and it cannot edit the tests or the verifier.
+    </p>
+    <div class="plate">
+<pre class="mermaid">
+flowchart TB
+  S(["Container starts<br/>fresh clone, task branch"]) --> C1["Code phase<br/>headless agent"]
+  C1 -->|"usage limit"| RL["exit 20 — pause<br/>no attempt used"]
+  C1 --> V{"Verifier<br/>tamper diff, tests"}
+  V -->|"frozen paths changed"| TA["exit 11 — tampered"]
+  V -->|"fail, under 3"| FB["Commit attempt<br/>feed failure forward"]
+  FB --> C1
+  V -->|"third failure"| ST["Commit WIP<br/>exit 10 — stuck"]
+  V -->|"pass"| ADV["SLOT 3 — advisors<br/>notes only, never a gate"]
+  ADV --> DP["Docs phase<br/>change summary"]
+  DP --> OK["exit 0 — verified"]
+
+  classDef specialist stroke:#9a6210,stroke-width:1.5px,stroke-dasharray:5 3
+  class ADV specialist
+</pre>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="phase p-walls">Isolation</span> Where the walls are</h2>
+    <p>
+      The container is disposable and nearly powerless: no git credentials, no package
+      registries, no route to the internet except three named Anthropic hosts through a
+      proxy. Everything durable stays on the host.
+    </p>
+    <div class="plate">
+<pre class="mermaid">
+flowchart LR
+  subgraph HOST["Host — holds every credential"]
+    R["Runner<br/>timers, budgets"]
+    GH["git push<br/>gh pr create"]
+    BD[("Beads queue")]
+  end
+  subgraph NET["pipeline-net — internal, no route out"]
+    T["Task container<br/>agent + verifier"]
+    PX["Allowlist proxy"]
+  end
+  R -->|"clone + issue.md"| T
+  T -->|"all egress"| PX
+  PX -->|"allowed"| AN["api · console · statsig<br/>.anthropic.com"]
+  PX -.->|"refused"| BL["github.com · npm<br/>everything else"]
+  T -->|"commits on host disk"| R
+  R --> GH
+  R --> BD
+</pre>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="phase p-impl">Contract</span> What each outcome does</h2>
+    <p>
+      One table, cited by the container, the runner, and the report generator — so three
+      separately built components can never disagree about what an outcome means.
+    </p>
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Outcome</th><th>Exit</th><th>Report</th><th>Queue</th><th>Branch</th><th>PR</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>Tests pass, no regressions</td><td class="code">0</td><td class="tag ok">done</td><td>closed</td><td>pushed</td><td>opened</td></tr>
+          <tr><td>Tests pass, regressions fail</td><td class="code">0</td><td class="tag warn">partial</td><td>closed</td><td>pushed</td><td>opened, flagged</td></tr>
+          <tr><td>Bailed after 3 attempts</td><td class="code">10</td><td class="tag bad">stuck</td><td>blocked</td><td>pushed, WIP</td><td>none</td></tr>
+          <tr><td>Frozen tests modified</td><td class="code">11</td><td class="tag bad">tampered</td><td>blocked</td><td>pushed, WIP</td><td>none</td></tr>
+          <tr><td>Usage limit hit</td><td class="code">20</td><td class="tag warn">paused</td><td>in progress</td><td>not yet</td><td>not yet</td></tr>
+          <tr><td>Internal error</td><td class="code">30</td><td class="tag bad">failed</td><td>blocked</td><td>if commits</td><td>none</td></tr>
+          <tr><td>Wall-clock kill</td><td class="code">—</td><td class="tag bad">failed</td><td>blocked</td><td>if commits</td><td>none</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">
+      <strong>Why <code>blocked</code> matters.</strong> It is what removes failed work from
+      the ready queue. A stuck task needs a human decision — fix the spec, fix the design,
+      or drop it — so the loop can never pick it up again and spin.
+    </p>
+  </section>
+
+  <footer>
+    Companion to DESIGN.md · diagrams also in docs/pipeline-diagram.md
+  </footer>
+</div>
