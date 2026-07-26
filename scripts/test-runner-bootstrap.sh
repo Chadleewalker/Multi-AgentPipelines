@@ -30,29 +30,33 @@ mkcfg() { printf '%s\n' "$2" > "$1"; }
 GOOD="$TMP/good.json"
 mkcfg "$GOOD" "{\"targetRepoPath\":\"$TGTW\",\"targetRepoRemote\":\"https://example.invalid/r.git\",\"image\":\"pipeline-base:local\"}"
 
+# Every runner call below is wrapped `$(set -o pipefail; ... | tee /dev/stderr)`: tee
+# streams the output to the terminal live (stderr escapes $( )) while stdout is still
+# captured for the assertions, and pipefail keeps RC as the runner's code, not tee's.
+
 # 1. Invalid configs fail fast, by name, exit 2 - before anything else happens.
 mkcfg "$TMP/missing.json" '{"targetRepoRemote":"x","image":"y"}'
-OUT=$(node runner/run.js --config "$TMP/missing.json" 2>&1); RC=$?
+OUT=$(set -o pipefail; node runner/run.js --config "$TMP/missing.json" 2>&1 | tee /dev/stderr); RC=$?
 [ "$RC" = 2 ] && echo "$OUT" | grep -q "targetRepoPath" \
   && pass "missing required field: exit 2, names the field" || fail "missing-field handling (rc=$RC)"
 
 mkcfg "$TMP/badjson.json" '{ not json'
-OUT=$(node runner/run.js --config "$TMP/badjson.json" 2>&1); RC=$?
+OUT=$(set -o pipefail; node runner/run.js --config "$TMP/badjson.json" 2>&1 | tee /dev/stderr); RC=$?
 [ "$RC" = 2 ] && echo "$OUT" | grep -qi "not valid JSON" \
   && pass "malformed config: exit 2 with a clear message" || fail "malformed-config handling (rc=$RC)"
 
-OUT=$(node runner/run.js --config "$TMP/nope.json" 2>&1); RC=$?
+OUT=$(set -o pipefail; node runner/run.js --config "$TMP/nope.json" 2>&1 | tee /dev/stderr); RC=$?
 [ "$RC" = 2 ] && echo "$OUT" | grep -qi "not found" \
   && pass "absent config: exit 2" || fail "absent-config handling (rc=$RC)"
 
 # 2. Missing image -> fail fast, runner never builds (3.4).
 mkcfg "$TMP/noimg.json" "{\"targetRepoPath\":\"$TGTW\",\"targetRepoRemote\":\"x\",\"image\":\"definitely-not-built:v0\"}"
-OUT=$(node runner/run.js --config "$TMP/noimg.json" 2>&1); RC=$?
+OUT=$(set -o pipefail; node runner/run.js --config "$TMP/noimg.json" 2>&1 | tee /dev/stderr); RC=$?
 [ "$RC" = 1 ] && echo "$OUT" | grep -q "not found" && echo "$OUT" | grep -q "PREFLIGHT FAILED" \
   && pass "missing image: preflight aborts (exit 1), no build attempted" || fail "missing-image handling (rc=$RC)"
 
 # 3. Happy path: full lifecycle - network up, egress gate, stale recovery, teardown.
-OUT=$(RUN_ID=t11-happy node runner/run.js --config "$GOOD" --dry-run 2>&1); RC=$?
+OUT=$(set -o pipefail; RUN_ID=t11-happy node runner/run.js --config "$GOOD" --dry-run 2>&1 | tee /dev/stderr); RC=$?
 [ "$RC" = 0 ] && pass "happy path: exit 0" || fail "happy path (rc=$RC): $(echo "$OUT" | tail -2)"
 echo "$OUT" | grep -q "image pipeline-base:local present" && pass "image asserted" || fail "image assert missing"
 echo "$OUT" | grep -q "network + proxy sidecar up" && pass "runner owns network/sidecar lifecycle" || fail "network not started by runner"
@@ -72,7 +76,7 @@ docker network inspect pipeline-net >/dev/null 2>&1 \
   && fail "network still up after run" || pass "network torn down at run end"
 
 # 6. Missing token -> abort before any container work.
-OUT=$(cd "$TMP" && CLAUDE_CODE_OAUTH_TOKEN= HOME="$TMP" node "$ROOT/runner/run.js" --config "$GOOD" --dry-run 2>&1) || true
+OUT=$(set -o pipefail; cd "$TMP" && CLAUDE_CODE_OAUTH_TOKEN= HOME="$TMP" node "$ROOT/runner/run.js" --config "$GOOD" --dry-run 2>&1 | tee /dev/stderr) || true
 echo "$OUT" | grep -qi "token" && pass "token presence is checked at bootstrap" || pass "token loaded from .env.pipeline"
 
 # 7. Plain JS, Node built-ins only, no WSL/timeout assumptions (s6).

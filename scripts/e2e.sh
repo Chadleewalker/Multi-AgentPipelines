@@ -67,7 +67,8 @@ run_scenario() { # run_scenario <target-issue> <stub-name> <run-id>
     cfg.agentCommand = "sh /pipeline/stubs/" + process.argv[2];
     fs.writeFileSync(process.argv[3], JSON.stringify(cfg, null, 2));
   ' "$CFG" "$stub" "$tmpcfg"
-  RUN_ID="$runid" node "$ROOT/runner/run.js" --config "$tmpcfg" 2>&1
+  # tee to stderr: streams live to the terminal, stdout still captured by the caller's $( ).
+  ( set -o pipefail; RUN_ID="$runid" node "$ROOT/runner/run.js" --config "$tmpcfg" 2>&1 | tee /dev/stderr )
 }
 
 echo "############################################################"

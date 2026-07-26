@@ -66,7 +66,9 @@ bdq update "$PROBE_ID" --status blocked >/dev/null
 EPOCH=$(( $(date +%s) + 14 ))
 mkcfg "$TMP/reset.json" "$(mkagent "$EPOCH")" 0.3 15
 T0=$(date +%s)
-OUT=$(RUN_ID=t15-reset node runner/run.js --config "$TMP/reset.json" 2>&1)
+# tee to stderr streams the run live to the terminal; stdout is still captured for the
+# assertions, and pipefail keeps the runner's exit code from being masked by tee's.
+OUT=$(set -o pipefail; RUN_ID=t15-reset node runner/run.js --config "$TMP/reset.json" 2>&1 | tee /dev/stderr)
 T1=$(date +%s)
 
 echo "$OUT" | grep -q "rate limit hit (pause 1)" && pass "rate limit detected as a pause, not a failure" || fail "pause not detected"
@@ -109,7 +111,7 @@ mkcfg "$TMP/probe.json" "$(mkagent '')" 0.5 0.03
 PROBEDIR="$TMP/probe-state"; mkdir -p "$PROBEDIR"
 # Probe stub: rate-limited on the first call, open on the second.
 export PIPELINE_PROBE_CMD="N=\$(cat $PROBEDIR/n 2>/dev/null || echo 0); N=\$((N+1)); echo \$N > $PROBEDIR/n; if [ \$N -le 1 ]; then echo 'usage limit reached'; exit 1; fi; echo ok"
-OUT=$(RUN_ID=t15-probe node runner/run.js --config "$TMP/probe.json" 2>&1)
+OUT=$(set -o pipefail; RUN_ID=t15-probe node runner/run.js --config "$TMP/probe.json" 2>&1 | tee /dev/stderr)
 unset PIPELINE_PROBE_CMD
 
 echo "$OUT" | grep -q "no reset time reported; probing every" && pass "probes when no reset time is reported" || fail "probe path not taken"

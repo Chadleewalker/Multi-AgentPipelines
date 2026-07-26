@@ -68,7 +68,12 @@ printf '{"issueId":"%s","attempts":[],"rateLimitResetAt":"%s"}\n' "$ISSUE_ID" "$
 exit 20
 EOF
 
-runq() { PIPELINE_EXEC_STUB="$1" RUN_ID="$2" node runner/run.js --config "$CFG" 2>&1; }
+# tee to stderr streams the run live to the terminal; stdout is still captured for the
+# assertions, and pipefail keeps the runner's exit code from being masked by tee's.
+# This suite in particular must never run silent: when its pause scenario regressed it
+# looped forever, and with no streamed output the only symptom was a suite that appeared
+# to hang — the relaunch spam was visible solely in a run log recovered afterwards.
+runq() { ( set -o pipefail; PIPELINE_EXEC_STUB="$1" RUN_ID="$2" node runner/run.js --config "$CFG" 2>&1 | tee /dev/stderr ); }
 st() { bdq show "$1" --json | grep '"status"' | head -1; }
 
 # 1. Ordering: priority first (0,1,3), FIFO within ties; blocked task excluded.
