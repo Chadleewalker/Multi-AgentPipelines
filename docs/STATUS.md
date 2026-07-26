@@ -374,12 +374,10 @@ before the task loop), and freezing tests weeks before the run that executes the
 suites go stale. Its acceptance tests get written in the planning session immediately
 before that run.
 
-**Ten tasks ran on 2026-07-26, all `done`** (`repo-4l8` is the tenth — verified on attempt
-1; its active time is in that run's manifest, not yet folded into the figures below). The
-first nine: `repo-qyd` 5.2, `repo-eyn` 2.6, `repo-zdm`
-3.2, `repo-4gp` 4.8, `repo-52m` 6.8, `repo-dhp` 9.1, `repo-1cy` 4.9, `repo-wxh` 5.5,
-`repo-006` 9.7 — **minutes of active container time each, 51.8 minutes summed**, longest
-single task 9.7 minutes. "Active" excludes any time parked waiting on a usage window
+**Ten tasks ran on 2026-07-26, all `done`, every one on the first attempt.** `repo-qyd`
+5.2, `repo-eyn` 2.6, `repo-zdm` 3.2, `repo-4gp` 4.8, `repo-52m` 6.8, `repo-dhp` 9.1,
+`repo-1cy` 4.9, `repo-wxh` 5.5, `repo-006` 9.7, `repo-4l8` 5.1 — **minutes of active
+container time each, 56.9 minutes summed**, longest single task 9.7 minutes. "Active" excludes any time parked waiting on a usage window
 (§4.6), and the sum is across tasks, not elapsed wall-clock for a run. These are the
 per-task numbers the scaling questions need, so quote them per task; a summed figure
 invites the reading that one task took that long. Four defects were found and fixed in the same day —
@@ -451,6 +449,19 @@ design's central bet, and it is the first day it paid out repeatedly.
 
 **Known gaps, deliberately deferred:**
 
+- **`docs/pipeline-map.html` has no guard, and that is the real difference between the two
+  diagram documents.** Both are kept, deliberately (decided 2026-07-26): they serve
+  different readers — `docs/pipeline-diagram.md` shows structure to someone about to
+  change the code, the HTML map explains the system to someone learning it. What separates
+  them is not age but maintenance. **The mermaid one has a working loop**: task docs phases
+  amend it unprompted in the same PR that changes what it draws (`repo-eyn` at 02:42,
+  `repo-4l8` at 20:13, both on 2026-07-26). The HTML map is hand-written, went stale within
+  three hours of being written, and was only caught because a review happened to look. So
+  the instinct to delete the humbler file is backwards — it is the one that keeps itself
+  honest. `CLAUDE.md`'s reading table now says which is which. If the HTML map should stop
+  being a liability, the cheap fix is a suite asserting the handful of claims in it that
+  are mechanically checkable (the agent-call count, the advisor names, the status-file
+  field list), so stale means a red sweep rather than a lucky catch.
 - **Batched tasks collide.** Every task forks from the integration branch as the run
   starts, so two tasks touching the same file produce a conflict once the first merges
   (seen with PRs #2 and #3). Options: fork from latest, or partition concurrency by
@@ -586,3 +597,12 @@ gap covered `runner/memory.js` until repo-dhp closed it by extracting
 (the frozen directories stayed put — extract, never move). Extracting the entrypoint
 coverage the same way is the obvious next one, and the `PIPELINE_AGENT_CMD` stub it needs
 must be a `.js` file run through `process.execPath` for the same EFTYPE reason.
+
+**Fourth sweep, after merging #16 (the epic filter): 20 of 20 green in 10:59.**
+`test-runner-queue` passed its full 24 assertions — it is the suite whose six greps of the
+queue-summary line `repo-4l8` rewrote, confirmed on merged `main` and not only on the task
+branch. That gap was known before the task ran: the frozen tests for `repo-4l8` cannot
+reach `run.js`'s log line at all (it sits behind `loadToken` and the Docker preflight, and
+`--dry-run` returns before the task loop), so the spec named this Docker suite as the
+thing that covers it instead of pretending a frozen test could. Checking it before merge —
+and again on `main` — is what that admission is for.
