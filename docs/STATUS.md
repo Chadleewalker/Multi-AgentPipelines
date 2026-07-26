@@ -88,6 +88,19 @@ real use. All are fixed.
    both halves of the channel are visible on the issue at review time. `collectArtifacts`
    now also copies `memory.md` (and `docs-err.txt`, per `repo-52m-note-2`), so a finished
    run still shows what the container was actually told.
+8. **The recorded model named the wrong model** (`repo-wxh`, found 2026-07-26 in run
+   `2026-07-26T16-47-15-326Z`). `envelope.js` took `Object.keys(modelUsage)[0]`, but
+   `modelUsage` enumerates *every* model the CLI billed and lists the cheap internal
+   helper first: both tasks of that run recorded `claude-haiku-4-5-20251001` while
+   `claude-opus-5` did 7897 of the 7912 output tokens. The pin was honoured throughout —
+   defect 2's *feature* worked and only its **record** lied, in the status file, the
+   manifest, the PR footer and the report, which is why nothing looked wrong. Worse,
+   `DESIGN.md` §4.3 had codified the first-key rule as a deliberate decision (change-log
+   `v1.8.3`), so the constitution agreed with the bug. Fixed at both: §4.3 now states an
+   ordered selection rule (pinned alias → sole key → greatest `outputTokens`, ties by name
+   → null), the entrypoint passes `${PIPELINE_MODEL:-}` through to `flatten`, and the
+   `2>/dev/null` on that call is gone so an alias matching nothing is visible in the run
+   log instead of silently falling back.
 
 ## Gotchas that cost real time
 
@@ -189,10 +202,10 @@ Planned from the shadow-run artifacts rather than the backlog. Snapshot:
 **`repo-52m` fixed defect 5 above at both ends.** `pipeline/envelope.js` is the single
 reader of the CLI's `--output-format json` envelope: `parse(text)` scans lines bottom-up
 and returns `{result, model}` from the first that parses to an object with a string
-`result` (`model` = the first key of `modelUsage`, else null), and
-`node envelope.js flatten <file>` rewrites a log to just its result text while printing
-the resolved model — a log with no envelope is left byte-identical and prints nothing, so
-stubs and caller-supplied commands need no special case. `status.js summary <file>` sets
+`result` (`model` selected from `modelUsage` per §4.3 — see defect 8 below; else null),
+and `node envelope.js flatten <file> [expected-alias]` rewrites a log to just its result
+text while printing the resolved model — a log with no envelope is left byte-identical and
+prints nothing, so stubs and caller-supplied commands need no special case. `status.js summary <file>` sets
 `changeSummary` from the envelope result, falling back to the raw file when there is none
 (trimmed, last 2000 chars); it is the only new writer, and `init`/`attempts`/`append`/
 `set`/`note` are untouched. The entrypoint now sends both agent phases through the JSON
@@ -206,6 +219,19 @@ Session learnings: critic panel earned its keep (Task C split in two, unverified
 subcommands caught, an unowned contract — nothing injects memory.md into the prompt —
 found and assigned); PLANNING.md step 5 amended — draft specs go to
 `docs/planning-draft-<date>.md`, never a scratchpad, so the user has one file to read.
+
+**`repo-wxh` then fixed defect 8** — the follow-on `repo-52m` left behind. `envelope.js`
+gains `chooseModel(modelUsage, alias)`, the ordered rule §4.3 now states, and `parse` takes
+an optional second argument (`parse(text)` is unchanged, so `status.js summary` and the
+frozen `repo-52m` suite are untouched — the `repo-wxh` suite shells out to that suite and
+asserts exit 0, since nothing else re-runs it). The `flatten` CLI takes an optional
+`[expected-alias]`; an empty or missing one means "no alias", which is the production
+default because `${PIPELINE_MODEL:-}` yields `""` on an unpinned run and `""` is a
+substring of every key. A supplied alias matching nothing prints a diagnostic naming the
+alias and the keys seen to **stderr** and still records the rule-3 choice — stdout stays
+the model id alone, so the entrypoint's `$(...)` capture is unaffected. `DESIGN.md` is
+amended to v1.9.1. Nothing under `runner/` changed: the manifest, report and PR footer all
+read the status file, so they were corrected by the one fix.
 
 ## What's next
 
