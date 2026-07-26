@@ -41,7 +41,9 @@ For each candidate task, draft the five spec fields (§3.1, mapping in
 - **Attempt log** — starts empty; the runner appends to it during runs.
 
 Label the task **trivial / medium / hard**, and split anything bigger than one PR the
-user can review in a few minutes (§3.2). Note dependencies between tasks.
+user can review in a few minutes (§3.2). Note dependencies between tasks. The label is
+a proposal — it appears in the approval pass (step 5) and the user may change it, since
+it decides how much critique the spec receives.
 
 ### 2. Run the critics, sized to the difficulty label
 Critic effort scales with difficulty (§3.2) — in V1 the "critics" are fresh-context
@@ -74,11 +76,17 @@ Write the drafted specs to **one reviewable file in the repo** —
 `docs/planning-draft-<YYYY-MM-DD>.md` — so the user has a single, findable thing to
 read (never a scratchpad or chat-only summary; the file is superseded by the Beads
 issues at freeze, like `docs/v1-backlog-draft.md`). The user reads the plain-English
-spec — description, constraints, acceptance criteria in "Done means" form — and says
-whether it matches what they want. Adjust until yes. For a
+spec — description, constraints, acceptance criteria in "Done means" form, and the
+difficulty label — and says whether it matches what they want. Adjust until yes. For a
 backlog decomposed from a design doc, this is a single list pass checking the slicing,
-not a re-litigation of intent (§3.3). **Nothing is frozen and nothing runs until this
-approval.**
+not a re-litigation of intent (§3.3).
+
+**Developers may go deeper (§3.3):** the plain-English criteria are the required gate,
+but the actual test files from step 3 are open for inspection — a developer who wants
+to read or challenge the tests before they freeze should; a user who prefers to approve
+the prose alone may. Claude offers, never insists.
+
+**Nothing is frozen and nothing runs until this approval.**
 
 ### 6. Freeze
 On approval, in the target repo:
@@ -94,6 +102,10 @@ On approval, in the target repo:
    -a "<acceptance>" -r "<design-ref>" [-p 0-4] [-D dep-id,dep-id] -C <target-repo>`
 3. Set priority (0 = highest; the runner drains the ready queue priority-first, FIFO
    within ties — §4.12) and dependencies (`-D` — the ready queue is blocker-aware).
+   **Priority and dependency order are the user's call** — Claude proposes an order
+   with reasons; the user decides. This, plus which issues exist and are unblocked, is
+   how the user chooses what a run works on: the runner has no picker of its own, it
+   drains the queue the user shaped (verified with `bd ready` in step 8).
 
 ### 7. Declare dependencies and rebuild the image
 If the task needs a package the image doesn't have (§3.4, §4.8 — containers cannot
