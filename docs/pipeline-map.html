@@ -285,6 +285,37 @@
   }
   .steps b { color: var(--ink); font-weight: 600; }
 
+  /* Skill breakdown cards — the two setup skills, step by step. */
+  .skillcards { display: grid; grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr)); gap: 1rem; }
+  .skillcard {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 1rem 1.1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+  .skillcard h3 {
+    font-family: var(--mono);
+    font-size: 0.85rem;
+    font-weight: 600;
+    margin: 0;
+    color: var(--ink);
+  }
+  .skillcard h3 .runs {
+    display: block;
+    font-weight: 500;
+    font-size: 0.7rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--human-stroke);
+    margin-top: 0.2rem;
+  }
+  .skillcard ol { margin: 0; padding-left: 1.2rem; display: flex; flex-direction: column; gap: 0.35rem; }
+  .skillcard li { font-size: 0.88rem; color: var(--muted); }
+  .skillcard li b { color: var(--ink); font-weight: 600; }
+
   /* Specialist slots (DESIGN.md 3.5) — dashed amber, distinct from built machinery.
      Mermaid may put a classDef class on the node group OR on the shape itself, so both
      are targeted; each selector carries a class more than the generic .node rule. */
@@ -561,15 +592,53 @@ flowchart LR
       touched again is a new dependency, baked into the image during that planning
       session.</span></li>
     </ol>
+    <div class="skillcards">
+      <div class="skillcard">
+        <h3>scaffold — create a project
+          <span class="runs">interactive · once, at the start</span></h3>
+        <ol>
+          <li><b>What do you want to build?</b> — described in plain English.</li>
+          <li><b>Spec approved first</b> — a "what it should do" list and a concrete
+          "done means" checklist, agreed before anything is built.</li>
+          <li><b>Language &amp; main technologies discussed</b> — options with
+          tradeoffs and a recommendation; the developer decides. Small tooling
+          choices stay Claude's.</li>
+          <li><b>Project written</b> — from the matching template: the rules file
+          (loads the master rules in every future session), spec, README, starter
+          code.</li>
+          <li><b>Git initialized, dependencies installed</b>, and the approved spec
+          built out.</li>
+          <li><b>Offers pipeline onboarding</b> — "will the overnight pipeline work
+          on this?" folds the next skill into the same sitting.</li>
+        </ol>
+      </div>
+      <div class="skillcard">
+        <h3>pipeline-onboard — make it a target
+          <span class="runs">interactive · once per project, ever</span></h3>
+        <ol>
+          <li><b>GitHub remote</b> verified or created; the project's real
+          integration branch recorded, never assumed; line-ending rules added.</li>
+          <li><b>Frozen-test home</b> — <code>tests/acceptance/</code> created with
+          the freeze rules stated.</li>
+          <li><b>Pipeline config written</b> — how to run this project's tests, its
+          branch, its frozen paths, its declared dependencies.</li>
+          <li><b>Sandbox image built</b> — a thin Docker layer on the pinned base,
+          holding exactly the declared dependencies.</li>
+          <li><b>Task database initialized</b> — the durable queue the runner
+          drains.</li>
+          <li><b>Project rules rewritten for containers</b> — an agent waking up
+          inside a sandbox learns where it is and what it must never touch; format
+          hooks removed (they fight the closed network).</li>
+          <li><b>Sanity pass</b> — everything committed and pushed, image present,
+          queue answering. The checklist lives in <code>ONBOARDING.md</code>; the
+          skill follows it, so there is one source of truth.</li>
+        </ol>
+      </div>
+    </div>
     <div class="gloss">
       <p><strong>The skills are interactive</strong> — you and Claude together, which is
       why they wear the same indigo as your decision points. Nothing the harness does
       runs unattended.</p>
-      <p><strong>Onboarding happens once per project</strong>: the GitHub remote, the
-      real integration branch recorded (never assumed), line-ending rules, the
-      frozen-test home, the config, the image, the task database — and a rewrite of the
-      project's own instructions, so an agent waking up inside a container knows exactly
-      where it is and what it must never touch.</p>
       <p><strong>After onboarding</strong>, every visit starts at PLANNING.md: specs
       drafted, tests frozen, your approval — then the runner takes over and the rest of
       this page applies.</p>
