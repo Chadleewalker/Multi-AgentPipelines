@@ -120,6 +120,11 @@ Copy this section in (adjust nothing but the project name):
   meaningful boundary; the host pushes your branch after the container exits.
 - Insights worth keeping across tasks go in the status file's memory notes as the run
   scaffolding instructs — never in ad-hoc memory files.
+- If you conclude the frozen spec or its tests are themselves wrong, say so with
+  `node /pipeline/status.js concern "<what is wrong and why>"` (§3.7). That is a
+  first-class result, not a failure — but it is evidence only: it cannot change your
+  outcome, so keep doing the best work the spec allows rather than contorting correct
+  code to satisfy a gate you believe is broken.
 ```
 
 ### 7. Knowledge the container will need (§4.8)
