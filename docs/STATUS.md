@@ -117,7 +117,10 @@ terminal outcomes `done|partial|failed|stuck`: never `tampered` (an agent that f
 trust check does not seed project memory) and never `paused` (not terminal). It never
 throws and returns `{filed, errors}`; bd failures are logged and the outcome is untouched,
 the same posture as `docsPhaseError`. `queue.attemptNotes` adds a `memory notes: <n>` line
-so the §3.6 promotion rule has something to act on at review time.
+so the §3.6 promotion rule has something to act on at review time. `DESIGN.md` is amended
+to v1.8.2: the outcome gate and the host-side re-enforcement of the schema bounds are
+decisions about *who may seed project memory* and *how far the host trusts an
+agent-written file*, so they now live in §3.6 rather than only in code comments.
 
 Session learnings: critic panel earned its keep (Task C split in two, unverified `bd`
 subcommands caught, an unowned contract — nothing injects memory.md into the prompt —
@@ -177,3 +180,9 @@ Run individually, never concurrently. Each drives real Docker.
 | `scripts/test-report.sh` | manifest schema, scrutiny ordering, idempotency |
 | `scripts/test-isolation.sh` | no push, read-only scaffolding, no egress, one credential |
 | `scripts/test-fixture.sh` | the fixture repo is a valid pipeline target |
+
+**Gap worth knowing:** `runner/memory.js` (both §3.6 channels) has no
+`scripts/test-runner-*.sh` suite — its coverage lives in the Docker-free acceptance tests
+at `tests/acceptance/repo-eyn/` and `tests/acceptance/repo-4gp/`, which drive it through
+the `PIPELINE_BD_CMD` stub seam. Fold it into a `test-runner-memory.sh` if the module
+grows past the two entry points.
