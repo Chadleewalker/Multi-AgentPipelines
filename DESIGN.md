@@ -25,8 +25,13 @@ needs. The user's time goes into two high-leverage moments — approving intent 
 reviewing results after — and nothing in between.
 
 The pipeline's own code (runner, image, entrypoint, verifier, playbook, schemas) lives in
-**this repository** (`Multi-AgentPipelines`). Target projects are separate repositories the
-pipeline operates on.
+**this repository** (`Multi-AgentPipelines`). Target projects are normally separate
+repositories the pipeline operates on — with one sanctioned exception: this repository is
+itself onboarded as a target (dogfooding), so pipeline development tasks can run through
+the pipeline. Safe because each task works on a fresh clone of the remote in a temp
+directory, never the live checkout. Constraint: task containers cannot run Docker, so
+acceptance tests for self-tasks must be plain Node/shell checks; work only the Docker
+suites can verify stays interactive.
 
 ## 2. The Three Phases
 
@@ -560,3 +565,4 @@ development starts only after.
 | 2026-07-25 | v1.3: added §3.6 memory — Beads is the memory store as well as the task queue (`bd remember`/`bd prime`, verified against bd 1.1.0 in the base image; no second database); knowledge hierarchy with repo files canonical for anything a container needs; container agents propose memories via a `memoryNotes` status-file field and read them via a runner-exported read-only `.run/memory.md`; host runner stays the sole Beads writer; promotion ladder from memory notes into repo files; plumbing ships with the shadow trial, not the V1 E2E pass. Touched §4.10 (input contract + sole-writer rule), §4.11 (status file), §9 (bd assumption) | User decision after the memory-design discussion: follow the upstream Beads convention (one database, memory beside tasks) with the pipeline's stricter access rule layered on top, instead of inventing a second store |
 | 2026-07-25 | v1.3.1: `PLANNING.md` brought in line with v1.2/v1.0.2 — freeze step, pre-run checklist, and spec-change section now say integration branch (`defaultBranch`) instead of hardcoded `main`, freeze scope mentions `frozenPaths`, and the prerequisites list the full `pipeline.config.json` schema | Drift fix via the change protocol: the playbook still described the pre-v1.2 contract and would have frozen Hallertau's tests against the wrong branch |
 | 2026-07-25 | v1.3.2: added `ONBOARDING.md` — the once-per-project checklist (git/GitHub + `defaultBranch`, `.gitattributes`, `tests/acceptance/`, `pipeline.config.json`, thin Dockerfile + image build, `bd init`, `CLAUDE.md` rewrite with the container section replacing yolo_docker guidance, hooks removed, vendored docs, `run.config.<project>.json`, sanity pass). `PLANNING.md` prerequisites now point at it. The harness gains a `/harness-pipeline:pipeline-onboard` skill that follows this file | Onboarding Hallertau took an evening of hand-work and one outright breakage (`master` vs `main`); the checklist makes it a repeatable step. Convention decided here: pipeline projects drop format hooks (they fight the closed network) and their `CLAUDE.md` must describe the pipeline container, not yolo_docker |
+| 2026-07-25 | v1.4: this repository onboarded as its own target (§1 amended — dogfooding sanctioned). Full ONBOARDING.md checklist applied: `pipeline.config.json` (Docker-free `verifyCommand`, empty dependencies), `tests/acceptance/`, thin Dockerfile + `pipeline-multiagentpipelines:local`, `bd init` (prefix `repo`), container section in `CLAUDE.md`, `run.config.multiagentpipelines.json`. Constraint recorded: acceptance tests for self-tasks may not use Docker; `bd init`'s SessionStart hook removed (no host `bd`; pipeline projects carry no hooks) | User decision: the pipeline's own backlog (e.g. the §3.6 memory plumbing) becomes shadow-trial material — real tasks, graded each morning |

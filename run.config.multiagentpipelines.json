@@ -1,0 +1,12 @@
+{
+  "targetRepoPath": "C:/Code/Projects/Multi-AgentPipelines",
+  "targetRepoRemote": "https://github.com/Chadleewalker/Multi-AgentPipelines.git",
+  "image": "pipeline-multiagentpipelines:local",
+  "network": "pipeline-net",
+  "proxyName": "pipeline-proxy",
+  "proxyPort": 3128,
+  "wallClockMinutes": 60,
+  "probeIntervalMinutes": 15,
+  "agentCommand": null,
+  "model": "opus"
+}
