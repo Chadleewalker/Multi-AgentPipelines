@@ -14,6 +14,8 @@
 //                                          raw text; trimmed, tail 2000)
 //   node status.js note <text>             propose one memory note (§3.6 out-channel;
 //                                          append-only, head 500, silently capped at 20)
+//   node status.js concern <text>          report that the frozen spec is itself wrong
+//                                          (§3.7; append-only, head 1000, capped at 5)
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -84,7 +86,23 @@ switch (cmd) {
     if (o.memoryNotes.length < 20) { o.memoryNotes.push(text.slice(0, 500)); save(o); }
     break;
   }
+  case 'concern': {
+    // "The spec is wrong" is a first-class result (§3.3), so §3.7 gives it a channel the
+    // agent can reach without changing what it is judged on. Evidence only (§3.5): the
+    // host surfaces these at review time, where changing a spec is legal — a concern can
+    // never move an outcome, which is what keeps the attempt cap meaningful. Same
+    // mechanism as `note`, deliberately different bounds: a concern is rarer than an
+    // insight and needs more room to be actionable.
+    const text = (args[0] || '').trim();
+    if (!text) { console.error('usage: status.js concern <text>'); process.exit(2); }
+    if (!fs.existsSync(FILE)) { console.error(`status.js: ${FILE} missing (init first)`); process.exit(2); }
+    const o = load();
+    if (!Array.isArray(o.specConcerns)) o.specConcerns = [];
+    // Head, like `note`: a concern leads with what is wrong.
+    if (o.specConcerns.length < 5) { o.specConcerns.push(text.slice(0, 1000)); save(o); }
+    break;
+  }
   default:
-    console.error('usage: status.js init|attempts|append|set|summary|note');
+    console.error('usage: status.js init|attempts|append|set|summary|note|concern');
     process.exit(2);
 }

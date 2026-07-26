@@ -61,6 +61,12 @@
       "maxItems": 20,
       "items": { "type": "string", "maxLength": 500 }
     },
+    "specConcerns": {
+      "description": "The coding or docs agent reporting that the frozen spec is itself the problem (DESIGN.md 3.7; 3.3 - drift flows upward). Appended with 'status.js concern'; after container exit the host surfaces them where review already looks. Evidence only, never a gate (3.5): nothing here can change an outcome, an exit code, or whether a branch is published.",
+      "type": "array",
+      "maxItems": 5,
+      "items": { "type": "string", "maxLength": 1000 }
+    },
     "advisories": {
       "description": "Domain-specialist notes (DESIGN.md 3.5, slot 3). Recorded evidence for the PR body and run report - NEVER a gate; nothing here can change the exit code. Empty/absent in V1, which builds no advisors.",
       "type": "array",
