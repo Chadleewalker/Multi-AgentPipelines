@@ -36,7 +36,7 @@ ck "step: manual image rebuild"      "manual step"
 ck "five fields listed"              "Attempt log"
 ck "design-ref mandatory"            "design-ref.*[Mm]andatory"
 ck "acceptance test home"            "tests/acceptance/<issue-id>/"
-ck "freeze = fork-point diff"        "git merge-base main"
+ck "freeze = fork-point diff"        "git merge-base <defaultBranch>"
 ck "tamper scope: whole tree"        "all of .tests/acceptance/"
 
 # s3.4 conventions stated correctly.
