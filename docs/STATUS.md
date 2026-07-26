@@ -75,6 +75,11 @@ real use. All are fixed.
   `/repo` produces `repo-xxx` ids. Mount at a meaningful path (`/fix`, `/hal`) when
   running `bd init`.
 - **`node --test <dir>/` is broken on Node 22+** (MODULE_NOT_FOUND). Always pass the file.
+- **`PIPELINE_BD_CMD` stubs the whole bd layer.** Set it and `runner/bd.js` spawns that
+  executable directly with the bare bd argument vector — no `-C` prefix, no host-`bd`
+  probe, no Docker fallback — which is how the Docker-free acceptance tests exercise
+  `runner/memory.js`. It takes absolute precedence over every other path in `bd()`, so
+  **production must never set it**; it is the sibling of `PIPELINE_AGENT_CMD` (§4.3).
 - **Test suites share one Docker network.** Run them one at a time; concurrent runs tear
   `pipeline-net` down under each other and produce meaningless failures.
 - **Watch what else is using a port before killing it.** A `node server.js` on :3000 was
@@ -91,8 +96,8 @@ design until implemented). Snapshot: `docs/planning-draft-2026-07-25.md`.
 |---|---|---|---|
 | `repo-qyd` | advisor registry + ambiguity/testability/scope charters (§3.5) | 1 | **Done** — `advisors/` (README + 3 planning-critic charters) |
 | `repo-zdm` | container-side memory: `memoryNotes` + `status.js note` + prompt (§3.6) | 2 | **Done** — see below |
-| `repo-eyn` | runner memory export: `.run/memory.md` + `PIPELINE_BD_CMD` seam (§3.6) | 2 | |
-| `repo-4gp` | runner memory filing: `bd remember` after exit (§3.6) | 3 | blocked on `repo-eyn`; **run in a later batch** — both edit `runner/memory.js` |
+| `repo-eyn` | runner memory export: `.run/memory.md` + `PIPELINE_BD_CMD` seam (§3.6) | 2 | **Done** — `runner/memory.js`, called from `workspace.prepare()` |
+| `repo-4gp` | runner memory filing: `bd remember` after exit (§3.6) | 3 | unblocked now `repo-eyn` has landed; **run in a later batch** — both edit `runner/memory.js` |
 
 **`repo-zdm` shipped the container-side half of §3.6.** `status.schema.json` now carries
 an optional `memoryNotes` array (max 20 entries, 500 chars each, inline like
@@ -112,9 +117,12 @@ found and assigned); PLANNING.md step 5 amended — draft specs go to
 
 **Recommended order:**
 
-1. **Run the dogfood queue** (`node runner/run.js --config run.config.multiagentpipelines.json`):
-   `repo-qyd` is done; `repo-zdm` and `repo-eyn` next, and queue `repo-4gp` only after
-   `repo-eyn`'s PR is merged.
+1. **Finish the dogfood queue** (`node runner/run.js --config run.config.multiagentpipelines.json`):
+   `repo-qyd`, `repo-zdm`, and `repo-eyn` are done and merged; only `repo-4gp` remains,
+   unblocked now that `repo-eyn` has landed. The §3.6 memory In channel is fully wired
+   (the runner exports `.run/memory.md`, the entrypoint injects it into the prompt);
+   the Out channel stops at the status file until `repo-4gp` files notes via
+   `bd remember`.
 2. **More shadow runs.** Three is a small sample. The numbers that matter for scaling are
    per-task active time, spec-defect rate, and how often tasks collide on shared files.
 3. **V2 — the spec pipeline** (`DESIGN.md` §3.2, §3.5): package the critic panel, the
