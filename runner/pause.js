@@ -40,16 +40,25 @@ function waitPlan(status, cfg, now) {
   return { kind: 'probe', ms: cfg.probeIntervalMinutes * MINUTE };
 }
 
-// Park until the window reopens. Returns {resumed:true} or {resumed:false, reason}
+// Park until the window reopens. Returns {resumed:true, pauses} or {resumed:false, reason}
 // when a stop condition fires (deadline exceeded / operator stop).
+//
+// The cap counts wait cycles for the WHOLE task, not for one call: on the reset-time path
+// this returns after a single cycle, so the caller re-enters it once per relaunch and must
+// hand back the cycles already spent via opts.spentCycles. Without that the counter
+// restarts at 1 every pause and the stop condition can never fire — a container that keeps
+// reporting a stale or already-elapsed reset time would relaunch forever.
 async function waitForWindow(cfg, status, log, traceId, opts = {}) {
   const token = opts.token;
   const sleepFn = opts.sleepFn || sleep;
   const probe = opts.probeFn || probeHost;
   const now = opts.now || Date.now;
   const maxPauses = opts.maxPauses === undefined ? 96 : opts.maxPauses; // ~24h at 15m
+  const spent = opts.spentCycles || 0;
 
-  for (let i = 1; i <= maxPauses; i++) {
+  if (spent >= maxPauses) return { resumed: false, reason: `still rate-limited after ${spent} pause cycles` };
+
+  for (let i = spent + 1; i <= maxPauses; i++) {
     const plan = waitPlan(status, cfg, now());
     if (plan.kind === 'reset-time') {
       log.info(traceId, `paused: waiting until reported reset ${plan.until} (${Math.round(plan.ms / MINUTE)}m)`);
