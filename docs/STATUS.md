@@ -54,7 +54,9 @@ real use. All are fixed.
 2. **The model was unpinned** — every container took whatever the account default was, so
    runs were not reproducible and quality could drift silently. Now `model: "opus"`, an
    alias resolved at call time, with the **resolved** id recorded in the status file,
-   manifest, report, and PR footer.
+   manifest, report, and PR footer. The pin itself has always held; the *record* took two
+   further defects to get right — see 5 (never written at all) and 8 (written, but naming
+   the wrong model).
 3. **A container artifact leaked into a PR** — the `node_modules` symlink the tools create
    inside the container. `.gitignore` matched the directory but not a symlink.
 4. **A self-nesting acceptance test** shaped the implementation badly (see above).
@@ -64,7 +66,8 @@ real use. All are fixed.
    warning, and the code phase's whole-file `JSON.parse` failed silently, meaning defect 2's
    resolved model id was in fact never recorded. Fixed at both ends: `pipeline/envelope.js`
    extracts the envelope bottom-up, and the entrypoint seeds the workspace trust flags so
-   the warning is not emitted in the first place.
+   the warning is not emitted in the first place. (The id it then started recording was
+   still the wrong one — defect 8.)
 6. **The pause loop had no working bound** (found 2026-07-26 by the full-suite re-run, not
    by a run). `pause.js` capped wait cycles at 96, but `run.js` re-entered `waitForWindow`
    fresh on every pause, so the counter restarted at 1 each time and the stop condition
@@ -344,6 +347,12 @@ hook, and 10 minutes is cheap enough that a named ritual may be sufficient.
 at `tests/acceptance/repo-eyn/` and `tests/acceptance/repo-4gp/`, which drive it through
 the `PIPELINE_BD_CMD` stub seam. Fold it into a `test-runner-memory.sh` if the module
 grows past the two entry points. The same is true of `pipeline/envelope.js` and
-`status.js summary`: their coverage is `tests/acceptance/repo-52m/`, which drives the
-whole entrypoint with a `PIPELINE_AGENT_CMD` stub and a stub `verify.js` (never the real
-verifier — that would self-nest, the shadow-01 lesson).
+`status.js summary`: their coverage is `tests/acceptance/repo-52m/` and
+`tests/acceptance/repo-wxh/`, which drive the whole entrypoint with a `PIPELINE_AGENT_CMD`
+stub and a stub `verify.js` (never the real verifier — that would self-nest, the
+shadow-01 lesson). Note the seam between those two: a verifier run covers only the task's
+own directory, so `repo-wxh`'s suite shells out to `node tests/acceptance/repo-52m/test.js`
+and asserts exit 0. That is the only thing standing between a change to `envelope.js` and
+a silent regression in the one-argument `parse(text)` that `status.js summary` depends on
+— `scripts/test-entrypoint.sh` needs Docker, which the container cannot run. A later task
+touching this module should chain the same way.
