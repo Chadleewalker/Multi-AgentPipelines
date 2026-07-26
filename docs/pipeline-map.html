@@ -285,6 +285,37 @@
   }
   .steps b { color: var(--ink); font-weight: 600; }
 
+  /* Skill breakdown cards — the two setup skills, step by step. */
+  .skillcards { display: grid; grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr)); gap: 1rem; }
+  .skillcard {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 1rem 1.1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+  .skillcard h3 {
+    font-family: var(--mono);
+    font-size: 0.85rem;
+    font-weight: 600;
+    margin: 0;
+    color: var(--ink);
+  }
+  .skillcard h3 .runs {
+    display: block;
+    font-weight: 500;
+    font-size: 0.7rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--human-stroke);
+    margin-top: 0.2rem;
+  }
+  .skillcard ol { margin: 0; padding-left: 1.2rem; display: flex; flex-direction: column; gap: 0.35rem; }
+  .skillcard li { font-size: 0.88rem; color: var(--muted); }
+  .skillcard li b { color: var(--ink); font-weight: 600; }
+
   /* Specialist slots (DESIGN.md 3.5) — dashed amber, distinct from built machinery.
      Mermaid may put a classDef class on the node group OR on the shape itself, so both
      are targeted; each selector carries a class more than the generic .node rule. */
@@ -357,6 +388,14 @@
     fill: var(--spec-fill) !important; stroke: var(--spec-stroke) !important;
     stroke-width: 1.5px !important; stroke-dasharray: 5 3 !important;
   }
+  .plate svg .cont rect, .plate svg .cont polygon, .plate svg .cont path,
+  .plate svg .cont .label-container, .plate svg rect.cont {
+    fill: var(--script-fill) !important; stroke: var(--script-stroke) !important;
+    stroke-width: 1.5px !important;
+  }
+  .plate svg .cont .nodeLabel, .plate svg .cont text, .plate svg .cont tspan {
+    color: var(--node-text) !important; fill: var(--node-text) !important;
+  }
   .plate svg .agent .nodeLabel, .plate svg .script .nodeLabel, .plate svg .human .nodeLabel,
   .plate svg .store .nodeLabel, .plate svg .external .nodeLabel, .plate svg .slot .nodeLabel,
   .plate svg .agent text, .plate svg .script text, .plate svg .human text,
@@ -372,6 +411,7 @@
   .key .sw.human { background: var(--human-fill); border: 2px solid var(--human-stroke); }
   .key .sw.store { background: var(--store-fill); border: 1.25px solid var(--store-stroke); border-radius: 8px; }
   .key .sw.slot { background: var(--spec-fill); border: 1.5px dashed var(--spec-stroke); }
+  .key .sw.cont { background: var(--script-fill); border: 1.5px solid var(--script-stroke); border-left-width: 4px; border-right-width: 4px; }
   .key .sw.external { background: var(--ext-fill); border: 1.25px dotted var(--ext-stroke); }
   .key b { color: var(--ink); font-weight: 600; font-size: 0.88rem; }
 
@@ -455,6 +495,7 @@
       <li><span class="sw human"></span><span><b>You</b> — a decision only you make. Diamonds are decision points.</span></li>
       <li><span class="sw store"></span><span><b>Data</b> — the task list. Cylinders are stored state, not steps.</span></li>
       <li><span class="sw slot"></span><span><b>Specialist slot</b> — where a domain agent plugs in. Dashed = not built yet.</span></li>
+      <li><span class="sw cont"></span><span><b>Container</b> — a disposable sandbox (double-edged box), one task each. One at a time today; the dashed extras arrive with the V2 concurrency knob.</span></li>
       <li><span class="sw external"></span><span><b>Outside your machine</b> — beyond the sandbox wall.</span></li>
       <li><span class="sw blocked"></span><span><b>Refused</b> — the proxy turns it away. An <b>—✕</b> arrow means blocked; a dotted arrow means read-only.</span></li>
     </ul>
@@ -490,7 +531,7 @@
         </thead>
         <tbody>
           <tr><td>V1 — the implementation loop</td><td><span class="tag ok">built &amp; proven</span></td><td>Runner, sandbox, verifier, report — proven by a scripted end-to-end pass (success, bail, and tamper scenarios) plus first real runs on a live project</td></tr>
-          <tr><td>Shadow trial</td><td><span class="tag warn">current phase</span></td><td>Real tasks, graded against a developer's own judgment each morning, before the pipeline gets real responsibility</td></tr>
+          <tr><td>Shadow trial</td><td><span class="tag warn">current phase</span></td><td>Real tasks, graded against a developer's own judgment after each run, before the pipeline gets real responsibility</td></tr>
           <tr><td>V2</td><td><span class="tag">planned</span></td><td>The planning session as a packaged skill, domain-specialist critics, an opt-in parallel-task knob</td></tr>
           <tr><td>V3</td><td><span class="tag">planned</span></td><td>Port to the office environment (network-share repos, local review mode)</td></tr>
         </tbody>
@@ -543,7 +584,7 @@ flowchart LR
   class CFG,FRZ,CLM,TL store
 </pre>
     </div>
-    <p>A brand-new project reaches its first overnight run in four stages — the first
+    <p>A brand-new project reaches its first autonomous run in four stages — the first
     three happen once, ever; the fourth is the rest of the project's life:</p>
     <ol class="steps">
       <li><span><b>Create it</b> — the scaffold skill. You and Claude discuss the
@@ -557,23 +598,105 @@ flowchart LR
       GitHub remote, integration branch recorded, frozen-test home, config, image, task
       database, container-aware instructions. Like wiring a house — done once.</span></li>
       <li><span><b>Plan and run, forever</b> — every future feature is a PLANNING.md
-      session and an overnight run. Never a re-onboarding; the one time the plumbing is
+      session and an autonomous run. Never a re-onboarding; the one time the plumbing is
       touched again is a new dependency, baked into the image during that planning
       session.</span></li>
     </ol>
+    <div class="skillcards">
+      <div class="skillcard">
+        <h3>scaffold — create a project
+          <span class="runs">interactive · once, at the start</span></h3>
+        <ol>
+          <li><b>What do you want to build?</b> — described in plain English.</li>
+          <li><b>Spec approved first</b> — a "what it should do" list and a concrete
+          "done means" checklist, agreed before anything is built.</li>
+          <li><b>Language &amp; main technologies discussed</b> — options with
+          tradeoffs and a recommendation; the developer decides. Small tooling
+          choices stay Claude's.</li>
+          <li><b>Project written</b> — from the matching template: the rules file
+          (loads the master rules in every future session), spec, README, starter
+          code.</li>
+          <li><b>Git initialized, dependencies installed</b>, and the approved spec
+          built out.</li>
+          <li><b>Offers pipeline onboarding</b> — "will the pipeline work
+          on this?" folds the next skill into the same sitting.</li>
+        </ol>
+      </div>
+      <div class="skillcard">
+        <h3>pipeline-onboard — make it a target
+          <span class="runs">interactive · once per project, ever</span></h3>
+        <ol>
+          <li><b>GitHub remote</b> verified or created; the project's real
+          integration branch recorded, never assumed; line-ending rules added.</li>
+          <li><b>Frozen-test home</b> — <code>tests/acceptance/</code> created with
+          the freeze rules stated.</li>
+          <li><b>Pipeline config written</b> — how to run this project's tests, its
+          branch, its frozen paths, its declared dependencies.</li>
+          <li><b>Sandbox image built</b> — a thin Docker layer on the pinned base,
+          holding exactly the declared dependencies.</li>
+          <li><b>Task database initialized</b> — the durable queue the runner
+          drains.</li>
+          <li><b>Project rules rewritten for containers</b> — an agent waking up
+          inside a sandbox learns where it is and what it must never touch; format
+          hooks removed (they fight the closed network).</li>
+          <li><b>Sanity pass</b> — everything committed and pushed, image present,
+          queue answering. The checklist lives in <code>ONBOARDING.md</code>; the
+          skill follows it, so there is one source of truth.</li>
+        </ol>
+      </div>
+    </div>
     <div class="gloss">
       <p><strong>The skills are interactive</strong> — you and Claude together, which is
       why they wear the same indigo as your decision points. Nothing the harness does
       runs unattended.</p>
-      <p><strong>Onboarding happens once per project</strong>: the GitHub remote, the
-      real integration branch recorded (never assumed), line-ending rules, the
-      frozen-test home, the config, the image, the task database — and a rewrite of the
-      project's own instructions, so an agent waking up inside a container knows exactly
-      where it is and what it must never touch.</p>
+      <p><strong>"Spec approved first" means Claude drafts, the human approves.</strong>
+      From your plain-English description, Claude writes a "what it should do" list and
+      a "done means" checklist of concrete, checkable outcomes ("saving a game and
+      reloading keeps it" — never "works well"). You edit it until it matches what you
+      want; nothing is built before your yes, because a misunderstanding costs one
+      sentence to fix at the draft and an evening to fix in code. The approved spec is
+      saved into the project and later work is reviewed against it.</p>
+      <p><strong>The same habit scales up.</strong> The scaffold's spec is the
+      lightweight form — a checklist a human verifies by hand. The pipeline's planning
+      session is the industrial form of the identical moment: Claude drafts, the
+      developer approves intent, and the checklist becomes frozen tests a script
+      verifies automatically. Moving a project onto the pipeline upgrades the spec, not
+      the way of thinking.</p>
       <p><strong>After onboarding</strong>, every visit starts at PLANNING.md: specs
       drafted, tests frozen, your approval — then the runner takes over and the rest of
       this page applies.</p>
     </div>
+  </section>
+
+  <section>
+    <h2><span class="phase p-harness">Governance</span> Who decides what</h2>
+    <p>
+      The whole division of labor in one place. Claude proposes; humans hold every
+      high-level call — except the last row, which belongs to no one on purpose.
+    </p>
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th>Decision</th><th>Claude's part</th><th>The call belongs to</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Language &amp; main technologies</td><td>Options + a recommendation</td><td><b>The developer</b></td></tr>
+          <tr><td>What "done" means (the spec)</td><td>Drafts it</td><td><b>The developer</b> — the approval gate</td></tr>
+          <tr><td>Difficulty label</td><td>Proposes</td><td><b>The developer</b> — it sizes the critics</td></tr>
+          <tr><td>Acceptance tests</td><td>Writes them, before any code</td><td><b>Claude</b> — developer may inspect before freeze</td></tr>
+          <tr><td>Priority &amp; dependencies</td><td>Proposes an order, with reasons</td><td><b>The developer</b> — this shapes the queue a run drains</td></tr>
+          <tr><td>Implementation, during a run</td><td>All of it</td><td><b>Claude alone</b>, steered by the frozen tests</td></tr>
+          <tr><td>Pass / fail</td><td>—</td><td><b>Nobody</b> — the frozen verifier's exit code</td></tr>
+          <tr><td>Merge, or send back</td><td>Assembles the PR and its evidence</td><td><b>The developer</b></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">
+      <strong>The empty cell is the design.</strong> Neither the agent that wrote the
+      code nor anyone reading its claims decides whether a task passed — a deterministic
+      script does, against tests frozen before the code existed. Everything trustworthy
+      about the autonomous phase traces back to that row.
+    </p>
   </section>
 
   <section>
@@ -595,9 +718,13 @@ flowchart TB
   F -->|"needs changes"| B
   F -->|"approved"| G["Freeze the tests on the main branch"]
   G --> H[("Task list, one issue per task")]
-  H --> I["Runner takes the next task, in order"]
-  I --> J["Fresh sandbox per task, then destroyed"]
-  J --> K["Run report and pull requests"]
+  H --> I["Runner takes ready tasks, in priority order"]
+  I -->|"today: one at a time"| J1[["Container — task A: fresh clone, then destroyed"]]
+  I -.->|"V2 knob"| J2[["Container — task B"]]
+  I -.-> J3[["⋯ up to N at once, default 1"]]
+  J1 --> K["Run report and pull requests"]
+  J2 -.-> K
+  J3 -.-> K
   K --> L{"You merge, or send back"}
   L -->|"send back"| B
 
@@ -606,10 +733,13 @@ flowchart TB
   classDef human stroke-width:2px
   classDef slot stroke-dasharray:5 3,stroke-width:1.5px
   classDef store stroke-width:1.25px
+  classDef cont stroke-width:1.5px
   class B,C,D,E agent
-  class G,I,J,K script
+  class G,I,K script
   class F,L human
   class SP1,SP2 slot
+  class J2,J3 slot
+  class J1 cont
   class H store
   class A human
 </pre>
@@ -633,37 +763,6 @@ flowchart TB
   </section>
 
   <section>
-    <h2><span class="phase p-harness">Governance</span> Who decides what</h2>
-    <p>
-      The whole division of labor in one place. Claude proposes; humans hold every
-      high-level call — except the last row, which belongs to no one on purpose.
-    </p>
-    <div class="tablewrap">
-      <table>
-        <thead>
-          <tr><th>Decision</th><th>Claude's part</th><th>The call belongs to</th></tr>
-        </thead>
-        <tbody>
-          <tr><td>Language &amp; main technologies</td><td>Options + a recommendation</td><td><b>The developer</b></td></tr>
-          <tr><td>What "done" means (the spec)</td><td>Drafts it</td><td><b>The developer</b> — the approval gate</td></tr>
-          <tr><td>Difficulty label</td><td>Proposes</td><td><b>The developer</b> — it sizes the critics</td></tr>
-          <tr><td>Acceptance tests</td><td>Writes them, before any code</td><td><b>Claude</b> — developer may inspect before freeze</td></tr>
-          <tr><td>Priority &amp; dependencies</td><td>Proposes an order, with reasons</td><td><b>The developer</b> — this shapes the queue a run drains</td></tr>
-          <tr><td>Implementation, overnight</td><td>All of it</td><td><b>Claude alone</b>, steered by the frozen tests</td></tr>
-          <tr><td>Pass / fail</td><td>—</td><td><b>Nobody</b> — the frozen verifier's exit code</td></tr>
-          <tr><td>Merge, or send back</td><td>Assembles the PR and its evidence</td><td><b>The developer</b></td></tr>
-        </tbody>
-      </table>
-    </div>
-    <p class="note">
-      <strong>The empty cell is the design.</strong> Neither the agent that wrote the
-      code nor anyone reading its claims decides whether a task passed — a deterministic
-      script does, against tests frozen before the code existed. Everything trustworthy
-      about the overnight phase traces back to that row.
-    </p>
-  </section>
-
-  <section>
     <h2><span class="phase p-impl">Implementation</span> Inside one task container</h2>
     <p>
       The phase order is scaffolding, not a decision the model makes. The verifier is the
@@ -677,9 +776,9 @@ flowchart TB
   C1 -->|"usage limit"| RL["exit 20 — paused, no attempt used"]
   C1 --> V{"Verifier — tamper diff, then tests"}
   V -->|"frozen paths changed"| TA["exit 11 — tampered"]
-  V -->|"fail, under 3"| FB["Commit attempt, feed failure forward"]
+  V -->|"fail, under the cap"| FB["Commit attempt, feed failure forward"]
   FB --> C1
-  V -->|"third failure"| ST["Commit WIP — exit 10, stuck"]
+  V -->|"final failed attempt"| ST["Commit WIP — exit 10, stuck"]
   V -->|"pass"| ADV["SLOT 3 — advisors, notes only"]
   ADV --> DP["Docs phase — change summary"]
   DP --> OK["exit 0 — verified"]
@@ -691,6 +790,23 @@ flowchart TB
   class S,V,FB,ST,TA,RL,OK script
   class ADV slot
 </pre>
+    </div>
+    <div class="gloss">
+      <p><strong>How a container is born.</strong> The runner launches each task with a
+      single <code>docker run</code> that hands in everything the task will ever have:
+      the fresh clone of the code (read-write), the pipeline's own scripts — entrypoint
+      and verifier — mounted <em>read-only</em>, the task file and memory file as
+      read-only exports, and environment variables: the task's id, the Claude
+      subscription token, and the proxy settings that force all traffic through the
+      allowlist. The token arrives at launch, is never baked into the image, and is the
+      only credential inside.</p>
+      <p><strong>Who talks to Claude: the entrypoint, never the runner.</strong> The
+      entrypoint script — plain scaffolding, unchangeable from inside — composes the
+      coding prompt from the task file, invokes headless Claude Code, runs the verifier,
+      feeds each failure back as the next attempt's prompt, and calls Claude once more
+      to write the docs summary. Phase order is script logic, not an AI decision. The
+      split is deliberate: the process holding the credential never prompts the model,
+      and the process prompting the model cannot alter what judges it.</p>
     </div>
   </section>
 
@@ -822,7 +938,8 @@ flowchart LR
     direction TB
     BD[("Task list")]
     R["Runner — timers, budgets, kill switch"]
-    GH["git push and gh pr create"]
+    WS[("Shared workspace folder — the container's disk lives here")]
+    GH["Scripts, no AI: git push · gh pr create · run report"]
   end
   subgraph NET["Sandbox"]
     direction TB
@@ -831,8 +948,11 @@ flowchart LR
     PX["Allowlist proxy"]
   end
   BD --> R
+  R -->|"fresh clone + issue.md"| WS
+  WS --- T
+  T -->|"commits, status file, verify evidence — via the folder, never the network"| WS
+  WS -->|"after the container exits"| GH
   R --> GH
-  R -->|"fresh clone + issue.md"| T
   REG -.-> T
   T -->|"every request"| PX
   PX -->|"allowed"| AN["The three anthropic.com endpoints"]
@@ -844,12 +964,23 @@ flowchart LR
   classDef external stroke-width:1.25px,stroke-dasharray:2 2
   classDef blocked stroke-width:2px
   class R,GH,T,PX script
-  class BD store
+  class BD,WS store
   class REG slot
   class AN external
   class BL blocked
 </pre>
     </div>
+    <p class="note">
+      <strong>What comes back out, and who touches it.</strong> The container's entire
+      disk is a folder on your PC, so the code — every commit — is already on the host
+      the moment it's written; nothing has to cross the network to escape the sandbox.
+      After the container exits, plain scripts take over: the runner pushes the branch,
+      assembles the pull request from the spec, the change summary, and the verifier's
+      evidence file, and generates the run report from the manifest. <em>No AI writes
+      the PR or the report.</em> The only AI-written prose in a PR is the change summary
+      the docs phase wrote inside the container — the host pastes it verbatim, never
+      parses it, and never asks a model anything on the way out.
+    </p>
   </section>
 
   <section>
@@ -868,7 +999,7 @@ flowchart LR
         <tbody>
           <tr><td>Tests pass, no regressions</td><td class="code">0</td><td class="tag ok">done</td><td>closed</td><td>pushed</td><td>opened</td></tr>
           <tr><td>Tests pass, regressions fail</td><td class="code">0</td><td class="tag warn">partial</td><td>closed</td><td>pushed</td><td>opened, flagged</td></tr>
-          <tr><td>Bailed after 3 attempts</td><td class="code">10</td><td class="tag bad">stuck</td><td>blocked</td><td>pushed, WIP</td><td>none</td></tr>
+          <tr><td>Bailed at the attempt cap (default 3, tunable per run)</td><td class="code">10</td><td class="tag bad">stuck</td><td>blocked</td><td>pushed, WIP</td><td>none</td></tr>
           <tr><td>Frozen tests modified</td><td class="code">11</td><td class="tag bad">tampered</td><td>blocked</td><td>pushed, WIP</td><td>none</td></tr>
           <tr><td>Usage limit hit</td><td class="code">20</td><td class="tag warn">paused</td><td>in progress</td><td>not yet</td><td>not yet</td></tr>
           <tr><td>Internal error</td><td class="code">30</td><td class="tag bad">failed</td><td>blocked</td><td>if commits</td><td>none</td></tr>
@@ -884,7 +1015,7 @@ flowchart LR
   </section>
 
   <section>
-    <h2><span class="phase p-harness">Review</span> The morning after</h2>
+    <h2><span class="phase p-harness">Review</span> When the run finishes</h2>
     <p>
       The run report arrives ordered by how much scrutiny each task needs —
       <span class="tag bad">tampered</span> &gt; <span class="tag bad">stuck</span> &gt;
@@ -896,7 +1027,7 @@ flowchart LR
     <div class="gloss">
       <p><strong>Tampered</strong> wants suspicion: something changed a frozen file, and
       the pushed WIP branch is the evidence. <strong>Stuck</strong> wants a decision —
-      three honest attempts failed, so the spec is probably wrong: fix it and re-approve,
+      every allowed attempt failed (three by default, tunable per run), so the spec is probably wrong: fix it and re-approve,
       amend the design, or drop the task. <strong>Partial</strong> wants its regression
       evidence read: the new work passed but something existing broke, and the flagged PR
       says what. <strong>Done</strong> wants an ordinary code review — the PR carries the
@@ -906,6 +1037,13 @@ flowchart LR
       through the normal planning session — nothing is fixed by hand on a pipeline
       branch, so every change that reaches the integration branch went through the same
       gates.</p>
+      <p><strong>Merging is one PR at a time, in your order.</strong> Every task forked
+      from the same starting point, so the first merge is clean. If a later PR collides
+      with one already merged, GitHub blocks it with a conflict — and the fix is never a
+      hand-edit: it goes back through planning as a new task that starts from the
+      updated main. The subtler case — two changes that merge cleanly but disagree in
+      behavior — is why overlapping tasks don't share a parallel batch, and why running
+      the project's own test suite after merging remains ordinary hygiene.</p>
     </div>
   </section>
 

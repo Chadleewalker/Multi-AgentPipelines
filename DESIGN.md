@@ -165,7 +165,7 @@ Specialists supply it. The governing rule:
 
 > **Judgment happens at planning time; run time stays deterministic.** An LLM judge
 > cannot be frozen — it may pass a task on one attempt and fail identical code on the
-> next. A fuzzy gate would destroy the retry loop's steering signal, void the 3-attempt
+> next. A fuzzy gate would destroy the retry loop's steering signal, void the attempt-cap
 > invariant, and produce unactionable failures. Therefore **no specialist is ever a
 > gate.** The frozen acceptance tests remain the only authority (4.4).
 
@@ -286,7 +286,7 @@ source of truth.
 3. **Inside the container, agents are ephemeral headless invocations** (`claude -p`,
    run with permissions bypassed — acceptable *only* because the container has a closed
    network, a disposable filesystem, and no credentials) in a fixed sequence driven by the
-   entrypoint script: **code → verify → (retry, max 3 attempts total) → docs → commit**.
+   entrypoint script: **code → verify → (retry, up to the attempt cap — default 3) → docs → commit**.
    The agent command is read from the `PIPELINE_AGENT_CMD` environment variable,
    defaulting to the headless `claude -p` invocation when unset — this is the deliberate
    test seam that lets the E2E pass substitute deterministic stubs (see section 7). The docs phase is one agent invocation
@@ -326,8 +326,8 @@ source of truth.
    status file, and `verify.json` — nothing parses free-form agent prose.
 6. **Budgets and hard exits — time and attempts, not money.** Two budgets only: max
    **active** wall-clock per task (host-enforced, default 4 hours, pause time excluded —
-   see next item) and max 3 verify attempts per task (entrypoint-enforced, counted in the
-   status file). After the third failed attempt: write the stuck-state to the status file,
+   see next item) and a per-task verify-attempt cap — default 3, tunable per run via `maxAttempts` in `run.config.json`, forwarded to the container as `PIPELINE_MAX_ATTEMPTS` (entrypoint-enforced, counted in the
+   status file). After the final allowed attempt: write the stuck-state to the status file,
    commit clearly-labeled WIP (message prefix `WIP:`), exit with the "stuck" code. On
    detected tampering the entrypoint likewise commits WIP first (evidence survives) and
    exits with the "tampered" code. One task failing must never block the next. There is
@@ -344,7 +344,7 @@ source of truth.
    host** (the host has the CLI and token; see section 6). It then relaunches a **fresh
    container reusing the same host-side clone and workspace**: `/workspace/.run/` persists
    across the relaunch, so the entrypoint reads the prior attempt count from the status
-   file and continues it — the 3-attempt cap is a per-task invariant, never reset by a
+   file and continues it — the attempt cap is a per-task invariant, never reset by a
    pause. Active time before the pause counts against the wall-clock budget (host-tracked);
    paused time never does. A run may span multiple usage windows. A rate limit is never
    recorded as a task failure, and an interrupted attempt is not a failed attempt.
@@ -381,8 +381,8 @@ source of truth.
     require an image rebuild; the issue exported to a read-only file mounted at
     `/workspace/.run/issue.md`; the project memories exported to a read-only file at
     `/workspace/.run/memory.md` (3.6); and the environment variables `ISSUE_ID`,
-    `PIPELINE_AGENT_CMD` (normally unset — see 4.3), the OAuth token, and proxy
-    variables. The container command is the entrypoint at its `/pipeline` path. The
+    `PIPELINE_AGENT_CMD` (normally unset — see 4.3), `PIPELINE_MAX_ATTEMPTS` (the 4.6
+    attempt cap), the OAuth token, and proxy variables. The container command is the entrypoint at its `/pipeline` path. The
     entrypoint composes the coding prompt from the issue file; the runner writes a
     `.git/info/exclude` entry for `.run/` at clone time so contract artifacts never end
     up in commits. Every spec,
@@ -398,7 +398,7 @@ source of truth.
     |---|---|---|---|---|---|
     | Acceptance pass, regressions pass or absent | 0 | done | closed | yes | yes |
     | Acceptance pass, regressions fail | 0 | partial | closed | yes | yes, flagged |
-    | Bailed after 3 attempts | 10 | stuck | blocked | yes (WIP) | no |
+    | Bailed at the attempt cap (default 3) | 10 | stuck | blocked | yes (WIP) | no |
     | Test tampering detected | 11 | tampered | blocked | yes (WIP) | no |
     | Usage limit hit | 20 | paused (transient) | in-progress (runner parks it) | not yet | not yet |
     | Internal error | 30 | failed | blocked | if commits exist | no |
@@ -415,7 +415,8 @@ source of truth.
     entrypoint task and cited as a frozen input by the runner and report tasks.
 12. **Runner configuration, lifecycle ownership, and logs.** The runner reads
     `run.config.json` in this repo: target repo path and remote, image name, wall-clock
-    default, probe interval, network/proxy identifiers, and an optional `agentCommand`
+    default, the attempt cap (`maxAttempts`, default 3 — see 4.6), probe interval,
+    network/proxy identifiers, and an optional `agentCommand`
     override (passed into containers as `PIPELINE_AGENT_CMD` — how the E2E pass injects
     its stubs). **The runner owns the run lifecycle end to end:** at run start it creates
     the internal network and proxy sidecar, invokes the pre-run egress check (aborting on
@@ -518,7 +519,7 @@ implementer inherits the why:
 - **Rate-limit pauses go global**: one task's usage-limit exit parks *every* running
   task (they share the subscription window); the runner resumes all parked workspaces
   when the window resets. Per-task pause mechanics (4.7) are reused unchanged.
-- **Sequential stays the overnight strategy.** Sequential maximizes *completed* work
+- **Sequential stays the strategy for long unattended runs.** Sequential maximizes *completed* work
   per budget: if the window dies mid-run, finished PRs exist. Parallel spreads the same
   budget across all started tasks — faster when the batch fits the window, but budget
   exhaustion leaves everything half-done and nothing reviewable until the next window.
@@ -612,4 +613,5 @@ development starts only after.
 | 2026-07-25 | v1.4.1: §3.4 now names onboarding and points at `ONBOARDING.md` (config is written at onboarding, not "during planning" — wording predated the checklist); ONBOARDING.md gained the from-zero project path and the post-onboarding lifecycle | Doc navigation fix: DESIGN.md's body never referenced onboarding, so a reader of this doc alone could not find the setup path |
 | 2026-07-25 | v1.5: audience widened to senior developers (§3.3) — developers may inspect drafted tests before freeze (optional; prose criteria remain the gate for everyone); difficulty labels join the approval pass; priority/dependency order made explicitly the user's decision. PLANNING.md steps 1, 5, 6 updated to match. No change to run-time autonomy or budgets (subscription window stays the natural limit — §4.6–4.7 unchanged) | User decision: the pipeline is now a tool for senior software devs, not only its original non-programmer owner — high-level decisions belong to the humans, proposals to Claude |
 | 2026-07-25 | v1.6: parallelism moved from out-of-scope to a decided V2 item (§7) — opt-in per-run concurrency knob, default 1, max 2–3; one runner juggling N containers (sole-writer preserved); global park/resume on rate limits; sequential remains the overnight default. §8 bullet narrowed to "as a default or in V1" | User decision after weighing it: parallel compresses elapsed time for daytime batches that fit the window, but budget exhaustion mid-run leaves everything half-done — sequential maximizes completed work per budget, so it stays the default |
-| 2026-07-26 | v1.7: the §3.5 registry is built (`repo-qyd`) — `advisors/README.md` pins the charter format (`## Lens` / `## Checks` / `## Output`, one JSON fence matching the `advisories` item shape in `status.schema.json`) and `ambiguity.md` / `testability.md` / `scope.md` staff the slot-1 critic panel; `PLANNING.md` step 2 now names the charter to paste per difficulty label. Markdown only — no code reads `advisors/`, no phase changed, so V2's `/spec` skill still owns dispatch | Dogfood queue task. The critic panel was described in three places and existed in none, so every planning session re-improvised the prompts; the shadow-01 self-nesting lesson had nowhere durable to live |
+| 2026-07-25 | v1.7: the verify-attempt cap is tunable per run — `maxAttempts` in `run.config.json` (validated positive whole number), forwarded as `PIPELINE_MAX_ATTEMPTS`; the entrypoint falls back to 3 on unset/invalid. §3.5/4.3/4.6/4.7/4.10/4.12 and the 4.11 table reworded from the hardcoded 3 to "the attempt cap (default 3)". Implemented in the same change (config.js, container.js, entrypoint.sh) with two new entrypoint checks (cap=2 honored; invalid value falls back to 3) | User request: tune how many failed attempts feed forward before a task bails; default unchanged at 3 |
+| 2026-07-26 | v1.8: the §3.5 registry is built (`repo-qyd`) — `advisors/README.md` pins the charter format (`## Lens` / `## Checks` / `## Output`, one JSON fence matching the `advisories` item shape in `status.schema.json`) and `ambiguity.md` / `testability.md` / `scope.md` staff the slot-1 critic panel; `PLANNING.md` step 2 now names the charter to paste per difficulty label. Markdown only — no code reads `advisors/`, no phase changed, so V2's `/spec` skill still owns dispatch. (Renumbered from the PR's v1.7 at merge: the attempt-cap amendment claimed v1.7 on `main` while this task ran) | Dogfood queue task. The critic panel was described in three places and existed in none, so every planning session re-improvised the prompts; the shadow-01 self-nesting lesson had nowhere durable to live |

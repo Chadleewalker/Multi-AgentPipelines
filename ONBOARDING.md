@@ -19,7 +19,7 @@ Four stages, in order. Each is interactive, each happens once except the last:
    recommendation, the user decides — then Claude picks the matching template, writes
    the project's `CLAUDE.md` (with the master-rules import), and gets a spec approved
    before building anything. The scaffold asks "will
-   the overnight pipeline work on this project?" — answer yes and stage 3 happens in
+   the pipeline work on this project?" — answer yes and stage 3 happens in
    the same sitting. An existing project skips this stage entirely.
 2. **Write the design doc** — for a project the pipeline will seriously develop, a
    `DESIGN.md` in its repo: intent, architecture, decisions and why, amendable only via
@@ -31,7 +31,7 @@ Four stages, in order. Each is interactive, each happens once except the last:
    below: GitHub remote, integration branch recorded, frozen-test home, config, image,
    task database, container-aware `CLAUDE.md`. Once, ever.
 4. **Plan and run, forever** — every feature from here on is a PLANNING.md session and
-   an overnight run. See "the life of an onboarded project" at the end of this file.
+   an autonomous run. See "the life of an onboarded project" at the end of this file.
 
 Stages 1–2 can also run in the other order (design first, scaffold after) — what
 matters is that both exist before planning tries to decompose anything.
