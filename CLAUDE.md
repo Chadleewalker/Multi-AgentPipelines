@@ -16,7 +16,8 @@ loads the master rules every session — don't remove it.
 | `DESIGN.md` | **Authoritative.** Every architectural decision and why, the outcome contract, the change log. When reality disagrees with it, amend it — never silently ignore it. |
 | `docs/STATUS.md` | Where the build actually is, what's proven, known gotchas, what's next. Start here to pick up the thread. |
 | `PLANNING.md` | The playbook for a planning session: how a task spec and its frozen tests get written and approved. |
-| `docs/pipeline-diagram.md` | The same design as diagrams. |
+| `docs/pipeline-diagram.md` | The same design as diagrams — compact mermaid, for someone about to change the code. **Task docs phases keep it current**, so amend it in the same PR that changes the shape it draws. |
+| `docs/pipeline-map.html` | The whole system explained for a reader rather than a maintainer: one page, nine diagrams, pan/zoom. Hand-maintained and **not** updated by task docs phases — check it against `DESIGN.md` when you touch it, because nothing else will. |
 
 `DESIGN.md` is long. Section 4.11 (the outcome table) and section 3.1 (the three levels:
 design doc → Beads issue → frozen tests) carry the most weight per line.
