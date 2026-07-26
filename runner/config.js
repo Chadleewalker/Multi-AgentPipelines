@@ -11,6 +11,7 @@ const DEFAULTS = {
   wallClockMinutes: 240,        // §4.6 default 4 hours of ACTIVE time
   maxAttempts: 3,               // §4.6 verify-attempt cap -> PIPELINE_MAX_ATTEMPTS
   probeIntervalMinutes: 15,     // §4.7 rate-limit probe cadence
+  maxPauseCycles: 96,           // §4.7 stop condition: total wait cycles per task (~24h at 15m)
   agentCommand: null,           // optional override -> PIPELINE_AGENT_CMD (§4.3 seam)
   // "opus" is an alias the CLI resolves to the CURRENT latest Opus, so the pipeline
   // follows model releases without edits here. The entrypoint records the RESOLVED
@@ -41,6 +42,11 @@ function loadConfig(file) {
   // The entrypoint's retry loop does shell integer math on this — enforce it here.
   if (raw.maxAttempts !== undefined && !(Number.isInteger(raw.maxAttempts) && raw.maxAttempts > 0)) {
     throw new Error(`run.config.json: 'maxAttempts' must be a positive whole number`);
+  }
+  // A cycle count, and the only thing that bounds the pause loop — a zero or fractional
+  // cap would either park forever or never pause at all.
+  if (raw.maxPauseCycles !== undefined && !(Number.isInteger(raw.maxPauseCycles) && raw.maxPauseCycles > 0)) {
+    throw new Error(`run.config.json: 'maxPauseCycles' must be a positive whole number`);
   }
   const cfg = { ...DEFAULTS, ...raw, configPath: p };
   cfg.proxyUrl = `http://${cfg.proxyName}:${cfg.proxyPort}`;
