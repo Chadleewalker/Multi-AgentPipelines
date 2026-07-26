@@ -70,8 +70,12 @@ names the criterion it serves. **An orphan on either side is a spec bug** — fi
 or the tests before going further, never during a run.
 
 ### 5. The user approves intent
-The user reads the plain-English spec — description, constraints, acceptance criteria in
-"Done means" form — and says whether it matches what they want. Adjust until yes. For a
+Write the drafted specs to **one reviewable file in the repo** —
+`docs/planning-draft-<YYYY-MM-DD>.md` — so the user has a single, findable thing to
+read (never a scratchpad or chat-only summary; the file is superseded by the Beads
+issues at freeze, like `docs/v1-backlog-draft.md`). The user reads the plain-English
+spec — description, constraints, acceptance criteria in "Done means" form — and says
+whether it matches what they want. Adjust until yes. For a
 backlog decomposed from a design doc, this is a single list pass checking the slicing,
 not a re-litigation of intent (§3.3). **Nothing is frozen and nothing runs until this
 approval.**
