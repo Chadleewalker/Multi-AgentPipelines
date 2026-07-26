@@ -9,6 +9,30 @@ the skill is a wrapper.
 Everything here happens interactively on the host, with the user. Run it once per
 project; PLANNING.md's per-session prerequisites then just verify it was done.
 
+## Starting from nothing — the whole path for a brand-new project
+
+Four stages, in order. Each is interactive, each happens once except the last:
+
+1. **Create the project** — `<the scaffold step>` (a harness skill). Claude picks
+   the language and template, writes the project's `CLAUDE.md` (with the master-rules
+   import), and gets a spec approved before building anything. The scaffold asks "will
+   the overnight pipeline work on this project?" — answer yes and stage 3 happens in
+   the same sitting. An existing project skips this stage entirely.
+2. **Write the design doc** — for a project the pipeline will seriously develop, a
+   `DESIGN.md` in its repo: intent, architecture, decisions and why, amendable only via
+   its change log (§3.1–3.2 of this pipeline's own DESIGN.md describe the session:
+   bounded interview, critics, dry-run decomposition as the readiness test). Small
+   projects can live on the scaffold's `SPEC.md` alone and enter planning per-task —
+   the doc layer is for work big enough to decompose.
+3. **Onboard** — `<the ONBOARDING.md checklist>`, which follows the checklist
+   below: GitHub remote, integration branch recorded, frozen-test home, config, image,
+   task database, container-aware `CLAUDE.md`. Once, ever.
+4. **Plan and run, forever** — every feature from here on is a PLANNING.md session and
+   an overnight run. See "the life of an onboarded project" at the end of this file.
+
+Stages 1–2 can also run in the other order (design first, scaffold after) — what
+matters is that both exist before planning tries to decompose anything.
+
 ## Before starting
 
 - The pipeline's base image is built (`docker/base/`; check `scripts/test-base-image.sh`).
