@@ -7,6 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { exportMemory } = require('./memory');
 
 const git = (cwd, args, opts = {}) =>
   spawnSync('git', args, { cwd, encoding: 'utf8', ...opts });
@@ -87,10 +88,16 @@ function prepare(cfg, issueId, issueMarkdown, log, traceId) {
   const excludeFile = path.join(dir, '.git', 'info', 'exclude');
   fs.appendFileSync(excludeFile, '\n.run/\n');
 
-  // The container's inputs: issue spec at .run/issue.md (§4.10).
+  // The container's inputs: issue spec at .run/issue.md, project memory at
+  // .run/memory.md (§4.10, §3.6). Both are read-only by contract, not by permission.
   const runDir = path.join(dir, '.run');
   fs.mkdirSync(runDir, { recursive: true });
   fs.writeFileSync(path.join(runDir, 'issue.md'), issueMarkdown);
+
+  // Memory is a convenience input, not a precondition: a failed export is logged and
+  // the run continues with the "(no memories recorded)" marker in place (§3.6).
+  const mem = exportMemory(cfg, runDir);
+  if (!mem.ok) log.info(traceId, `memory export failed (continuing): ${mem.error}`);
 
   const forkPoint = git(dir, ['rev-parse', 'HEAD']).stdout.trim();
   log.info(traceId, `workspace ready: ${dir} on ${branch} (fork point ${forkPoint.slice(0, 8)})`);

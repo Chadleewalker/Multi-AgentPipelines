@@ -21,6 +21,16 @@ function toMountPath(p) {
 }
 
 function bd(cfg, args, opts = {}) {
+  // Test seam (never set in production): spawn the named executable directly with the
+  // bare bd argument vector — no `-C` prefix, no host probe, no Docker fallback — so
+  // Docker-free suites can stub the whole bd layer. Takes absolute precedence.
+  if (process.env.PIPELINE_BD_CMD) {
+    return spawnSync(process.env.PIPELINE_BD_CMD, args, {
+      encoding: 'utf8',
+      env: process.env,
+      ...opts,
+    });
+  }
   if (haveHostBd()) {
     return spawnSync('bd', ['-C', cfg.targetRepoPath, ...args], { encoding: 'utf8', ...opts });
   }
