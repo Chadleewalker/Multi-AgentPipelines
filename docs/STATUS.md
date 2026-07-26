@@ -4,7 +4,7 @@ Where the build actually is. Update this when something changes — it is the fi
 session reads to pick up the thread, and unlike a machine-local memory folder it travels
 with the repo.
 
-_Last updated: 2026-07-25_
+_Last updated: 2026-07-26_
 
 ## Where things stand
 
@@ -87,9 +87,18 @@ design until implemented). Snapshot: `docs/planning-draft-2026-07-25.md`.
 | Issue | Task | Prio | Notes |
 |---|---|---|---|
 | `repo-qyd` | advisor registry + ambiguity/testability/scope charters (§3.5) | 1 | |
-| `repo-zdm` | container-side memory: `memoryNotes` + `status.js note` + prompt (§3.6) | 2 | |
+| `repo-zdm` | container-side memory: `memoryNotes` + `status.js note` + prompt (§3.6) | 2 | **Done** — see below |
 | `repo-eyn` | runner memory export: `.run/memory.md` + `PIPELINE_BD_CMD` seam (§3.6) | 2 | |
 | `repo-4gp` | runner memory filing: `bd remember` after exit (§3.6) | 3 | blocked on `repo-eyn`; **run in a later batch** — both edit `runner/memory.js` |
+
+**`repo-zdm` shipped the container-side half of §3.6.** `status.schema.json` now carries
+an optional `memoryNotes` array (max 20 entries, 500 chars each, inline like
+`advisories`); `pipeline/status.js note "<text>"` appends one entry, keeping the *head*
+of an over-long note and silently dropping notes past the cap so a memory can never
+change an outcome; and `pipeline/entrypoint.sh` both injects `.run/memory.md` into the
+prompt when the runner has exported one and tells the coding and docs agents how to
+propose a note. Nothing files those notes yet — that is `repo-4gp`, and until it lands
+`memoryNotes` accumulates in the status file and goes no further.
 
 Session learnings: critic panel earned its keep (Task C split in two, unverified `bd`
 subcommands caught, an unowned contract — nothing injects memory.md into the prompt —
