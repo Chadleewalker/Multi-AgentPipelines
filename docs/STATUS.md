@@ -97,7 +97,7 @@ design until implemented). Snapshot: `docs/planning-draft-2026-07-25.md`.
 | `repo-qyd` | advisor registry + ambiguity/testability/scope charters (§3.5) | 1 | **Done** — `advisors/` (README + 3 planning-critic charters) |
 | `repo-zdm` | container-side memory: `memoryNotes` + `status.js note` + prompt (§3.6) | 2 | **Done** — see below |
 | `repo-eyn` | runner memory export: `.run/memory.md` + `PIPELINE_BD_CMD` seam (§3.6) | 2 | **Done** — `runner/memory.js`, called from `workspace.prepare()` |
-| `repo-4gp` | runner memory filing: `bd remember` after exit (§3.6) | 3 | unblocked now `repo-eyn` has landed; **run in a later batch** — both edit `runner/memory.js` |
+| `repo-4gp` | runner memory filing: `bd remember` after exit (§3.6) | 3 | **Done** — `memory.fileMemoryNotes()`, called from `run.js` after the pause loop |
 
 **`repo-zdm` shipped the container-side half of §3.6.** `status.schema.json` now carries
 an optional `memoryNotes` array (max 20 entries, 500 chars each, inline like
@@ -105,8 +105,22 @@ an optional `memoryNotes` array (max 20 entries, 500 chars each, inline like
 of an over-long note and silently dropping notes past the cap so a memory can never
 change an outcome; and `pipeline/entrypoint.sh` both injects `.run/memory.md` into the
 prompt when the runner has exported one and tells the coding and docs agents how to
-propose a note. Nothing files those notes yet — that is `repo-4gp`, and until it lands
-`memoryNotes` accumulates in the status file and goes no further.
+propose a note.
+
+**`repo-4gp` closed the loop.** `memory.fileMemoryNotes(cfg, issueId, status)` files each
+proposed note through the bd layer as `bd remember <text> --key <issueId>-note-<n>` — the
+issue id is the §3.6 audit trail, and because `bd remember` updates a key in place a
+re-run of the same issue overwrites its notes instead of duplicating them. The host
+re-enforces the schema bounds on the agent-written file (first 20 notes, first 500 chars
+each). `run.js` calls it once per task after the pause/relaunch loop, gated to the
+terminal outcomes `done|partial|failed|stuck`: never `tampered` (an agent that failed the
+trust check does not seed project memory) and never `paused` (not terminal). It never
+throws and returns `{filed, errors}`; bd failures are logged and the outcome is untouched,
+the same posture as `docsPhaseError`. `queue.attemptNotes` adds a `memory notes: <n>` line
+so the §3.6 promotion rule has something to act on at review time. `DESIGN.md` is amended
+to v1.8.2: the outcome gate and the host-side re-enforcement of the schema bounds are
+decisions about *who may seed project memory* and *how far the host trusts an
+agent-written file*, so they now live in §3.6 rather than only in code comments.
 
 Session learnings: critic panel earned its keep (Task C split in two, unverified `bd`
 subcommands caught, an unowned contract — nothing injects memory.md into the prompt —
@@ -117,12 +131,13 @@ found and assigned); PLANNING.md step 5 amended — draft specs go to
 
 **Recommended order:**
 
-1. **Finish the dogfood queue** (`node runner/run.js --config run.config.multiagentpipelines.json`):
-   `repo-qyd`, `repo-zdm`, and `repo-eyn` are done and merged; only `repo-4gp` remains,
-   unblocked now that `repo-eyn` has landed. The §3.6 memory In channel is fully wired
-   (the runner exports `.run/memory.md`, the entrypoint injects it into the prompt);
-   the Out channel stops at the status file until `repo-4gp` files notes via
-   `bd remember`.
+1. **The dogfood queue is drained** — all four tasks (`repo-qyd`, `repo-zdm`, `repo-eyn`,
+   `repo-4gp`) are implemented. §3.6 is now wired end to end: In (the runner exports
+   `.run/memory.md`, the entrypoint injects it into the prompt) and Out (the agent
+   proposes notes in the status file, the host files them via `bd remember` after exit).
+   What is still unproven is the *round trip on a real run* — a note proposed by one
+   container turning up in the next task's `memory.md`. Watch for that on the next
+   shadow run, and apply the §3.6 promotion rule to whatever accumulates.
 2. **More shadow runs.** Three is a small sample. The numbers that matter for scaling are
    per-task active time, spec-defect rate, and how often tasks collide on shared files.
 3. **V2 — the spec pipeline** (`DESIGN.md` §3.2, §3.5): package the critic panel, the
@@ -165,3 +180,9 @@ Run individually, never concurrently. Each drives real Docker.
 | `scripts/test-report.sh` | manifest schema, scrutiny ordering, idempotency |
 | `scripts/test-isolation.sh` | no push, read-only scaffolding, no egress, one credential |
 | `scripts/test-fixture.sh` | the fixture repo is a valid pipeline target |
+
+**Gap worth knowing:** `runner/memory.js` (both §3.6 channels) has no
+`scripts/test-runner-*.sh` suite — its coverage lives in the Docker-free acceptance tests
+at `tests/acceptance/repo-eyn/` and `tests/acceptance/repo-4gp/`, which drive it through
+the `PIPELINE_BD_CMD` stub seam. Fold it into a `test-runner-memory.sh` if the module
+grows past the two entry points.
