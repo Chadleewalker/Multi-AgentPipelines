@@ -14,7 +14,9 @@ const path = require('path');
 const { loadConfig, loadToken } = require('./config');
 const { startRun } = require('./log');
 const { preflight, networkDown } = require('./preflight');
-const { readyQueue, claim, exportIssue, finish, outcomeFor, attemptNotes } = require('./queue');
+const {
+  readyQueue, queueSummary, claim, exportIssue, finish, outcomeFor, attemptNotes,
+} = require('./queue');
 const { prepare, hasCommits, collectArtifacts, discard } = require('./workspace');
 const { runTask } = require('./container');
 const { waitForWindow } = require('./pause');
@@ -118,7 +120,7 @@ async function main() {
     networkDown(REPO_ROOT);
     process.exit(1);
   }
-  log.info(t, `ready queue: ${q.issues.length} task(s) — ${q.issues.map((i) => i.id).join(', ') || '(empty)'}`);
+  log.info(t, queueSummary(q.issues, q.skipped));
 
   const results = [];
   for (const issue of q.issues) {
