@@ -188,6 +188,25 @@ cp /tmp/ws10/.run/status.json /out/e10-ratelimit-noreset.json 2>/dev/null
 grep -q '"rateLimitResetAt"' /out/e10-ratelimit-noreset.json \
   && fail "rate-limit-noreset: spurious reset time" || pass "rate-limit-noreset: no reset field"
 
+# 11. Tunable attempt cap (§4.6): PIPELINE_MAX_ATTEMPTS=2 -> exactly 2 attempts, bail.
+new_ws /tmp/ws11
+WORKSPACE=/tmp/ws11 ISSUE_ID=T-3 PIPELINE_AGENT_CMD="sh /tmp/stub-fail.sh" \
+  PIPELINE_MAX_ATTEMPTS=2 bash "$PIPELINE_DIR/entrypoint.sh" >/dev/null 2>&1
+RC=$?
+cp /tmp/ws11/.run/status.json /out/e11-maxattempts.json 2>/dev/null
+[ "$RC" = 10 ] && pass "max-attempts: exit 10 at the tuned cap" || fail "max-attempts: rc=$RC"
+[ "$(grep -c '"verifierResult": "fail"' /out/e11-maxattempts.json)" = 2 ] \
+  && pass "max-attempts: exactly 2 attempts when cap=2" || fail "max-attempts: attempt count wrong"
+
+# 12. Invalid cap falls back to the default of 3.
+new_ws /tmp/ws12
+WORKSPACE=/tmp/ws12 ISSUE_ID=T-3 PIPELINE_AGENT_CMD="sh /tmp/stub-fail.sh" \
+  PIPELINE_MAX_ATTEMPTS=banana bash "$PIPELINE_DIR/entrypoint.sh" >/dev/null 2>&1
+RC=$?
+cp /tmp/ws12/.run/status.json /out/e12-badcap.json 2>/dev/null
+[ "$RC" = 10 ] && [ "$(grep -c '"verifierResult": "fail"' /out/e12-badcap.json)" = 3 ] \
+  && pass "max-attempts: invalid value falls back to 3" || fail "max-attempts: fallback broken (rc=$RC)"
+
 # 6. main is untouched by every scenario.
 MAIN_AFTER=$(cd /tmp/src && git rev-parse main)
 [ "$MAIN_BEFORE" = "$MAIN_AFTER" ] && pass "main untouched across all scenarios" \

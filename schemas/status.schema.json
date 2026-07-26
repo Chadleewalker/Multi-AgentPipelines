@@ -55,6 +55,12 @@
       "description": "The model the agent phases ran on, pinned by the runner (4.3). Recorded so a run is reproducible and so review can tell what built a change.",
       "type": "string"
     },
+    "memoryNotes": {
+      "description": "Insights the coding or docs agent proposes for the project's memory (DESIGN.md 3.6, out-channel). Agents propose; after container exit the host - the sole Beads writer - files each note via 'bd remember'. Advisory only: nothing here can change the exit code.",
+      "type": "array",
+      "maxItems": 20,
+      "items": { "type": "string", "maxLength": 500 }
+    },
     "advisories": {
       "description": "Domain-specialist notes (DESIGN.md 3.5, slot 3). Recorded evidence for the PR body and run report - NEVER a gate; nothing here can change the exit code. Empty/absent in V1, which builds no advisors.",
       "type": "array",

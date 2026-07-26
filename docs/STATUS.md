@@ -38,7 +38,10 @@ from inside `node --test`, so `NODE_TEST_CONTEXT` was inherited and the child ru
 as a nested subtest. The agent wrote the correct one-line script on attempt 1, diagnosed
 the nesting correctly in its notes, watched it fail the gate anyway, and contorted the
 implementation until it passed. **A green run cannot tell you the spec was good**, and V1
-gives an agent no channel to report "your spec is wrong" — it can only comply.
+gives an agent no channel to report "your spec is wrong" — it can only comply. That
+lesson is now encoded in [`advisors/testability.md`](../advisors/testability.md), which
+directs the critic to hunt for self-nesting test invocations, inherited environment
+(`NODE_TEST_CONTEXT` and friends), and criteria no script can honestly check.
 
 ## Defects the trial found in the pipeline itself
 
@@ -91,10 +94,19 @@ design until implemented). Snapshot: `docs/planning-draft-2026-07-25.md`.
 
 | Issue | Task | Prio | Notes |
 |---|---|---|---|
-| `repo-qyd` | advisor registry + ambiguity/testability/scope charters (§3.5) | 1 | |
-| `repo-zdm` | container-side memory: `memoryNotes` + `status.js note` + prompt (§3.6) | 2 | |
+| `repo-qyd` | advisor registry + ambiguity/testability/scope charters (§3.5) | 1 | **Done** — `advisors/` (README + 3 planning-critic charters) |
+| `repo-zdm` | container-side memory: `memoryNotes` + `status.js note` + prompt (§3.6) | 2 | **Done** — see below |
 | `repo-eyn` | runner memory export: `.run/memory.md` + `PIPELINE_BD_CMD` seam (§3.6) | 2 | **Done** — `runner/memory.js`, called from `workspace.prepare()` |
 | `repo-4gp` | runner memory filing: `bd remember` after exit (§3.6) | 3 | unblocked now `repo-eyn` has landed; **run in a later batch** — both edit `runner/memory.js` |
+
+**`repo-zdm` shipped the container-side half of §3.6.** `status.schema.json` now carries
+an optional `memoryNotes` array (max 20 entries, 500 chars each, inline like
+`advisories`); `pipeline/status.js note "<text>"` appends one entry, keeping the *head*
+of an over-long note and silently dropping notes past the cap so a memory can never
+change an outcome; and `pipeline/entrypoint.sh` both injects `.run/memory.md` into the
+prompt when the runner has exported one and tells the coding and docs agents how to
+propose a note. Nothing files those notes yet — that is `repo-4gp`, and until it lands
+`memoryNotes` accumulates in the status file and goes no further.
 
 Session learnings: critic panel earned its keep (Task C split in two, unverified `bd`
 subcommands caught, an unowned contract — nothing injects memory.md into the prompt —
@@ -106,15 +118,18 @@ found and assigned); PLANNING.md step 5 amended — draft specs go to
 **Recommended order:**
 
 1. **Finish the dogfood queue** (`node runner/run.js --config run.config.multiagentpipelines.json`):
-   `repo-eyn` is done; `repo-qyd` and `repo-zdm` remain, and `repo-4gp` can be queued
-   once `repo-eyn`'s PR is merged. The memory In channel is only half-wired until
-   `repo-zdm` lands — the runner now writes `.run/memory.md`, but nothing injects it
-   into the container prompt yet.
+   `repo-qyd`, `repo-zdm`, and `repo-eyn` are done and merged; only `repo-4gp` remains,
+   unblocked now that `repo-eyn` has landed. The §3.6 memory In channel is fully wired
+   (the runner exports `.run/memory.md`, the entrypoint injects it into the prompt);
+   the Out channel stops at the status file until `repo-4gp` files notes via
+   `bd remember`.
 2. **More shadow runs.** Three is a small sample. The numbers that matter for scaling are
    per-task active time, spec-defect rate, and how often tasks collide on shared files.
 3. **V2 — the spec pipeline** (`DESIGN.md` §3.2, §3.5): package the critic panel, the
    decomposition agent, and the coverage check as a `/spec` skill, and add the
-   "the spec is wrong" channel V1 lacks.
+   "the spec is wrong" channel V1 lacks. The panel's three charters already exist in
+   `advisors/` and are run by hand from `PLANNING.md` step 2 — `/spec` automates
+   dispatching them, not writing them.
 
 **Known gaps, deliberately deferred:**
 
@@ -129,7 +144,9 @@ found and assigned); PLANNING.md step 5 amended — draft specs go to
   policy for clean, small, green diffs would be needed.
 - **Run-time advisors (slot 3)** are unbuilt. The sockets exist: `advisories` in
   `status.schema.json`, the read-only `/pipeline` mount, per-project selection in
-  `pipeline.config.json`.
+  `pipeline.config.json`, and now the charter format in `advisors/README.md` — a slot-3
+  charter is written the same way as the slot-1 ones. Nothing calls one yet; no run-time
+  advisor is registered until the trial shows a lens that genuinely resists determinism.
 
 ## Test suites
 
