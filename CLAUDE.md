@@ -152,6 +152,13 @@ the pipeline working on the pipeline's own code. The rules:
   file instead: `node /pipeline/status.js note "<insight>"` appends one, and the host
   files it after you exit. You propose; the host commits. Notes are advisory — they can
   never change your outcome, and past 20 the call is silently a no-op.
+- If you conclude the frozen spec or its tests are themselves wrong, say so:
+  `node /pipeline/status.js concern "<what is wrong and why>"`. That is a first-class
+  result (§3.3), not a failure — the host surfaces it where a human reviewing the run
+  will see it, and changing a spec is legal there and nowhere else. It is evidence only:
+  it cannot change your outcome, so keep doing the best work the spec allows rather than
+  contorting correct code to satisfy a gate you believe is broken. Head-truncated at 1000
+  characters, and past 5 the call is silently a no-op.
 
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:6cd5cc61 -->
