@@ -26,17 +26,60 @@ function outcomeFor(exitCode, verify) {
   return { ...base };
 }
 
+// Types the runner never runs (§3.1, §4.12). A DENY-LIST, not an allow-list: bd also
+// has bug, feature, chore and decision, and the runner drains all of them. Admitting
+// only 'task' would make a legitimately-typed issue carrying a full spec vanish from
+// every run with nothing to say why.
+const EXCLUDED_TYPES = new Set(['epic']);
+
+// The type as bd reports it, normalised for comparison. Absent, null or empty comes
+// back as '' — which no excluded name matches, so such an entry is KEPT (§4.12
+// back-compat: failing closed on a missing field would drain nothing at all against an
+// older bd, the catastrophic direction).
+function typeOf(issue) {
+  const t = issue && issue.issue_type;
+  return typeof t === 'string' ? t.trim().toLowerCase() : '';
+}
+
 // Ready work: bd's own blocker-aware semantics (verified in T2), then our ordering.
+// Returns the survivors plus the entries filtered out by type, so the caller can name
+// them in the queue-summary line — a skip nobody can see is the silent-failure family
+// this design has already paid for.
 function readyQueue(cfg) {
   const res = bdJson(cfg, ['ready']);
   if (!res.ok) return { ok: false, error: res.error };
-  const issues = [...res.data].sort((a, b) => {
+  const entries = Array.isArray(res.data) ? res.data : [];
+  const skipped = entries.filter((i) => EXCLUDED_TYPES.has(typeOf(i)));
+  const issues = entries.filter((i) => !EXCLUDED_TYPES.has(typeOf(i))).sort((a, b) => {
     const pa = a.priority ?? 2;
     const pb = b.priority ?? 2;
     if (pa !== pb) return pa - pb;                                   // 0 = highest first
     return String(a.created_at || '').localeCompare(String(b.created_at || '')); // FIFO
   });
-  return { ok: true, issues };
+  return { ok: true, issues, skipped };
+}
+
+const describe = (i) => `${i.id} (${typeOf(i) || 'untyped'})`;
+
+// The run's queue-summary line, built here rather than inline in run.js so it can be
+// tested at all: run.js only reaches it after loadToken and the Docker preflight, which
+// no Docker-free test can execute (same move repo-dhp made with shouldFileMemory).
+// The historic prefix is load-bearing — scripts/test-runner-queue.sh greps it at six
+// sites — so both clauses are APPENDED, never woven into it.
+function queueSummary(issues, skipped) {
+  const list = Array.isArray(issues) ? issues : [];
+  const out = Array.isArray(skipped) ? skipped : [];
+  let line = `ready queue: ${list.length} task(s) — ${list.map((i) => i.id).join(', ') || '(empty)'}`;
+  if (out.length) {
+    line += `; skipped ${out.length} by type: ${out.map(describe).join(', ')}`;
+  }
+  // Kept entries that are not plain tasks are named too: the deny-list means the runner
+  // will happily run a bug or a chore, and a reviewer should see that it did.
+  const nonTask = list.filter((i) => typeOf(i) && typeOf(i) !== 'task');
+  if (nonTask.length) {
+    line += `; running ${nonTask.length} non-task: ${nonTask.map(describe).join(', ')}`;
+  }
+  return line;
 }
 
 function claim(cfg, issueId) {
@@ -96,4 +139,6 @@ function attemptNotes(runId, outcome, status, memoryIn) {
   return [lines.join('\n')];
 }
 
-module.exports = { readyQueue, claim, exportIssue, finish, outcomeFor, attemptNotes, OUTCOMES };
+module.exports = {
+  readyQueue, queueSummary, claim, exportIssue, finish, outcomeFor, attemptNotes, OUTCOMES,
+};

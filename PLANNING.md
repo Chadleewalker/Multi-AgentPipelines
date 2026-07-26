@@ -130,7 +130,11 @@ install anything at run time):
 
 ### 8. Pre-run checklist
 - `bd ready` (in the target repo's working copy) lists exactly the tasks meant to run,
-  in the intended priority order.
+  in the intended priority order. An **epic** may appear in that list and is expected to —
+  `bd ready` returns the parent alongside its children — but the runner filters entries
+  typed `epic` out and names them in its `ready queue:` log line (§3.1, §4.12). Every
+  other type (`bug`, `feature`, `chore`, `decision`) *does* run, so anything in the list
+  that is not meant to run this batch must be blocked or closed, not merely retyped.
 - Frozen tests are on the integration branch (`defaultBranch`) and pushed;
   `pipeline.config.json` is current.
 - The per-project image exists; Docker Desktop is running.
