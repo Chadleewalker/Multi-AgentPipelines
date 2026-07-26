@@ -74,7 +74,11 @@ function finish(cfg, issueId, outcome, notes) {
 }
 
 // Attempt-log line from the container's status file (§4.11).
-function attemptNotes(runId, outcome, status) {
+// memoryIn is the count exported into the container (§3.6 In channel): a number, or
+// null when the export failed. Recorded next to the outgoing notes so both halves of
+// the channel are visible on the issue at review time — an In channel that quietly
+// stops delivering is otherwise invisible, since an empty export still succeeds.
+function attemptNotes(runId, outcome, status, memoryIn) {
   const lines = [`run ${runId}: outcome ${outcome.status}`];
   for (const a of (status && status.attempts) || []) {
     lines.push(`  attempt ${a.number}: ${a.verifierResult} at ${a.timestamp}`);
@@ -87,6 +91,8 @@ function attemptNotes(runId, outcome, status) {
   if (status && Array.isArray(status.memoryNotes) && status.memoryNotes.length) {
     lines.push(`  memory notes: ${status.memoryNotes.length}`);
   }
+  if (memoryIn === null) lines.push('  memory in: export failed');
+  else if (typeof memoryIn === 'number') lines.push(`  memory in: ${memoryIn}`);
   return [lines.join('\n')];
 }
 

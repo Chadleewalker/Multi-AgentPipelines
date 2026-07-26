@@ -74,6 +74,20 @@ real use. All are fixed.
    the cap is now `maxPauseCycles` in `run.config.json` (default 96). Making it
    configurable was part of the fix — while hardcoded, the stop condition was untestable,
    which is exactly why the gap survived three rounds of review and 21 build tasks.
+7. **The §3.6 In channel was unobservable** (found 2026-07-26 while answering "is memory
+   actually updating?"). The channel *worked* — but `exportMemory` returns `{ok:true}`
+   for a successful export of **zero** memories, and `workspace.js` logged only on
+   failure. So a run could not distinguish "the container received 8 notes" from "the
+   container received `(no memories recorded)`"; if `bd memories` ever started returning
+   empty, every task would silently lose its context with no error anywhere. The same
+   shape as defects 2 and 5, and the rule was already written down in this repo's own
+   filed memory (`repo-52m-note-4`: *when scaffolding is deliberately fail-safe,
+   something must still assert the artifact is non-empty*). Fixed: `exportMemory` returns
+   `count`, `workspace.prepare()` logs it either way and passes it out as `memoryCount`,
+   and `attemptNotes` records `memory in: <n>` beside the existing `memory notes: <n>` so
+   both halves of the channel are visible on the issue at review time. `collectArtifacts`
+   now also copies `memory.md` (and `docs-err.txt`, per `repo-52m-note-2`), so a finished
+   run still shows what the container was actually told.
 
 ## Gotchas that cost real time
 
@@ -201,9 +215,12 @@ found and assigned); PLANNING.md step 5 amended — draft specs go to
    `repo-4gp`) are implemented. §3.6 is now wired end to end: In (the runner exports
    `.run/memory.md`, the entrypoint injects it into the prompt) and Out (the agent
    proposes notes in the status file, the host files them via `bd remember` after exit).
-   What is still unproven is the *round trip on a real run* — a note proposed by one
-   container turning up in the next task's `memory.md`. Watch for that on the next
-   shadow run, and apply the §3.6 promotion rule to whatever accumulates.
+   **The round trip is now verified** (2026-07-26): eight notes are filed in this repo's
+   Beads DB (`repo-4gp-note-1..4`, `repo-52m-note-1..4`), `exportMemory` returns
+   `{ok:true,count:8}` against them, `entrypoint.sh` injects the file under
+   `--- PROJECT MEMORY (read-only) ---`, and `prepare()` (run.js:144) runs inside the
+   task loop *after* the previous task's `fileMemoryNotes()` (run.js:204) — so task N+1
+   genuinely sees task N's notes. Apply the §3.6 promotion rule to whatever accumulates.
 2. **More shadow runs.** Three is a small sample. The numbers that matter for scaling are
    per-task active time, spec-defect rate, and how often tasks collide on shared files.
 3. **V2 — the spec pipeline** (`DESIGN.md` §3.2, §3.5): package the critic panel, the

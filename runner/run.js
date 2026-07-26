@@ -218,7 +218,7 @@ async function main() {
       runId: log.runId,
     }, log, tr);
 
-    const notes = attemptNotes(log.runId, outcome, artifacts.status);
+    const notes = attemptNotes(log.runId, outcome, artifacts.status, ws.memoryCount);
     if (published.prUrl) notes.push(`PR: ${published.prUrl}`);
     else if (published.pushed) notes.push(`branch pushed for review: ${ws.branch} (no PR — ${outcome.status})`);
     finish(cfg, issue.id, outcome, notes);
