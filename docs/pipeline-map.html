@@ -938,7 +938,8 @@ flowchart LR
     direction TB
     BD[("Task list")]
     R["Runner — timers, budgets, kill switch"]
-    GH["git push and gh pr create"]
+    WS[("Shared workspace folder — the container's disk lives here")]
+    GH["Scripts, no AI: git push · gh pr create · run report"]
   end
   subgraph NET["Sandbox"]
     direction TB
@@ -947,8 +948,11 @@ flowchart LR
     PX["Allowlist proxy"]
   end
   BD --> R
+  R -->|"fresh clone + issue.md"| WS
+  WS --- T
+  T -->|"commits, status file, verify evidence — via the folder, never the network"| WS
+  WS -->|"after the container exits"| GH
   R --> GH
-  R -->|"fresh clone + issue.md"| T
   REG -.-> T
   T -->|"every request"| PX
   PX -->|"allowed"| AN["The three anthropic.com endpoints"]
@@ -960,12 +964,23 @@ flowchart LR
   classDef external stroke-width:1.25px,stroke-dasharray:2 2
   classDef blocked stroke-width:2px
   class R,GH,T,PX script
-  class BD store
+  class BD,WS store
   class REG slot
   class AN external
   class BL blocked
 </pre>
     </div>
+    <p class="note">
+      <strong>What comes back out, and who touches it.</strong> The container's entire
+      disk is a folder on your PC, so the code — every commit — is already on the host
+      the moment it's written; nothing has to cross the network to escape the sandbox.
+      After the container exits, plain scripts take over: the runner pushes the branch,
+      assembles the pull request from the spec, the change summary, and the verifier's
+      evidence file, and generates the run report from the manifest. <em>No AI writes
+      the PR or the report.</em> The only AI-written prose in a PR is the change summary
+      the docs phase wrote inside the container — the host pastes it verbatim, never
+      parses it, and never asks a model anything on the way out.
+    </p>
   </section>
 
   <section>
