@@ -35,6 +35,7 @@ function buildArgs(cfg, opts) {
   // The entrypoint appends --model to its default headless invocation; an explicit
   // agentCommand (stubs, overrides) owns its own flags and ignores this.
   if (cfg.model) args.push('-e', `PIPELINE_MODEL=${cfg.model}`);
+  if (cfg.maxAttempts) args.push('-e', `PIPELINE_MAX_ATTEMPTS=${cfg.maxAttempts}`);
   args.push(cfg.image, 'bash', '/pipeline/entrypoint.sh');
   return args;
 }

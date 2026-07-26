@@ -9,6 +9,7 @@ const DEFAULTS = {
   proxyName: 'pipeline-proxy',
   proxyPort: 3128,
   wallClockMinutes: 240,        // §4.6 default 4 hours of ACTIVE time
+  maxAttempts: 3,               // §4.6 verify-attempt cap -> PIPELINE_MAX_ATTEMPTS
   probeIntervalMinutes: 15,     // §4.7 rate-limit probe cadence
   agentCommand: null,           // optional override -> PIPELINE_AGENT_CMD (§4.3 seam)
   // "opus" is an alias the CLI resolves to the CURRENT latest Opus, so the pipeline
@@ -36,6 +37,10 @@ function loadConfig(file) {
     if (raw[k] !== undefined && (typeof raw[k] !== 'number' || raw[k] <= 0)) {
       throw new Error(`run.config.json: '${k}' must be a positive number`);
     }
+  }
+  // The entrypoint's retry loop does shell integer math on this — enforce it here.
+  if (raw.maxAttempts !== undefined && !(Number.isInteger(raw.maxAttempts) && raw.maxAttempts > 0)) {
+    throw new Error(`run.config.json: 'maxAttempts' must be a positive whole number`);
   }
   const cfg = { ...DEFAULTS, ...raw, configPath: p };
   cfg.proxyUrl = `http://${cfg.proxyName}:${cfg.proxyPort}`;
