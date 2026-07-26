@@ -1,5 +1,10 @@
 # Task specs v2 — revised against critic findings (planning session 2026-07-25)
 
+> **Approved and frozen 2026-07-25.** Canonical specs now live in the Beads issues:
+> Task A = `repo-qyd`, Task B = `repo-zdm`, Task C = `repo-eyn`, Task D = `repo-4gp`;
+> frozen tests at `tests/acceptance/<id>/`. This file is a superseded planning
+> snapshot, like `docs/v1-backlog-draft.md`.
+
 Critic findings applied: A (2 blockers fixed), B (2 blockers + 4 minors fixed),
 C split into C + D per the scope critic; every frozen test now targets a pinned
 module/function; the bd invocations are verified against bd 1.1.0 in the base image

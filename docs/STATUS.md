@@ -78,13 +78,31 @@ real use. All are fixed.
   assumed to be a stale server and killed; it was a different app entirely, served over a
   Tailscale link.
 
+## The dogfood queue (planned 2026-07-25, first full PLANNING.md session)
+
+Four tasks specced, critic-reviewed, approved, and frozen for the pipeline to run on
+itself. Specs live in the Beads issues; tests at `tests/acceptance/<id>/` (all red by
+design until implemented). Snapshot: `docs/planning-draft-2026-07-25.md`.
+
+| Issue | Task | Prio | Notes |
+|---|---|---|---|
+| `repo-qyd` | advisor registry + ambiguity/testability/scope charters (§3.5) | 1 | |
+| `repo-zdm` | container-side memory: `memoryNotes` + `status.js note` + prompt (§3.6) | 2 | |
+| `repo-eyn` | runner memory export: `.run/memory.md` + `PIPELINE_BD_CMD` seam (§3.6) | 2 | |
+| `repo-4gp` | runner memory filing: `bd remember` after exit (§3.6) | 3 | blocked on `repo-eyn`; **run in a later batch** — both edit `runner/memory.js` |
+
+Session learnings: critic panel earned its keep (Task C split in two, unverified `bd`
+subcommands caught, an unowned contract — nothing injects memory.md into the prompt —
+found and assigned); PLANNING.md step 5 amended — draft specs go to
+`docs/planning-draft-<date>.md`, never a scratchpad, so the user has one file to read.
+
 ## What's next
 
 **Recommended order:**
 
-1. **Write the critic and specialist charters** (`advisors/*.md`) — a testability critic
-   that would have caught the self-nesting test, plus ambiguity, scope, and any domain
-   ones. These are planning-session prompts and need **zero pipeline code**.
+1. **Run the dogfood queue** (`node runner/run.js --config run.config.multiagentpipelines.json`):
+   `repo-qyd`, `repo-zdm`, `repo-eyn` first; queue `repo-4gp` only after `repo-eyn`'s
+   PR is merged.
 2. **More shadow runs.** Three is a small sample. The numbers that matter for scaling are
    per-task active time, spec-defect rate, and how often tasks collide on shared files.
 3. **V2 — the spec pipeline** (`DESIGN.md` §3.2, §3.5): package the critic panel, the
