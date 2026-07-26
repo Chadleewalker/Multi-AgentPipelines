@@ -126,7 +126,14 @@ while :; do
   # envelope (a stub, an error page, a caller-supplied command) is left byte-identical
   # and prints no model, so there is nothing to guard on. The rate-limit grep above has
   # already read the raw log.
-  MODEL=$(node "$PIPE/envelope.js" flatten "$RUN/agent-$N.log" 2>/dev/null) || MODEL=""
+  #
+  # The pinned alias is passed through so the model that actually ran is the one recorded
+  # — modelUsage also lists the cheap helper model the CLI bills alongside it (§4.3).
+  # `${PIPELINE_MODEL:-}` (not `$PIPELINE_MODEL`) because `set -u` is on and an unpinned
+  # run leaves it unset; the empty string means "no alias" and is not an error. stderr is
+  # NOT swallowed: an alias that matches nothing is a diagnostic a human must see in the
+  # run log, and hiding it is how the wrong model went unnoticed in the first place.
+  MODEL=$(node "$PIPE/envelope.js" flatten "$RUN/agent-$N.log" "${PIPELINE_MODEL:-}") || MODEL=""
   [ -n "$MODEL" ] && node "$PIPE/status.js" set model "$MODEL" 2>/dev/null
 
   # ---- verify phase: the authoritative gate (§4.4) ----
