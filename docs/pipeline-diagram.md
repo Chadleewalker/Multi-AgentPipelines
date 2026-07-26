@@ -140,7 +140,7 @@ flowchart LR
     PX["Allowlist proxy"]
     REG["SLOT 3 registry, read-only"]
   end
-  R -->|"fresh clone + issue.md"| T
+  R -->|"fresh clone + issue.md + memory.md"| T
   T -->|"commits land on your disk"| R
   T -->|"every request"| PX
   PX -->|"allowed"| AN["The three anthropic.com endpoints"]
