@@ -82,6 +82,11 @@ function attemptNotes(runId, outcome, status) {
   if (status && status.stuckState) lines.push(`  stuck: ${status.stuckState}`);
   if (status && status.rateLimitResetAt) lines.push(`  paused until ${status.rateLimitResetAt}`);
   if (status && status.docsPhaseError) lines.push(`  docs: ${status.docsPhaseError}`);
+  // Proposed memory notes are visible at review — that is where the §3.6 promotion rule
+  // is applied (a note that keeps recurring graduates into repo files).
+  if (status && Array.isArray(status.memoryNotes) && status.memoryNotes.length) {
+    lines.push(`  memory notes: ${status.memoryNotes.length}`);
+  }
   return [lines.join('\n')];
 }
 

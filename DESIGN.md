@@ -247,8 +247,17 @@ the wrapper scripts. Autonomous agents never touch the database (they physically
 - **Out:** the entrypoint accepts a `memoryNotes` array in the status file — short
   insights the coding or docs agent wants to persist ("this API rejects batch calls",
   "tests assume port 3000 free"). After container exit the runner — already the sole
-  Beads writer — files each note via `bd remember`, recording the issue id in the audit
-  trail. Agents propose; the host commits.
+  Beads writer — files each note via `bd remember`, keyed `<issue-id>-note-<n>`: the
+  issue id is the audit trail, and because the key updates in place, re-running an issue
+  overwrites its notes instead of duplicating them. Agents propose; the host commits.
+  Two rules make the channel safe to leave unattended. **Terminal, trusted outcomes
+  only** — notes are filed for `done`, `partial`, `failed`, and `stuck`, never for
+  `tampered` (an agent that failed the trust check does not get to seed project memory)
+  and never for `paused` (not terminal; the task files its notes when it finishes).
+  **The host re-enforces the schema bounds** — the file is agent-written, so the runner
+  trusts it to have respected `status.schema.json` no more than the entrypoint does:
+  first 20 notes, first 500 characters each, the rest dropped. Like the In channel,
+  filing is non-fatal: a `bd` failure is logged and the outcome is untouched.
 - **In:** at workspace prep, before container launch, the runner exports current project
   memories to a read-only file at `/workspace/.run/memory.md`, beside `issue.md` — the
   container-side mirror of `bd prime`. The export is a convenience, never a
@@ -260,7 +269,9 @@ an inbox, not a destination. A memory that keeps mattering to coding runs — th
 gotcha proposed twice, the same API misunderstanding — gets promoted at review time into
 repo files (a `CLAUDE.md` convention, a vendored doc), where it steers every future agent
 with no export step. Knowledge migrates leftward into the repo over time, exactly as
-advisor judgment migrates into frozen tests.
+advisor judgment migrates into frozen tests. So the rule has something to act on, the
+attempt log (4.11) carries a `memory notes: <count>` line whenever a task proposed any —
+review sees that notes were filed without having to query the database.
 
 **Phasing.** The contract (the `memoryNotes` status-file field, the `.run/memory.md`
 mount) is decided here because it spans the entrypoint, the runner, and
@@ -618,3 +629,4 @@ development starts only after.
 | 2026-07-25 | v1.7: the verify-attempt cap is tunable per run — `maxAttempts` in `run.config.json` (validated positive whole number), forwarded as `PIPELINE_MAX_ATTEMPTS`; the entrypoint falls back to 3 on unset/invalid. §3.5/4.3/4.6/4.7/4.10/4.12 and the 4.11 table reworded from the hardcoded 3 to "the attempt cap (default 3)". Implemented in the same change (config.js, container.js, entrypoint.sh) with two new entrypoint checks (cap=2 honored; invalid value falls back to 3) | User request: tune how many failed attempts feed forward before a task bails; default unchanged at 3 |
 | 2026-07-26 | v1.8: the §3.5 registry is built (`repo-qyd`) — `advisors/README.md` pins the charter format (`## Lens` / `## Checks` / `## Output`, one JSON fence matching the `advisories` item shape in `status.schema.json`) and `ambiguity.md` / `testability.md` / `scope.md` staff the slot-1 critic panel; `PLANNING.md` step 2 now names the charter to paste per difficulty label. Markdown only — no code reads `advisors/`, no phase changed, so V2's `/spec` skill still owns dispatch. (Renumbered from the PR's v1.7 at merge: the attempt-cap amendment claimed v1.7 on `main` while this task ran) | Dogfood queue task. The critic panel was described in three places and existed in none, so every planning session re-improvised the prompts; the shadow-01 self-nesting lesson had nowhere durable to live |
 | 2026-07-26 | v1.8.1: §3.6 In-channel built (`repo-eyn`, container side `repo-zdm`) — export moved to "at workspace prep" and pinned non-fatal: a `bd` failure logs, writes `(no memories recorded)`, and the run continues, so memory can never cost a task. Row added at merge review: the task's PR amended §3.6 wording without logging it | Change-protocol backfill — every DESIGN.md amendment gets a row, including ones made by the pipeline's own agents |
+| 2026-07-26 | v1.8.2: §3.6 Out-channel built (`repo-4gp`) — `memory.fileMemoryNotes()` files each proposed note as `bd remember <text> --key <issue-id>-note-<n>`, called once per task from `run.js` after the pause/relaunch loop. Two rules recorded in §3.6 that the design had not stated: filing is gated to the terminal, trusted outcomes (`done|partial|failed|stuck` — never `tampered`, never `paused`), and the host re-enforces the schema bounds (first 20 notes, 500 chars each) on the agent-written file. §3.6's promotion rule now names the `memory notes: <count>` attempt-log line that makes filing visible at review | Dogfood queue task. The gate and the re-enforced bounds are design-level decisions — who may seed project memory, and how far the host trusts a file an agent wrote — so they belong in the constitution, not only in the code comments |

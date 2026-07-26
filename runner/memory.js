@@ -3,13 +3,22 @@
 // container-side mirror of `bd prime`. Read through the bd layer against
 // cfg.targetRepoPath (the canonical working copy, §4.12) — never the task clone, and
 // never by the container, which has no bd at all (§4.10, sole-writer rule).
+//
+// The "Out" channel is the mirror image: after the container exits the runner files the
+// agent's proposed `memoryNotes` via `bd remember`, keyed by issue id (§3.6 audit trail).
+// Agents propose; the host commits.
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const { bdJson } = require('./bd');
+const { bd, bdJson } = require('./bd');
 
 const HEADER = '# Project memory';
 const EMPTY = '(no memories recorded)';
+
+// status.schema.json's bounds on memoryNotes, re-enforced here: the file is written by
+// the agent, so the host never trusts it to have respected its own schema.
+const MAX_NOTES = 20;
+const MAX_CHARS = 500;
 
 // bd 1.1.0's `bd memories --json` returns one object whose every key except
 // schema_version is a memory: key -> text.
@@ -51,4 +60,41 @@ function exportMemory(cfg, runDir) {
   return { ok: true };
 }
 
-module.exports = { exportMemory };
+// The "Out" channel (§3.6): file each proposed note into project memory as the sole
+// Beads writer (§4.10). Keys are `<issueId>-note-<n>` (1-based) — the issue id is the
+// audit trail, and because `bd remember` updates a key in place, re-running the same
+// issue overwrites its notes instead of accumulating duplicates.
+//
+// Never throws and never changes a task's outcome (the docsPhaseError posture): a bd
+// failure is recorded in `errors` and the run continues. Missing or empty memoryNotes
+// is a silent no-op with zero bd invocations.
+function fileMemoryNotes(cfg, issueId, status) {
+  const notes = status && Array.isArray(status.memoryNotes) ? status.memoryNotes : [];
+  const errors = [];
+  let filed = 0;
+  if (!notes.length) return { filed, errors };
+
+  const id = String(issueId || (status && status.issueId) || 'unknown');
+  notes.slice(0, MAX_NOTES).forEach((note, i) => {
+    const text = String(note == null ? '' : note).slice(0, MAX_CHARS);
+    if (!text.trim()) return;                        // nothing to remember
+    const key = `${id}-note-${i + 1}`;
+    let r;
+    try {
+      r = bd(cfg, ['remember', text, '--key', key]);
+    } catch (e) {
+      errors.push(`${key}: ${(e && e.message) || 'bd remember failed'}`);
+      return;
+    }
+    if (!r || r.status !== 0) {
+      const why = ((r && (r.stderr || r.stdout)) || (r && r.error && r.error.message) || 'bd remember failed');
+      errors.push(`${key}: ${String(why).trim() || 'bd remember failed'}`);
+      return;
+    }
+    filed += 1;
+  });
+
+  return { filed, errors };
+}
+
+module.exports = { exportMemory, fileMemoryNotes };
