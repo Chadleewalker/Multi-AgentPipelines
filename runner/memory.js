@@ -66,6 +66,18 @@ function exportMemory(cfg, runDir) {
   return { ok: true, count: lines.length };
 }
 
+// The outcome gate on the "Out" channel (§3.6). It lives here, beside the channel it
+// guards, rather than inline in the runner: it is a design rule ("which outcomes may
+// seed project memory"), and as an array literal buried in run.js no test could reach
+// it without a container. Terminal outcomes only — never 'tampered' (an agent that
+// failed the trust check does not seed project memory) and never 'paused' (not
+// terminal). Anything unrecognised, absent or non-string is false: the gate fails
+// closed, because a status the runner does not know about is not one we let write.
+const MEMORY_STATUSES = ['done', 'partial', 'failed', 'stuck'];
+function shouldFileMemory(status) {
+  return MEMORY_STATUSES.includes(status);
+}
+
 // The "Out" channel (§3.6): file each proposed note into project memory as the sole
 // Beads writer (§4.10). Keys are `<issueId>-note-<n>` (1-based) — the issue id is the
 // audit trail, and because `bd remember` updates a key in place, re-running the same
@@ -103,4 +115,4 @@ function fileMemoryNotes(cfg, issueId, status) {
   return { filed, errors };
 }
 
-module.exports = { exportMemory, fileMemoryNotes };
+module.exports = { exportMemory, fileMemoryNotes, shouldFileMemory };
