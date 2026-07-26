@@ -333,10 +333,13 @@ before the task loop), and freezing tests weeks before the run that executes the
 suites go stale. Its acceptance tests get written in the planning session immediately
 before that run.
 
-**Five tasks ran on 2026-07-26, all `done` on the first attempt**: `repo-1cy` (§3.7
-container side), `repo-dhp` (memory suite + the outcome predicate), `repo-wxh` (the
-resolved-model rule), `repo-006` (change-log slugs), plus the earlier `repo-52m`. Roughly
-30 minutes of container time in total. Four defects were found and fixed in the same day —
+**Nine tasks ran on 2026-07-26, all `done`**: `repo-qyd` 5.2, `repo-eyn` 2.6, `repo-zdm`
+3.2, `repo-4gp` 4.8, `repo-52m` 6.8, `repo-dhp` 9.1, `repo-1cy` 4.9, `repo-wxh` 5.5,
+`repo-006` 9.7 — **minutes of active container time each, 51.8 minutes summed**, longest
+single task 9.7 minutes. "Active" excludes any time parked waiting on a usage window
+(§4.6), and the sum is across tasks, not elapsed wall-clock for a run. These are the
+per-task numbers the scaling questions need, so quote them per task; a summed figure
+invites the reading that one task took that long. Four defects were found and fixed in the same day —
 6, 7, 8 and 9 — and three of the four were caught by **deterministic scaffolding** (a
 suite re-run, the run artifacts, the sweep) rather than by anyone noticing. That is the
 design's central bet, and it is the first day it paid out repeatedly.
@@ -383,10 +386,17 @@ design's central bet, and it is the first day it paid out repeatedly.
    mechanism**. Nothing enforces it the way the sweep enforces suites or the verifier
    enforces frozen tests, and its record is one hit and one miss: it was in `CLAUDE.md`
    all day and a fixture that could not tell a correct implementation from the bug it was
-   fixing still reached a freeze (caught by the testability critic, not by the rule). If
-   this class recurs, the next move is to make part of it deterministic — a check in
-   `advisors/testability.md`, or a convention in the acceptance-test guide — rather than
-   to reword the paragraph again.
+   fixing still reached a freeze (caught by the testability critic, not by the rule).
+
+   Two different follow-ups, and they are **not** the same thing. Sharpening
+   `advisors/testability.md` makes the *judgment* step better — a charter is a prompt read
+   by an LLM critic, so it raises the odds a discriminating fixture gets demanded, and
+   nothing more. Making it **deterministic** means a script, which here would mean the
+   acceptance-test conventions growing a mechanical check (§3.5's ladder: judgment
+   migrates leftward into frozen tests). The charter route is cheap and was the thing that
+   actually caught this class twice today; the deterministic route is the one that would
+   stop depending on a critic noticing. Do the first; reach for the second only if the
+   class recurs after it.
 2. **More shadow runs.** Three is a small sample. The numbers that matter for scaling are
    per-task active time, spec-defect rate, and how often tasks collide on shared files.
 3. **V2 — the spec pipeline** (`DESIGN.md` §3.2, §3.5): package the critic panel, the
