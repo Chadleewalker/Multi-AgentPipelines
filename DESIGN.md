@@ -278,6 +278,38 @@ mount) is decided here because it spans the entrypoint, the runner, and
 `status.schema.json` — §10's dividing line. The plumbing ships with the shadow trial;
 the V1 E2E fixture pass does not exercise it.
 
+### 3.7 Spec concerns (the "this spec is wrong" channel)
+
+§3.3 states that drift flows upward: an agent reporting "the spec is wrong" is a
+first-class result, not a failure. V1 gave that principle no mechanism. An agent that
+believed its frozen spec was wrong could only comply — and shadow-01 showed exactly what
+that costs: the agent wrote the correct implementation on attempt 1, diagnosed the broken
+acceptance gate correctly in its own notes, watched it fail the task anyway, and then
+contorted correct code until the broken gate went green. It knew, and had no way to say
+so. This section closes the gap without weakening anything.
+
+The status file carries an optional `specConcerns` array of strings. The coding and docs
+agents may append to it with `status.js concern "<text>"`; after exit the host reads it
+and surfaces the entries where a human reviewing the run already looks — the attempt log,
+the run manifest, the run report, and the PR body. Bounds: **at most 5 entries, each
+truncated to its first 1000 characters**, using the mechanism `status.js note` already
+provides for `memoryNotes` but with different numbers. A spec concern is rarer than an
+insight and needs more room to be actionable.
+
+**A concern is evidence and never a gate** (§3.5). It cannot change an outcome, an exit
+code, a Beads transition, or whether a branch is published — the same posture as
+`advisories`, and what keeps the three-attempt cap meaningful: an agent must not be able
+to escape a task it dislikes by declaring the spec broken. What a concern does is reach
+the human at review time, where changing a spec is legal. That is §3.3's approval gate
+reopened deliberately, rather than a run rewriting its own definition of done.
+
+**Phasing.** Like §3.6, the contract is decided here because it spans the entrypoint, the
+runner, and `status.schema.json` — §10's dividing line — and it is declared before either
+half is built, so no container has to invent it. The container-side half (the schema
+field, the writer, the prompt text) and the host-side half (surfacing) are separate
+tasks, sequenced: the host side cannot run in the same batch, since the runner reads the
+ready queue once before the task loop.
+
 ## 4. The Implementation Phase (the execution layer)
 
 Carried over from v3, amended over two critic-review rounds; this section is the single
@@ -655,3 +687,4 @@ development starts only after.
 | 2026-07-26 | v1.8.3: §4.3 gains the contract-artifact extraction rule and §4.11 names the resolved model id in the status file (`repo-52m`) — both agent phases request `--output-format json` when the entrypoint owns the invocation, and `pipeline/envelope.js` reads the last log line that parses to a JSON object with a string `result` (summary + `modelUsage`'s first key). Recorded as design, not comment: the rule is *structural on purpose* (no list of known CLI warnings to maintain), the docs phase keeps stderr out of the file its summary comes from because that text becomes the PR body (§4.5), and the workspace trust flags are seeded before the first call so the noise is removed at source | The v1.2 model-pinning feature had never actually recorded a resolved id — a CLI warning line broke the whole-file `JSON.parse` — and the same line led every PR body. A defect that silently disabled a shipped contract belongs in the constitution so the next reader knows the extraction rule is load-bearing |
 | 2026-07-26 | v1.8.2: §3.6 Out-channel built (`repo-4gp`) — `memory.fileMemoryNotes()` files each proposed note as `bd remember <text> --key <issue-id>-note-<n>`, called once per task from `run.js` after the pause/relaunch loop. Two rules recorded in §3.6 that the design had not stated: filing is gated to the terminal, trusted outcomes (`done|partial|failed|stuck` — never `tampered`, never `paused`), and the host re-enforces the schema bounds (first 20 notes, 500 chars each) on the agent-written file. §3.6's promotion rule now names the `memory notes: <count>` attempt-log line that makes filing visible at review | Dogfood queue task. The gate and the re-enforced bounds are design-level decisions — who may seed project memory, and how far the host trusts a file an agent wrote — so they belong in the constitution, not only in the code comments |
 | 2026-07-26 | v1.8.4: §4.7 states that the pause loop is bounded per task, via `maxPauseCycles` in `run.config.json` (validated positive whole number, default 96). The bound is a per-*task* cycle count carried across relaunches, not a per-wait one: `run.js` hands `waitForWindow` the cycles already spent, and `runner/config.js` exposes the cap that was previously hardcoded and unreachable | Found by re-running `scripts/test-runner-queue.sh` after the V1 merges. The stop condition existed but could never fire — the wait was re-entered fresh on every pause, resetting its counter — so a container reporting an already-elapsed reset time relaunched on a 5-second cycle forever, unbounded, because paused time is deliberately excluded from the wall-clock budget. Making the cap configurable is part of the fix: it was untestable while hardcoded, which is why the gap survived |
+| 2026-07-26 | v1.9: §3.7 declares the spec-concern channel — `specConcerns` in the status file (optional, max 5 entries, 1000 chars each), `status.js concern` as the writer, host surfacing in the attempt log / manifest / report / PR body, and evidence-only per §3.5: a concern can never change an outcome, an exit code, a Beads transition, or whether a branch is published. Declared before either half is built, so no container invents a cross-component contract | Warranted by §3.3 (drift flows upward) and by shadow-01, where the agent diagnosed a broken gate correctly, had no channel to report it, and contorted correct code until the gate went green. The scope critic caught that the field appeared nowhere in this doc; §3.6 declared `memoryNotes` before `repo-zdm` built it, and this follows that precedent |
