@@ -595,6 +595,37 @@ flowchart TB
   </section>
 
   <section>
+    <h2><span class="phase p-harness">Governance</span> Who decides what</h2>
+    <p>
+      The whole division of labor in one place. Claude proposes; humans hold every
+      high-level call — except the last row, which belongs to no one on purpose.
+    </p>
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th>Decision</th><th>Claude's part</th><th>The call belongs to</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Language &amp; main technologies</td><td>Options + a recommendation</td><td><b>The developer</b></td></tr>
+          <tr><td>What "done" means (the spec)</td><td>Drafts it</td><td><b>The developer</b> — the approval gate</td></tr>
+          <tr><td>Difficulty label</td><td>Proposes</td><td><b>The developer</b> — it sizes the critics</td></tr>
+          <tr><td>Acceptance tests</td><td>Writes them, before any code</td><td><b>Claude</b> — developer may inspect before freeze</td></tr>
+          <tr><td>Priority &amp; dependencies</td><td>Proposes an order, with reasons</td><td><b>The developer</b> — this shapes the queue a run drains</td></tr>
+          <tr><td>Implementation, overnight</td><td>All of it</td><td><b>Claude alone</b>, steered by the frozen tests</td></tr>
+          <tr><td>Pass / fail</td><td>—</td><td><b>Nobody</b> — the frozen verifier's exit code</td></tr>
+          <tr><td>Merge, or send back</td><td>Assembles the PR and its evidence</td><td><b>The developer</b></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">
+      <strong>The empty cell is the design.</strong> Neither the agent that wrote the
+      code nor anyone reading its claims decides whether a task passed — a deterministic
+      script does, against tests frozen before the code existed. Everything trustworthy
+      about the overnight phase traces back to that row.
+    </p>
+  </section>
+
+  <section>
     <h2><span class="phase p-impl">Implementation</span> Inside one task container</h2>
     <p>
       The phase order is scaffolding, not a decision the model makes. The verifier is the
@@ -688,6 +719,55 @@ PR: <private repo> PR #2</pre>
   </section>
 
   <section>
+    <h2><span class="phase p-impl">Memory</span> What the pipeline remembers between tasks</h2>
+    <p>
+      Insights outlive the disposable containers. The memory store is the same database
+      as the task list, and the same rule applies: <strong>the host holds the only
+      pen.</strong> Agents propose memories through the status file; the runner files
+      them after the container exits. Going the other way, the runner exports current
+      memories to a read-only file at container launch — so each task starts knowing
+      what earlier tasks learned.
+    </p>
+    <div class="plate">
+<pre class="mermaid">
+flowchart LR
+  subgraph HOST["Host"]
+    direction TB
+    MDB[("Project memory — same database as the task list")]
+    R2["Runner"]
+  end
+  subgraph CONT["Container"]
+    direction TB
+    AG["Coding agent"]
+    SF[("status file — proposed memory notes")]
+  end
+  RP["Repo files — docs and project rules"]
+  MDB -->|"exported read-only at launch: memory.md"| AG
+  AG -->|"proposes"| SF
+  SF --> R2
+  R2 -->|"files each note"| MDB
+  MDB -->|"recurring lessons promoted, at review"| RP
+
+  classDef agent stroke-width:1.5px
+  classDef script stroke-width:1.25px
+  classDef store stroke-width:1.25px
+  class AG agent
+  class R2 script
+  class MDB,SF,RP store
+</pre>
+    </div>
+    <div class="gloss">
+      <p><strong>Repo files outrank memory.</strong> A lesson that keeps mattering —
+      the same gotcha proposed twice, the same API misunderstanding — gets promoted into
+      the project's own docs and rules at review time, where every future agent sees it
+      with no export step. Memory is the inbox, the repo is the destination.</p>
+      <p><strong>In interactive sessions</strong> (planning, review) the store is used
+      directly — remembered insights are injected at session start, the standard way.
+      The container-side plumbing shown here lands with the shadow trial.</p>
+    </div>
+  </section>
+
+  <section>
     <h2><span class="phase p-walls">Isolation</span> Where the walls are</h2>
     <p>
       The container is disposable and nearly powerless: no git credentials, no package
@@ -763,6 +843,32 @@ flowchart LR
       the ready queue. A stuck task needs a human decision — fix the spec, fix the design,
       or drop it — so the loop can never pick it up again and spin.
     </p>
+  </section>
+
+  <section>
+    <h2><span class="phase p-harness">Review</span> The morning after</h2>
+    <p>
+      The run report arrives ordered by how much scrutiny each task needs —
+      <span class="tag bad">tampered</span> &gt; <span class="tag bad">stuck</span> &gt;
+      <span class="tag warn">partial</span> &gt; <span class="tag bad">failed</span> &gt;
+      <span class="tag ok">done with retries</span> &gt;
+      <span class="tag ok">done first try</span> — so the top of the report is where your
+      attention goes first. Each kind asks something different of you:
+    </p>
+    <div class="gloss">
+      <p><strong>Tampered</strong> wants suspicion: something changed a frozen file, and
+      the pushed WIP branch is the evidence. <strong>Stuck</strong> wants a decision —
+      three honest attempts failed, so the spec is probably wrong: fix it and re-approve,
+      amend the design, or drop the task. <strong>Partial</strong> wants its regression
+      evidence read: the new work passed but something existing broke, and the flagged PR
+      says what. <strong>Done</strong> wants an ordinary code review — the PR carries the
+      spec, the change summary, and the verification evidence, so judging it needs no
+      archaeology.</p>
+      <p><strong>"Send back" is not an edit.</strong> Feedback on a PR becomes a new task
+      through the normal planning session — nothing is fixed by hand on a pipeline
+      branch, so every change that reaches the integration branch went through the same
+      gates.</p>
+    </div>
   </section>
 
   <footer>
