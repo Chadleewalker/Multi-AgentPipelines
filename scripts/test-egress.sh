@@ -61,9 +61,14 @@ CODE=$(probe -- https://api.anthropic.com/)
 
 # Live headless claude through the proxy (empirical endpoint confirmation).
 if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-  OUT=$(MSYS_NO_PATHCONV=1 docker run --rm --network pipeline-net "${PROXY_ENV[@]}" \
+  # tee to stderr: a live model call is the slowest step here — stream it instead of
+  # going silent. stdout is still captured for the assertion below. pipefail is not
+  # needed by the assertion (it greps the text) but is kept uniform across every tee'd
+  # call: without it the pipeline reports tee's status, so anyone who later adds an
+  # exit-code check here would silently always read 0.
+  OUT=$(set -o pipefail; MSYS_NO_PATHCONV=1 docker run --rm --network pipeline-net "${PROXY_ENV[@]}" \
         -e CLAUDE_CODE_OAUTH_TOKEN "$BASE_IMG" \
-        sh -c 'claude -p "Reply with exactly: ok" --max-turns 1 2>&1' )
+        sh -c 'claude -p "Reply with exactly: ok" --max-turns 1 2>&1' | tee /dev/stderr )
   echo "$OUT" | grep -qi "ok" && pass "headless claude -p works through the proxy" \
                               || fail "claude -p failed through proxy: $(echo "$OUT" | head -2)"
 else

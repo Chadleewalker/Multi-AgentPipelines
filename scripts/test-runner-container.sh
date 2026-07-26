@@ -63,7 +63,10 @@ CFG_OK="$TMP/ok.json";    mkcfg "$CFG_OK"   '"sh -c \"cat >/dev/null; echo done 
 CFG_FAIL="$TMP/fail.json"; mkcfg "$CFG_FAIL" '"sh -c \"cat >/dev/null; echo nope >> notes.txt\""'
 CFG_HANG="$TMP/hang.json"; mkcfg "$CFG_HANG" '"sh -c \"cat >/dev/null; sleep 600\""' 0.15
 
-run() { RUN_ID="$1" node runner/run.js --config "$2" 2>&1; }
+# tee to stderr so the run streams to the terminal live while stdout is still captured
+# for the assertions ($( ) takes stdout only). Without it these suites look hung for
+# minutes. pipefail keeps the runner's exit code from being masked by tee's.
+run() { ( set -o pipefail; RUN_ID="$1" node runner/run.js --config "$2" 2>&1 | tee /dev/stderr ); }
 
 # 1. Real container, real entrypoint, verified success.
 bdq update "$BAIL_ID" --status blocked >/dev/null   # isolate the success task
