@@ -136,6 +136,31 @@ to v1.8.2: the outcome gate and the host-side re-enforcement of the schema bound
 decisions about *who may seed project memory* and *how far the host trusts an
 agent-written file*, so they now live in §3.6 rather than only in code comments.
 
+## The 2026-07-26 queue (one task, from run artifacts)
+
+Planned from the shadow-run artifacts rather than the backlog. Snapshot:
+`docs/planning-draft-2026-07-26.md`.
+
+| Issue | Task | Prio | Notes |
+|---|---|---|---|
+| `repo-52m` | clean contract artifacts from agent CLI noise (§4.3, §4.11) | 1 | **Done** — `pipeline/envelope.js`, `status.js summary`, entrypoint trust seeding |
+
+**`repo-52m` fixed defect 5 above at both ends.** `pipeline/envelope.js` is the single
+reader of the CLI's `--output-format json` envelope: `parse(text)` scans lines bottom-up
+and returns `{result, model}` from the first that parses to an object with a string
+`result` (`model` = the first key of `modelUsage`, else null), and
+`node envelope.js flatten <file>` rewrites a log to just its result text while printing
+the resolved model — a log with no envelope is left byte-identical and prints nothing, so
+stubs and caller-supplied commands need no special case. `status.js summary <file>` sets
+`changeSummary` from the envelope result, falling back to the raw file when there is none
+(trimmed, last 2000 chars); it is the only new writer, and `init`/`attempts`/`append`/
+`set`/`note` are untouched. The entrypoint now sends both agent phases through the JSON
+path, keeps the docs phase's stderr in `.run/docs-err.txt` instead of merging it into the
+file the summary is read from (the code phase's log stays merged — the rate-limit grep
+reads it), and seeds `hasTrustDialogAccepted` / `hasCompletedOnboarding` for `$WS` into
+`$HOME/.claude.json` before the first call, merging into any existing config and never
+touching the token. `DESIGN.md` is amended to v1.8.3.
+
 Session learnings: critic panel earned its keep (Task C split in two, unverified `bd`
 subcommands caught, an unowned contract — nothing injects memory.md into the prompt —
 found and assigned); PLANNING.md step 5 amended — draft specs go to
@@ -199,4 +224,7 @@ Run individually, never concurrently. Each drives real Docker.
 `scripts/test-runner-*.sh` suite — its coverage lives in the Docker-free acceptance tests
 at `tests/acceptance/repo-eyn/` and `tests/acceptance/repo-4gp/`, which drive it through
 the `PIPELINE_BD_CMD` stub seam. Fold it into a `test-runner-memory.sh` if the module
-grows past the two entry points.
+grows past the two entry points. The same is true of `pipeline/envelope.js` and
+`status.js summary`: their coverage is `tests/acceptance/repo-52m/`, which drives the
+whole entrypoint with a `PIPELINE_AGENT_CMD` stub and a stub `verify.js` (never the real
+verifier — that would self-nest, the shadow-01 lesson).
