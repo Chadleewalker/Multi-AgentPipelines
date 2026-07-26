@@ -76,9 +76,10 @@ Two facts make the exclusion mandatory rather than cosmetic, both verified again
 children, so an unfiltered runner would clone a workspace for it and hand an agent a spec
 with no criteria. And **closing every child does not close the parent** — the epic stays
 open and ready, so it would be re-picked on every subsequent run, forever. The runner
-therefore skips any ready-queue entry whose `issue_type` is not `task`. That is a
-deterministic type check on a field `bd ready --json` already returns (§4.12, hard rule 7)
-— never a heuristic over the title, and never an LLM.
+therefore skips any ready-queue entry whose `issue_type` is `epic`, and drains every other
+type (§4.12 says why it is a deny-list and not an allow-list). That is a deterministic
+type check on a field `bd ready --json` already returns (hard rule 7) — never a heuristic
+over the title, and never an LLM.
 
 **Who decides what is an epic.** The human does, at planning time, exactly as with
 priority and the difficulty label (§3.3): the decomposer proposes, the user approves.
