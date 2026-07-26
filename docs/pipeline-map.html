@@ -669,6 +669,37 @@ flowchart LR
   </section>
 
   <section>
+    <h2><span class="phase p-harness">Governance</span> Who decides what</h2>
+    <p>
+      The whole division of labor in one place. Claude proposes; humans hold every
+      high-level call — except the last row, which belongs to no one on purpose.
+    </p>
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th>Decision</th><th>Claude's part</th><th>The call belongs to</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Language &amp; main technologies</td><td>Options + a recommendation</td><td><b>The developer</b></td></tr>
+          <tr><td>What "done" means (the spec)</td><td>Drafts it</td><td><b>The developer</b> — the approval gate</td></tr>
+          <tr><td>Difficulty label</td><td>Proposes</td><td><b>The developer</b> — it sizes the critics</td></tr>
+          <tr><td>Acceptance tests</td><td>Writes them, before any code</td><td><b>Claude</b> — developer may inspect before freeze</td></tr>
+          <tr><td>Priority &amp; dependencies</td><td>Proposes an order, with reasons</td><td><b>The developer</b> — this shapes the queue a run drains</td></tr>
+          <tr><td>Implementation, overnight</td><td>All of it</td><td><b>Claude alone</b>, steered by the frozen tests</td></tr>
+          <tr><td>Pass / fail</td><td>—</td><td><b>Nobody</b> — the frozen verifier's exit code</td></tr>
+          <tr><td>Merge, or send back</td><td>Assembles the PR and its evidence</td><td><b>The developer</b></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">
+      <strong>The empty cell is the design.</strong> Neither the agent that wrote the
+      code nor anyone reading its claims decides whether a task passed — a deterministic
+      script does, against tests frozen before the code existed. Everything trustworthy
+      about the overnight phase traces back to that row.
+    </p>
+  </section>
+
+  <section>
     <h2><span class="phase p-plan">Phase 1–3</span> End to end</h2>
     <p>
       Planning is always interactive. Implementation is always autonomous. Nothing during
@@ -729,37 +760,6 @@ flowchart TB
       a brand new one with a fresh download of your code, and it is destroyed when the task
       ends — so nothing leaks between tasks and killing one is always safe.</p>
     </div>
-  </section>
-
-  <section>
-    <h2><span class="phase p-harness">Governance</span> Who decides what</h2>
-    <p>
-      The whole division of labor in one place. Claude proposes; humans hold every
-      high-level call — except the last row, which belongs to no one on purpose.
-    </p>
-    <div class="tablewrap">
-      <table>
-        <thead>
-          <tr><th>Decision</th><th>Claude's part</th><th>The call belongs to</th></tr>
-        </thead>
-        <tbody>
-          <tr><td>Language &amp; main technologies</td><td>Options + a recommendation</td><td><b>The developer</b></td></tr>
-          <tr><td>What "done" means (the spec)</td><td>Drafts it</td><td><b>The developer</b> — the approval gate</td></tr>
-          <tr><td>Difficulty label</td><td>Proposes</td><td><b>The developer</b> — it sizes the critics</td></tr>
-          <tr><td>Acceptance tests</td><td>Writes them, before any code</td><td><b>Claude</b> — developer may inspect before freeze</td></tr>
-          <tr><td>Priority &amp; dependencies</td><td>Proposes an order, with reasons</td><td><b>The developer</b> — this shapes the queue a run drains</td></tr>
-          <tr><td>Implementation, overnight</td><td>All of it</td><td><b>Claude alone</b>, steered by the frozen tests</td></tr>
-          <tr><td>Pass / fail</td><td>—</td><td><b>Nobody</b> — the frozen verifier's exit code</td></tr>
-          <tr><td>Merge, or send back</td><td>Assembles the PR and its evidence</td><td><b>The developer</b></td></tr>
-        </tbody>
-      </table>
-    </div>
-    <p class="note">
-      <strong>The empty cell is the design.</strong> Neither the agent that wrote the
-      code nor anyone reading its claims decides whether a task passed — a deterministic
-      script does, against tests frozen before the code existed. Everything trustworthy
-      about the overnight phase traces back to that row.
-    </p>
   </section>
 
   <section>
