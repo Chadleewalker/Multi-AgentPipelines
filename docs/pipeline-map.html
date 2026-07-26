@@ -954,7 +954,7 @@ flowchart LR
           </tr>
           <tr>
             <td><b>status file</b></td>
-            <td><span class="tag">.run/status.json</span> — outcome, attempts, proposed memory notes, advisories; schema-checked against <span class="tag">schemas/status.schema.json</span>. The verifier's <span class="tag">verify.json</span> evidence rides beside it</td>
+            <td><span class="tag">.run/status.json</span> — outcome, attempts, proposed memory notes, spec concerns, advisories; schema-checked against <span class="tag">schemas/status.schema.json</span>. The verifier's <span class="tag">verify.json</span> evidence rides beside it</td>
             <td class="code">JSON</td>
             <td>The container — its only way to report anything</td>
           </tr>
@@ -1544,7 +1544,7 @@ flowchart LR
   subgraph CONT["Container"]
     direction TB
     AG["Coding agent"]
-    SF[("status.json — proposed memory notes")]
+    SF[("status.json — agent proposals:<br/>memory notes · spec concerns")]
   end
   RP[("Repo files — CLAUDE.md, docs")]
   MDB -->|"exported read-only at launch: memory.md"| AG
@@ -1697,8 +1697,10 @@ flowchart LR
       with one already merged, GitHub blocks it with a conflict — and the fix is never a
       hand-edit: it goes back through planning as a new task that starts from the
       updated main. The subtler case — two changes that merge cleanly but disagree in
-      behavior — is why overlapping tasks don't share a parallel batch, and why running
-      the project's own test suite after merging remains ordinary hygiene.</p>
+      behavior — is why overlapping tasks don't share a parallel batch, and why the full
+      sweep after merging a batch is a named step rather than optional hygiene:
+      <span class="tag">scripts/test-all.sh</span> runs every suite in sequence, and it is
+      what caught a suite that passed inside the container and failed on the host.</p>
     </div>
   </section>
 
