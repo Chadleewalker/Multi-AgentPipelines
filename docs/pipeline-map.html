@@ -35,6 +35,8 @@
     --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 
     --step: clamp(1rem, 0.9rem + 0.4vw, 1.0625rem);
+    /* Prose measure. Everything that is not prose is free to ignore it. */
+    --measure: 68ch;
   }
 
   @media (prefers-color-scheme: dark) {
@@ -137,11 +139,11 @@
     font-size: var(--step);
     line-height: 1.6;
     margin: 0;
-    padding: clamp(1.5rem, 4vw, 4rem) 1.25rem 5rem;
+    padding: clamp(1.5rem, 3vw, 3.5rem) clamp(1.25rem, 2.5vw, 2.5rem) 5rem;
   }
 
   .wrap {
-    max-width: 62rem;
+    max-width: min(100rem, 100%);
     margin: 0 auto;
     display: flex;
     flex-direction: column;
@@ -168,7 +170,7 @@
     margin: 0;
   }
 
-  .lede { max-width: 60ch; color: var(--muted); margin: 0; }
+  .lede { max-width: var(--measure); color: var(--muted); margin: 0; }
 
   section { display: flex; flex-direction: column; gap: 1rem; }
 
@@ -196,8 +198,9 @@
   .p-impl { color: var(--flow); }
   .p-walls { color: var(--refuse); }
   .p-harness { color: var(--human-stroke); }
+  .p-all { color: var(--ink); }
 
-  section > p { max-width: 62ch; margin: 0; color: var(--muted); }
+  section > p { max-width: var(--measure); margin: 0; color: var(--muted); }
 
   .plate {
     background: var(--plate);
@@ -208,6 +211,78 @@
   }
   .plate pre.mermaid { margin: 0; background: none; }
   .plate svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+
+  /* The master map is a canvas, not a picture. It fits its frame at rest — the whole
+     system on one screen — and detail comes from zooming, so nothing has to scroll and
+     nothing has to shrink to 6px type. touch-action keeps vertical page scroll working
+     on touch devices; horizontal drag still pans. */
+  .plate.canvas {
+    position: relative;
+    padding: 0;
+    /* Shape, not height. An artifact's frame height is set by the parent FROM the
+       content height, so a vh unit here measures a viewport derived from this very
+       element — circular, and it destabilises under page zoom. An aspect ratio keeps
+       the frame's proportions fixed at every zoom level; only its size changes. */
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    min-height: 17rem;
+    overflow: hidden;
+    touch-action: pan-y;
+    cursor: grab;
+    /* Without this, dragging across the diagram starts a text selection on the SVG
+       labels; the browser then fires pointercancel and the pan dies a few pixels in. */
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  .plate.canvas.grabbing { cursor: grabbing; }
+  .plate.canvas:focus-visible { outline: 2px solid var(--flow); outline-offset: 2px; }
+  .plate.canvas svg { width: 100%; height: 100%; max-width: none; margin: 0; }
+
+  .zoombar {
+    position: absolute;
+    right: 0.55rem;
+    bottom: 0.55rem;
+    display: flex;
+    gap: 0.25rem;
+    padding: 0.25rem;
+    background: var(--plate);
+    border: 1px solid var(--plate-rule);
+    border-radius: 3px;
+  }
+  .zoombar button {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    line-height: 1;
+    min-width: 1.9rem;
+    padding: 0.4rem 0.35rem;
+    color: var(--ink);
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 2px;
+    cursor: pointer;
+  }
+  .zoombar button:hover { border-color: var(--flow); color: var(--flow); }
+  .zoombar button:focus-visible { outline: 2px solid var(--flow); outline-offset: 1px; }
+
+  .canvashint {
+    position: absolute;
+    left: 0.7rem;
+    top: 0.55rem;
+    font-family: var(--mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    background: var(--plate);
+    padding: 0.1rem 0.35rem;
+    border-radius: 2px;
+    pointer-events: none;
+  }
+  .zoomlevel { min-width: 2.6rem; text-align: center; }
+  /* Jump straight to a readable scale on one stretch of the timeline. A 42-node map
+     cannot be legible whole; these are the way in. */
+  .jumpbar { right: auto; left: 0.55rem; bottom: 0.55rem; }
+  .jumpbar button { min-width: 0; letter-spacing: 0.06em; }
 
   /* Mermaid's own theming is unreliable across runtimes, so contrast is enforced
      here on the rendered SVG instead of being left to its defaults. */
@@ -265,12 +340,12 @@
   .plate svg .arrowheadPath,
   .plate svg defs marker path { fill: var(--line) !important; stroke: var(--line) !important; }
 
-  .gloss { display: flex; flex-direction: column; gap: 0.5rem; max-width: 62ch; }
+  .gloss { display: flex; flex-direction: column; gap: 0.5rem; max-width: var(--measure); }
   .gloss p { margin: 0; color: var(--muted); font-size: 0.92rem; }
   .gloss strong { color: var(--ink); font-weight: 600; }
 
   /* The from-zero path — a true sequence, so it gets numbers. */
-  .steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.55rem; max-width: 62ch; counter-reset: step; }
+  .steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.55rem; max-width: var(--measure); counter-reset: step; }
   .steps li { display: flex; gap: 0.7rem; align-items: baseline; font-size: 0.92rem; color: var(--muted); }
   .steps li::before {
     counter-increment: step;
@@ -315,6 +390,54 @@
   .skillcard ol { margin: 0; padding-left: 1.2rem; display: flex; flex-direction: column; gap: 0.35rem; }
   .skillcard li { font-size: 0.88rem; color: var(--muted); }
   .skillcard li b { color: var(--ink); font-weight: 600; }
+
+  /* Critic charters. The checks are a lens, not a sequence, so they stay unnumbered —
+     unlike the skill cards above, where step order is real. */
+  .critcards { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: 1rem; }
+  .critcard {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-top: 2px solid var(--gate);
+    border-radius: 3px;
+    padding: 1rem 1.1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+  }
+  .critcard h3 { font-family: var(--mono); font-size: 0.85rem; font-weight: 600; margin: 0; color: var(--ink); }
+  .critcard .lens { margin: 0; font-size: 0.88rem; color: var(--ink); }
+  .critcard ul { margin: 0; padding-left: 1.05rem; display: flex; flex-direction: column; gap: 0.3rem; }
+  .critcard li { font-size: 0.85rem; color: var(--muted); }
+  .critcard li b { color: var(--ink); font-weight: 600; }
+
+  /* One critique in three moves: what the draft said, what came back, what froze.
+     Stripe colours follow the phase tags — amber is always the gate. */
+  /* Capped: the label column is fixed, so an uncapped box would run the finding text
+     out to 110 characters a line. */
+  .exchanges { display: flex; flex-direction: column; gap: 0.9rem; max-width: 76rem; }
+  .exchange { background: var(--surface); border: 1px solid var(--rule); border-radius: 3px; overflow: hidden; }
+  .exchange .row {
+    display: grid;
+    grid-template-columns: 7.5rem 1fr;
+    gap: 0 1rem;
+    padding: 0.7rem 0.95rem;
+    border-bottom: 1px solid var(--rule);
+    border-left: 3px solid transparent;
+  }
+  .exchange .row:last-child { border-bottom: none; }
+  .exchange .who { font-family: var(--mono); font-size: 0.68rem; letter-spacing: 0.1em; text-transform: uppercase; line-height: 1.9; }
+  .exchange .what { margin: 0; font-size: 0.88rem; color: var(--muted); }
+  .exchange .what b { color: var(--ink); font-weight: 600; }
+  .row.draft { border-left-color: var(--store-stroke); }
+  .row.draft .who { color: var(--muted); }
+  .row.finding { border-left-color: var(--gate); }
+  .row.finding .who { color: var(--gate); }
+  .row.frozen { border-left-color: var(--flow); }
+  .row.frozen .who { color: var(--flow); }
+  @media (max-width: 38rem) {
+    .exchange .row { grid-template-columns: 1fr; gap: 0.25rem; }
+    .exchange .who { line-height: 1.5; }
+  }
 
   /* Specialist slots (DESIGN.md 3.5) — dashed amber, distinct from built machinery.
      Mermaid may put a classDef class on the node group OR on the shape itself, so both
@@ -396,6 +519,18 @@
   .plate svg .cont .nodeLabel, .plate svg .cont text, .plate svg .cont tspan {
     color: var(--node-text) !important; fill: var(--node-text) !important;
   }
+  /* The Beads database is the one durable store in the system — the task queue and the
+     project memory are the same rows in the same file. It appears in six diagrams, so it
+     gets a thicker wall rather than a new colour: still data, but the data. */
+  .plate svg .db rect, .plate svg .db polygon, .plate svg .db path,
+  .plate svg .db .label-container, .plate svg rect.db, .plate svg path.db {
+    fill: var(--store-fill) !important; stroke: var(--store-stroke) !important;
+    stroke-width: 3.25px !important;
+  }
+  .plate svg .db .nodeLabel, .plate svg .db text, .plate svg .db tspan {
+    color: var(--node-text) !important; fill: var(--node-text) !important;
+  }
+
   .plate svg .agent .nodeLabel, .plate svg .script .nodeLabel, .plate svg .human .nodeLabel,
   .plate svg .store .nodeLabel, .plate svg .external .nodeLabel, .plate svg .slot .nodeLabel,
   .plate svg .agent text, .plate svg .script text, .plate svg .human text,
@@ -410,6 +545,7 @@
   .key .sw.script { background: var(--script-fill); border: 1.25px solid var(--script-stroke); }
   .key .sw.human { background: var(--human-fill); border: 2px solid var(--human-stroke); }
   .key .sw.store { background: var(--store-fill); border: 1.25px solid var(--store-stroke); border-radius: 8px; }
+  .key .sw.db { background: var(--store-fill); border: 3px solid var(--store-stroke); border-radius: 8px; }
   .key .sw.slot { background: var(--spec-fill); border: 1.5px dashed var(--spec-stroke); }
   .key .sw.cont { background: var(--script-fill); border: 1.5px solid var(--script-stroke); border-left-width: 4px; border-right-width: 4px; }
   .key .sw.external { background: var(--ext-fill); border: 1.25px dotted var(--ext-stroke); }
@@ -457,7 +593,7 @@
   .note {
     border-left: 2px solid var(--flow);
     padding: 0.1rem 0 0.1rem 1rem;
-    max-width: 62ch;
+    max-width: var(--measure);
     color: var(--muted);
   }
   .note strong { color: var(--ink); font-weight: 600; }
@@ -478,6 +614,35 @@
     font-size: 0.85rem;
     font-family: var(--mono);
   }
+
+  /* Wide screens (a 1080p monitor and up). Prose keeps its measure — long lines are
+     harder to read, not more efficient — while everything that is not prose spreads
+     into the space: diagrams get bigger, annotation sets go multi-column, and the page
+     gets shorter instead of wider. Placed last so it wins on equal specificity. */
+  @media (min-width: 78rem) {
+    .wrap { gap: 3.75rem; }
+
+    /* Each gloss paragraph is a self-contained note with a bold lead-in, so they read
+       as a set side by side — this is where most of the vertical scroll goes away. */
+    .gloss {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(23rem, 1fr));
+      gap: 0.9rem 2.25rem;
+      max-width: none;
+      align-items: start;
+    }
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.6rem 2.25rem;
+      max-width: none;
+    }
+    /* auto-fill, not auto-fit: two cards stay card-sized instead of stretching to
+       ninety characters a line, and the empty track reads as a grid. */
+    .skillcards { grid-template-columns: repeat(auto-fill, minmax(23rem, 1fr)); }
+    .critcards { grid-template-columns: repeat(auto-fill, minmax(21rem, 1fr)); }
+    .key { grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: 0.6rem 2rem; }
+  }
 </style>
 
 <div class="wrap">
@@ -493,7 +658,8 @@
       <li><span class="sw agent"></span><span><b>Agent</b> — an AI call. Judgment, non-deterministic. There are only four in the whole system.</span></li>
       <li><span class="sw script"></span><span><b>Scaffolding</b> — a plain script. Same input, same output, every time. Most of the pipeline.</span></li>
       <li><span class="sw human"></span><span><b>You</b> — a decision only you make. Diamonds are decision points.</span></li>
-      <li><span class="sw store"></span><span><b>Data</b> — the task list. Cylinders are stored state, not steps.</span></li>
+      <li><span class="sw store"></span><span><b>Data</b> — anything stored: a file, a folder, a database. Cylinders are state, not steps.</span></li>
+      <li><span class="sw db"></span><span><b>Beads</b> (<code>bd</code>) — the thick-walled cylinder, and the only database here. The task queue <em>and</em> the project memory are the same one; only the host may write to it.</span></li>
       <li><span class="sw slot"></span><span><b>Specialist slot</b> — where a domain agent plugs in. Dashed = not built yet.</span></li>
       <li><span class="sw cont"></span><span><b>Container</b> — a disposable sandbox (double-edged box), one task each. One at a time today; the dashed extras arrive with the V2 concurrency knob.</span></li>
       <li><span class="sw external"></span><span><b>Outside your machine</b> — beyond the sandbox wall.</span></li>
@@ -540,6 +706,264 @@
   </section>
 
   <section>
+    <h2><span class="phase p-all">The whole map</span> Everything, in one picture</h2>
+    <p>
+      Every box on this page, once. At <code>fit</code> this is a shape, not a reading —
+      what you see is the four bands and where the arrows cross them. For the labels, hit
+      <code>plan</code>, <code>run</code> or <code>review</code> to land on that stretch
+      of the timeline at a legible scale, then drag and scroll from there. Node names are
+      abbreviated here; the eight diagrams below spell each one out.
+    </p>
+    <ul class="key">
+      <li><span class="sw human"></span><span><b>Bands are trust domains</b> — who is allowed to touch a thing. The interesting events are all band crossings.</span></li>
+      <li><span class="sw script"></span><span><b>Left to right is time</b> — a project's whole life, from “create it” to “merge it”.</span></li>
+      <li><span class="sw store"></span><span><b>Arrows are flow only.</b> Solid = something moves. Dotted = read-only or reference. <b>—✕</b> = refused at the wall.</span></li>
+    </ul>
+    <div class="plate canvas" tabindex="0" role="group"
+         aria-label="Master pipeline map. Scroll to zoom, drag to pan, arrow keys to move, plus and minus to zoom, 0 to reset.">
+      <span class="canvashint">scroll to zoom · drag to pan</span>
+      <div class="zoombar jumpbar">
+        <button type="button" data-region="0,0.46">plan</button>
+        <button type="button" data-region="0.36,0.76">run</button>
+        <button type="button" data-region="0.68,1">review</button>
+      </div>
+      <div class="zoombar">
+        <button type="button" data-zoom="out" aria-label="Zoom out">−</button>
+        <button type="button" data-zoom="in" aria-label="Zoom in">+</button>
+        <button type="button" data-zoom="fit" class="zoomlevel" aria-label="Reset to fit">fit</button>
+      </div>
+<pre class="mermaid">
+%%{init: {"flowchart": {"rankSpacing": 44, "nodeSpacing": 150, "padding": 12, "subGraphTitleMargin": {"top": 8, "bottom": 16}}}}%%
+flowchart LR
+  subgraph YOU["You"]
+    direction LR
+    DESIGN["Design doc"]
+    SCAF["scaffold"]
+    ONBD["pipeline-onboard"]
+    LABEL{"Difficulty label"}
+    APPR{"Approve intent"}
+    MERGE{"Merge or<br/>send back"}
+  end
+
+  subgraph HOST["Your PC — the host"]
+    direction LR
+    REPO[("This repo<br/>*.md checklists")]
+    SPECS["Task-sized specs"]
+    CRITICS["Critics"]
+    SLOT1["SLOT 1 critic"]
+    TESTS["Tests +<br/>coverage check"]
+    SLOT2["SLOT 2 tests"]
+    FREEZE["Freeze"]
+    FROZEN[("tests/acceptance/<br/>frozen test files")]
+    CFG[("pipeline.config.json<br/>Dockerfile · image")]
+    CLAUDEMD[("CLAUDE.md")]
+    DB[("Beads database<br/>queue + memory")]
+    RUNNER["Runner"]
+    PREP["Workspace prep"]
+    WS[("Workspace folder<br/>the container's disk")]
+    COLLECT["Collect + finish"]
+    PUBLISH["Push + PR"]
+    REPORT["Run report"]
+  end
+
+  subgraph SBX["Sandbox — one container per task"]
+    direction LR
+    ISSUE[("issue.md<br/>memory.md")]
+    CODE["Code phase"]
+    VERIFY{"Verifier"}
+    FEEDBACK["Retry"]
+    ADV["SLOT 3 advisors"]
+    REG["Registry"]
+    DOCS["Docs phase"]
+    STATUS[("status.json<br/>+ verify.json")]
+    OK["exit 0 verified"]
+    STUCK["exit 10 stuck"]
+    TAMP["exit 11 tampered"]
+    PAUSE["exit 20 paused"]
+    PROXY["Proxy"]
+    MORE[["⋯ N at once<br/>V2 knob"]]
+  end
+
+  subgraph OUT["Outside"]
+    direction LR
+    ANTH["anthropic.com ×3"]
+    GHUB["GitHub PR"]
+    BLOCKED["Refused"]
+  end
+
+  REPO -.-> ONBD
+  SCAF --> CLAUDEMD
+  ONBD --> CFG
+  ONBD --> FROZEN
+  ONBD --> CLAUDEMD
+  ONBD --> DB
+  REPO -.-> SPECS
+  REPO -.-> SLOT1
+  REPO -.-> REG
+
+  DESIGN --> SPECS
+  SPECS --> LABEL
+  LABEL -->|"medium · hard"| CRITICS
+  LABEL -->|"trivial"| TESTS
+  SLOT1 -.-> CRITICS
+  CRITICS -->|"advisory"| TESTS
+  SLOT2 -.-> TESTS
+  TESTS --> APPR
+  APPR -->|"not yet"| SPECS
+  APPR -->|"approved"| FREEZE
+  FREEZE --> FROZEN
+  FREEZE -->|"open"| DB
+
+  DB --> RUNNER
+  RUNNER -->|"claim"| DB
+  RUNNER --> PREP
+  RUNNER -.-> MORE
+  PREP --> WS
+  PREP --> ISSUE
+  DB -.->|"memory.md"| ISSUE
+  CLAUDEMD -.-> WS
+  WS --- CODE
+
+  ISSUE --> CODE
+  CODE -->|"usage limit"| PAUSE
+  CODE --> VERIFY
+  FROZEN -.->|"diffed"| VERIFY
+  CFG -.->|"fork commit"| VERIFY
+  VERIFY -->|"tampered"| TAMP
+  VERIFY -->|"fail"| FEEDBACK
+  FEEDBACK --> CODE
+  VERIFY -->|"cap"| STUCK
+  VERIFY -->|"pass"| ADV
+  REG -.-> ADV
+  ADV --> DOCS
+  DOCS --> OK
+  CODE -.-> STATUS
+  ADV -.-> STATUS
+  CODE -->|"every request"| PROXY
+  PROXY -->|"allowed"| ANTH
+  PROXY --x BLOCKED
+  CODE -.->|"commits"| WS
+
+  OK --> COLLECT
+  STUCK --> COLLECT
+  TAMP --> COLLECT
+  PAUSE --> COLLECT
+  STATUS --> COLLECT
+  COLLECT -->|"closed · blocked"| DB
+  WS --> PUBLISH
+  COLLECT --> PUBLISH
+  COLLECT --> REPORT
+  PUBLISH --> GHUB
+  REPORT --> MERGE
+  MERGE -->|"send back"| SPECS
+  MERGE -.-> CLAUDEMD
+
+  classDef agent stroke-width:1.75px
+  classDef script stroke-width:1.25px
+  classDef human stroke-width:2px
+  classDef slot stroke-dasharray:5 3,stroke-width:1.5px
+  classDef store stroke-width:1.25px
+  classDef external stroke-width:1.25px,stroke-dasharray:2 2
+  classDef blocked stroke-width:2px
+  classDef db stroke-width:3.25px
+  class DESIGN,SCAF,ONBD,LABEL,APPR,MERGE human
+  class SPECS,CRITICS,TESTS,CODE,DOCS agent
+  class FREEZE,RUNNER,PREP,COLLECT,PUBLISH,REPORT,VERIFY,FEEDBACK,OK,STUCK,TAMP,PAUSE,PROXY script
+  class REPO,CFG,CLAUDEMD,FROZEN,WS,ISSUE,STATUS store
+  class DB db
+  class SLOT1,SLOT2,ADV,REG,MORE slot
+  class ANTH,GHUB external
+  class BLOCKED blocked
+</pre>
+    </div>
+    <div class="gloss">
+      <p><strong>Four boxes here replace fourteen below</strong>, and the merges are the
+      point. <b>The queue and project memory are one store</b> — the same database, the
+      same sole-writer rule, which is why an agent's insight and an agent's task travel
+      the same path home. <b>The runner is one script</b> that claims the task, prepares
+      the clone, waits, collects, and files the result: it is the only thing in the system
+      touching both sides of the freeze. <b>The workspace folder is the container's
+      disk</b>, which is why commits are on your PC the instant they're written and
+      killing a container never loses work.</p>
+      <p><strong>Read the band crossings first.</strong> Only four kinds of thing cross
+      into the sandbox: a fresh clone, two read-only files, one credential, and requests
+      to three hostnames. Only three kinds come back: commits in a shared folder, a status
+      file, and an exit code. Everything else on this page is arranged so that those lists
+      stay that short.</p>
+      <p><strong>What the arrows deliberately don't show.</strong> There is no arrow from
+      any agent to the queue, none from the container to a git host, and none from the
+      verifier back to anything the agent can reach. Those absences are the design; the
+      diagram is as much a map of what cannot happen as what does.</p>
+      <p><strong>Where the task states live.</strong> The lifecycle — open, in progress,
+      closed, blocked — isn't drawn as its own shape here; it's the two labels on the
+      arrows into the database, written by the host and nobody else. The state machine has
+      its own diagram further down.</p>
+    </div>
+    <p>
+      Every cylinder on the map, and what it actually is. Only one of them is a database —
+      the rest are files, and that is deliberate: state you can read in a text editor and
+      diff in a commit is state you can audit.
+    </p>
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th>Cylinder</th><th>What it really is</th><th>Format</th><th>Written by</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><b>Queue + memory</b></td>
+            <td><b>Beads</b> — the task list and project memory in one store, synced over <span class="tag">refs/dolt/data</span>; <span class="tag">.beads/issues.jsonl</span> is a passive export, not the source</td>
+            <td class="code">database</td>
+            <td>The host, only — never the container</td>
+          </tr>
+          <tr>
+            <td><b>This repo</b></td>
+            <td>The pipeline's own checklists and critic charters: <span class="tag">ONBOARDING.md</span>, <span class="tag">PLANNING.md</span>, <span class="tag">advisors/*.md</span></td>
+            <td class="code">markdown</td>
+            <td>You and Claude, in a session</td>
+          </tr>
+          <tr>
+            <td><b>Config + image</b></td>
+            <td><span class="tag">pipeline.config.json</span> — verify command, branch, frozen paths, declared dependencies — plus the thin Dockerfile and the image built from it</td>
+            <td class="code">JSON + Dockerfile</td>
+            <td>Onboarding; planning, when a dependency is added</td>
+          </tr>
+          <tr>
+            <td><b>Frozen tests</b></td>
+            <td>The acceptance tests at <span class="tag">tests/acceptance/&lt;issue-id&gt;/</span> and anything listed in <span class="tag">frozenPaths</span></td>
+            <td class="code">test files</td>
+            <td>Claude at planning, committed before the run</td>
+          </tr>
+          <tr>
+            <td><b>CLAUDE.md</b></td>
+            <td>The rules an agent wakes up to inside the container — where it is, what it must never touch</td>
+            <td class="code">markdown</td>
+            <td>Onboarding; promoted lessons at review</td>
+          </tr>
+          <tr>
+            <td><b>Workspace folder</b></td>
+            <td>A directory on your PC mounted as the container's whole disk — which is why commits are on the host the moment they're written</td>
+            <td class="code">directory</td>
+            <td>Runner clones it; the container works in it</td>
+          </tr>
+          <tr>
+            <td><b>issue.md + memory.md</b></td>
+            <td>The task spec and the exported project memories, dropped into <span class="tag">.run/</span> before launch</td>
+            <td class="code">markdown</td>
+            <td>Runner at workspace prep — read-only to the agent</td>
+          </tr>
+          <tr>
+            <td><b>status file</b></td>
+            <td><span class="tag">.run/status.json</span> — outcome, attempts, proposed memory notes, spec concerns, advisories; schema-checked against <span class="tag">schemas/status.schema.json</span>. The verifier's <span class="tag">verify.json</span> evidence rides beside it</td>
+            <td class="code">JSON</td>
+            <td>The container — its only way to report anything</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
     <h2><span class="phase p-harness">Setup</span> Where the harness fits</h2>
     <p>
       Around the pipeline sits the harness — a plugin of skills every Claude session
@@ -563,10 +987,10 @@ flowchart LR
   end
   subgraph TP["Target project repo"]
     direction TB
-    CFG["pipeline.config.json + thin Dockerfile"]
-    FRZ["tests/acceptance — frozen at approval"]
-    CLM["CLAUDE.md — rides into every container"]
-    TL[("Task list")]
+    CFG[("pipeline.config.json + thin Dockerfile")]
+    FRZ[("tests/acceptance — frozen test files")]
+    CLM[("CLAUDE.md — rides into every container")]
+    TL[("Beads database — task queue + project memory")]
   end
   SC --> CLM
   ONB -.->|"source of truth"| OB
@@ -579,9 +1003,11 @@ flowchart LR
   classDef human stroke-width:2px
   classDef script stroke-width:1.25px
   classDef store stroke-width:1.25px
+  classDef db stroke-width:3.25px
   class SC,OB human
   class ONB,PLN,RN script
-  class CFG,FRZ,CLM,TL store
+  class CFG,FRZ,CLM store
+  class TL db
 </pre>
     </div>
     <p>A brand-new project reaches its first autonomous run in four stages — the first
@@ -717,7 +1143,7 @@ flowchart TB
   E --> F{"You approve intent"}
   F -->|"needs changes"| B
   F -->|"approved"| G["Freeze the tests on the main branch"]
-  G --> H[("Task list, one issue per task")]
+  G --> H[("Beads database — one issue per task")]
   H --> I["Runner takes ready tasks, in priority order"]
   I -->|"today: one at a time"| J1[["Container — task A: fresh clone, then destroyed"]]
   I -.->|"V2 knob"| J2[["Container — task B"]]
@@ -734,13 +1160,14 @@ flowchart TB
   classDef slot stroke-dasharray:5 3,stroke-width:1.5px
   classDef store stroke-width:1.25px
   classDef cont stroke-width:1.5px
+  classDef db stroke-width:3.25px
   class B,C,D,E agent
   class G,I,K script
   class F,L human
   class SP1,SP2 slot
   class J2,J3 slot
   class J1 cont
-  class H store
+  class H db
   class A human
 </pre>
     </div>
@@ -759,6 +1186,230 @@ flowchart TB
       <p><strong>A sandbox</strong> is a throwaway computer inside your PC. Each task gets
       a brand new one with a fresh download of your code, and it is destroyed when the task
       ends — so nothing leaks between tasks and killing one is always safe.</p>
+      <p><strong>“Critics attack each spec”</strong> is one box above and the section
+      below — it is where most of a bad task gets caught, and the only place the cost of a
+      misunderstanding is still one sentence.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="phase p-plan">Planning</span> Inside “critics attack each spec”</h2>
+    <p>
+      A critic is one Claude review with no memory of the conversation that produced the
+      spec — a subagent or a fresh session, handed three things: the draft, read access to
+      the repository, and a charter pasted verbatim from <code>advisors/</code>. The blank
+      context is the whole point. A reviewer who watched the spec get written agrees with
+      it; a stranger has to guess at exactly what the coding agent, sealed in a container
+      weeks later, will have to guess at — except the agent guesses silently and ships.
+    </p>
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th>Difficulty label</th><th>Critics run</th><th>Why that much</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><b>trivial</b></td><td>none</td><td>Straight to tests. This is also why an under-labelled task is the dangerous one — it reaches a container unreviewed</td></tr>
+          <tr><td><b>medium</b></td><td>one light pass — testability</td><td>Untestable criteria are the failure that survives review most often</td></tr>
+          <tr><td><b>hard</b></td><td>the full panel — ambiguity, testability, scope</td><td>Three independent reviews, each in its own fresh context, never a discussion between them</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      The label is Claude's proposal and your call — changing it is how you turn the
+      scrutiny up or down on a spec you're unsure about.
+    </p>
+    <div class="plate">
+<pre class="mermaid">
+flowchart TB
+  D["Draft spec — Description · Constraints · Done means · design-ref"] --> L{"Difficulty label — Claude proposes, you decide"}
+  L -->|"trivial — no critics"| RV["Claude revises the draft against the findings"]
+  L -->|"medium — one light pass"| TE["Testability critic"]
+  L -->|"hard — full panel"| AM["Ambiguity critic"]
+  L -->|"hard"| TE
+  L -->|"hard"| SC["Scope critic"]
+  SP1["SLOT 1 — domain critic, same charter format"] -.-> AM
+  AM --> V[("Findings — one JSON verdict each: ok · concerns · error")]
+  TE --> V
+  SC --> V
+  V -->|"advisory: a list of decisions, never a veto"| RV
+  RV --> AP{"You approve intent"}
+  AP -->|"not yet"| RV
+  AP -->|"approved"| FR["Tests written from the spec, then frozen"]
+
+  classDef agent stroke-width:1.5px
+  classDef script stroke-width:1.25px
+  classDef human stroke-width:2px
+  classDef slot stroke-dasharray:5 3,stroke-width:1.5px
+  classDef store stroke-width:1.25px
+  class D,AM,TE,SC,RV agent
+  class FR script
+  class L,AP human
+  class SP1 slot
+  class V store
+</pre>
+    </div>
+    <div class="critcards">
+      <div class="critcard">
+        <h3>ambiguity</h3>
+        <p class="lens">Where would two competent engineers, working from this spec alone
+        and unable to ask a question, build different things?</p>
+        <ul>
+          <li><b>Unpinned outputs</b> — “writes a summary” leaves the where, the what and the shape all open.</li>
+          <li><b>Terms that shift meaning</b> — one word used for the host <code>.run/</code> in one line and the container's in another.</li>
+          <li><b>Quantities left to taste</b> — limits, timeouts, retries: either a number or an explicit “implementer's call”.</li>
+          <li><b>Silent conflicts</b> — a constraint that contradicts a criterion. Report it; don't pick a winner.</li>
+          <li><b>Load-bearing adjectives</b> — “robust”, “sensible”, “properly”: each is a decision the spec declined to make.</li>
+        </ul>
+      </div>
+      <div class="critcard">
+        <h3>testability</h3>
+        <p class="lens">Which criteria can a script not verify — and which could it verify
+        <em>wrongly</em>? Both end as a green run that proves nothing.</p>
+        <ul>
+          <li><b>Overfitted gates</b> — would this test pass on an implementation that is obviously wrong? Say how, concretely.</li>
+          <li><b>Self-nesting test runners</b> — the real shadow-01 defect: a test that shells out to the same runner it's running under.</li>
+          <li><b>Environment inheritance</b> — which inherited variable makes this pass on your PC and fail in the container?</li>
+          <li><b>Non-determinism</b> — clocks, random ids, ordering. A flaky test is worse than none: it destroys the retry loop's steering signal.</li>
+          <li><b>Coverage both ways</b> — a criterion with no test, or a test with no criterion, is a spec bug.</li>
+        </ul>
+      </div>
+      <div class="critcard">
+        <h3>scope</h3>
+        <p class="lens">Is this secretly several tasks — or a fragment that can't stand
+        alone? One spec = one run = one PR a human reviews in a few minutes.</p>
+        <ul>
+          <li><b>The conjunction test</b> — two clauses joined by “and” touching different layers are usually two tasks.</li>
+          <li><b>Blast radius</b> — a change spanning separately-built components hides which half broke.</li>
+          <li><b>Too small to stand</b> — a schema field nothing writes; absorb its consumer or sequence it explicitly.</li>
+          <li><b>Undeclared dependencies</b> — anything missing gets discovered in a container that cannot install or invent it.</li>
+          <li><b>Label fit</b> — does the difficulty label match what the review actually found?</li>
+        </ul>
+      </div>
+    </div>
+    <p>
+      Every critic answers in the same four-field object — the same shape a run-time
+      advisor writes into the status file, so a lens can move between planning and run time
+      without being rewritten:
+    </p>
+    <pre class="trail">{
+  "advisor": "testability",
+  "verdict": "concerns",
+  "summary": "A1 forces a self-nesting test runner and A3 rests on human judgment.",
+  "details": [
+    "A1 'the project's test suite passes' will be checked by running node --test from
+     inside node --test. NODE_TEST_CONTEXT is inherited by the child, which reports as
+     a nested subtest and fails regardless of the code. Assert on the script's exit
+     code instead, or spawn the child with that variable stripped.",
+    "A3 'the report reads clearly' is not machine-checkable. Restate as the fields the
+     report must contain and their order, or drop it to a review note."
+  ]
+}</pre>
+    <p>
+      Three verdicts exist and only three. <span class="tag ok">ok</span> — reviewed
+      through this lens, nothing worth acting on. <span class="tag warn">concerns</span> —
+      findings that deserve a decision. <span class="tag bad">error</span> — the review
+      could not be performed, which is a finding about the review, not about the work.
+    </p>
+  </section>
+
+  <section>
+    <h2><span class="phase p-plan">Worked example</span> One session's back-and-forth</h2>
+    <p>
+      The 2026-07-25 session put four specs through the panel — this project's own
+      backlog, planned by the pipeline for the pipeline. Three findings and what they
+      changed. Draft and frozen wording are verbatim; the findings are summarised from
+      that session's critic passes.
+    </p>
+    <div class="exchanges">
+      <div class="exchange">
+        <div class="row draft">
+          <span class="who">Draft</span>
+          <p class="what">A3 — “<code>advisors/testability.md</code> <b>mentions</b> the
+          nested-test-runner failure mode: contains (case-insensitive) <code>nest</code>
+          and the literal <code>NODE_TEST_CONTEXT</code>.”</p>
+        </div>
+        <div class="row finding">
+          <span class="who">testability</span>
+          <p class="what">An overfitted gate — it passes on an implementation that is
+          obviously wrong. The substring <code>nest</code> occurs in any file that
+          happens to say “nested”; a charter that never explains the failure mode would
+          go green. <b>Name the strings that only a correct charter contains.</b></p>
+        </div>
+        <div class="row frozen">
+          <span class="who">Frozen as</span>
+          <p class="what">A3 requires the literal <code>NODE_TEST_CONTEXT</code>,
+          <em>and</em> a match for <code>nested test</code> or <code>self-nest</code>,
+          <em>and</em> one for <code>environment inherit</code>. The neighbouring criteria
+          hardened with it: “mentions the headings” became line-anchored regexes
+          (<code>^## Lens\s*$</code>), and “each fenced json block” became <b>exactly
+          one</b> fence.</p>
+        </div>
+      </div>
+      <div class="exchange">
+        <div class="row draft">
+          <span class="who">Draft</span>
+          <p class="what">Task C, labelled <b>hard</b> — “(1) <b>In:</b> the runner exports
+          the project's memories to <code>.run/memory.md</code> … (2) <b>Out:</b> after
+          container exit, the runner files each note via <code>bd remember</code>.”</p>
+        </div>
+        <div class="row finding">
+          <span class="who">scope</span>
+          <p class="what">The conjunction test: two deliverables, one running before launch
+          in workspace prep and one after exit in the publish path. They pass and fail
+          independently and produce a diff a reviewer has to read twice.
+          <b>Split, in dependency order.</b></p>
+        </div>
+        <div class="row frozen">
+          <span class="who">Frozen as</span>
+          <p class="what">Two tasks, both <b>medium</b>: <b>C</b> — memory export at
+          workspace prep, plus the <code>PIPELINE_BD_CMD</code> test seam.
+          <b>D</b> — <code>memoryNotes</code> → <code>bd remember</code> after exit,
+          declared as depending on C. Two PRs, each reviewable on its own.</p>
+        </div>
+      </div>
+      <div class="exchange">
+        <div class="row draft">
+          <span class="who">Draft</span>
+          <p class="what">Constraint — “if the project has no memories, write the file with
+          a <b>‘no memories’ line</b> rather than omitting it (stable contract for the
+          container side).”</p>
+        </div>
+        <div class="row finding">
+          <span class="who">ambiguity</span>
+          <p class="what">Unpinned output. The file's path is pinned; its contents are not.
+          One engineer writes <code># No memories</code>, another <code>(none)</code> — and
+          “stable contract” is exactly the claim that then fails. Nor does the spec say what
+          happens when <code>bd</code> itself errors. <b>Pin the bytes, and pin the error
+          case.</b></p>
+        </div>
+        <div class="row frozen">
+          <span class="who">Frozen as</span>
+          <p class="what">“First line is exactly <code># Project memory</code>, followed by
+          one line per memory of the form <code>- &lt;key&gt;: &lt;text&gt;</code>. With
+          zero memories <b>or on any bd error</b>, the file's content is the single line
+          <code>(no memories recorded)</code>.” The export never throws and always writes
+          the file.</p>
+        </div>
+      </div>
+    </div>
+    <div class="gloss">
+      <p><strong>The pattern in all three:</strong> a critic never says the spec is bad.
+      It names the exact phrase, says what two different things could be built from it,
+      and stops. Claude revises, you approve the revision — the finding itself decides
+      nothing, which is why a critic can be wrong without costing anything.</p>
+      <p><strong>Why they are advisory by design.</strong> An AI reviewer that could fail
+      a task would void the three-attempt cap and produce overnight failures nobody can
+      act on. The frozen tests are the only authority on pass/fail; a charter that asks
+      its critic to block anything is a bug in the charter.</p>
+      <p><strong>Findings want to become tests.</strong> A lens that keeps flagging the
+      same thing should stop being a review and start being a check — a tolerance, a grep,
+      a dimensional analysis. A test steers the container's retry loop; a review does not.
+      That migration, judgment moving leftward into frozen tests, is the direction the
+      whole registry is meant to travel.</p>
+      <p><strong>Today this is a human-driven session</strong> following PLANNING.md, with
+      three general-purpose charters. The dashed slot is where a domain critic plugs in —
+      the same file format, named in a config rather than wired into the runner. V2
+      packages the session itself as a skill.</p>
     </div>
   </section>
 
@@ -827,7 +1478,7 @@ flowchart LR
     A["1. Claim — status becomes in progress"]
     C["2. Collect the exit code and status file"]
     D["3. Finish — append notes, close or block"]
-    Q[("Task list")]
+    Q[("Beads database — the task queue")]
   end
   subgraph CONT["Container — no queue access"]
     B["The task runs: code, verify, docs"]
@@ -839,9 +1490,9 @@ flowchart LR
   D -.->|"write"| Q
 
   classDef script stroke-width:1.25px
-  classDef store stroke-width:1.25px
+  classDef db stroke-width:3.25px
   class A,C,D,B script
-  class Q store
+  class Q db
 </pre>
     </div>
     <div class="plate">
@@ -887,15 +1538,15 @@ PR: https://github.com/Chadleewalker/Hallertau/pull/2</pre>
 flowchart LR
   subgraph HOST["Host"]
     direction TB
-    MDB[("Project memory — same database as the task list")]
+    MDB[("Beads database — project memory, same store as the queue")]
     R2["Runner"]
   end
   subgraph CONT["Container"]
     direction TB
     AG["Coding agent"]
-    SF[("status file — proposed memory notes")]
+    SF[("status.json — agent proposals:<br/>memory notes · spec concerns")]
   end
-  RP["Repo files — docs and project rules"]
+  RP[("Repo files — CLAUDE.md, docs")]
   MDB -->|"exported read-only at launch: memory.md"| AG
   AG -->|"proposes"| SF
   SF --> R2
@@ -905,9 +1556,11 @@ flowchart LR
   classDef agent stroke-width:1.5px
   classDef script stroke-width:1.25px
   classDef store stroke-width:1.25px
+  classDef db stroke-width:3.25px
   class AG agent
   class R2 script
-  class MDB,SF,RP store
+  class SF,RP store
+  class MDB db
 </pre>
     </div>
     <div class="gloss">
@@ -936,7 +1589,7 @@ flowchart LR
 flowchart LR
   subgraph HOST["Your PC"]
     direction TB
-    BD[("Task list")]
+    BD[("Beads database — queue + memory")]
     R["Runner — timers, budgets, kill switch"]
     WS[("Shared workspace folder — the container's disk lives here")]
     GH["Scripts, no AI: git push · gh pr create · run report"]
@@ -963,8 +1616,10 @@ flowchart LR
   classDef slot stroke-dasharray:5 3,stroke-width:1.5px
   classDef external stroke-width:1.25px,stroke-dasharray:2 2
   classDef blocked stroke-width:2px
+  classDef db stroke-width:3.25px
   class R,GH,T,PX script
-  class BD,WS store
+  class WS store
+  class BD db
   class REG slot
   class AN external
   class BL blocked
@@ -1042,8 +1697,10 @@ flowchart LR
       with one already merged, GitHub blocks it with a conflict — and the fix is never a
       hand-edit: it goes back through planning as a new task that starts from the
       updated main. The subtler case — two changes that merge cleanly but disagree in
-      behavior — is why overlapping tasks don't share a parallel batch, and why running
-      the project's own test suite after merging remains ordinary hygiene.</p>
+      behavior — is why overlapping tasks don't share a parallel batch, and why the full
+      sweep after merging a batch is a named step rather than optional hygiene:
+      <span class="tag">scripts/test-all.sh</span> runs every suite in sequence, and it is
+      what caught a suite that passed inside the container and failed on the host.</p>
     </div>
   </section>
 
@@ -1058,58 +1715,415 @@ flowchart LR
   // them — this adjusts the rendered SVG instead. If it never runs, the diagram is
   // simply the mermaid default: still correct, just tighter and centre-titled.
   (function () {
-    var PAD = 18;      // breathing room added inside each zone box
-    var INSET = 12;    // how far the title sits in from the box corner
+    // Each zone box is REDRAWN around its own member nodes rather than nudged from
+    // where mermaid put it. Nudging could never open a real gap: raising the diagram's
+    // nodeSpacing pushes the nodes apart, but mermaid then grows each box to wrap its
+    // nodes, so the boxes stay as close as they ever were and the new space is spent
+    // inside them. Measuring the members and drawing a tight box hands that space back —
+    // the gap between two bands becomes their node separation minus the padding below,
+    // which is a number this file controls instead of one mermaid picks.
+    //
+    // This only ever rewrites rectangle geometry and the title's position. Nodes, edges
+    // and text are never moved, so the worst case is mermaid's own default appearance.
+    var PAD_X = 14;       // side padding inside a zone box
+    var PAD_TOP = 30;     // room for the title, which sits inside the top edge
+    var PAD_BOTTOM = 14;
+    var INSET = 12;       // how far the title sits in from the box's left edge
+
+    // Bounding box of an element in its nearest svg viewport's coordinates. getCTM is
+    // safe here — unlike getScreenCTM it never involves client pixels, so page zoom
+    // cannot skew it.
+    function boxIn(el) {
+      var b, m;
+      try { b = el.getBBox(); m = el.getCTM(); } catch (err) { return null; }
+      if (!b || !(b.width > 0) || !(b.height > 0)) return null;
+      if (!m) return { x: b.x, y: b.y, w: b.width, h: b.height };
+      var xs = [], ys = [];
+      [[b.x, b.y], [b.x + b.width, b.y], [b.x, b.y + b.height], [b.x + b.width, b.y + b.height]]
+        .forEach(function (p) {
+          xs.push(m.a * p[0] + m.c * p[1] + m.e);
+          ys.push(m.b * p[0] + m.d * p[1] + m.f);
+        });
+      var x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs);
+      var y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys);
+      return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+    }
 
     function layoutClusters() {
       document.querySelectorAll(".plate svg").forEach(function (svg) {
+        if (svg.getAttribute("data-clustered")) return;
         var clusters = svg.querySelectorAll("g.cluster");
         if (!clusters.length) return;
 
+        var nodeBoxes = [];
+        svg.querySelectorAll("g.node").forEach(function (n) {
+          var b = boxIn(n);
+          if (b) nodeBoxes.push(b);
+        });
+        if (!nodeBoxes.length) return;
+
+        var done = 0;
         clusters.forEach(function (c) {
           var rect = c.querySelector("rect");
-          if (!rect || rect.getAttribute("data-laidout")) return;
+          if (!rect) return;
+          var outer = boxIn(rect);
+          if (!outer) return;
 
-          var x = parseFloat(rect.getAttribute("x")) || 0;
-          var y = parseFloat(rect.getAttribute("y")) || 0;
-          var w = parseFloat(rect.getAttribute("width")) || 0;
-          var h = parseFloat(rect.getAttribute("height")) || 0;
+          // Members are the nodes whose centre falls inside the box mermaid drew.
+          var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, found = 0;
+          nodeBoxes.forEach(function (b) {
+            var cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+            if (cx <= outer.x || cx >= outer.x + outer.w) return;
+            if (cy <= outer.y || cy >= outer.y + outer.h) return;
+            x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y);
+            x1 = Math.max(x1, b.x + b.w); y1 = Math.max(y1, b.y + b.h);
+            found++;
+          });
+          if (!found) return;
 
-          rect.setAttribute("x", x - PAD);
-          rect.setAttribute("y", y - PAD);
-          rect.setAttribute("width", w + PAD * 2);
-          rect.setAttribute("height", h + PAD * 2);
-          rect.setAttribute("data-laidout", "1");
+          var m = rect.getCTM();
+          if (!m || !m.inverse) return;
+          var inv = m.inverse();
+          function toLocal(px, py) {
+            return { x: inv.a * px + inv.c * py + inv.e, y: inv.b * px + inv.d * py + inv.f };
+          }
+
+          // VERTICAL ONLY. The gap between bands is a vertical quantity, so that is all
+          // this needs to touch — and leaving x/width exactly as mermaid set them makes
+          // the whole thing fail safe. Membership is decided by which nodes sit inside
+          // the box mermaid drew; if that box was itself misplaced, a node can be missed,
+          // and a box rebuilt on both axes would then visibly fail to wrap its own row.
+          // Rebuilt on one axis, a missed node costs nothing: everything in a band shares
+          // its vertical extent.
+          var rx = parseFloat(rect.getAttribute("x")) || 0;
+          var a = toLocal(x0, y0 - PAD_TOP);
+          var b2 = toLocal(x1, y1 + PAD_BOTTOM);
+          var ry = Math.min(a.y, b2.y);
+
+          rect.setAttribute("y", ry);
+          rect.setAttribute("height", Math.abs(b2.y - a.y));
 
           // Title to the box's top-left, inside the border.
           var label = c.querySelector(".cluster-label");
           if (label) {
             var fo = label.querySelector("foreignObject");
             if (fo) { fo.setAttribute("x", 0); fo.setAttribute("y", 0); }
-            label.setAttribute("transform",
-              "translate(" + (x - PAD + INSET) + "," + (y - PAD + 4) + ")");
+            label.setAttribute("transform", "translate(" + (rx + INSET) + "," + (ry + 5) + ")");
             label.setAttribute("text-anchor", "start");
           }
+          done++;
         });
 
-        // Give the enlarged boxes room so nothing clips at the edges.
+        if (!done) return;
+        svg.setAttribute("data-clustered", "1");
+
+        // A little room around the whole drawing so nothing clips at the edges.
         if (!svg.getAttribute("data-vb")) {
           var vb = (svg.getAttribute("viewBox") || "").split(/[ ,]+/).map(Number);
           if (vb.length === 4 && vb.every(function (n) { return !isNaN(n); })) {
             svg.setAttribute("viewBox",
-              (vb[0] - PAD) + " " + (vb[1] - PAD) + " " +
-              (vb[2] + PAD * 2) + " " + (vb[3] + PAD * 2));
+              (vb[0] - PAD_X) + " " + (vb[1] - PAD_X) + " " +
+              (vb[2] + PAD_X * 2) + " " + (vb[3] + PAD_X * 2));
             svg.setAttribute("data-vb", "1");
           }
         }
       });
     }
 
+    // Pan and zoom for the master map. The whole thing is done by rewriting the SVG's
+    // own viewBox, so the diagram stays vector-sharp at every level and no library is
+    // needed — which matters here, since the page can't load one. The fitted view is the
+    // zoom-out floor: you can never pan off into empty space.
+    var MAX_ZOOM = 14;
+
+    function makeCanvas(plate) {
+      var svg = plate.querySelector("svg");
+      if (!svg || svg.getAttribute("data-zoomable")) return;
+      var vb = (svg.getAttribute("viewBox") || "").split(/[ ,]+/).map(Number);
+      if (vb.length !== 4 || !(vb[2] > 0) || !(vb[3] > 0)) return;
+
+      svg.setAttribute("data-zoomable", "1");
+      svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+      svg.style.maxWidth = "none";
+      svg.style.width = "100%";
+      svg.style.height = "100%";
+
+      // Two boxes: the diagram's own bounds, and those bounds grown to the frame's
+      // proportions. Zoom operates on the second. If the viewBox kept the diagram's
+      // aspect ratio instead, "meet" would letterbox it inside the frame at every zoom
+      // level — and that empty band would never shrink no matter how far you zoomed in.
+      // Fit to the ink, not to the declared viewBox. Mermaid's viewBox carries dead
+      // space, and fitting to it throws away scale the reader needs — measure what is
+      // actually drawn and fit to that instead.
+      // Measured, not read off the viewBox: mermaid's viewBox carries dead space, and
+      // fitting to it throws away scale. The margin is proportional because getBBox
+      // measures declared boxes while label text may overflow its foreignObject, so the
+      // real extent runs past the measurement — vertical gets more, since the band stack
+      // is where that shows.
+      function measure() {
+        var c = { x: vb[0], y: vb[1], w: vb[2], h: vb[3] };
+        try {
+          var ink = svg.getBBox();
+          if (ink && ink.width > 8 && ink.height > 8) {
+            // Deliberately lopsided. The resting view is this box, so where the drawing
+            // sits inside the frame is decided here: a deep bottom margin pushes the
+            // drawing UP, which is what keeps the last band off the bottom edge. Nothing
+            // else in the file positions the view at rest.
+            var mx = Math.max(20, ink.width * 0.035);
+            var top = Math.max(24, ink.height * 0.08);
+            var bottom = Math.max(80, ink.height * 0.30);
+            c = {
+              x: ink.x - mx, y: ink.y - top,
+              w: ink.width + mx * 2, h: ink.height + top + bottom
+            };
+          }
+        } catch (err) {}
+        return c;
+      }
+      var content = measure();
+      var fit = { x: content.x, y: content.y, w: content.w, h: content.h };
+      var touched = false;   // has the reader moved the view themselves yet?
+      var cur = { x: fit.x, y: fit.y, w: fit.w, h: fit.h };
+      var readout = plate.querySelector('[data-zoom="fit"]');
+      var hint = plate.querySelector(".canvashint");
+
+      function frameAspect() {
+        var r = plate.getBoundingClientRect();
+        return (r.width > 8 && r.height > 8) ? r.width / r.height : content.w / content.h;
+      }
+      // Rebuild the fitted box for the frame's current shape, holding both the zoom
+      // level and the centre of whatever you were looking at.
+      function refit() {
+        var zoom = (fit.w / cur.w) || 1;
+        var cx = cur.x + cur.w / 2;
+        var cy = cur.y + cur.h / 2;
+        var a = frameAspect();
+        var w = content.w, h = content.h;
+        if (w / h < a) { w = h * a; } else { h = w / a; }
+        fit = {
+          x: content.x - (w - content.w) / 2,
+          y: content.y - (h - content.h) / 2,
+          w: w,
+          h: h
+        };
+        cur.w = fit.w / zoom;
+        cur.h = fit.h / zoom;
+        cur.x = cx - cur.w / 2;
+        cur.y = cy - cur.h / 2;
+        clamp();
+        apply();
+      }
+      // The view always keeps the frame's exact proportions — clamping width and height
+      // independently would let them drift apart and squash the diagram.
+      function clamp() {
+        cur.w = Math.min(cur.w, fit.w);
+        cur.h = cur.w * (fit.h / fit.w);
+        // Slack beyond the fitted box, so the map can still be nudged around at full
+        // zoom-out — checking one edge shouldn't require zooming in first. Bounded at
+        // 40% so it can never be dragged out of sight, and "fit" always brings it home.
+        var slackX = fit.w * 0.4;
+        var slackY = fit.h * 0.4;
+        cur.x = Math.min(Math.max(cur.x, fit.x - slackX), fit.x + fit.w - cur.w + slackX);
+        cur.y = Math.min(Math.max(cur.y, fit.y - slackY), fit.y + fit.h - cur.h + slackY);
+      }
+      function apply() {
+        svg.setAttribute("viewBox", cur.x + " " + cur.y + " " + cur.w + " " + cur.h);
+        var z = fit.w / cur.w;
+        if (readout) readout.textContent = z < 1.02 ? "fit" : (Math.round(z * 10) / 10) + "×";
+        // At fit there is nowhere to pan to, so the hint says what is actually available.
+        // Drag works at every zoom level now, so the hint no longer changes with state.
+        if (hint) hint.textContent = "drag to move · scroll to zoom · fit to reset";
+      }
+      // Map client pixels to diagram units WITHOUT getScreenCTM(). Under browser page
+      // zoom that matrix and clientX/clientY are not in the same units, which makes the
+      // zoom anchor drift and drag move the wrong distance at anything but 100%. A
+      // bounding rect is in the same CSS pixels the event is, so this holds at every
+      // zoom level. The offsets cover "meet" letterboxing if the aspects ever disagree.
+      function view() {
+        var r = svg.getBoundingClientRect();
+        if (!r.width || !r.height || !cur.w || !cur.h) return null;
+        var s = Math.min(r.width / cur.w, r.height / cur.h);
+        return {
+          left: r.left, top: r.top, scale: s,
+          offX: (r.width - cur.w * s) / 2,
+          offY: (r.height - cur.h * s) / 2
+        };
+      }
+      function userPoint(evt) {
+        var v = view();
+        if (!v) return null;
+        return {
+          x: cur.x + (evt.clientX - v.left - v.offX) / v.scale,
+          y: cur.y + (evt.clientY - v.top - v.offY) / v.scale
+        };
+      }
+      // Zoom about a fixed point: the spot under the cursor stays under the cursor.
+      function zoomAt(factor, ux, uy) {
+        var w = cur.w / factor;
+        w = Math.min(fit.w, Math.max(fit.w / MAX_ZOOM, w));
+        var k = w / cur.w;
+        cur.x = ux - (ux - cur.x) * k;
+        cur.y = uy - (uy - cur.y) * k;
+        cur.w = w;
+        cur.h = cur.h * k;
+        clamp();
+        apply();
+      }
+      function reset() {
+        cur.x = fit.x; cur.y = fit.y; cur.w = fit.w; cur.h = fit.h;
+        apply();
+      }
+
+      // Mermaid renders asynchronously, and the zone boxes are redrawn after that, so a
+      // single measurement can be taken while the diagram is still growing — which shows
+      // up as the last band hanging off the bottom edge. Re-measure on every pass until
+      // the number stops moving, and re-centre while the reader hasn't taken over.
+      function remeasure() {
+        var next = measure();
+        if (Math.abs(next.x - content.x) < 2 && Math.abs(next.y - content.y) < 2 &&
+            Math.abs(next.w - content.w) < 2 && Math.abs(next.h - content.h) < 2) return;
+        content = next;
+        refit();
+        if (!touched) reset();
+      }
+
+      plate.addEventListener("wheel", function (e) {
+        var p = userPoint(e);
+        if (!p) return;
+        e.preventDefault();
+        touched = true;
+        // deltaMode 1 is lines, 2 is pages; normalise both to something pixel-ish.
+        var d = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1);
+        zoomAt(Math.pow(1.0016, -d), p.x, p.y);
+      }, { passive: false });
+
+      // Drag to pan. Pointer capture keeps the drag alive when the cursor leaves the
+      // frame mid-throw; selectstart and dragstart are suppressed so the browser never
+      // decides the gesture was really a text selection and cancels it out from under us.
+      var last = null;
+      var heldPointer = null;
+
+      function endDrag() {
+        if (last === null) return;
+        last = null;
+        plate.classList.remove("grabbing");
+        if (heldPointer !== null) {
+          try { plate.releasePointerCapture(heldPointer); } catch (err) {}
+          heldPointer = null;
+        }
+      }
+
+      plate.addEventListener("selectstart", function (e) { e.preventDefault(); });
+      plate.addEventListener("dragstart", function (e) { e.preventDefault(); });
+
+      plate.addEventListener("pointerdown", function (e) {
+        if (e.target.closest(".zoombar")) return;
+        if (e.pointerType === "mouse" && e.button !== 0) return;
+        touched = true;
+        last = { x: e.clientX, y: e.clientY };
+        heldPointer = e.pointerId;
+        plate.classList.add("grabbing");
+        try { plate.setPointerCapture(e.pointerId); } catch (err) {}
+      });
+
+      plate.addEventListener("pointermove", function (e) {
+        if (last === null || (heldPointer !== null && e.pointerId !== heldPointer)) return;
+        var v = view();
+        if (!v) return;
+        cur.x -= (e.clientX - last.x) / v.scale;
+        cur.y -= (e.clientY - last.y) / v.scale;
+        last = { x: e.clientX, y: e.clientY };
+        clamp();
+        apply();
+      });
+
+      ["pointerup", "pointercancel", "lostpointercapture"].forEach(function (evt) {
+        plate.addEventListener(evt, endDrag);
+      });
+      // Belt and braces: a mouseup outside the frame, or the window losing focus
+      // mid-drag, must not leave the map stuck in grab mode.
+      window.addEventListener("pointerup", endDrag);
+      window.addEventListener("blur", endDrag);
+
+      // Double-click zooms in where you clicked — the fast way to dive into one region.
+      plate.addEventListener("dblclick", function (e) {
+        if (e.target.closest(".zoombar")) return;
+        var p = userPoint(e);
+        if (!p) return;
+        e.preventDefault();
+        zoomAt(1.8, p.x, p.y);
+      });
+
+      plate.querySelectorAll("[data-zoom]").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          var mode = btn.getAttribute("data-zoom");
+          touched = mode !== "fit";
+          if (mode === "fit") { reset(); return; }
+          zoomAt(mode === "in" ? 1.5 : 1 / 1.5, cur.x + cur.w / 2, cur.y + cur.h / 2);
+        });
+      });
+
+      // Jump to a stretch of the timeline, framed at whatever scale that slab needs.
+      plate.querySelectorAll("[data-region]").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          var f = btn.getAttribute("data-region").split(",").map(Number);
+          if (f.length !== 2) return;
+          touched = true;
+          cur.w = Math.min(fit.w, content.w * (f[1] - f[0]));
+          cur.h = cur.w * (fit.h / fit.w);
+          cur.x = content.x + content.w * f[0];
+          cur.y = content.y + content.h / 2 - cur.h / 2;
+          clamp();
+          apply();
+        });
+      });
+
+      plate.addEventListener("keydown", function (e) {
+        var step = cur.w * 0.1;
+        var cx = cur.x + cur.w / 2, cy = cur.y + cur.h / 2;
+        if (e.key === "ArrowLeft") cur.x -= step;
+        else if (e.key === "ArrowRight") cur.x += step;
+        else if (e.key === "ArrowUp") cur.y -= cur.h * 0.1;
+        else if (e.key === "ArrowDown") cur.y += cur.h * 0.1;
+        else if (e.key === "+" || e.key === "=") return e.preventDefault(), zoomAt(1.5, cx, cy);
+        else if (e.key === "-" || e.key === "_") return e.preventDefault(), zoomAt(1 / 1.5, cx, cy);
+        else if (e.key === "0") return e.preventDefault(), reset();
+        else return;
+        e.preventDefault();
+        clamp();
+        apply();
+      });
+
+      // The frame's shape changes with the window and with the wide-screen breakpoint,
+      // so the fitted box has to be rebuilt when it does.
+      if (window.ResizeObserver) {
+        new ResizeObserver(function () { refit(); }).observe(plate);
+      }
+      // Belt and braces for page zoom: Chrome fires resize on a zoom change, and pinch
+      // zoom moves the visual viewport without necessarily resizing the element.
+      window.addEventListener("resize", refit);
+      if (window.visualViewport) {
+        window.visualViewport.addEventListener("resize", refit);
+      }
+      refit();
+      pending.push(remeasure);
+    }
+
+    // Re-measured on every scheduled pass (0, 200, 600, 1500 and 3000ms) and on any DOM
+    // change, so a late-arriving row is picked up rather than left hanging off the edge.
+    var pending = [];
+    function initCanvases() {
+      document.querySelectorAll(".plate.canvas").forEach(makeCanvas);
+      for (var i = 0; i < pending.length; i++) pending[i]();
+    }
+
+    function refresh() { layoutClusters(); initCanvases(); }
+
     // Mermaid renders asynchronously and may re-render on a theme change.
-    new MutationObserver(layoutClusters).observe(document.documentElement, {
+    new MutationObserver(refresh).observe(document.documentElement, {
       childList: true, subtree: true
     });
-    [0, 200, 600, 1500, 3000].forEach(function (t) { setTimeout(layoutClusters, t); });
-    document.addEventListener("DOMContentLoaded", layoutClusters);
+    [0, 200, 600, 1500, 3000].forEach(function (t) { setTimeout(refresh, t); });
+    document.addEventListener("DOMContentLoaded", refresh);
   })();
 </script>
