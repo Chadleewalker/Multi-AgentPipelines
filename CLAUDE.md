@@ -79,8 +79,9 @@ bash scripts/e2e.sh            # add --keep to leave branches and PRs up for ins
 bash scripts/test-verifier.sh
 bash scripts/test-runner-container.sh
 
-# the one suite that needs no Docker — seconds, safe to run anywhere, even in a container
+# the two suites that need no Docker — seconds, safe to run anywhere, even in a container
 bash scripts/test-runner-memory.sh
+bash scripts/test-changelog.sh   # DESIGN.md §12 row identity (CHANGELOG_FILE re-aims it)
 ```
 
 Suites are slow (real containers) and **share one Docker network** — run them one at a
@@ -128,6 +129,19 @@ trail is how a later session knows a decision was deliberate rather than acciden
 Change-log rows are **chronological ascending** — append a new row at the bottom of the
 §12 table, after the newest existing one (`repo-4gp-note-3`).
 
+**A row is identified by a slug in the `Ref` column, never by a version number.** If the
+row comes from a pipeline task, the ref *is* that task's issue id (`repo-dhp`) — the host
+assigned it, so parallel agents cannot collide because none of them invents its own
+identity. If it comes from an interactive session, the ref is a short descriptive
+kebab-case name (`default-branch`). Never renumber a row you did not write. Version
+numbers already inside a row's prose are history and stay there.
+
+**Cite a row in the pinned form**: the literal phrase change-log row followed by the slug
+in backticks — change-log row `repo-52m`. Anything looser is indistinguishable from
+ordinary hyphenated prose or from a Beads memory key. `scripts/test-changelog.sh` checks
+the table's shape, the slug syntax, uniqueness and every citation in the living docs; run
+it after any change-log edit.
+
 ## Working inside the pipeline container (read this when you are the coding agent in a run)
 
 This repo is onboarded as a target of its own pipeline (dogfooding — see the DESIGN.md
@@ -147,13 +161,16 @@ the pipeline working on the pipeline's own code. The rules:
   work (`sh tools/run-acceptance.sh tests/acceptance/<issue-id>/`), but the
   authoritative check runs after you exit. You cannot run Docker in here, so the repo's
   `scripts/test-*.sh` suites will not work — do not try; the acceptance tests for your
-  task are Docker-free by design. The one exception is
+  task are Docker-free by design. The exceptions are
   `sh scripts/test-runner-memory.sh` (`tests/unit/memory.test.js`), which stubs the whole
   `bd` layer through `PIPELINE_BD_CMD` and needs no Docker — run it if you touch
-  `runner/memory.js`. Any new Docker-free suite belongs beside it in `tests/unit/`, and
-  its seam stub must be a `.js` file invoked through `process.execPath`, never a
-  `#!/bin/sh` script: `spawnSync` without a shell fails such a script with EFTYPE on the
-  Windows host, so the suite would pass in here and fail in the host sweep.
+  `runner/memory.js` — and `sh scripts/test-changelog.sh`
+  (`tests/unit/changelog.test.js`), which reads markdown only: run it if you add a
+  `DESIGN.md` change-log row. Any new Docker-free suite belongs beside them in
+  `tests/unit/`, and its seam stub must be a `.js` file invoked through
+  `process.execPath`, never a `#!/bin/sh` script: `spawnSync` without a shell fails such a
+  script with EFTYPE on the Windows host, so the suite would pass in here and fail in the
+  host sweep.
 - You cannot push (no credentials, no git-host network). Commit locally at every
   meaningful boundary; the host pushes your branch after the container exits.
 - The `bd` quick-reference below is for interactive host sessions — in here you have no
