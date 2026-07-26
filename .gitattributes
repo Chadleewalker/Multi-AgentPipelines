@@ -1,0 +1,2 @@
+# Shell scripts run inside Linux containers; never commit or check out CRLF blobs.
+*.sh text eol=lf
