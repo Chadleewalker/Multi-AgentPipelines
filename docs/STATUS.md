@@ -132,7 +132,10 @@ real use. All are fixed.
   (`docker run --rm -v "$(cygpath -m "$PWD"):/w" -w /w pipeline-base:local node
   tests/acceptance/<id>/test.js`), which is where the verifier runs them. Also note
   `node --test` swallows these suites' per-check output — run the file with plain `node`
-  to see which assertion failed.
+  to see which assertion failed. **A new seam-driven test must not copy the `#!/bin/sh`
+  stub**: write the stub as a `.js` file and point the seam variable at
+  `process.execPath` (`tests/unit/memory.test.js` is the worked example), which is what
+  makes a suite that runs on the host sweep as well as in the container.
 - **`bd ready` empty on the fixture means the last e2e left state behind.** An
   `e2e.sh --keep` run (or one interrupted before teardown) leaves the three scenario
   issues `blocked` and `task/*` branches on the remote, so `test-fixture.sh` fails its
@@ -264,7 +267,8 @@ found and assigned); PLANNING.md step 5 amended — draft specs go to
 
 ## Test suites
 
-Each drives real Docker and they share one network, so they must never run concurrently.
+All but one drive real Docker and share one network, so they must never run concurrently
+(`test-runner-memory.sh` is the exception — see below; it needs neither).
 **`scripts/test-all.sh` is the sweep** — it holds a lock, runs every suite sequentially,
 kills one that hangs (`--timeout`, default 900s), tears `pipeline-net` down if a suite
 leaks it, and writes per-suite logs plus a summary table to `runs/sweeps/<timestamp>/`.
@@ -327,11 +331,13 @@ do: it does not run itself. Automating it (a post-merge hook, a schedule) was co
 and deferred — `e2e.sh` opening a live PR means the trigger needs a policy, not just a
 hook, and 10 minutes is cheap enough that a named ritual may be sufficient.
 
-**Gap worth knowing:** `runner/memory.js` (both §3.6 channels) has no
-`scripts/test-runner-*.sh` suite — its coverage lives in the Docker-free acceptance tests
-at `tests/acceptance/repo-eyn/` and `tests/acceptance/repo-4gp/`, which drive it through
-the `PIPELINE_BD_CMD` stub seam. Fold it into a `test-runner-memory.sh` if the module
-grows past the two entry points. The same is true of `pipeline/envelope.js` and
-`status.js summary`: their coverage is `tests/acceptance/repo-52m/`, which drives the
-whole entrypoint with a `PIPELINE_AGENT_CMD` stub and a stub `verify.js` (never the real
-verifier — that would self-nest, the shadow-01 lesson).
+**Gap worth knowing:** `pipeline/envelope.js` and `status.js summary` have no
+`scripts/test-*.sh` suite — their coverage is `tests/acceptance/repo-52m/`, which drives
+the whole entrypoint with a `PIPELINE_AGENT_CMD` stub and a stub `verify.js` (never the
+real verifier — that would self-nest, the shadow-01 lesson). That is a frozen artifact of
+a finished task, so nothing re-runs it: the modules are untested going forward. The same
+gap covered `runner/memory.js` until repo-dhp closed it by extracting
+`tests/acceptance/repo-eyn/` + `repo-4gp/`'s coverage into `tests/unit/memory.test.js`
+(the frozen directories stayed put — extract, never move). Extracting the entrypoint
+coverage the same way is the obvious next one, and the `PIPELINE_AGENT_CMD` stub it needs
+must be a `.js` file run through `process.execPath` for the same EFTYPE reason.
