@@ -220,7 +220,23 @@ found and assigned); PLANNING.md step 5 amended — draft specs go to
    `{ok:true,count:8}` against them, `entrypoint.sh` injects the file under
    `--- PROJECT MEMORY (read-only) ---`, and `prepare()` (run.js:144) runs inside the
    task loop *after* the previous task's `fileMemoryNotes()` (run.js:204) — so task N+1
-   genuinely sees task N's notes. Apply the §3.6 promotion rule to whatever accumulates.
+   genuinely sees task N's notes.
+
+   **The promotion rule has now been exercised for the first time** (2026-07-26), on the
+   eight notes in the inbox. Three were promoted into `CLAUDE.md` under *Code conventions
+   (promoted from memory — §3.6)*, each citing its originating note key: parse agent logs
+   structurally (`52m-note-1` and `52m-note-3` — the same rule proposed twice by two
+   phases, the textbook trigger); fail-safe scaffolding must assert its artifact is
+   non-empty (`52m-note-4` — the strongest case in the set, because it was filed as a
+   memory, left in the inbox, and the same defect then shipped again as defect 7); and all
+   runner Beads access goes through `runner/bd.js` (`4gp-note-2`). A fourth, change-log
+   rows append in ascending order (`4gp-note-3`), folded into the *Changing the design*
+   section where it belongs. Notes deliberately left in the inbox: `4gp-note-1` (now
+   encoded in code and §3.6 itself), `4gp-note-4` (a docs-phase habit, not yet recurring),
+   and `52m-note-2` — which is **stale**: it asks for `collectArtifacts` to copy
+   `docs-err.txt`, and defect 7's fix did exactly that. A note whose content has been
+   absorbed should be retired, but nothing retires one today; the promotion rule covers
+   graduation, not expiry. Worth a §3.6 amendment once a second stale note shows up.
 2. **More shadow runs.** Three is a small sample. The numbers that matter for scaling are
    per-task active time, spec-defect rate, and how often tasks collide on shared files.
 3. **V2 — the spec pipeline** (`DESIGN.md` §3.2, §3.5): package the critic panel, the
@@ -248,10 +264,18 @@ found and assigned); PLANNING.md step 5 amended — draft specs go to
 
 ## Test suites
 
-Run individually, never concurrently. Each drives real Docker.
+Each drives real Docker and they share one network, so they must never run concurrently.
+**`scripts/test-all.sh` is the sweep** — it holds a lock, runs every suite sequentially,
+kills one that hangs (`--timeout`, default 900s), tears `pipeline-net` down if a suite
+leaks it, and writes per-suite logs plus a summary table to `runs/sweeps/<timestamp>/`.
+It exits non-zero if any suite exits non-zero *or* prints a `FAIL` line while exiting 0
+(a suite that lies about its own result is itself a defect). Discovery is a glob over
+`scripts/test-*.sh` plus `e2e.sh` last, so a suite added later is swept without anyone
+editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fail-fast`.
 
 | Script | Covers |
 |---|---|
+| `scripts/test-all.sh` | the sweep — every suite below, in order, with a summary |
 | `scripts/e2e.sh` | the whole pipeline against the fixture repo, live GitHub |
 | `scripts/test-base-image.sh` | pinned image contents, no baked credentials |
 | `scripts/test-beads-roundtrip.sh` | the five spec fields, ready-queue semantics |
@@ -273,6 +297,21 @@ renamed to `run.json`) and `test-fixture.sh` (leftover state from an earlier
 the stub path compatible, because `status.js summary` falls back to the raw file when
 there is no JSON envelope. The lesson generalizes: the suites that break are the ones
 nobody re-runs, and T12 had accumulated three separate staleness bugs from T15 and T17.
+
+**That re-run happened only because someone asked** — nothing made it a habit, and the
+gap outlived the defects it found. `scripts/test-all.sh` closes it: one command, all
+18 suites, a summary you can paste. It is deterministic scaffolding like everything else
+in the control path (hard rule 7). `CLAUDE.md` names when to run it — after merging a
+batch, before a shadow run, on picking up a cold branch.
+
+**First sweep, 2026-07-26: 17 of 17 green in 9:38** (`--skip e2e`; `e2e.sh` adds ~5 min
+and opens a live PR, so it is excluded only when a run is unattended-unsafe, not by
+default). The slowest four are `runner-queue` 2:17, `runner-container` 1:28, `publish`
+1:20, `workspace` 1:14 — the whole thing is a coffee break, not an overnight job, which
+is the number that matters for whether the habit sticks. Note what the sweep does *not*
+do: it does not run itself. Automating it (a post-merge hook, a schedule) was considered
+and deferred — `e2e.sh` opening a live PR means the trigger needs a policy, not just a
+hook, and 10 minutes is cheap enough that a named ritual may be sufficient.
 
 **Gap worth knowing:** `runner/memory.js` (both §3.6 channels) has no
 `scripts/test-runner-*.sh` suite — its coverage lives in the Docker-free acceptance tests
