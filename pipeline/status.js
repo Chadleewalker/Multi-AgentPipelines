@@ -9,6 +9,9 @@
 //                                          optional feedback from file, tail 2000)
 //   node status.js set <key> <value>       changeSummary | stuckState |
 //                                          rateLimitResetAt | docsPhaseError
+//   node status.js summary <file>          set changeSummary from a docs-phase log
+//                                          (envelope result if there is one, else the
+//                                          raw text; trimmed, tail 2000)
 //   node status.js note <text>             propose one memory note (§3.6 out-channel;
 //                                          append-only, head 500, silently capped at 20)
 'use strict';
@@ -50,6 +53,22 @@ switch (cmd) {
     save(o);
     break;
   }
+  case 'summary': {
+    // The PR body (§4.5) comes from here, so it must never carry CLI noise: prefer the
+    // agent's envelope result and fall back to the raw file only when there is no
+    // envelope (plain-text agents and stubs). Extraction is deterministic — no LLM.
+    if (!fs.existsSync(FILE)) { console.error(`status.js: ${FILE} missing (init first)`); process.exit(2); }
+    let raw = '';
+    try { raw = fs.readFileSync(args[0] || '', 'utf8'); } catch { raw = ''; }
+    const env = require('./envelope.js').parse(raw);
+    const text = (env ? env.result : raw).trim().slice(-2000);
+    // Nothing to say is not a failure: the docs phase is non-fatal after success.
+    if (!text) break;
+    const o = load();
+    o.changeSummary = text;
+    save(o);
+    break;
+  }
   case 'note': {
     // Agents propose memories; the host files them after exit (§3.6). Append-only and
     // silently capped, so a chatty agent can never grow the status file without bound
@@ -66,6 +85,6 @@ switch (cmd) {
     break;
   }
   default:
-    console.error('usage: status.js init|attempts|append|set|note');
+    console.error('usage: status.js init|attempts|append|set|summary|note');
     process.exit(2);
 }
