@@ -3,7 +3,7 @@
 This is the once-per-project setup that turns any repo — freshly scaffolded or years
 old — into a valid pipeline target. It is the checklist form of DESIGN.md §3.4 and §6;
 when those sections change, this file changes with them. The harness skill
-`/harness:pipeline-onboard` follows this document — this file is the source of truth,
+`/harness-pipeline:pipeline-onboard` follows this document — this file is the source of truth,
 the skill is a wrapper.
 
 Everything here happens interactively on the host, with the user. Run it once per

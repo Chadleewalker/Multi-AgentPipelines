@@ -16,7 +16,7 @@ Two rules frame everything below (§2, §3.3):
 ## Prerequisites (once per target project)
 
 These are done by the onboarding checklist — `ONBOARDING.md` in this repo (or the
-`/harness:pipeline-onboard` skill, which follows it). Verify, don't redo:
+`/harness-pipeline:pipeline-onboard` skill, which follows it). Verify, don't redo:
 
 - The target repo has a GitHub remote and `pipeline.config.json` in its root (§3.4):
   `verifyCommand`, optional `regressionCommand`, optional `defaultBranch` (record it if
