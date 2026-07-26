@@ -791,6 +791,23 @@ flowchart TB
   class ADV slot
 </pre>
     </div>
+    <div class="gloss">
+      <p><strong>How a container is born.</strong> The runner launches each task with a
+      single <code>docker run</code> that hands in everything the task will ever have:
+      the fresh clone of the code (read-write), the pipeline's own scripts — entrypoint
+      and verifier — mounted <em>read-only</em>, the task file and memory file as
+      read-only exports, and environment variables: the task's id, the Claude
+      subscription token, and the proxy settings that force all traffic through the
+      allowlist. The token arrives at launch, is never baked into the image, and is the
+      only credential inside.</p>
+      <p><strong>Who talks to Claude: the entrypoint, never the runner.</strong> The
+      entrypoint script — plain scaffolding, unchangeable from inside — composes the
+      coding prompt from the task file, invokes headless Claude Code, runs the verifier,
+      feeds each failure back as the next attempt's prompt, and calls Claude once more
+      to write the docs summary. Phase order is script logic, not an AI decision. The
+      split is deliberate: the process holding the credential never prompts the model,
+      and the process prompting the model cannot alter what judges it.</p>
+    </div>
   </section>
 
   <section>
