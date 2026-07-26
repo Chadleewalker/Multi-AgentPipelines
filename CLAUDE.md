@@ -110,12 +110,20 @@ note keys are cited so the trail back to the run survives.
   body. `pipeline/envelope.js` scans lines bottom-up for the first that parses to an
   object with a string `result`; reuse it. Never maintain a list of known warning
   strings. (`repo-52m-note-1`, `repo-52m-note-3`; STATUS defect 5.)
-- **Fail-safe scaffolding must still assert its artifact is non-empty.** Anything that
-  swallows an error to protect a run — model-id extraction, the memory export, artifact
-  collection — can succeed vacuously and disable a shipped feature for months with no
-  error anywhere. Log the count, and make the count visible where a human already looks.
-  This rule was *filed as a memory and not promoted*, and the same defect shipped again
-  two tasks later. (`repo-52m-note-4`; STATUS defects 2, 5, 7.)
+- **Assert the artifact is *right*, not merely present.** Anything that swallows an error
+  to protect a run — model-id extraction, the memory export, artifact collection — can
+  succeed vacuously and disable a shipped feature for months with no error anywhere. Log
+  the count, and make it visible where a human already looks. But a non-empty artifact is
+  only half the check, because **the harder failures write something plausible and
+  wrong**: the resolved model id named the CLI's cheap helper model for every run between
+  `repo-52m` and `repo-wxh` (defect 8), and a suite that could not execute its own stub on
+  Windows reported every check as a genuine failure rather than as a broken harness. Both
+  were non-empty, well-formed, and false. So the assertion has to pin the *value* against
+  something independent — the alias the runner actually pinned, a fixture whose expected
+  answer differs from what the bug would produce — not just its presence.
+  The non-empty half of this rule was itself *filed as a memory and not promoted*, and the
+  same defect shipped again two tasks later; the "plausible and wrong" half was added after
+  three more instances in one day. (`repo-52m-note-4`; STATUS defects 2, 5, 7, 8.)
 - **All runner Beads access goes through `runner/bd.js`** (`bd()` / `bdJson()`). That is
   the seam `PIPELINE_BD_CMD` stubs, and it is the only reason the Docker-free acceptance
   tests can exercise runner code at all. New runner code that shells `bd` directly is
