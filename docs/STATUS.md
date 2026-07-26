@@ -4,7 +4,7 @@ Where the build actually is. Update this when something changes — it is the fi
 session reads to pick up the thread, and unlike a machine-local memory folder it travels
 with the repo.
 
-_Last updated: 2026-07-25_
+_Last updated: 2026-07-26_
 
 ## Where things stand
 
@@ -72,6 +72,11 @@ real use. All are fixed.
   `/repo` produces `repo-xxx` ids. Mount at a meaningful path (`/fix`, `/hal`) when
   running `bd init`.
 - **`node --test <dir>/` is broken on Node 22+** (MODULE_NOT_FOUND). Always pass the file.
+- **`PIPELINE_BD_CMD` stubs the whole bd layer.** Set it and `runner/bd.js` spawns that
+  executable directly with the bare bd argument vector — no `-C` prefix, no host-`bd`
+  probe, no Docker fallback — which is how the Docker-free acceptance tests exercise
+  `runner/memory.js`. It takes absolute precedence over every other path in `bd()`, so
+  **production must never set it**; it is the sibling of `PIPELINE_AGENT_CMD` (§4.3).
 - **Test suites share one Docker network.** Run them one at a time; concurrent runs tear
   `pipeline-net` down under each other and produce meaningless failures.
 - **Watch what else is using a port before killing it.** A `node server.js` on :3000 was
@@ -88,8 +93,8 @@ design until implemented). Snapshot: `docs/planning-draft-2026-07-25.md`.
 |---|---|---|---|
 | `repo-qyd` | advisor registry + ambiguity/testability/scope charters (§3.5) | 1 | |
 | `repo-zdm` | container-side memory: `memoryNotes` + `status.js note` + prompt (§3.6) | 2 | |
-| `repo-eyn` | runner memory export: `.run/memory.md` + `PIPELINE_BD_CMD` seam (§3.6) | 2 | |
-| `repo-4gp` | runner memory filing: `bd remember` after exit (§3.6) | 3 | blocked on `repo-eyn`; **run in a later batch** — both edit `runner/memory.js` |
+| `repo-eyn` | runner memory export: `.run/memory.md` + `PIPELINE_BD_CMD` seam (§3.6) | 2 | **Done** — `runner/memory.js`, called from `workspace.prepare()` |
+| `repo-4gp` | runner memory filing: `bd remember` after exit (§3.6) | 3 | unblocked now `repo-eyn` has landed; **run in a later batch** — both edit `runner/memory.js` |
 
 Session learnings: critic panel earned its keep (Task C split in two, unverified `bd`
 subcommands caught, an unowned contract — nothing injects memory.md into the prompt —
@@ -100,9 +105,11 @@ found and assigned); PLANNING.md step 5 amended — draft specs go to
 
 **Recommended order:**
 
-1. **Run the dogfood queue** (`node runner/run.js --config run.config.multiagentpipelines.json`):
-   `repo-qyd`, `repo-zdm`, `repo-eyn` first; queue `repo-4gp` only after `repo-eyn`'s
-   PR is merged.
+1. **Finish the dogfood queue** (`node runner/run.js --config run.config.multiagentpipelines.json`):
+   `repo-eyn` is done; `repo-qyd` and `repo-zdm` remain, and `repo-4gp` can be queued
+   once `repo-eyn`'s PR is merged. The memory In channel is only half-wired until
+   `repo-zdm` lands — the runner now writes `.run/memory.md`, but nothing injects it
+   into the container prompt yet.
 2. **More shadow runs.** Three is a small sample. The numbers that matter for scaling are
    per-task active time, spec-defect rate, and how often tasks collide on shared files.
 3. **V2 — the spec pipeline** (`DESIGN.md` §3.2, §3.5): package the critic panel, the
