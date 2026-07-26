@@ -23,7 +23,7 @@ flowchart TB
   F -->|"needs changes"| B
   F -->|"approved"| G["Freeze — tests committed<br/>to the integration branch"]
   G --> H[("Beads issue = the task spec")]
-  H --> I["Runner drains the ready queue<br/>priority, then FIFO"]
+  H --> I["Runner drains the ready queue<br/>epics skipped · priority, then FIFO"]
   I --> J["One fresh container per task"]
   J --> K["Run report + pull requests<br/>ordered by scrutiny needed"]
   K --> L{"Merge, or send back"}
@@ -116,6 +116,11 @@ stateDiagram-v2
 
 `blocked` is doing quiet but critical work: it removes failed work from the ready queue.
 Without it a task that cannot pass would be picked up again on every run, forever.
+
+An **epic** never enters this diagram at all. `bd ready` returns it alongside its children
+and never closes it when they close, so the runner filters ready entries typed `epic` out
+before the loop and names them in its queue-summary line — skipped, but never silently
+(§3.1, §4.12).
 
 ## Where the walls are
 

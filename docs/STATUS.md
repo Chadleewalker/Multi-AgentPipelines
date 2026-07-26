@@ -324,16 +324,59 @@ alone, and said so in the §12 preamble: the version citations in `runner/memory
 task could not touch those trees), and the doc-level version in `DESIGN.md`'s header — the
 *document* still has a version, its *rows* no longer do.
 
+## The runner skips epics (`repo-4l8`, 2026-07-26)
+
+Beads hierarchy (`bd create -t epic`) was being ignored, and ignoring it is unsafe. Two
+facts verified against `bd 1.1.0` in a throwaway database, not read from documentation:
+`bd ready` returns **the epic itself**, ranked among its children, and closing every child
+leaves the parent **open and ready**. An unfiltered runner would therefore clone a
+workspace for an issue with no acceptance criteria, and would do it again on every
+subsequent run for the life of the repository. §3.1 and change-log row
+`epics-group-never-run` declared the filter before it existed; this task built it.
+
+`queue.readyQueue()` now partitions the ready list: entries whose `issue_type` is `epic`
+go to `skipped`, everything else survives in the unchanged priority-then-FIFO order.
+**Excluded by name, never by allow-list** — `bug`, `feature`, `chore` and `decision` all
+still run, because admitting only `task` would make a legitimately-typed issue carrying a
+full spec vanish from every run with nothing to say why, which is the silent-failure
+family defects 7, 8 and 9 are all instances of. And it **fails open**: an entry whose
+`issue_type` is absent, null or empty string is kept, since failing closed on a missing
+field would drain nothing at all against an older `bd` — the catastrophic direction.
+Note `bd ready --json` returns no `parent_id` (that appears on `show`/`create` only), so
+the type is the only field the filter can use, and it is the one it wants.
+
+**The queue-summary line is now a function**, `queue.queueSummary(issues, skipped)`, and
+this is the reusable part. `run.js` reaches that line only after `loadToken` and the full
+Docker preflight, and `--dry-run` returns before the task loop — so a test running inside
+a task container could never execute it, and the skip announcement is precisely the thing
+a filter that removes work silently must not get wrong. Extracting the string-building
+made it testable at all; the same move `repo-dhp` made with `shouldFileMemory`, for the
+same reason. The historic prefix is load-bearing (`scripts/test-runner-queue.sh` greps
+`ready queue: <n> task(s) — ` at six sites, `(empty)` when there are none), so both new
+clauses — `skipped <n> by type:` and `running <n> non-task:` — are **appended** after it,
+never woven into it. Each names the id *and* the type, because "skipped 1" tells a
+reviewer nothing they can act on.
+
+Coverage splits along the Docker line, deliberately: `tests/acceptance/repo-4l8/` drives
+the filter and the builder through the `PIPELINE_BD_CMD` seam with a `.js` stub spawned
+via `process.execPath` (never a `#!/bin/sh` one — that is defect 9's EFTYPE trap), and the
+Docker suite `scripts/test-runner-queue.sh` remains the only thing that proves the line is
+actually emitted at run time.
+
 ## What's next
 
-**The queue is empty as of 2026-07-26.** `bd ready` returns nothing; the only open issue
-is `repo-iok` (the §3.7 host side), deliberately **blocked and deliberately unfrozen** —
+**The queue drained again on 2026-07-26**, after `repo-4l8` (the epic filter, planned and
+frozen in session E — `docs/planning-draft-2026-07-26-e.md`) ran and passed on attempt 1.
+The only open issue left is `repo-iok` (the §3.7 host side), deliberately **blocked and
+deliberately unfrozen** —
 it cannot run in the same batch as its dependency (the runner reads the ready queue once,
 before the task loop), and freezing tests weeks before the run that executes them is how
 suites go stale. Its acceptance tests get written in the planning session immediately
 before that run.
 
-**Nine tasks ran on 2026-07-26, all `done`**: `repo-qyd` 5.2, `repo-eyn` 2.6, `repo-zdm`
+**Ten tasks ran on 2026-07-26, all `done`** (`repo-4l8` is the tenth — verified on attempt
+1; its active time is in that run's manifest, not yet folded into the figures below). The
+first nine: `repo-qyd` 5.2, `repo-eyn` 2.6, `repo-zdm`
 3.2, `repo-4gp` 4.8, `repo-52m` 6.8, `repo-dhp` 9.1, `repo-1cy` 4.9, `repo-wxh` 5.5,
 `repo-006` 9.7 — **minutes of active container time each, 51.8 minutes summed**, longest
 single task 9.7 minutes. "Active" excludes any time parked waiting on a usage window
