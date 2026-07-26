@@ -99,11 +99,11 @@ real use. All are fixed.
    defect 2's *feature* worked and only its **record** lied, in the status file, the
    manifest, the PR footer and the report, which is why nothing looked wrong. Worse,
    `DESIGN.md` §4.3 had codified the first-key rule as a deliberate decision (change-log
-   `v1.8.3`), so the constitution agreed with the bug. Fixed at both: §4.3 now states an
-   ordered selection rule (pinned alias → sole key → greatest `outputTokens`, ties by name
-   → null), the entrypoint passes `${PIPELINE_MODEL:-}` through to `flatten`, and the
-   `2>/dev/null` on that call is gone so an alias matching nothing is visible in the run
-   log instead of silently falling back.
+   row `repo-52m`), so the constitution agreed with the bug. Fixed at both: §4.3 now
+   states an ordered selection rule (pinned alias → sole key → greatest `outputTokens`,
+   ties by name → null), the entrypoint passes `${PIPELINE_MODEL:-}` through to
+   `flatten`, and the `2>/dev/null` on that call is gone so an alias matching nothing is
+   visible in the run log instead of silently falling back.
 
 ## Gotchas that cost real time
 
@@ -192,9 +192,9 @@ trust check does not seed project memory) and never `paused` (not terminal). It 
 throws and returns `{filed, errors}`; bd failures are logged and the outcome is untouched,
 the same posture as `docsPhaseError`. `queue.attemptNotes` adds a `memory notes: <n>` line
 so the §3.6 promotion rule has something to act on at review time. `DESIGN.md` is amended
-to v1.8.2: the outcome gate and the host-side re-enforcement of the schema bounds are
-decisions about *who may seed project memory* and *how far the host trusts an
-agent-written file*, so they now live in §3.6 rather than only in code comments.
+in change-log row `repo-4gp`: the outcome gate and the host-side re-enforcement of the
+schema bounds are decisions about *who may seed project memory* and *how far the host
+trusts an agent-written file*, so they now live in §3.6 rather than only in code comments.
 
 ## The 2026-07-26 queue (one task, from run artifacts)
 
@@ -219,7 +219,7 @@ path, keeps the docs phase's stderr in `.run/docs-err.txt` instead of merging it
 file the summary is read from (the code phase's log stays merged — the rate-limit grep
 reads it), and seeds `hasTrustDialogAccepted` / `hasCompletedOnboarding` for `$WS` into
 `$HOME/.claude.json` before the first call, merging into any existing config and never
-touching the token. `DESIGN.md` is amended to v1.8.3.
+touching the token. `DESIGN.md` is amended in change-log row `repo-52m`.
 
 Session learnings: critic panel earned its keep (Task C split in two, unverified `bd`
 subcommands caught, an unowned contract — nothing injects memory.md into the prompt —
@@ -236,8 +236,8 @@ default because `${PIPELINE_MODEL:-}` yields `""` on an unpinned run and `""` is
 substring of every key. A supplied alias matching nothing prints a diagnostic naming the
 alias and the keys seen to **stderr** and still records the rule-3 choice — stdout stays
 the model id alone, so the entrypoint's `$(...)` capture is unaffected. `DESIGN.md` is
-amended to v1.9.1. Nothing under `runner/` changed: the manifest, report and PR footer all
-read the status file, so they were corrected by the one fix.
+amended in change-log row `repo-wxh`. Nothing under `runner/` changed: the manifest,
+report and PR footer all read the status file, so they were corrected by the one fix.
 
 ## The spec-concern batch (frozen 2026-07-26)
 
@@ -272,6 +272,40 @@ fork point.
 so a concern raised today reaches only the status file — not the attempt log, the run
 manifest, the run report, or the PR body. Until that ships, an agent can say the spec is
 wrong and no human sees it where they already look. That is the separate task §3.7 names.
+
+## Change-log rows are identified by a slug (`repo-006`, 2026-07-26)
+
+**The collision that forced it.** Merging PRs #10, #11 and #13 in one sitting, two of the
+three claimed the same change-log version. Neither agent did anything wrong: each forked
+from a base where that number was free, numbered its own row, and the clash only existed
+once both landed — so the rows were renumbered by hand at merge, for the second time (the
+`repo-qyd` row records the first). A version number is a *global* identifier assigned by a
+*local* actor, which cannot be unique by construction, and the pipeline is built to run
+tasks in batches that touch this doc.
+
+**The fix moves identity to where it is already unique.** §12's table gained a `Ref`
+column — `| Date | Ref | What changed | Why |` — holding a kebab-case slug. A row written
+by a pipeline task takes that task's issue id (`repo-52m`, `repo-dhp`); the host assigned
+it before the container started, so no agent invents its own identity and two agents
+cannot collide. A row from an interactive session takes a short descriptive name
+(`default-branch`, `readiness-bar`). All 26 pre-existing rows kept their date and their
+"why" verbatim; only the leading version token moved out of the what-changed cell. Version
+numbers *inside* a row's prose stayed — they record what was true when the row was
+written, and several rows cross-reference each other by the old numbers.
+
+**Citations are pinned.** The literal phrase change-log row followed by the slug in
+backticks — change-log row `repo-52m`. Without a marker phrase nothing can distinguish a
+citation from ordinary hyphenated prose or from a Beads memory key like `repo-52m-note-4`;
+this file alone holds well over a hundred kebab-case tokens, and a bare date matches a
+slug regex too. The four version citations that were here (in defect 8 and in the
+`repo-4gp` / `repo-52m` / `repo-wxh` write-ups) now use that form.
+
+**`scripts/test-changelog.sh` keeps it from drifting back**, and it is where the value is:
+a convention with nothing enforcing it lasts until the next batch. Deliberately left
+alone, and said so in the §12 preamble: the version citations in `runner/memory.js`,
+`pipeline/verify.js`, `scripts/test-verifier.sh` and `scripts/test-base-image.sh` (the
+task could not touch those trees), and the doc-level version in `DESIGN.md`'s header — the
+*document* still has a version, its *rows* no longer do.
 
 ## What's next
 
@@ -331,8 +365,9 @@ wrong and no human sees it where they already look. That is the separate task §
 
 ## Test suites
 
-All but one drive real Docker and share one network, so they must never run concurrently
-(`test-runner-memory.sh` is the exception — see below; it needs neither).
+All but two drive real Docker and share one network, so they must never run concurrently
+(`test-runner-memory.sh` and `test-changelog.sh` are the exceptions — see below; they need
+neither).
 **`scripts/test-all.sh` is the sweep** — it holds a lock, runs every suite sequentially,
 kills one that hangs (`--timeout`, default 900s), tears `pipeline-net` down if a suite
 leaks it, and writes per-suite logs plus a summary table to `runs/sweeps/<timestamp>/`.
@@ -355,8 +390,10 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-report.sh` | manifest schema, scrutiny ordering, idempotency |
 | `scripts/test-isolation.sh` | no push, read-only scaffolding, no egress, one credential |
 | `scripts/test-fixture.sh` | the fixture repo is a valid pipeline target |
+| `scripts/test-changelog.sh` | `DESIGN.md` §12 row identity — slug refs, uniqueness, citations |
 
-**`scripts/test-runner-memory.sh` is the one suite that needs no Docker** (repo-dhp): it
+**`scripts/test-runner-memory.sh` is one of the two suites that need no Docker**
+(repo-dhp): it
 drives both §3.6 memory channels plus the `shouldFileMemory` outcome gate through the
 `PIPELINE_BD_CMD` seam, so it runs anywhere — including inside a task container, where
 `scripts/test-*.sh` otherwise cannot run at all. It exists because that coverage used to
@@ -369,6 +406,20 @@ returns status `null` with `EFTYPE` — so the obvious extraction is green in th
 and red in the host sweep. The stub is preloaded into node with
 `NODE_OPTIONS=--require "<stub>"` (quoted: repo and temp paths may contain spaces), which
 works because node runs preloads before it resolves the main module.
+
+**`scripts/test-changelog.sh` is the other** (repo-006): it reads markdown and nothing
+else, so it needs no Docker, no network and no target repo. It checks §12's table shape
+(four cells per row, counted *after* masking backtick spans — one row carries
+`done|partial|failed|stuck` in a code span and so has three pipes that are not cell
+boundaries), that every ref is a unique kebab-case slug and never a bare date, that no
+what-changed cell is led by a version token, and that every pinned citation in the five
+living documents resolves to a row that exists. Same shape as the memory suite: a thin
+`sh` wrapper over `tests/unit/changelog.test.js`, with all parsing in the Node checker —
+`tools/run-acceptance.sh` invokes `*.sh` through `sh`, which is bash on the Windows host
+and dash in a container, so shell-side parsing is exactly the kind of thing that goes
+green in one and red in the other. Set `CHANGELOG_FILE` to aim the checker at a fixture
+instead of `DESIGN.md`; that seam is what makes the negative cases falsifiable, since a
+duplicate-detector that is a no-op still passes "exits 0 on the good file".
 
 **Full re-run 2026-07-26**, after the five dogfood/queue PRs merged to `main`: all 18
 suites green, including `e2e.sh` (32 assertions, real PR opened and cleaned up). Two were
