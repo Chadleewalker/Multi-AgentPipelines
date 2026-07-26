@@ -15,6 +15,9 @@ Two rules frame everything below (§2, §3.3):
 
 ## Prerequisites (once per target project)
 
+These are done by the onboarding checklist — `ONBOARDING.md` in this repo (or the
+`<the ONBOARDING.md checklist>` skill, which follows it). Verify, don't redo:
+
 - The target repo has a GitHub remote and `pipeline.config.json` in its root (§3.4):
   `verifyCommand`, optional `regressionCommand`, optional `defaultBranch` (record it if
   the repo's integration branch isn't `main` — e.g. the shadow-trial project uses `master`), optional
