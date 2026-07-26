@@ -18,6 +18,7 @@ const { readyQueue, claim, exportIssue, finish, outcomeFor, attemptNotes } = req
 const { prepare, hasCommits, collectArtifacts, discard } = require('./workspace');
 const { runTask } = require('./container');
 const { waitForWindow } = require('./pause');
+const { fileMemoryNotes } = require('./memory');
 const { publish } = require('./publish');
 const { writeManifest, writeReport } = require('./report');
 
@@ -186,6 +187,16 @@ async function main() {
     const outcome = outcomeFor(exec.exitCode, artifacts.verify);
     const commits = hasCommits(ws.dir, ws.forkPoint);
     log.info(tr, `branch ${ws.branch}: ${commits ? 'has commits (push candidate)' : 'no commits (nothing to push)'}`);
+
+    // ---- memory out-channel (§3.6): file the agent's proposed notes, host as sole
+    // Beads writer. Terminal outcomes only — never 'tampered' (an agent that failed the
+    // trust check does not seed project memory) and never 'paused' (not terminal).
+    // Non-fatal by construction: it never throws and never touches the outcome.
+    if (['done', 'partial', 'failed', 'stuck'].includes(outcome.status)) {
+      const mem = fileMemoryNotes(cfg, issue.id, artifacts.status);
+      if (mem.filed) log.info(tr, `memory: filed ${mem.filed} note(s) via bd remember`);
+      for (const err of mem.errors) log.error(tr, `memory: could not file a note — ${err}`);
+    }
 
     // ---- publish: push what exists, PR what passed (§4.5, T16) ----
     const published = publish(cfg, {
