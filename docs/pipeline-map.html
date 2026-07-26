@@ -388,6 +388,14 @@
     fill: var(--spec-fill) !important; stroke: var(--spec-stroke) !important;
     stroke-width: 1.5px !important; stroke-dasharray: 5 3 !important;
   }
+  .plate svg .cont rect, .plate svg .cont polygon, .plate svg .cont path,
+  .plate svg .cont .label-container, .plate svg rect.cont {
+    fill: var(--script-fill) !important; stroke: var(--script-stroke) !important;
+    stroke-width: 1.5px !important;
+  }
+  .plate svg .cont .nodeLabel, .plate svg .cont text, .plate svg .cont tspan {
+    color: var(--node-text) !important; fill: var(--node-text) !important;
+  }
   .plate svg .agent .nodeLabel, .plate svg .script .nodeLabel, .plate svg .human .nodeLabel,
   .plate svg .store .nodeLabel, .plate svg .external .nodeLabel, .plate svg .slot .nodeLabel,
   .plate svg .agent text, .plate svg .script text, .plate svg .human text,
@@ -403,6 +411,7 @@
   .key .sw.human { background: var(--human-fill); border: 2px solid var(--human-stroke); }
   .key .sw.store { background: var(--store-fill); border: 1.25px solid var(--store-stroke); border-radius: 8px; }
   .key .sw.slot { background: var(--spec-fill); border: 1.5px dashed var(--spec-stroke); }
+  .key .sw.cont { background: var(--script-fill); border: 1.5px solid var(--script-stroke); border-left-width: 4px; border-right-width: 4px; }
   .key .sw.external { background: var(--ext-fill); border: 1.25px dotted var(--ext-stroke); }
   .key b { color: var(--ink); font-weight: 600; font-size: 0.88rem; }
 
@@ -486,6 +495,7 @@
       <li><span class="sw human"></span><span><b>You</b> — a decision only you make. Diamonds are decision points.</span></li>
       <li><span class="sw store"></span><span><b>Data</b> — the task list. Cylinders are stored state, not steps.</span></li>
       <li><span class="sw slot"></span><span><b>Specialist slot</b> — where a domain agent plugs in. Dashed = not built yet.</span></li>
+      <li><span class="sw cont"></span><span><b>Container</b> — a disposable sandbox (double-edged box), one task each. One at a time today; the dashed extras arrive with the V2 concurrency knob.</span></li>
       <li><span class="sw external"></span><span><b>Outside your machine</b> — beyond the sandbox wall.</span></li>
       <li><span class="sw blocked"></span><span><b>Refused</b> — the proxy turns it away. An <b>—✕</b> arrow means blocked; a dotted arrow means read-only.</span></li>
     </ul>
@@ -677,10 +687,13 @@ flowchart TB
   F -->|"needs changes"| B
   F -->|"approved"| G["Freeze the tests on the main branch"]
   G --> H[("Task list, one issue per task")]
-  H --> I["Runner takes the next task, in order"]
-  I --> J["Fresh sandbox per task, then destroyed"]
-  PAR["V2 KNOB — one runner, up to N sandboxes at once (default 1)"] -.-> J
-  J --> K["Run report and pull requests"]
+  H --> I["Runner takes ready tasks, in priority order"]
+  I -->|"today: one at a time"| J1[["Container — task A: fresh clone, then destroyed"]]
+  I -.->|"V2 knob"| J2[["Container — task B"]]
+  I -.-> J3[["⋯ up to N at once, default 1"]]
+  J1 --> K["Run report and pull requests"]
+  J2 -.-> K
+  J3 -.-> K
   K --> L{"You merge, or send back"}
   L -->|"send back"| B
 
@@ -689,10 +702,13 @@ flowchart TB
   classDef human stroke-width:2px
   classDef slot stroke-dasharray:5 3,stroke-width:1.5px
   classDef store stroke-width:1.25px
+  classDef cont stroke-width:1.5px
   class B,C,D,E agent
-  class G,I,J,K script
+  class G,I,K script
   class F,L human
-  class SP1,SP2,PAR slot
+  class SP1,SP2 slot
+  class J2,J3 slot
+  class J1 cont
   class H store
   class A human
 </pre>
