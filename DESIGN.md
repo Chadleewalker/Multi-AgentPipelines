@@ -196,7 +196,9 @@ frozen tests over time, so the pipeline sharpens instead of accumulating noise.
 scaffolding (4.3); only a declared list varies, so the orchestrator stays dumb:
 - **Registry:** each specialist is a definition file in this repo (`advisors/<name>.md`)
   stating its lens, what it checks, and the structured output it must return. Versioned,
-  reusable across projects.
+  reusable across projects. **Built** — `advisors/README.md` pins the charter format
+  (`## Lens` / `## Checks` / `## Output`, one JSON fence matching the `advisories` item
+  shape), and `ambiguity.md`, `testability.md`, `scope.md` staff the slot-1 panel.
 - **Selection:** `pipeline.config.json` lists the project's specialists; an issue field
   names the ones that apply to that task. Opt-in per task, never blanket — each advisor
   is another `claude -p` call against the subscription window.
@@ -214,6 +216,11 @@ components (entrypoint, PR assembly, report) — §10's dividing line — and be
 frozen schemas would otherwise need a breaking change later. Specialist critics and test
 authors (slots 1–2) arrive with the V2 `/spec` skill; run-time advisors (slot 3) follow
 only if the trial shows something that genuinely cannot be made deterministic.
+
+The registry itself landed early, in the dogfood queue: the charter format and the three
+generic planning critics exist now and are run by hand from `PLANNING.md` step 2. That
+does not move V2 forward — no code reads `advisors/`, no phase changed, and a charter is
+still a prompt a human pastes. What V2 adds is dispatch, not content.
 
 ### 3.6 Memory (knowledge that outlives a task)
 
@@ -605,3 +612,4 @@ development starts only after.
 | 2026-07-25 | v1.4.1: §3.4 now names onboarding and points at `ONBOARDING.md` (config is written at onboarding, not "during planning" — wording predated the checklist); ONBOARDING.md gained the from-zero project path and the post-onboarding lifecycle | Doc navigation fix: DESIGN.md's body never referenced onboarding, so a reader of this doc alone could not find the setup path |
 | 2026-07-25 | v1.5: audience widened to senior developers (§3.3) — developers may inspect drafted tests before freeze (optional; prose criteria remain the gate for everyone); difficulty labels join the approval pass; priority/dependency order made explicitly the user's decision. PLANNING.md steps 1, 5, 6 updated to match. No change to run-time autonomy or budgets (subscription window stays the natural limit — §4.6–4.7 unchanged) | User decision: the pipeline is now a tool for senior software devs, not only its original non-programmer owner — high-level decisions belong to the humans, proposals to Claude |
 | 2026-07-25 | v1.6: parallelism moved from out-of-scope to a decided V2 item (§7) — opt-in per-run concurrency knob, default 1, max 2–3; one runner juggling N containers (sole-writer preserved); global park/resume on rate limits; sequential remains the overnight default. §8 bullet narrowed to "as a default or in V1" | User decision after weighing it: parallel compresses elapsed time for daytime batches that fit the window, but budget exhaustion mid-run leaves everything half-done — sequential maximizes completed work per budget, so it stays the default |
+| 2026-07-26 | v1.7: the §3.5 registry is built (`repo-qyd`) — `advisors/README.md` pins the charter format (`## Lens` / `## Checks` / `## Output`, one JSON fence matching the `advisories` item shape in `status.schema.json`) and `ambiguity.md` / `testability.md` / `scope.md` staff the slot-1 critic panel; `PLANNING.md` step 2 now names the charter to paste per difficulty label. Markdown only — no code reads `advisors/`, no phase changed, so V2's `/spec` skill still owns dispatch | Dogfood queue task. The critic panel was described in three places and existed in none, so every planning session re-improvised the prompts; the shadow-01 self-nesting lesson had nowhere durable to live |
