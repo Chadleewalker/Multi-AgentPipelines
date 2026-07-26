@@ -57,6 +57,7 @@ on the shared base image, and `bd init` — [`PLANNING.md`](PLANNING.md) walks t
 | `DESIGN.md` | the authoritative design — decisions, contracts, change log |
 | `PLANNING.md` | how a spec and its frozen tests get written and approved |
 | `docs/STATUS.md` | current state, gotchas, what's next |
+| `advisors/` | the specialist registry — one charter per critic/advisor lens |
 | `runner/` | the host-side orchestrator — plain JavaScript, no dependencies, no LLM |
 | `pipeline/` | what runs *inside* a container: entrypoint, verifier, agent stubs |
 | `schemas/` | the three frozen contracts between separately-built components |
