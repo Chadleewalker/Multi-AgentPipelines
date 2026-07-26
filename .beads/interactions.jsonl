@@ -8,3 +8,4 @@
 {"id":"int-69a84155abe74faa00d082a673cdf380","kind":"field_change","created_at":"2026-07-26T03:48:38.461417479Z","actor":"unknown","issue_id":"repo-4gp","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
 {"id":"int-8574defea5ddfec85cc24c333305657a","kind":"field_change","created_at":"2026-07-26T12:34:45.215297265Z","actor":"unknown","issue_id":"repo-52m","extra":{"field":"status","new_value":"in_progress","old_value":"open"}}
 {"id":"int-ca5688837831ca8097605c350079f160","kind":"field_change","created_at":"2026-07-26T12:41:58.304065832Z","actor":"unknown","issue_id":"repo-52m","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
+{"id":"int-4c7f411b129674492540de22e5c850da","kind":"field_change","created_at":"2026-07-26T16:37:22.749294678Z","actor":"unknown","issue_id":"repo-iok","extra":{"field":"status","new_value":"blocked","old_value":"open"}}
