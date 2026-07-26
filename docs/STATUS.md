@@ -65,6 +65,15 @@ real use. All are fixed.
    resolved model id was in fact never recorded. Fixed at both ends: `pipeline/envelope.js`
    extracts the envelope bottom-up, and the entrypoint seeds the workspace trust flags so
    the warning is not emitted in the first place.
+6. **The pause loop had no working bound** (found 2026-07-26 by the full-suite re-run, not
+   by a run). `pause.js` capped wait cycles at 96, but `run.js` re-entered `waitForWindow`
+   fresh on every pause, so the counter restarted at 1 each time and the stop condition
+   could never fire. A container reporting an already-elapsed reset time relaunched on a
+   5-second cycle **forever** — the wall-clock budget cannot catch it, because paused time
+   is deliberately excluded from it. Fixed: the cycle count carries across relaunches, and
+   the cap is now `maxPauseCycles` in `run.config.json` (default 96). Making it
+   configurable was part of the fix — while hardcoded, the stop condition was untestable,
+   which is exactly why the gap survived three rounds of review and 21 build tasks.
 
 ## Gotchas that cost real time
 
@@ -96,6 +105,24 @@ real use. All are fixed.
   `hasCompletedOnboarding` for `$WS` into `$HOME/.claude.json` before the first agent call.
 - **Test suites share one Docker network.** Run them one at a time; concurrent runs tear
   `pipeline-net` down under each other and produce meaningless failures.
+- **Never hardcode a timestamp in a fixture.** `test-runner-queue.sh` pinned
+  `rateLimitResetAt: "2026-07-26T00:00:00Z"`. It was written at T12, when exit 20 just
+  mapped to `paused`; T15 then added the real pause loop and the same constant silently
+  became "park for 24 hours", and once the wall clock passed it, "relaunch every 5
+  seconds forever". Compute reset times relative to `date +%s`, the way
+  `test-runner-pause.sh` always has.
+- **Acceptance tests are container-targeted; running them on the Windows host lies.**
+  `tests/acceptance/repo-eyn|4gp|52m` drive the `PIPELINE_BD_CMD` / `PIPELINE_AGENT_CMD`
+  seams with `#!/bin/sh` stubs, which Windows cannot exec — every seam assertion goes red
+  for a reason that has nothing to do with the code. Run them inside `pipeline-base:local`
+  (`docker run --rm -v "$(cygpath -m "$PWD"):/w" -w /w pipeline-base:local node
+  tests/acceptance/<id>/test.js`), which is where the verifier runs them. Also note
+  `node --test` swallows these suites' per-check output — run the file with plain `node`
+  to see which assertion failed.
+- **`bd ready` empty on the fixture means the last e2e left state behind.** An
+  `e2e.sh --keep` run (or one interrupted before teardown) leaves the three scenario
+  issues `blocked` and `task/*` branches on the remote, so `test-fixture.sh` fails its
+  ready-queue check. `cleanup_remote` + resetting the three issues to `open` restores it.
 - **Watch what else is using a port before killing it.** A `node server.js` on :3000 was
   assumed to be a stale server and killed; it was a different app entirely, served over a
   Tailscale link.
@@ -219,6 +246,16 @@ Run individually, never concurrently. Each drives real Docker.
 | `scripts/test-report.sh` | manifest schema, scrutiny ordering, idempotency |
 | `scripts/test-isolation.sh` | no push, read-only scaffolding, no egress, one credential |
 | `scripts/test-fixture.sh` | the fixture repo is a valid pipeline target |
+
+**Full re-run 2026-07-26**, after the five dogfood/queue PRs merged to `main`: all 18
+suites green, including `e2e.sh` (32 assertions, real PR opened and cleaned up). Two were
+red before the fixes above — `test-runner-queue.sh` (hung; defect 6 plus two stale
+fixtures: the pinned reset timestamp, and an assertion on `results.json`, which T17 had
+renamed to `run.json`) and `test-fixture.sh` (leftover state from an earlier
+`e2e.sh --keep`). **`test-entrypoint.sh` was fine** — repo-52m's docs-phase rewrite kept
+the stub path compatible, because `status.js summary` falls back to the raw file when
+there is no JSON envelope. The lesson generalizes: the suites that break are the ones
+nobody re-runs, and T12 had accumulated three separate staleness bugs from T15 and T17.
 
 **Gap worth knowing:** `runner/memory.js` (both §3.6 channels) has no
 `scripts/test-runner-*.sh` suite — its coverage lives in the Docker-free acceptance tests
