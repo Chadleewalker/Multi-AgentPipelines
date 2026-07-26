@@ -105,6 +105,23 @@ real use. All are fixed.
    `flatten`, and the `2>/dev/null` on that call is gone so an alias matching nothing is
    visible in the run log instead of silently falling back.
 
+9. **A new suite was green in the container and red on the host** (found 2026-07-26 by
+   the sweep's first real use, minutes after `repo-dhp` merged). `tests/unit/memory.test.js`
+   set `NODE_OPTIONS=--require "<path>"`, and on Windows that is the one combination Node
+   rejects: it strips the quotes and then treats the backslashes as escapes, so the
+   preload never loads, `node` exits 1, and `runner/bd.js` reports **every** stubbed `bd`
+   call as a bd failure. 11 of 30 checks red. Verified directly — quoted+backslash fails,
+   bare+backslash, quoted+forward and bare+forward all work — and fixed by passing the
+   stub path with forward slashes.
+
+   Two things make this worth recording. **No acceptance test could have caught it:**
+   `repo-dhp`'s criterion C7 did assert the stub runs through `process.execPath`, and it
+   does — but acceptance tests are container-targeted by design, and inside the Linux
+   container the path has no backslashes to mangle. The sweep is the only thing that runs
+   these suites on the host. And the failure was **misleading, not absent**: a suite that
+   cannot execute its own stub reports genuine-looking failures rather than announcing a
+   broken harness, which is the same "plausible and wrong" family as defect 8.
+
 ## Gotchas that cost real time
 
 - **MSYS path conversion.** Git Bash rewrites container-side paths in `docker` arguments
@@ -309,6 +326,21 @@ task could not touch those trees), and the doc-level version in `DESIGN.md`'s he
 
 ## What's next
 
+**The queue is empty as of 2026-07-26.** `bd ready` returns nothing; the only open issue
+is `repo-iok` (the §3.7 host side), deliberately **blocked and deliberately unfrozen** —
+it cannot run in the same batch as its dependency (the runner reads the ready queue once,
+before the task loop), and freezing tests weeks before the run that executes them is how
+suites go stale. Its acceptance tests get written in the planning session immediately
+before that run.
+
+**Five tasks ran on 2026-07-26, all `done` on the first attempt**: `repo-1cy` (§3.7
+container side), `repo-dhp` (memory suite + the outcome predicate), `repo-wxh` (the
+resolved-model rule), `repo-006` (change-log slugs), plus the earlier `repo-52m`. Roughly
+30 minutes of container time in total. Four defects were found and fixed in the same day —
+6, 7, 8 and 9 — and three of the four were caught by **deterministic scaffolding** (a
+suite re-run, the run artifacts, the sweep) rather than by anyone noticing. That is the
+design's central bet, and it is the first day it paid out repeatedly.
+
 **Recommended order:**
 
 1. **The dogfood queue is drained** — all four tasks (`repo-qyd`, `repo-zdm`, `repo-eyn`,
@@ -328,7 +360,8 @@ task could not touch those trees), and the doc-level version in `DESIGN.md`'s he
    structurally (`52m-note-1` and `52m-note-3` — the same rule proposed twice by two
    phases, the textbook trigger); fail-safe scaffolding must assert its artifact is
    non-empty (`52m-note-4` — the strongest case in the set, because it was filed as a
-   memory, left in the inbox, and the same defect then shipped again as defect 7); and all
+   memory, left in the inbox, and the same defect then shipped again as defect 7 —
+   **since widened**, see below); and all
    runner Beads access goes through `runner/bd.js` (`4gp-note-2`). A fourth, change-log
    rows append in ascending order (`4gp-note-3`), folded into the *Changing the design*
    section where it belongs. Notes deliberately left in the inbox: `4gp-note-1` (now
@@ -337,6 +370,23 @@ task could not touch those trees), and the doc-level version in `DESIGN.md`'s he
    `docs-err.txt`, and defect 7's fix did exactly that. A note whose content has been
    absorbed should be retired, but nothing retires one today; the promotion rule covers
    graduation, not expiry. Worth a §3.6 amendment once a second stale note shows up.
+
+   **The non-empty rule was widened the same day** to *assert the artifact is right, not
+   merely present*. Non-emptiness caught defect 7 in advance and would have caught defect
+   2, but it says nothing about the harder failure, which struck three times on
+   2026-07-26: an artifact that is non-empty, well-formed, and **false** — the model id
+   naming the CLI's helper model (defect 8), and a suite reporting genuine-looking
+   failures when it could not execute its own stub (defect 9). The rule now requires the
+   assertion to pin the *value* against something independent: the alias the runner
+   actually pinned, or a fixture whose expected answer differs from what the bug would
+   produce. Worth being honest about its standing — this is a **convention, not a
+   mechanism**. Nothing enforces it the way the sweep enforces suites or the verifier
+   enforces frozen tests, and its record is one hit and one miss: it was in `CLAUDE.md`
+   all day and a fixture that could not tell a correct implementation from the bug it was
+   fixing still reached a freeze (caught by the testability critic, not by the rule). If
+   this class recurs, the next move is to make part of it deterministic — a check in
+   `advisors/testability.md`, or a convention in the acceptance-test guide — rather than
+   to reword the paragraph again.
 2. **More shadow runs.** Three is a small sample. The numbers that matter for scaling are
    per-task active time, spec-defect rate, and how often tasks collide on shared files.
 3. **V2 — the spec pipeline** (`DESIGN.md` §3.2, §3.5): package the critic panel, the
@@ -445,6 +495,18 @@ is the number that matters for whether the habit sticks. Note what the sweep doe
 do: it does not run itself. Automating it (a post-merge hook, a schedule) was considered
 and deferred — `e2e.sh` opening a live PR means the trigger needs a policy, not just a
 hook, and 10 minutes is cheap enough that a named ritual may be sufficient.
+
+**Second sweep, after merging PRs #10, #11 and #13: 19 suites, 18 green.** The one red was
+`test-runner-memory`, added by `repo-dhp` minutes earlier — defect 9. This is the sweep
+paying for itself on its first real use, and it is the case for the habit in one line:
+**the defect was invisible to every other gate the pipeline has.** The task's own frozen
+tests passed, the verifier passed it, the PR review passed it, and it was still broken on
+the machine the suite exists to run on.
+
+**Third sweep, after merging #14 and #15: 20 of 20 green in 10:55**, including `e2e`'s 32
+assertions and both new suites (`test-changelog` 21 checks, `test-runner-memory` green on
+the host this time). That is the whole of 2026-07-26's work verified together rather than
+task by task.
 
 **Gap worth knowing:** `runner/memory.js` (both §3.6 channels) has no
 `scripts/test-runner-*.sh` suite — its coverage lives in the Docker-free acceptance tests
