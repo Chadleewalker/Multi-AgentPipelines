@@ -96,12 +96,19 @@ function prepare(cfg, issueId, issueMarkdown, log, traceId) {
 
   // Memory is a convenience input, not a precondition: a failed export is logged and
   // the run continues with the "(no memories recorded)" marker in place (§3.6).
+  // Logged on success as well as failure. The In channel used to be silent when it
+  // worked, so a run report could not distinguish "the container was given 8 memories"
+  // from "the container was given the empty marker" — and the empty case returns ok.
   const mem = exportMemory(cfg, runDir);
   if (!mem.ok) log.info(traceId, `memory export failed (continuing): ${mem.error}`);
+  else if (mem.count) log.info(traceId, `memory: exported ${mem.count} note(s) to .run/memory.md`);
+  else log.info(traceId, 'memory: no notes recorded yet — container gets the empty marker');
 
   const forkPoint = git(dir, ['rev-parse', 'HEAD']).stdout.trim();
   log.info(traceId, `workspace ready: ${dir} on ${branch} (fork point ${forkPoint.slice(0, 8)})`);
-  return { ok: true, dir, branch, forkPoint, defaultBranch };
+  // memoryCount travels with the workspace so the attempt log can record what went IN
+  // as well as what came OUT; null means the export failed rather than found nothing.
+  return { ok: true, dir, branch, forkPoint, defaultBranch, memoryCount: mem.ok ? mem.count : null };
 }
 
 // Does the branch have commits beyond the fork point? (§4.5: push only what exists.)
@@ -125,7 +132,11 @@ function collectArtifacts(dir, taskDir) {
       /* best-effort: a timeout kill can leave a half-written file (§4.11) */
     }
   }
-  for (const f of ['agent-1.log', 'agent-2.log', 'agent-3.log', 'docs-out.txt']) {
+  // memory.md is an INPUT, collected so a finished run still shows what the container
+  // was actually told (§3.6) — without it the In channel can only be inspected with
+  // --keep, on a workspace that no longer exists. docs-err.txt is the docs phase's
+  // stderr, split out by repo-52m and never collected until now.
+  for (const f of ['agent-1.log', 'agent-2.log', 'agent-3.log', 'docs-out.txt', 'docs-err.txt', 'memory.md']) {
     const src = path.join(dir, '.run', f);
     if (fs.existsSync(src)) fs.copyFileSync(src, path.join(taskDir, f));
   }
