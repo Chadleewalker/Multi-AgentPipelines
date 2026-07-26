@@ -236,6 +236,40 @@ the model id alone, so the entrypoint's `$(...)` capture is unaffected. `DESIGN.
 amended to v1.9.1. Nothing under `runner/` changed: the manifest, report and PR footer all
 read the status file, so they were corrected by the one fix.
 
+## The spec-concern batch (frozen 2026-07-26)
+
+Two tasks frozen together, splitting §3.7 along §10's dividing line: the container writes
+the concern, the host surfaces it. They are sequenced, not batched — the runner reads the
+ready queue once before the task loop, so the host side cannot run alongside the container
+side.
+
+| Issue | Task | Prio | Notes |
+|---|---|---|---|
+| `repo-1cy` | spec-concern channel, container side: `specConcerns` + `status.js concern` + prompt (§3.7) | 1 | **Done** — see below |
+| `repo-dhp` | runner memory unit suite (`tests/unit/`, `scripts/test-runner-memory.sh`) | 2 | Frozen, not yet implemented — `tests/acceptance/repo-dhp/` is red by design |
+
+**`repo-1cy` shipped the container-side half of §3.7.** `status.schema.json` now carries
+an optional `specConcerns` array (max 5 entries, 1000 chars each — deliberately *not* the
+`memoryNotes` numbers: a concern is rarer than an insight and needs more room to be
+actionable), and `schemas/examples/status.valid.json` carries one so
+`scripts/test-status-schema.sh` exercises the field against a real validator on the host.
+`pipeline/status.js concern "<text>"` appends one entry with the same mechanism as `note`
+— head-truncating, replacing a malformed array, and silently no-opping past the cap so a
+concern can never fail a task. Both entrypoint phases now tell the agent the channel
+exists *and* that it cannot change the outcome; the frozen test asserts those literals
+against the **generated** `.run/prompt-<N>.md` and `.run/prompt-docs.md`, never against
+`entrypoint.sh` source, because a shell comment would satisfy the latter while leaving the
+agent never actually told. `CLAUDE.md`'s container section carries the same line beside
+the `status.js note` guidance. Nothing in the control path moved: the evidence-only
+invariant is enforced by an acceptance check that drives a failing run to exit 10 with a
+concern recorded, and that diffs `pipeline/verify.js` and all of `runner/` against the
+fork point.
+
+**Still open: the host side.** Nothing yet reads `specConcerns` after the container exits,
+so a concern raised today reaches only the status file — not the attempt log, the run
+manifest, the run report, or the PR body. Until that ships, an agent can say the spec is
+wrong and no human sees it where they already look. That is the separate task §3.7 names.
+
 ## What's next
 
 **Recommended order:**
@@ -269,8 +303,9 @@ read the status file, so they were corrected by the one fix.
 2. **More shadow runs.** Three is a small sample. The numbers that matter for scaling are
    per-task active time, spec-defect rate, and how often tasks collide on shared files.
 3. **V2 — the spec pipeline** (`DESIGN.md` §3.2, §3.5): package the critic panel, the
-   decomposition agent, and the coverage check as a `/spec` skill, and add the
-   "the spec is wrong" channel V1 lacks. The panel's three charters already exist in
+   decomposition agent, and the coverage check as a `/spec` skill. (The "the spec is
+   wrong" channel is no longer wholly missing — `repo-1cy` shipped its container half;
+   what V1 still lacks is the host surfacing.) The panel's three charters already exist in
    `advisors/` and are run by hand from `PLANNING.md` step 2 — `/spec` automates
    dispatching them, not writing them.
 

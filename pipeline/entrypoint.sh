@@ -92,6 +92,12 @@ while :; do
     # Memory out-channel (§3.6): the agent proposes, the host files it after exit.
     echo "If you learn something worth keeping for future tasks in this project, record it with:"
     echo "  node $PIPE/status.js note \"<insight>\""
+    # Spec-concern out-channel (§3.7): "the spec is wrong" is a first-class result (§3.3),
+    # so say the channel exists in the prompt itself — an agent never told cannot use it.
+    echo "If you believe the frozen spec or its tests are themselves wrong, say so with:"
+    echo "  node $PIPE/status.js concern \"<what is wrong and why>\""
+    echo "A concern is evidence for the human reviewing this run; it cannot change the outcome"
+    echo "of this task, so still do the best work the spec allows."
     echo
     echo "--- TASK SPEC ---"
     cat "$RUN/issue.md"
@@ -153,6 +159,10 @@ while :; do
         echo "   of what the implementation changed - it becomes the PR body."
         echo "Before that summary you may record any insight worth keeping for future tasks"
         echo "with: node $PIPE/status.js note \"<insight>\" - it does not go in the summary."
+        echo "If the frozen spec or its tests are themselves wrong, report that the same way"
+        echo "with: node $PIPE/status.js concern \"<what is wrong and why>\" - it is evidence for"
+        echo "the human reviewing this run and cannot change the outcome, and it is not part of"
+        echo "the summary either."
         echo
         echo "--- TASK SPEC ---"
         cat "$RUN/issue.md"
