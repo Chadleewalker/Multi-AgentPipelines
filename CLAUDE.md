@@ -95,8 +95,9 @@ the pipeline working on the pipeline's own code. The rules:
 - This is a locked-down Docker container: the network reaches Anthropic endpoints only.
   No package installs, no web lookups — everything you need is in this repo, the issue
   file, or the memory file.
-- Your task is `/workspace/.run/issue.md`; project memory is `/workspace/.run/memory.md`.
-  Both are read-only exports — use them, don't edit them.
+- Your task is `/workspace/.run/issue.md`; project memory is `/workspace/.run/memory.md`
+  (present only when the host had memories to export, and injected into your prompt when
+  it is). Both are read-only exports — use them, don't edit them.
 - NEVER touch `tests/acceptance/` or any path in `pipeline.config.json`'s `frozenPaths`.
   The verifier diffs them against the fork point; any change — even whitespace — ends
   the task as "tampered".
@@ -109,7 +110,9 @@ the pipeline working on the pipeline's own code. The rules:
   meaningful boundary; the host pushes your branch after the container exits.
 - The `bd` quick-reference below is for interactive host sessions — in here you have no
   Beads database and must not try to create one. Insights worth keeping go in the status
-  file's memory notes as the run scaffolding instructs.
+  file instead: `node /pipeline/status.js note "<insight>"` appends one, and the host
+  files it after you exit. You propose; the host commits. Notes are advisory — they can
+  never change your outcome, and past 20 the call is silently a no-op.
 
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:6cd5cc61 -->
