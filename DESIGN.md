@@ -195,6 +195,49 @@ frozen schemas would otherwise need a breaking change later. Specialist critics 
 authors (slots 1–2) arrive with the V2 `/spec` skill; run-time advisors (slot 3) follow
 only if the trial shows something that genuinely cannot be made deterministic.
 
+### 3.6 Memory (knowledge that outlives a task)
+
+Beads is the project's **memory store as well as its task queue** — the upstream
+convention, not an invention of this pipeline: `bd remember` stores keyed insights in the
+same per-repo database, and `bd prime` injects them at session start (verified against
+bd 1.1.0 in the base image). There is **no second database**; what varies between the
+phases is only *who holds the pen*, consistent with the sole-writer rule (4.10).
+
+**Knowledge hierarchy — one canonical home per kind:**
+
+| Kind of knowledge | Canonical home | Why there |
+|---|---|---|
+| Anything a container-side coding agent must know (conventions, gotchas, API specifics) | Repo files (`CLAUDE.md`, `docs/`) | A fresh clone is the only guaranteed container input (4.10); repo files need no export step and are reviewed with the code |
+| Project insights and operational notes | Beads memory (`bd remember`) in the target repo's database | Structured, keyed, queryable; primed into every interactive session |
+| Per-task history (attempts, stuck-state) | The issue's attempt log | Unchanged (3.1) |
+| Machine-specific facts | `<untracked local notes>` | Harness rule; never syncs |
+
+**Access rule.** Interactive sessions on the host (planning, review) use `bd remember` /
+`bd prime` directly — the standard convention; task issues remain writable only through
+the wrapper scripts. Autonomous agents never touch the database (they physically cannot —
+4.10). Instead:
+
+- **Out:** the entrypoint accepts a `memoryNotes` array in the status file — short
+  insights the coding or docs agent wants to persist ("this API rejects batch calls",
+  "tests assume port 3000 free"). After container exit the runner — already the sole
+  Beads writer — files each note via `bd remember`, recording the issue id in the audit
+  trail. Agents propose; the host commits.
+- **In:** at container launch the runner exports current project memories to a read-only
+  file at `/workspace/.run/memory.md`, beside `issue.md` — the container-side mirror of
+  `bd prime`.
+
+**Promotion rule (the 3.5/4.9 escalation ladder, applied to memory).** Memory notes are
+an inbox, not a destination. A memory that keeps mattering to coding runs — the same
+gotcha proposed twice, the same API misunderstanding — gets promoted at review time into
+repo files (a `CLAUDE.md` convention, a vendored doc), where it steers every future agent
+with no export step. Knowledge migrates leftward into the repo over time, exactly as
+advisor judgment migrates into frozen tests.
+
+**Phasing.** The contract (the `memoryNotes` status-file field, the `.run/memory.md`
+mount) is decided here because it spans the entrypoint, the runner, and
+`status.schema.json` — §10's dividing line. The plumbing ships with the shadow trial;
+the V1 E2E fixture pass does not exercise it.
+
 ## 4. The Implementation Phase (the execution layer)
 
 Carried over from v3, amended over two critic-review rounds; this section is the single
@@ -309,7 +352,8 @@ source of truth.
     (entrypoint + verifier) bind-mounted **read-only at `/pipeline` by the runner from
     this repo** — the base image stays scaffolding-free, so scaffolding changes never
     require an image rebuild; the issue exported to a read-only file mounted at
-    `/workspace/.run/issue.md`; and the environment variables `ISSUE_ID`,
+    `/workspace/.run/issue.md`; the project memories exported to a read-only file at
+    `/workspace/.run/memory.md` (3.6); and the environment variables `ISSUE_ID`,
     `PIPELINE_AGENT_CMD` (normally unset — see 4.3), the OAuth token, and proxy
     variables. The container command is the entrypoint at its `/pipeline` path. The
     entrypoint composes the coding prompt from the issue file; the runner writes a
@@ -318,7 +362,8 @@ source of truth.
     verifier run, and result is logged with trace IDs back to the issue. "I couldn't
     because X" is a result type, not an error. **The host runner is the sole Beads
     writer**: attempt notes travel back via the status file and the runner appends them to
-    the issue after exit. Beads data never rides task branches.
+    the issue after exit, and proposed memory notes travel the same way — the runner files
+    them via `bd remember` (3.6). Beads data never rides task branches.
 11. **The outcome taxonomy — one table, cited by every component.** The contract between
     entrypoint, runner, and report generator:
 
@@ -339,7 +384,7 @@ source of truth.
     the status file as best-effort (it may be half-written). Alongside the codes, the
     entrypoint maintains `/workspace/.run/status.json` — attempt summaries (number,
     verifier result, timestamp), the docs-phase change summary, the rate-limit reset time
-    when known. Its schema is `status.schema.json`, checked into this repo, owned by the
+    when known, and any proposed memory notes (`memoryNotes`, 3.6). Its schema is `status.schema.json`, checked into this repo, owned by the
     entrypoint task and cited as a frozen input by the runner and report tasks.
 12. **Runner configuration, lifecycle ownership, and logs.** The runner reads
     `run.config.json` in this repo: target repo path and remote, image name, wall-clock
@@ -467,6 +512,10 @@ review mode. Machine specifics stay in `<untracked local notes>`, per harness ru
 - Headless `claude -p` reports usage-limit errors distinguishably from other failures, and
   honors standard proxy environment variables. (If either proves false at implementation
   time, that's a doc amendment, not a workaround.)
+- `bd remember` / `bd prime` provide keyed project memory in the same per-repo database
+  (verified against bd 1.1.0 in the base image). Memory state lives with the canonical
+  Beads home (the host working copy — 4.12) and, like the rest of the database, is not
+  pushed anywhere in V1.
 
 ## 10. Open Questions
 
@@ -508,3 +557,5 @@ development starts only after.
 | 2026-07-25 | v1.0.2: verifier reads `pipeline.config.json` from the fork-point commit, and tamper scope extends to the config's new optional `frozenPaths` (§3.4, §4.4) | Found during T7: worktree config or a repo helper script invoked by `verifyCommand` were agent-editable — a failing task could be made to "pass" |
 | 2026-07-25 | v1.2: `defaultBranch` in `pipeline.config.json` (§3.4) — task branches, the freeze baseline, and PR targets all follow the project's integration branch instead of assuming `main` | Shadow-trial finding: the first real project uses `master`; the pipeline hardcoded `main` in three separately-built components |
 | 2026-07-25 | v1.1: added §3.5 domain specialists — three slots (planning critic / test author / run-time advisor), specialists are never gates, registry + per-task selection + schema'd output, escalation ladder toward determinism; V2 phasing | User goal: pluggable domain agents (physics, aesthetics). Shape decided now because the advisor slot spans three separately-built components and the frozen schemas would otherwise need a breaking change |
+| 2026-07-25 | v1.3: added §3.6 memory — Beads is the memory store as well as the task queue (`bd remember`/`bd prime`, verified against bd 1.1.0 in the base image; no second database); knowledge hierarchy with repo files canonical for anything a container needs; container agents propose memories via a `memoryNotes` status-file field and read them via a runner-exported read-only `.run/memory.md`; host runner stays the sole Beads writer; promotion ladder from memory notes into repo files; plumbing ships with the shadow trial, not the V1 E2E pass. Touched §4.10 (input contract + sole-writer rule), §4.11 (status file), §9 (bd assumption) | User decision after the memory-design discussion: follow the upstream Beads convention (one database, memory beside tasks) with the pipeline's stricter access rule layered on top, instead of inventing a second store |
+| 2026-07-25 | v1.3.1: `PLANNING.md` brought in line with v1.2/v1.0.2 — freeze step, pre-run checklist, and spec-change section now say integration branch (`defaultBranch`) instead of hardcoded `main`, freeze scope mentions `frozenPaths`, and the prerequisites list the full `pipeline.config.json` schema | Drift fix via the change protocol: the playbook still described the pre-v1.2 contract and would have frozen the shadow-trial project's tests against the wrong branch |

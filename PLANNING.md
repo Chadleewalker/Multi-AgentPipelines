@@ -16,7 +16,9 @@ Two rules frame everything below (§2, §3.3):
 ## Prerequisites (once per target project)
 
 - The target repo has a GitHub remote and `pipeline.config.json` in its root (§3.4):
-  `verifyCommand`, optional `regressionCommand`, and `dependencies`.
+  `verifyCommand`, optional `regressionCommand`, optional `defaultBranch` (record it if
+  the repo's integration branch isn't `main` — e.g. the shadow-trial project uses `master`), optional
+  `frozenPaths`, and `dependencies`.
 - A thin per-project Dockerfile sits beside it, `FROM` the pinned base image (§6).
 - Beads is initialized in the host working copy (`bd init`; see `beads/issue-template.md`).
 - The base image is built (`docker/base/`, checks: `scripts/test-base-image.sh`).
@@ -73,10 +75,12 @@ approval.**
 
 ### 6. Freeze
 On approval, in the target repo:
-1. Commit the acceptance tests **to `main`** and push. Frozen means: the test paths as
-   they exist at the task branch's fork point from `main` — `git merge-base main
-   <branch>` (§3.1). Since task branches fork from `main` at run time, tests must be on
-   `main` before the run; the verifier diffs **all of `tests/acceptance/`** against the
+1. Commit the acceptance tests **to the project's integration branch** (its
+   `defaultBranch` — §3.4; `main` only if none is configured) and push. Frozen means:
+   the test paths as they exist at the task branch's fork point from that branch —
+   `git merge-base <defaultBranch> <branch>` (§3.1). Since task branches fork from the
+   integration branch at run time, tests must be on it before the run; the verifier
+   diffs **all of `tests/acceptance/`** plus the config's `frozenPaths` against the
    fork point and treats any difference as tampering (§4.4).
 2. Create the issue with all five fields via the wrapper (refuses a missing design-ref):
    `scripts/new-issue.sh -t "<title>" -d "<description>" -c "<constraints>"
@@ -97,7 +101,8 @@ install anything at run time):
 ### 8. Pre-run checklist
 - `bd ready` (in the target repo's working copy) lists exactly the tasks meant to run,
   in the intended priority order.
-- Frozen tests are on `main` and pushed; `pipeline.config.json` is current.
+- Frozen tests are on the integration branch (`defaultBranch`) and pushed;
+  `pipeline.config.json` is current.
 - The per-project image exists; Docker Desktop is running.
 - Anything the task needs to *know* (API details, conventions) is in the repo or attached
   to the issue — the container has no internet beyond the Anthropic endpoints (§4.8).
@@ -108,7 +113,7 @@ touchpoint is the run report (§5).
 ## Spec Changes After Freeze
 
 A spec change **reopens the approval gate** (§3.3): re-run the relevant steps above,
-get fresh user approval, re-freeze the tests on `main`. An agent reporting "the spec is
+get fresh user approval, re-freeze the tests on the integration branch. An agent reporting "the spec is
 wrong" during a run is a first-class result that lands in review — never a reason for
 anything to edit specs or tests mid-run. If the cause is architectural, amend the design
 doc (change-log row) so the doc never silently drifts from reality.
