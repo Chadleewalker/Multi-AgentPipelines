@@ -64,7 +64,9 @@ mkcfg "$TMP/bad.json" "$AGENT_BAD"
 
 # ---- Scenario 1: verified success -> pushed AND PR opened ----
 bdq update "$STUCK_ID" --status blocked >/dev/null
-OUT=$(RUN_ID=t16-done node runner/run.js --config "$TMP/ok.json" 2>&1)
+# tee to stderr streams the run live to the terminal; stdout is still captured for the
+# assertions, and pipefail keeps the runner's exit code from being masked by tee's.
+OUT=$(set -o pipefail; RUN_ID=t16-done node runner/run.js --config "$TMP/ok.json" 2>&1 | tee /dev/stderr)
 echo "$OUT" | grep -q "exit 0 -> done" && pass "task verified (exit 0 -> done)" || fail "success path: $(echo "$OUT" | grep -E 'exit ' | tail -2)"
 echo "$OUT" | grep -q "pushed task/$DONE_ID" && pass "branch pushed to the remote" || fail "push missing"
 git -C "$REMOTE" rev-parse "task/$DONE_ID" >/dev/null 2>&1 && pass "branch exists on the remote" || fail "branch not on remote"
@@ -83,7 +85,7 @@ bdq show "$DONE_ID" --json | grep -q "example.test/pr/1" && pass "PR URL recorde
 bdq update "$STUCK_ID" --status open >/dev/null
 bdq update "$DONE_ID" --status blocked >/dev/null 2>&1 || true
 rm -f "$GHLOG"/*
-OUT=$(RUN_ID=t16-stuck node runner/run.js --config "$TMP/bad.json" 2>&1)
+OUT=$(set -o pipefail; RUN_ID=t16-stuck node runner/run.js --config "$TMP/bad.json" 2>&1 | tee /dev/stderr)
 echo "$OUT" | grep -q "exit 10 -> stuck" && pass "unsatisfiable task -> stuck" || fail "stuck path wrong"
 echo "$OUT" | grep -q "pushed task/$STUCK_ID" && pass "stuck branch pushed (work survives for review)" || fail "stuck branch not pushed"
 git -C "$REMOTE" rev-parse "task/$STUCK_ID" >/dev/null 2>&1 && pass "stuck branch exists on the remote" || fail "stuck branch missing"
@@ -100,7 +102,7 @@ printf '#!/bin/sh\nexit 1\n' > "$TGT/tools/regress.sh"      # regressions now fa
 (cd "$TGT" && git add -A && git commit -qm "planning: partial fixture" >/dev/null && git push -q origin main)
 bdq update "$STUCK_ID" --status blocked >/dev/null
 rm -f "$GHLOG"/*
-OUT=$(RUN_ID=t16-partial node runner/run.js --config "$TMP/ok.json" 2>&1)
+OUT=$(set -o pipefail; RUN_ID=t16-partial node runner/run.js --config "$TMP/ok.json" 2>&1 | tee /dev/stderr)
 echo "$OUT" | grep -q "exit 0 -> partial" && pass "regressions fail -> partial" || fail "partial not derived"
 echo "$OUT" | grep -q "opened PR" && pass "partial still gets a PR (acceptance is the gate)" || fail "partial PR missing"
 PBODY=$(ls "$GHLOG"/body-*.md 2>/dev/null | head -1)
