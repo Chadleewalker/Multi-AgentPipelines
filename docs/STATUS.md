@@ -274,8 +274,9 @@ wrong and no human sees it where they already look. That is the separate task §
 2. **More shadow runs.** Three is a small sample. The numbers that matter for scaling are
    per-task active time, spec-defect rate, and how often tasks collide on shared files.
 3. **V2 — the spec pipeline** (`DESIGN.md` §3.2, §3.5): package the critic panel, the
-   decomposition agent, and the coverage check as a `/spec` skill, and add the
-   "the spec is wrong" channel V1 lacks. The panel's three charters already exist in
+   decomposition agent, and the coverage check as a `/spec` skill. (The "the spec is
+   wrong" channel is no longer wholly missing — `repo-1cy` shipped its container half;
+   what V1 still lacks is the host surfacing.) The panel's three charters already exist in
    `advisors/` and are run by hand from `PLANNING.md` step 2 — `/spec` automates
    dispatching them, not writing them.
 
