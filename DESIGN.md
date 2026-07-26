@@ -120,8 +120,13 @@ not by a script.
 
 ### 3.4 Per-project pipeline config
 
-Each target project carries a `pipeline.config.json` in its repo root, written once during
-planning and read by the scaffolding:
+Each target project carries a `pipeline.config.json` in its repo root, written once
+during **onboarding** and read by the scaffolding. Onboarding — the once-per-project
+setup that makes any repo a valid target (this config, the frozen-test home, the
+per-project image, Beads, a container-aware `CLAUDE.md`) — is specified in
+`ONBOARDING.md` in this repo, which also documents the full path from an empty folder
+(scaffold → design doc → onboard → plan) and the life of a project afterward. The
+harness skill `/harness-pipeline:pipeline-onboard` follows that file. The config fields:
 
 - `verifyCommand` — the verifier invokes it with the test directory appended as the final
   argument: `<verifyCommand> tests/acceptance/<issue-id>/`.
@@ -566,3 +571,4 @@ development starts only after.
 | 2026-07-25 | v1.3.1: `PLANNING.md` brought in line with v1.2/v1.0.2 — freeze step, pre-run checklist, and spec-change section now say integration branch (`defaultBranch`) instead of hardcoded `main`, freeze scope mentions `frozenPaths`, and the prerequisites list the full `pipeline.config.json` schema | Drift fix via the change protocol: the playbook still described the pre-v1.2 contract and would have frozen Hallertau's tests against the wrong branch |
 | 2026-07-25 | v1.3.2: added `ONBOARDING.md` — the once-per-project checklist (git/GitHub + `defaultBranch`, `.gitattributes`, `tests/acceptance/`, `pipeline.config.json`, thin Dockerfile + image build, `bd init`, `CLAUDE.md` rewrite with the container section replacing yolo_docker guidance, hooks removed, vendored docs, `run.config.<project>.json`, sanity pass). `PLANNING.md` prerequisites now point at it. The harness gains a `/harness-pipeline:pipeline-onboard` skill that follows this file | Onboarding Hallertau took an evening of hand-work and one outright breakage (`master` vs `main`); the checklist makes it a repeatable step. Convention decided here: pipeline projects drop format hooks (they fight the closed network) and their `CLAUDE.md` must describe the pipeline container, not yolo_docker |
 | 2026-07-25 | v1.4: this repository onboarded as its own target (§1 amended — dogfooding sanctioned). Full ONBOARDING.md checklist applied: `pipeline.config.json` (Docker-free `verifyCommand`, empty dependencies), `tests/acceptance/`, thin Dockerfile + `pipeline-multiagentpipelines:local`, `bd init` (prefix `repo`), container section in `CLAUDE.md`, `run.config.multiagentpipelines.json`. Constraint recorded: acceptance tests for self-tasks may not use Docker; `bd init`'s SessionStart hook removed (no host `bd`; pipeline projects carry no hooks) | User decision: the pipeline's own backlog (e.g. the §3.6 memory plumbing) becomes shadow-trial material — real tasks, graded each morning |
+| 2026-07-25 | v1.4.1: §3.4 now names onboarding and points at `ONBOARDING.md` (config is written at onboarding, not "during planning" — wording predated the checklist); ONBOARDING.md gained the from-zero project path and the post-onboarding lifecycle | Doc navigation fix: DESIGN.md's body never referenced onboarding, so a reader of this doc alone could not find the setup path |
