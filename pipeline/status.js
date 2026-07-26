@@ -9,6 +9,8 @@
 //                                          optional feedback from file, tail 2000)
 //   node status.js set <key> <value>       changeSummary | stuckState |
 //                                          rateLimitResetAt | docsPhaseError
+//   node status.js note <text>             propose one memory note (§3.6 out-channel;
+//                                          append-only, head 500, silently capped at 20)
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -48,7 +50,22 @@ switch (cmd) {
     save(o);
     break;
   }
+  case 'note': {
+    // Agents propose memories; the host files them after exit (§3.6). Append-only and
+    // silently capped, so a chatty agent can never grow the status file without bound
+    // or disturb notes already proposed. A note is advisory — it must not be able to
+    // fail the task, hence the cap drops quietly rather than erroring.
+    const text = (args[0] || '').trim();
+    if (!text) { console.error('usage: status.js note <text>'); process.exit(2); }
+    if (!fs.existsSync(FILE)) { console.error(`status.js: ${FILE} missing (init first)`); process.exit(2); }
+    const o = load();
+    if (!Array.isArray(o.memoryNotes)) o.memoryNotes = [];
+    // Head, not tail: an insight leads with its point, unlike verifier feedback where
+    // the last lines carry the failure.
+    if (o.memoryNotes.length < 20) { o.memoryNotes.push(text.slice(0, 500)); save(o); }
+    break;
+  }
   default:
-    console.error('usage: status.js init|attempts|append|set');
+    console.error('usage: status.js init|attempts|append|set|note');
     process.exit(2);
 }

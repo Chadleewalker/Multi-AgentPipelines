@@ -13,5 +13,9 @@
       "timestamp": "2026-07-25T02:31:44Z"
     }
   ],
-  "changeSummary": "Renamed the widget across src/ and updated README usage examples."
+  "changeSummary": "Renamed the widget across src/ and updated README usage examples.",
+  "memoryNotes": [
+    "The widget config is generated at build time - editing config output by hand is overwritten.",
+    "The acceptance suite assumes port 3000 is free."
+  ]
 }

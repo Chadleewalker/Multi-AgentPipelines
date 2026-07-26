@@ -68,9 +68,19 @@ while :; do
     echo "NEVER modify tests/acceptance/ or any frozen path - the verifier fails the task if you do."
     echo "Do not run git commit; the scaffolding commits for you."
     echo "Done means: the frozen acceptance tests under tests/acceptance/$ISSUE_ID/ pass."
+    # Memory out-channel (§3.6): the agent proposes, the host files it after exit.
+    echo "If you learn something worth keeping for future tasks in this project, record it with:"
+    echo "  node $PIPE/status.js note \"<insight>\""
     echo
     echo "--- TASK SPEC ---"
     cat "$RUN/issue.md"
+    # Memory in-channel (§3.6): project memories exported read-only by the runner.
+    # Absent whenever the host has none to export, so the prompt simply omits the block.
+    if [ -f "$RUN/memory.md" ]; then
+      echo
+      echo "--- PROJECT MEMORY (read-only) ---"
+      cat "$RUN/memory.md"
+    fi
     if [ -f "$RUN/feedback.txt" ]; then
       echo
       echo "--- VERIFIER FEEDBACK FROM PREVIOUS ATTEMPT ---"
@@ -125,6 +135,8 @@ while :; do
         echo "   NEVER touch tests/acceptance/ or any frozen path."
         echo "2. Your final output must be ONLY a concise change summary (2-4 sentences)"
         echo "   of what the implementation changed - it becomes the PR body."
+        echo "Before that summary you may record any insight worth keeping for future tasks"
+        echo "with: node $PIPE/status.js note \"<insight>\" - it does not go in the summary."
         echo
         echo "--- TASK SPEC ---"
         cat "$RUN/issue.md"
