@@ -242,9 +242,11 @@ the wrapper scripts. Autonomous agents never touch the database (they physically
   "tests assume port 3000 free"). After container exit the runner — already the sole
   Beads writer — files each note via `bd remember`, recording the issue id in the audit
   trail. Agents propose; the host commits.
-- **In:** at container launch the runner exports current project memories to a read-only
-  file at `/workspace/.run/memory.md`, beside `issue.md` — the container-side mirror of
-  `bd prime`.
+- **In:** at workspace prep, before container launch, the runner exports current project
+  memories to a read-only file at `/workspace/.run/memory.md`, beside `issue.md` — the
+  container-side mirror of `bd prime`. The export is a convenience, never a
+  precondition: a `bd` failure is logged and the run continues with the file written as
+  `(no memories recorded)`, so memory can never cost a task.
 
 **Promotion rule (the 3.5/4.9 escalation ladder, applied to memory).** Memory notes are
 an inbox, not a destination. A memory that keeps mattering to coding runs — the same
