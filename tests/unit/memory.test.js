@@ -66,7 +66,13 @@ fs.writeFileSync(stubOut, '');
 fs.writeFileSync(argsLog, '');
 
 process.env.PIPELINE_BD_CMD = process.execPath;
-process.env.NODE_OPTIONS = `--require "${stub}"`;
+// Forward slashes, not the native separator. NODE_OPTIONS strips the surrounding quotes
+// and then treats backslashes as escapes, so `--require "C:\tmp\bd-stub.js"` resolves to
+// a mangled path, the preload never loads, node exits 1, and EVERY stubbed bd call looks
+// like a bd failure — 11 of these checks went red on the Windows host while passing in
+// the Linux container, where the path has no backslashes to mangle. Node accepts forward
+// slashes on Windows; the quotes stay, because the temp path may contain spaces.
+process.env.NODE_OPTIONS = `--require "${stub.split(path.sep).join('/')}"`;
 process.env.BD_ARGS_LOG = argsLog;
 process.env.BD_STUB_OUT = stubOut;
 delete process.env.BD_STUB_EXIT;
