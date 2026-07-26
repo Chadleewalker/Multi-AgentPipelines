@@ -776,9 +776,9 @@ flowchart TB
   C1 -->|"usage limit"| RL["exit 20 — paused, no attempt used"]
   C1 --> V{"Verifier — tamper diff, then tests"}
   V -->|"frozen paths changed"| TA["exit 11 — tampered"]
-  V -->|"fail, under 3"| FB["Commit attempt, feed failure forward"]
+  V -->|"fail, under the cap"| FB["Commit attempt, feed failure forward"]
   FB --> C1
-  V -->|"third failure"| ST["Commit WIP — exit 10, stuck"]
+  V -->|"final failed attempt"| ST["Commit WIP — exit 10, stuck"]
   V -->|"pass"| ADV["SLOT 3 — advisors, notes only"]
   ADV --> DP["Docs phase — change summary"]
   DP --> OK["exit 0 — verified"]
@@ -984,7 +984,7 @@ flowchart LR
         <tbody>
           <tr><td>Tests pass, no regressions</td><td class="code">0</td><td class="tag ok">done</td><td>closed</td><td>pushed</td><td>opened</td></tr>
           <tr><td>Tests pass, regressions fail</td><td class="code">0</td><td class="tag warn">partial</td><td>closed</td><td>pushed</td><td>opened, flagged</td></tr>
-          <tr><td>Bailed after 3 attempts</td><td class="code">10</td><td class="tag bad">stuck</td><td>blocked</td><td>pushed, WIP</td><td>none</td></tr>
+          <tr><td>Bailed at the attempt cap (default 3, tunable per run)</td><td class="code">10</td><td class="tag bad">stuck</td><td>blocked</td><td>pushed, WIP</td><td>none</td></tr>
           <tr><td>Frozen tests modified</td><td class="code">11</td><td class="tag bad">tampered</td><td>blocked</td><td>pushed, WIP</td><td>none</td></tr>
           <tr><td>Usage limit hit</td><td class="code">20</td><td class="tag warn">paused</td><td>in progress</td><td>not yet</td><td>not yet</td></tr>
           <tr><td>Internal error</td><td class="code">30</td><td class="tag bad">failed</td><td>blocked</td><td>if commits</td><td>none</td></tr>
@@ -1012,7 +1012,7 @@ flowchart LR
     <div class="gloss">
       <p><strong>Tampered</strong> wants suspicion: something changed a frozen file, and
       the pushed WIP branch is the evidence. <strong>Stuck</strong> wants a decision —
-      three honest attempts failed, so the spec is probably wrong: fix it and re-approve,
+      every allowed attempt failed (three by default, tunable per run), so the spec is probably wrong: fix it and re-approve,
       amend the design, or drop the task. <strong>Partial</strong> wants its regression
       evidence read: the new work passed but something existing broke, and the flagged PR
       says what. <strong>Done</strong> wants an ordinary code review — the PR carries the
