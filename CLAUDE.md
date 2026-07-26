@@ -128,6 +128,25 @@ note keys are cited so the trail back to the run survives.
   the seam `PIPELINE_BD_CMD` stubs, and it is the only reason the Docker-free acceptance
   tests can exercise runner code at all. New runner code that shells `bd` directly is
   untestable by construction. (`repo-4gp-note-2`.)
+- **Guard line endings at the point of parsing — and nowhere else.** The working copy on
+  this machine is CRLF while every container sees LF, so anything that splits lines,
+  anchors a regex at `$`, or compares file content has to say so explicitly. The existing
+  code already does, and new code must match it: `trim()` each cell or line
+  (`runner/workspace.js`, the change-log checker's `cells()`), `\s*$` inside the pattern
+  (`runner/config.js`'s token regex — that `\s*` is this defence, not decoration), or
+  normalise both sides before comparing (`tests/acceptance/repo-1cy` compares blob to
+  worktree with `\r\n` → `\n`, because `git diff --name-only` reports *every* file as
+  changed on a CRLF checkout and `--ignore-cr-at-eol` does not help — it affects hunks,
+  not name listing).
+
+  **Two places this must never be done.** Not in `pipeline/verify.js`: §4.4 treats any
+  difference in a frozen path — whitespace included — as tampering, so normalising there
+  would weaken verification (hard rule 2). And not as a shared helper imported by frozen
+  acceptance tests: a frozen test that imports mutable code can change what it gates
+  without its own frozen text changing, which is exactly what the freeze prevents (§3.1).
+  Frozen tests inline what they need. The systemic fix already in place is upstream of
+  all of this — workspaces clone with `core.autocrlf=false` and `core.eol=lf`, so the
+  container never sees CRLF at all.
 
 ## Changing the design
 
