@@ -7,7 +7,7 @@ approves intent before a run and reviews results after; nothing in between is in
 This project was created with the <project harness>. The line below automatically
 loads the master rules every session — don't remove it.
 
-@<local path>\Harness\CLAUDE.md
+@<local harness rules file>
 
 ## Read these first, in this order
 
@@ -85,3 +85,84 @@ time, never concurrently, or they tear the network down under each other.
 If something here turns out to be wrong, amend `DESIGN.md` and add a row to its change
 log saying what changed and why. Four amendments came out of the first real runs; that
 trail is how a later session knows a decision was deliberate rather than accidental.
+
+## Working inside the pipeline container (read this when you are the coding agent in a run)
+
+This repo is onboarded as a target of its own pipeline (dogfooding — see the DESIGN.md
+change log). If you are reading this from `/workspace` inside a task container, you are
+the pipeline working on the pipeline's own code. The rules:
+
+- This is a locked-down Docker container: the network reaches Anthropic endpoints only.
+  No package installs, no web lookups — everything you need is in this repo, the issue
+  file, or the memory file.
+- Your task is `/workspace/.run/issue.md`; project memory is `/workspace/.run/memory.md`.
+  Both are read-only exports — use them, don't edit them.
+- NEVER touch `tests/acceptance/` or any path in `pipeline.config.json`'s `frozenPaths`.
+  The verifier diffs them against the fork point; any change — even whitespace — ends
+  the task as "tampered".
+- The frozen verifier decides pass/fail, not you. Run the acceptance tests while you
+  work (`sh tools/run-acceptance.sh tests/acceptance/<issue-id>/`), but the
+  authoritative check runs after you exit. You cannot run Docker in here, so the repo's
+  `scripts/test-*.sh` suites will not work — do not try; the acceptance tests for your
+  task are Docker-free by design.
+- You cannot push (no credentials, no git-host network). Commit locally at every
+  meaningful boundary; the host pushes your branch after the container exits.
+- The `bd` quick-reference below is for interactive host sessions — in here you have no
+  Beads database and must not try to create one. Insights worth keeping go in the status
+  file's memory notes as the run scaffolding instructs.
+
+
+<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:6cd5cc61 -->
+## Beads Issue Tracker
+
+This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
+
+### Quick Reference
+
+```bash
+bd ready              # Find available work
+bd show <id>          # View issue details
+bd update <id> --claim  # Claim work
+bd close <id>         # Complete work
+```
+
+### Rules
+
+- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
+- Run `bd prime` for detailed command reference and session close protocol
+- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
+
+**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
+
+## Agent Context Profiles
+
+The managed Beads block is task-tracking guidance, not permission to override repository, user, or orchestrator instructions.
+
+- **Conservative (default)**: Use `bd` for task tracking. Do not run git commits, git pushes, or Dolt remote sync unless explicitly asked. At handoff, report changed files, validation, and suggested next commands.
+- **Minimal**: Keep tool instruction files as pointers to `bd prime`; use the same conservative git policy unless active instructions say otherwise.
+- **Team-maintainer**: Only when the repository explicitly opts in, agents may close beads, run quality gates, commit, and push as part of session close. A current "do not commit" or "do not push" instruction still wins.
+
+## Session Completion
+
+This protocol applies when ending a Beads implementation workflow. It is subordinate to explicit user, repository, and orchestrator instructions.
+
+1. **File issues for remaining work** - Create beads for anything that needs follow-up
+2. **Run quality gates** (if code changed) - Tests, linters, builds
+3. **Update issue status** - Close finished work, update in-progress items
+4. **Handle git/sync by active profile**:
+   ```bash
+   # Conservative/minimal/default: report status and proposed commands; wait for approval.
+   git status
+
+   # Team-maintainer opt-in only, unless current instructions forbid it:
+   git pull --rebase
+   git push
+   git status
+   ```
+5. **Hand off** - Summarize changes, validation, issue status, and any blocked sync/commit/push step
+
+**Critical rules:**
+- Explicit user or orchestrator instructions override this Beads block.
+- Do not commit or push without clear authority from the active profile or the current user request.
+- If a required sync or push is blocked, stop and report the exact command and error.
+<!-- END BEADS INTEGRATION -->

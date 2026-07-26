@@ -1,0 +1,8 @@
+{
+  "verifyCommand": "sh tools/run-acceptance.sh",
+  "defaultBranch": "main",
+  "frozenPaths": [
+    "tools/run-acceptance.sh"
+  ],
+  "dependencies": {}
+}
