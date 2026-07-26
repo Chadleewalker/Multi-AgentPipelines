@@ -78,6 +78,9 @@ bash scripts/e2e.sh            # add --keep to leave branches and PRs up for ins
 # individual suites — see docs/STATUS.md for the full list
 bash scripts/test-verifier.sh
 bash scripts/test-runner-container.sh
+
+# the one suite that needs no Docker — seconds, safe to run anywhere, even in a container
+bash scripts/test-runner-memory.sh
 ```
 
 Suites are slow (real containers) and **share one Docker network** — run them one at a
@@ -144,7 +147,13 @@ the pipeline working on the pipeline's own code. The rules:
   work (`sh tools/run-acceptance.sh tests/acceptance/<issue-id>/`), but the
   authoritative check runs after you exit. You cannot run Docker in here, so the repo's
   `scripts/test-*.sh` suites will not work — do not try; the acceptance tests for your
-  task are Docker-free by design.
+  task are Docker-free by design. The one exception is
+  `sh scripts/test-runner-memory.sh` (`tests/unit/memory.test.js`), which stubs the whole
+  `bd` layer through `PIPELINE_BD_CMD` and needs no Docker — run it if you touch
+  `runner/memory.js`. Any new Docker-free suite belongs beside it in `tests/unit/`, and
+  its seam stub must be a `.js` file invoked through `process.execPath`, never a
+  `#!/bin/sh` script: `spawnSync` without a shell fails such a script with EFTYPE on the
+  Windows host, so the suite would pass in here and fail in the host sweep.
 - You cannot push (no credentials, no git-host network). Commit locally at every
   meaningful boundary; the host pushes your branch after the container exits.
 - The `bd` quick-reference below is for interactive host sessions — in here you have no
