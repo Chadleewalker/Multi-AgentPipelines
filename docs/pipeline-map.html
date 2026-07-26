@@ -679,6 +679,7 @@ flowchart TB
   G --> H[("Task list, one issue per task")]
   H --> I["Runner takes the next task, in order"]
   I --> J["Fresh sandbox per task, then destroyed"]
+  PAR["V2 KNOB — one runner, up to N sandboxes at once (default 1)"] -.-> J
   J --> K["Run report and pull requests"]
   K --> L{"You merge, or send back"}
   L -->|"send back"| B
@@ -691,7 +692,7 @@ flowchart TB
   class B,C,D,E agent
   class G,I,J,K script
   class F,L human
-  class SP1,SP2 slot
+  class SP1,SP2,PAR slot
   class H store
   class A human
 </pre>
@@ -988,6 +989,13 @@ flowchart LR
       through the normal planning session — nothing is fixed by hand on a pipeline
       branch, so every change that reaches the integration branch went through the same
       gates.</p>
+      <p><strong>Merging is one PR at a time, in your order.</strong> Every task forked
+      from the same starting point, so the first merge is clean. If a later PR collides
+      with one already merged, GitHub blocks it with a conflict — and the fix is never a
+      hand-edit: it goes back through planning as a new task that starts from the
+      updated main. The subtler case — two changes that merge cleanly but disagree in
+      behavior — is why overlapping tasks don't share a parallel batch, and why running
+      the project's own test suite after merging remains ordinary hygiene.</p>
     </div>
   </section>
 
