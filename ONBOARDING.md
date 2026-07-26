@@ -13,9 +13,10 @@ project; PLANNING.md's per-session prerequisites then just verify it was done.
 
 Four stages, in order. Each is interactive, each happens once except the last:
 
-1. **Create the project** — `<the scaffold step>` (a harness skill). Claude picks
-   the language and template, writes the project's `CLAUDE.md` (with the master-rules
-   import), and gets a spec approved before building anything. The scaffold asks "will
+1. **Create the project** — `<the scaffold step>` (a harness skill). The language
+   is chosen together — Claude lays out the options with a recommendation, the user
+   decides — then Claude picks the matching template, writes the project's `CLAUDE.md`
+   (with the master-rules import), and gets a spec approved before building anything. The scaffold asks "will
    the overnight pipeline work on this project?" — answer yes and stage 3 happens in
    the same sitting. An existing project skips this stage entirely.
 2. **Write the design doc** — for a project the pipeline will seriously develop, a
