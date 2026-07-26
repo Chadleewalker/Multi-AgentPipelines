@@ -503,12 +503,33 @@ data. Includes the specialist registry and slots 1–2 of 3.5 (domain critics an
 test authors); run-time advisors (slot 3) only if the trial proves something resists
 determinism.
 
+**V2 — the concurrency knob (opt-in parallelism):** a per-run concurrency setting in
+`run.config.json` — default **1**, sensible maximum 2–3. Shape decided now so the
+implementer inherits the why:
+- **One runner juggling N containers, never N runners** — the sole-Beads-writer rule
+  (4.10) and claim-based double-pick prevention survive only inside a single process.
+- **Rate-limit pauses go global**: one task's usage-limit exit parks *every* running
+  task (they share the subscription window); the runner resumes all parked workspaces
+  when the window resets. Per-task pause mechanics (4.7) are reused unchanged.
+- **Sequential stays the overnight strategy.** Sequential maximizes *completed* work
+  per budget: if the window dies mid-run, finished PRs exist. Parallel spreads the same
+  budget across all started tasks — faster when the batch fits the window, but budget
+  exhaustion leaves everything half-done and nothing reviewable until the next window.
+  The knob exists for **daytime batches of small tasks** ("these three by lunch"),
+  where elapsed time matters and the batch is expected to fit; it also competes with
+  the user's own interactive subscription use, another reason it is opt-in.
+- Planning-time caution: don't queue overlapping-file tasks in the same parallel batch —
+  both will pass their own tests and then conflict at merge.
+Built only after the shadow trial proves the sequential loop.
+
 **V3 — the second environment port:** <another container workflow> containers, network-share repos, local-branch
 review mode. Machine specifics stay in `<untracked local notes>`, per harness rules.
 
 ## 8. Out of Scope (agreed)
 
-- Parallel task execution — sequential is fine; resilience matters more than throughput.
+- Parallel task execution **as a default or in V1** — sequential is fine; resilience
+  matters more than throughput. An opt-in, small-N concurrency knob is a decided V2
+  item (see §7), built only after the shadow trial.
 - An LLM orchestrator, nested orchestrators, or a leader agent inside containers.
   Orchestrator intelligence (re-planning, cross-task learning) waits until the dumb loop
   has proven itself.
@@ -583,3 +604,4 @@ development starts only after.
 | 2026-07-25 | v1.4: this repository onboarded as its own target (§1 amended — dogfooding sanctioned). Full ONBOARDING.md checklist applied: `pipeline.config.json` (Docker-free `verifyCommand`, empty dependencies), `tests/acceptance/`, thin Dockerfile + `pipeline-multiagentpipelines:local`, `bd init` (prefix `repo`), container section in `CLAUDE.md`, `run.config.multiagentpipelines.json`. Constraint recorded: acceptance tests for self-tasks may not use Docker; `bd init`'s SessionStart hook removed (no host `bd`; pipeline projects carry no hooks) | User decision: the pipeline's own backlog (e.g. the §3.6 memory plumbing) becomes shadow-trial material — real tasks, graded each morning |
 | 2026-07-25 | v1.4.1: §3.4 now names onboarding and points at `ONBOARDING.md` (config is written at onboarding, not "during planning" — wording predated the checklist); ONBOARDING.md gained the from-zero project path and the post-onboarding lifecycle | Doc navigation fix: DESIGN.md's body never referenced onboarding, so a reader of this doc alone could not find the setup path |
 | 2026-07-25 | v1.5: audience widened to senior developers (§3.3) — developers may inspect drafted tests before freeze (optional; prose criteria remain the gate for everyone); difficulty labels join the approval pass; priority/dependency order made explicitly the user's decision. PLANNING.md steps 1, 5, 6 updated to match. No change to run-time autonomy or budgets (subscription window stays the natural limit — §4.6–4.7 unchanged) | User decision: the pipeline is now a tool for senior software devs, not only its original non-programmer owner — high-level decisions belong to the humans, proposals to Claude |
+| 2026-07-25 | v1.6: parallelism moved from out-of-scope to a decided V2 item (§7) — opt-in per-run concurrency knob, default 1, max 2–3; one runner juggling N containers (sole-writer preserved); global park/resume on rate limits; sequential remains the overnight default. §8 bullet narrowed to "as a default or in V1" | User decision after weighing it: parallel compresses elapsed time for daytime batches that fit the window, but budget exhaustion mid-run leaves everything half-done — sequential maximizes completed work per budget, so it stays the default |
