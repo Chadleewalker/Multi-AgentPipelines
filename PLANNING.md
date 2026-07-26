@@ -148,6 +148,14 @@ wrong" during a run is a first-class result that lands in review — never a rea
 anything to edit specs or tests mid-run. If the cause is architectural, amend the design
 doc (change-log row) so the doc never silently drifts from reality.
 
+A change-log row is identified by a **slug** in its `Ref` column, never a version number:
+a row a pipeline task produced takes that task's issue id, and a row a planning session
+produced takes a short descriptive kebab-case name. Versions could not survive parallel
+work — agents fork from a base where a number is free and two rows arrive claiming it —
+so identity moved to a value the host already assigns uniquely. Cite a row by the pinned
+phrase change-log row plus the slug in backticks, and run `bash scripts/test-changelog.sh`
+after editing the log (Docker-free, seconds).
+
 ## What "Done" Is (and Isn't)
 
 This playbook's own acceptance bar is structural — the checks in
