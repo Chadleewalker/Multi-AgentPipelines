@@ -269,6 +269,22 @@
   .gloss p { margin: 0; color: var(--muted); font-size: 0.92rem; }
   .gloss strong { color: var(--ink); font-weight: 600; }
 
+  /* The from-zero path — a true sequence, so it gets numbers. */
+  .steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.55rem; max-width: 62ch; counter-reset: step; }
+  .steps li { display: flex; gap: 0.7rem; align-items: baseline; font-size: 0.92rem; color: var(--muted); }
+  .steps li::before {
+    counter-increment: step;
+    content: counter(step);
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    color: var(--human-stroke);
+    border: 1px solid var(--human-stroke);
+    border-radius: 2px;
+    padding: 0.05rem 0.4rem;
+    flex: 0 0 auto;
+  }
+  .steps b { color: var(--ink); font-weight: 600; }
+
   /* Specialist slots (DESIGN.md 3.5) — dashed amber, distinct from built machinery.
      Mermaid may put a classDef class on the node group OR on the shape itself, so both
      are targeted; each selector carries a class more than the generic .node rule. */
@@ -489,6 +505,23 @@ flowchart LR
   class CFG,FRZ,CLM,TL store
 </pre>
     </div>
+    <p>A brand-new project reaches its first overnight run in four stages — the first
+    three happen once, ever; the fourth is the rest of the project's life:</p>
+    <ol class="steps">
+      <li><span><b>Create it</b> — the scaffold skill. Claude picks the language, writes
+      the project's rules file, and gets a plain-English spec approved before building
+      anything. An existing project skips this.</span></li>
+      <li><span><b>Write the design doc</b> — for anything big enough to decompose into
+      a backlog: intent, architecture, decisions and why, changed only through its
+      change log. Small projects live on the scaffold's spec alone.</span></li>
+      <li><span><b>Onboard it</b> — the pipeline-onboard skill, following ONBOARDING.md:
+      GitHub remote, integration branch recorded, frozen-test home, config, image, task
+      database, container-aware instructions. Like wiring a house — done once.</span></li>
+      <li><span><b>Plan and run, forever</b> — every future feature is a PLANNING.md
+      session and an overnight run. Never a re-onboarding; the one time the plumbing is
+      touched again is a new dependency, baked into the image during that planning
+      session.</span></li>
+    </ol>
     <div class="gloss">
       <p><strong>The skills are interactive</strong> — you and Claude together, which is
       why they wear the same indigo as your decision points. Nothing the harness does
