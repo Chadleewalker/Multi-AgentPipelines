@@ -3,7 +3,8 @@
 # Runs inside the task container from the read-only /pipeline mount (§4.10).
 #
 # Fixed sequence, scaffolding-driven (no LLM decides phases):
-#   code → verify → (retry, max 3 attempts TOTAL, carried across relaunches) → commit
+#   code → verify → (retry, max PIPELINE_MAX_ATTEMPTS total — default 3 — carried
+#   across relaunches) → commit
 #   [T9 inserts the docs phase before the final commit; T10 inserts rate-limit exit 20]
 #
 # Inputs (§4.10): /workspace mount (repo on task branch), /workspace/.run/issue.md,
@@ -26,7 +27,13 @@ AGENT_CMD="${PIPELINE_AGENT_CMD:-claude -p --dangerously-skip-permissions${MODEL
 # PIPELINE_AGENT_CMD (stubs, overrides) owns its own flags and gets none of this.
 CODE_FORMAT=""
 [ -z "${PIPELINE_AGENT_CMD:-}" ] && CODE_FORMAT="--output-format json"
-MAX_ATTEMPTS=3
+# Attempt cap (§4.6): tunable per run via run.config.json maxAttempts, which the
+# runner forwards as PIPELINE_MAX_ATTEMPTS. Anything unset or non-numeric falls back
+# to 3 — the cap must always be a positive integer or the retry loop breaks.
+MAX_ATTEMPTS="${PIPELINE_MAX_ATTEMPTS:-3}"
+case "$MAX_ATTEMPTS" in
+  ''|*[!0-9]*|0) MAX_ATTEMPTS=3 ;;
+esac
 
 die30() { echo "entrypoint: $1" >&2; exit 30; }
 
@@ -61,9 +68,19 @@ while :; do
     echo "NEVER modify tests/acceptance/ or any frozen path - the verifier fails the task if you do."
     echo "Do not run git commit; the scaffolding commits for you."
     echo "Done means: the frozen acceptance tests under tests/acceptance/$ISSUE_ID/ pass."
+    # Memory out-channel (§3.6): the agent proposes, the host files it after exit.
+    echo "If you learn something worth keeping for future tasks in this project, record it with:"
+    echo "  node $PIPE/status.js note \"<insight>\""
     echo
     echo "--- TASK SPEC ---"
     cat "$RUN/issue.md"
+    # Memory in-channel (§3.6): project memories exported read-only by the runner.
+    # Absent whenever the host has none to export, so the prompt simply omits the block.
+    if [ -f "$RUN/memory.md" ]; then
+      echo
+      echo "--- PROJECT MEMORY (read-only) ---"
+      cat "$RUN/memory.md"
+    fi
     if [ -f "$RUN/feedback.txt" ]; then
       echo
       echo "--- VERIFIER FEEDBACK FROM PREVIOUS ATTEMPT ---"
@@ -118,6 +135,8 @@ while :; do
         echo "   NEVER touch tests/acceptance/ or any frozen path."
         echo "2. Your final output must be ONLY a concise change summary (2-4 sentences)"
         echo "   of what the implementation changed - it becomes the PR body."
+        echo "Before that summary you may record any insight worth keeping for future tasks"
+        echo "with: node $PIPE/status.js note \"<insight>\" - it does not go in the summary."
         echo
         echo "--- TASK SPEC ---"
         cat "$RUN/issue.md"
@@ -148,7 +167,7 @@ while :; do
   esac
 done
 
-# ---- bail: three failed attempts (§4.6) ----
+# ---- bail: attempt cap reached (§4.6) ----
 # Attempt work is already committed at each boundary; this marker (allow-empty)
 # labels the outcome at the branch tip.
 node "$PIPE/status.js" set stuckState "bailed after $MAX_ATTEMPTS failed verification attempts; per-attempt feedback in attempts[]"
