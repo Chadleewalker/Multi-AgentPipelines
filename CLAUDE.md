@@ -69,6 +69,9 @@ pipeline unable to be trusted unattended.
 # a real run against a target project
 node runner/run.js --config run.config.hallertau.json
 
+# the full sweep — every suite, one at a time, with a summary table
+bash scripts/test-all.sh
+
 # prove the whole pipeline end to end (stubs, no model calls, ~5 min)
 bash scripts/e2e.sh            # add --keep to leave branches and PRs up for inspection
 
@@ -79,12 +82,48 @@ bash scripts/test-runner-container.sh
 
 Suites are slow (real containers) and **share one Docker network** — run them one at a
 time, never concurrently, or they tear the network down under each other.
+`scripts/test-all.sh` is the safe way to run more than one: it holds a lock, sweeps them
+sequentially, kills any suite that hangs (default 900s), and writes per-suite logs plus a
+summary to `runs/sweeps/<timestamp>/`. It discovers suites by glob, so a new
+`scripts/test-*.sh` is swept without anyone editing anything.
+
+**Run the sweep after merging a batch of PRs, before a shadow run, and when picking up a
+cold branch.** Suites go stale silently: T12 was never re-run after T15 and T17 changed
+the runner underneath it, and had quietly accumulated three separate staleness bugs by
+the time anyone looked. Changing a component means the suites that *cover* it are green;
+the sweep is what tells you the suites that merely *touch* it still are.
+
+## Code conventions (promoted from memory — §3.6)
+
+Memory notes are an inbox, not a destination. These started as `bd remember` notes
+proposed by task agents; each one recurred, or cost a shipped feature, so it has been
+promoted here where it steers every future agent with no export step. The originating
+note keys are cited so the trail back to the run survives.
+
+- **Never scrape an agent log; parse it structurally.** The Claude CLI prints chatter
+  around its own output (untrusted-workspace warnings and whatever a future version
+  invents), so a whole-file `JSON.parse` fails and a raw `tail` leaks noise into a PR
+  body. `pipeline/envelope.js` scans lines bottom-up for the first that parses to an
+  object with a string `result`; reuse it. Never maintain a list of known warning
+  strings. (`repo-52m-note-1`, `repo-52m-note-3`; STATUS defect 5.)
+- **Fail-safe scaffolding must still assert its artifact is non-empty.** Anything that
+  swallows an error to protect a run — model-id extraction, the memory export, artifact
+  collection — can succeed vacuously and disable a shipped feature for months with no
+  error anywhere. Log the count, and make the count visible where a human already looks.
+  This rule was *filed as a memory and not promoted*, and the same defect shipped again
+  two tasks later. (`repo-52m-note-4`; STATUS defects 2, 5, 7.)
+- **All runner Beads access goes through `runner/bd.js`** (`bd()` / `bdJson()`). That is
+  the seam `PIPELINE_BD_CMD` stubs, and it is the only reason the Docker-free acceptance
+  tests can exercise runner code at all. New runner code that shells `bd` directly is
+  untestable by construction. (`repo-4gp-note-2`.)
 
 ## Changing the design
 
 If something here turns out to be wrong, amend `DESIGN.md` and add a row to its change
 log saying what changed and why. Four amendments came out of the first real runs; that
 trail is how a later session knows a decision was deliberate rather than accidental.
+Change-log rows are **chronological ascending** — append a new row at the bottom of the
+§12 table, after the newest existing one (`repo-4gp-note-3`).
 
 ## Working inside the pipeline container (read this when you are the coding agent in a run)
 
