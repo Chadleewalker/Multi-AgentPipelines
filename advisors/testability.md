@@ -64,6 +64,24 @@ prevent.
   will fail on any legitimate refactor.
 - **Overfitted gates.** Would this test pass on an implementation that is wrong in an
   obvious way? Say how, concretely. This is the shadow-01 question asked forward.
+- **Fixtures that pass against the bug.** The sharper form of the previous question, and
+  the one to ask whenever the task fixes a defect: would this criterion pass against the
+  **current implementation, unchanged**? If yes, it cannot detect the thing it exists to
+  catch. In `repo-wxh` the drafted fixture listed the helper model both first and largest,
+  so the new alias rule and the greatest-tokens fallback selected the same key — an
+  implementation ignoring the pinned alias entirely, and the `Object.keys(modelUsage)[0]`
+  bug being fixed, both passed every criterion. Name the discriminating input: the fixture
+  whose expected answer differs under the fix and under the bug. A defect-fix spec with no
+  such fixture is a spec that cannot fail.
+- **Presence standing in for correctness.** A criterion that asserts an artifact exists,
+  is non-empty, or has the right shape, but never pins its **value** against something
+  independent. Non-empty and well-formed are not the same as right, and the harder
+  failures write something plausible and wrong: the resolved model id was present,
+  well-formed and false for days because it named the first key of `modelUsage` rather
+  than the pinned model, and a unit suite that could not execute its own stub reported
+  genuine-looking check failures instead of announcing a broken harness. Ask what the
+  value is being compared against — the alias the runner actually requested, a fixture
+  whose answer was computed independently — and if the answer is "nothing", say so.
 - **Coverage in both directions.** Every criterion must be checkable by something; every
   plausible test implied by the Description must trace back to a criterion. An orphan on
   either side is a spec bug — flag it now, because after the freeze it cannot be fixed
