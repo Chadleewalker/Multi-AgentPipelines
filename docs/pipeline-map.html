@@ -461,6 +461,44 @@
   </header>
 
   <section>
+    <h2><span class="phase p-impl">At a glance</span> What it runs on, what it costs, where it stands</h2>
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th>Technology</th><th>What it is</th><th>Role here</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><b>Claude</b> (Anthropic)</td><td>The AI model, via headless Claude Code</td><td>All fuzzy work: planning specs, writing code, writing docs — nothing else</td></tr>
+          <tr><td><b>Docker Desktop</b></td><td>Container runtime on a Windows PC</td><td>A disposable, locked-down sandbox per task</td></tr>
+          <tr><td><b>Node.js</b></td><td>JavaScript runtime; the runner is plain scripts, zero packages</td><td>The deterministic orchestrator — timers, budgets, kill switch. No AI in it</td></tr>
+          <tr><td><b>Git + GitHub</b></td><td>Version control and code review</td><td>Every task on its own branch; every result a reviewable pull request; nothing reaches the main branch unreviewed</td></tr>
+          <tr><td><b>Beads</b></td><td>Open-source, git-backed task database (<span class="tag">bd</span>)</td><td>The durable work queue and project memory; only the host machine can write to it</td></tr>
+          <tr><td><b>Squid proxy</b></td><td>An allowlist gate on the container network</td><td>Containers can reach Anthropic's API and nothing else — no package registries, no git hosts, no web</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">
+      <strong>Cost model: the existing Claude subscription, nothing metered.</strong>
+      There is no per-use API billing and no way for a run to overspend — when the
+      subscription's usage window is exhausted, the pipeline pauses and resumes when it
+      resets. The subscription is the hard budget, by design.
+    </p>
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th>Phase</th><th>Status</th><th>Contents</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>V1 — the implementation loop</td><td><span class="tag ok">built &amp; proven</span></td><td>Runner, sandbox, verifier, report — proven by a scripted end-to-end pass (success, bail, and tamper scenarios) plus first real runs on a live project</td></tr>
+          <tr><td>Shadow trial</td><td><span class="tag warn">current phase</span></td><td>Real tasks, graded against a developer's own judgment each morning, before the pipeline gets real responsibility</td></tr>
+          <tr><td>V2</td><td><span class="tag">planned</span></td><td>The planning session as a packaged skill, domain-specialist critics, an opt-in parallel-task knob</td></tr>
+          <tr><td>V3</td><td><span class="tag">planned</span></td><td>Port to the office environment (network-share repos, local review mode)</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
     <h2><span class="phase p-harness">Setup</span> Where the harness fits</h2>
     <p>
       Around the pipeline sits the harness — a plugin of skills every Claude session
