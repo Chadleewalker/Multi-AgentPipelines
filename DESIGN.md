@@ -196,7 +196,9 @@ frozen tests over time, so the pipeline sharpens instead of accumulating noise.
 scaffolding (4.3); only a declared list varies, so the orchestrator stays dumb:
 - **Registry:** each specialist is a definition file in this repo (`advisors/<name>.md`)
   stating its lens, what it checks, and the structured output it must return. Versioned,
-  reusable across projects.
+  reusable across projects. **Built** — `advisors/README.md` pins the charter format
+  (`## Lens` / `## Checks` / `## Output`, one JSON fence matching the `advisories` item
+  shape), and `ambiguity.md`, `testability.md`, `scope.md` staff the slot-1 panel.
 - **Selection:** `pipeline.config.json` lists the project's specialists; an issue field
   names the ones that apply to that task. Opt-in per task, never blanket — each advisor
   is another `claude -p` call against the subscription window.
@@ -214,6 +216,11 @@ components (entrypoint, PR assembly, report) — §10's dividing line — and be
 frozen schemas would otherwise need a breaking change later. Specialist critics and test
 authors (slots 1–2) arrive with the V2 `/spec` skill; run-time advisors (slot 3) follow
 only if the trial shows something that genuinely cannot be made deterministic.
+
+The registry itself landed early, in the dogfood queue: the charter format and the three
+generic planning critics exist now and are run by hand from `PLANNING.md` step 2. That
+does not move V2 forward — no code reads `advisors/`, no phase changed, and a charter is
+still a prompt a human pastes. What V2 adds is dispatch, not content.
 
 ### 3.6 Memory (knowledge that outlives a task)
 
@@ -607,3 +614,4 @@ development starts only after.
 | 2026-07-25 | v1.5: audience widened to senior developers (§3.3) — developers may inspect drafted tests before freeze (optional; prose criteria remain the gate for everyone); difficulty labels join the approval pass; priority/dependency order made explicitly the user's decision. PLANNING.md steps 1, 5, 6 updated to match. No change to run-time autonomy or budgets (subscription window stays the natural limit — §4.6–4.7 unchanged) | User decision: the pipeline is now a tool for senior software devs, not only its original non-programmer owner — high-level decisions belong to the humans, proposals to Claude |
 | 2026-07-25 | v1.6: parallelism moved from out-of-scope to a decided V2 item (§7) — opt-in per-run concurrency knob, default 1, max 2–3; one runner juggling N containers (sole-writer preserved); global park/resume on rate limits; sequential remains the overnight default. §8 bullet narrowed to "as a default or in V1" | User decision after weighing it: parallel compresses elapsed time for daytime batches that fit the window, but budget exhaustion mid-run leaves everything half-done — sequential maximizes completed work per budget, so it stays the default |
 | 2026-07-25 | v1.7: the verify-attempt cap is tunable per run — `maxAttempts` in `run.config.json` (validated positive whole number), forwarded as `PIPELINE_MAX_ATTEMPTS`; the entrypoint falls back to 3 on unset/invalid. §3.5/4.3/4.6/4.7/4.10/4.12 and the 4.11 table reworded from the hardcoded 3 to "the attempt cap (default 3)". Implemented in the same change (config.js, container.js, entrypoint.sh) with two new entrypoint checks (cap=2 honored; invalid value falls back to 3) | User request: tune how many failed attempts feed forward before a task bails; default unchanged at 3 |
+| 2026-07-26 | v1.8: the §3.5 registry is built (`repo-qyd`) — `advisors/README.md` pins the charter format (`## Lens` / `## Checks` / `## Output`, one JSON fence matching the `advisories` item shape in `status.schema.json`) and `ambiguity.md` / `testability.md` / `scope.md` staff the slot-1 critic panel; `PLANNING.md` step 2 now names the charter to paste per difficulty label. Markdown only — no code reads `advisors/`, no phase changed, so V2's `/spec` skill still owns dispatch. (Renumbered from the PR's v1.7 at merge: the attempt-cap amendment claimed v1.7 on `main` while this task ran) | Dogfood queue task. The critic panel was described in three places and existed in none, so every planning session re-improvised the prompts; the shadow-01 self-nesting lesson had nowhere durable to live |

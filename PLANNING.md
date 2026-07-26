@@ -47,14 +47,25 @@ it decides how much critique the spec receives.
 
 ### 2. Run the critics, sized to the difficulty label
 Critic effort scales with difficulty (§3.2) — in V1 the "critics" are fresh-context
-Claude reviews (subagents or a fresh session), not tooling:
+Claude reviews (subagents or a fresh session), not tooling. Each one is run by pasting a
+charter from [`advisors/`](advisors/README.md) verbatim as the review prompt, together
+with the draft spec; the charters are written for a reader with no session history, so
+give each critic its own fresh context and don't summarise the discussion that produced
+the spec:
 - **trivial** — no critics; go straight to tests.
-- **medium** — one light pass: "which acceptance criteria are ambiguous or not actually
-  machine-checkable?"
-- **hard** — the full panel, each as an independent review: **ambiguity** (where would
-  two engineers build different things?), **testability** (which criteria can't a script
-  verify?), **scope** (is this secretly several tasks?).
-Revise the draft against the critiques before showing it to the user.
+- **medium** — one light pass, normally [`advisors/testability.md`](advisors/testability.md)
+  ("which acceptance criteria are ambiguous or not actually machine-checkable?"), since
+  untestable criteria are the failure that most often survives review.
+- **hard** — the full panel, each as an independent review:
+  [`advisors/ambiguity.md`](advisors/ambiguity.md) (where would two engineers build
+  different things?), [`advisors/testability.md`](advisors/testability.md) (which criteria
+  can't a script verify?), [`advisors/scope.md`](advisors/scope.md) (is this secretly
+  several tasks?).
+
+Each critic returns one JSON object — `advisor` / `verdict` (`ok`, `concerns`, `error`) /
+`summary` / `details[]` — the same shape as an `advisories` entry in the status file.
+**A critic never gates** (§3.5): `concerns` is a list of decisions for you and the user,
+not a veto. Revise the draft against the critiques before showing it to the user.
 
 ### 3. Write the acceptance tests
 Claude writes the tests **now, before any code exists**, from the spec alone (§2, §4.4):
