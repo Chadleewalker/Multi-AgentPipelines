@@ -57,7 +57,13 @@ function exportMemory(cfg, runDir) {
   const lines = toLines(res.data);
   const writeErr = write(lines.length ? [HEADER, ...lines].join('\n') : EMPTY);
   if (writeErr) return { ok: false, error: writeErr };
-  return { ok: true };
+  // `count` is the point of the return value, not decoration: a successful export of
+  // ZERO memories is indistinguishable from a healthy one by `ok` alone, and this
+  // channel is fail-safe by design — if `bd memories` ever starts returning nothing
+  // (schema change, wrong DB path, a bd upgrade), every container silently receives
+  // the "(no memories recorded)" marker with no error anywhere. That is precisely how
+  // model pinning (v1.2) recorded nothing for months. The caller logs this.
+  return { ok: true, count: lines.length };
 }
 
 // The "Out" channel (§3.6): file each proposed note into project memory as the sole
