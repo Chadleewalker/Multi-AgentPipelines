@@ -3,7 +3,8 @@
 # Runs inside the task container from the read-only /pipeline mount (§4.10).
 #
 # Fixed sequence, scaffolding-driven (no LLM decides phases):
-#   code → verify → (retry, max 3 attempts TOTAL, carried across relaunches) → commit
+#   code → verify → (retry, max PIPELINE_MAX_ATTEMPTS total — default 3 — carried
+#   across relaunches) → commit
 #   [T9 inserts the docs phase before the final commit; T10 inserts rate-limit exit 20]
 #
 # Inputs (§4.10): /workspace mount (repo on task branch), /workspace/.run/issue.md,
@@ -26,7 +27,13 @@ AGENT_CMD="${PIPELINE_AGENT_CMD:-claude -p --dangerously-skip-permissions${MODEL
 # PIPELINE_AGENT_CMD (stubs, overrides) owns its own flags and gets none of this.
 CODE_FORMAT=""
 [ -z "${PIPELINE_AGENT_CMD:-}" ] && CODE_FORMAT="--output-format json"
-MAX_ATTEMPTS=3
+# Attempt cap (§4.6): tunable per run via run.config.json maxAttempts, which the
+# runner forwards as PIPELINE_MAX_ATTEMPTS. Anything unset or non-numeric falls back
+# to 3 — the cap must always be a positive integer or the retry loop breaks.
+MAX_ATTEMPTS="${PIPELINE_MAX_ATTEMPTS:-3}"
+case "$MAX_ATTEMPTS" in
+  ''|*[!0-9]*|0) MAX_ATTEMPTS=3 ;;
+esac
 
 die30() { echo "entrypoint: $1" >&2; exit 30; }
 
@@ -160,7 +167,7 @@ while :; do
   esac
 done
 
-# ---- bail: three failed attempts (§4.6) ----
+# ---- bail: attempt cap reached (§4.6) ----
 # Attempt work is already committed at each boundary; this marker (allow-empty)
 # labels the outcome at the branch tip.
 node "$PIPE/status.js" set stuckState "bailed after $MAX_ATTEMPTS failed verification attempts; per-attempt feedback in attempts[]"
