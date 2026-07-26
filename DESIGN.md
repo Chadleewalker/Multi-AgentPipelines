@@ -64,6 +64,33 @@ work — the design doesn't care when.
 | Task spec | One bounded task: description, constraints, "Done means" criteria, attempt log | A Beads issue | Frozen at approval |
 | Acceptance tests | Machine-checkable proof of each criterion | `tests/acceptance/<issue-id>/` in the repo | Frozen at approval (verifier `git diff`-checks them) |
 
+**Epics group specs; they are never work.** The three levels above are the whole of what
+runs. Beads also supports a hierarchical parent (`bd create -t epic`, children carrying
+`parent_id`), and the pipeline uses it for exactly one thing: giving a reviewer a place to
+see that several specs are one feature. An epic holds a title and a design-ref and nothing
+else — **no acceptance criteria, no frozen tests, no container run, no pull request**. The
+1:1 rule is untouched: one *spec* is still one issue, one run, one PR.
+
+Two facts make the exclusion mandatory rather than cosmetic, both verified against
+`bd 1.1.0` rather than assumed. **`bd ready` returns the epic itself**, ranked among its
+children, so an unfiltered runner would clone a workspace for it and hand an agent a spec
+with no criteria. And **closing every child does not close the parent** — the epic stays
+open and ready, so it would be re-picked on every subsequent run, forever. The runner
+therefore skips any ready-queue entry whose `issue_type` is not `task`. That is a
+deterministic type check on a field `bd ready --json` already returns (§4.12, hard rule 7)
+— never a heuristic over the title, and never an LLM.
+
+**Who decides what is an epic.** The human does, at planning time, exactly as with
+priority and the difficulty label (§3.3): the decomposer proposes, the user approves.
+Nothing infers it. The criterion is narrow — an epic is worth creating when two or more
+specs implement the same design-ref section and want reviewing together — and if a
+would-be epic has acceptance criteria of its own, it is a spec that has not been
+decomposed yet, not an epic.
+
+*Not built yet:* the runner's type filter is declared here before it is implemented, the
+same sequencing §3.7 used, so no container has to invent the contract. Until it ships, do
+not create an epic in a repo the runner drains.
+
 One canonical home per artifact; everything else (PR descriptions, the run report) is a
 generated copy, never edited by hand. Each Beads issue carries a `design-ref` naming the
 design-doc section it implements — this makes two checks cheap: doc sections with no issue
@@ -504,7 +531,12 @@ source of truth.
     failure), and resets any issue left in-progress by an abnormal earlier end (operator
     stop, crash) back to open with an attempt-log note; at run end it tears the network
     and sidecar down. Task order: Beads' ready queue (open, unblocked, dependencies
-    satisfied), ranked by Beads priority, first-in-first-out within the same priority.
+    satisfied), **filtered to entries whose `issue_type` is `task`**, ranked by Beads
+    priority, first-in-first-out within the same priority. The type filter is what keeps
+    an epic out of the run (§3.1): `bd ready` returns the parent alongside its children
+    and never closes it when they close, so without the filter the runner would attempt
+    an epic on every run for the life of the repository. A deterministic check on a field
+    the queue already returns — no heuristic, no LLM.
     The Beads database's canonical home is the working copy at the configured
     target-repo path on the host; the runner runs `bd` against it, and in V1 (single
     machine) its state is not pushed anywhere. **The runner writes a per-run manifest**
@@ -726,3 +758,4 @@ version (`Status: READY v1.0`). The *document* still has a version; its *rows* n
 | 2026-07-26 | repo-1cy | §3.7's container-side half built (`repo-1cy`) — `specConcerns` in `status.schema.json` (optional, `maxItems` 5, `maxLength` 1000) and in `schemas/examples/status.valid.json`, `pipeline/status.js concern` as the writer, and prompt text in both entrypoint phases telling the agent the channel exists *and* that it cannot change the outcome. §4.11's status-file enumeration now names `specConcerns` beside `memoryNotes`, and the container section of `CLAUDE.md` plus `ONBOARDING.md`'s copy-in block carry the guidance. Host-side surfacing remains unbuilt | §4.11 listed every other status-file field but not this one, so a reader of the contract section alone would not have known the field existed. The prompt literals are asserted against the *generated* prompt files rather than `entrypoint.sh`, because a shell comment satisfies the source but leaves the agent never actually told |
 | 2026-07-26 | repo-dhp | §3.6's out-channel gate is named — `memory.shouldFileMemory(status)` is the single statement of which outcomes may seed project memory, exported from `runner/memory.js` and called by `run.js`, replacing an inline array literal in the runner; it fails closed on any status the runner does not recognise. No rule changed, only where it lives | `repo-dhp`. The gate was a design decision (recorded v1.8.2) living as a literal buried in a control-flow branch, where no test could reach it without a container; beside the channel it guards it became testable for the first time, in `tests/unit/memory.test.js`. Logged even though it is small — the v1.8.1 lesson is that every §3.6 amendment gets a row |
 | 2026-07-26 | repo-006 | §12 change-log rows are identified by a stable kebab-case slug in a new `Ref` column (`| Date | Ref | What changed | Why |`) instead of a version number: a pipeline task's row takes its issue id, an interactive row a short descriptive name. All 26 existing rows keep their date and their "why" verbatim and gain a ref; version tokens inside prose are left as history. Citations in the living docs move to the pinned form (the phrase change-log row plus a backticked slug), and `scripts/test-changelog.sh` / `tests/unit/changelog.test.js` — a Docker-free suite the sweep discovers by glob — enforce the shape, the slug syntax, uniqueness and the no-leading-version rule, reading `CHANGELOG_FILE` when set so the negative cases are exercisable | `repo-006`. Merging three PRs on 2026-07-26, two claimed the same version because each forked from a base where that number was free — a collision that recurs on every batch run touching this doc, and that the `repo-qyd` row already records happening once before. Numbers assigned by parallel agents cannot be unique by construction; an id the host assigns can be, so identity moves to where it is already unique instead of being renumbered by hand at each merge |
+| 2026-07-26 | epics-group-never-run | §3.1 admits Beads epics as a **grouping** device and §4.12 filters them out of the run: an epic holds a title and a design-ref, never acceptance criteria, frozen tests, a container run or a PR, and the runner takes only ready-queue entries whose `issue_type` is `task`. The 1:1 rule is untouched — one spec is still one issue, one run, one PR. Who calls something an epic stays a planning-time human decision (§3.3), like priority and the difficulty label; the system only *recognises* the type deterministically. Declared before the filter is implemented, the §3.7 sequencing | Asked during review: can one spec create several beads? No — but Beads offers hierarchy the pipeline was silently ignoring, and ignoring it is unsafe. Verified against bd 1.1.0 in a throwaway database: `bd ready` returns the epic itself ranked among its children, and closing every child leaves the parent open and ready — so an unfiltered runner would clone a workspace for a spec with no criteria, and would do it again on every subsequent run |
