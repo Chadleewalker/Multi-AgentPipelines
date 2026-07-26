@@ -156,6 +156,11 @@ async function main() {
     let artifacts;
     let activeMs = 0;
     let pauses = 0;
+    // Wait cycles accumulate across relaunches, separately from `pauses` (which counts
+    // relaunches and is what the manifest reports). waitForWindow's stop condition is a
+    // cycle cap, so it has to be told what has already been spent — re-entering it fresh
+    // on every pause would reset the count and the cap could never fire (§4.7).
+    let waitCycles = 0;
     for (;;) {
       const remainingMinutes = cfg.wallClockMinutes - activeMs / 60000;
       if (remainingMinutes <= 0) {
@@ -176,7 +181,10 @@ async function main() {
 
       pauses += 1;
       log.info(tr, `rate limit hit (pause ${pauses}) — parking the task; issue stays in_progress`);
-      const waited = await waitForWindow(cfg, artifacts.status, log, tr, { token });
+      const waited = await waitForWindow(cfg, artifacts.status, log, tr, {
+        token, spentCycles: waitCycles, maxPauses: cfg.maxPauseCycles,
+      });
+      waitCycles = waited.pauses || waitCycles;
       if (!waited.resumed) {
         log.error(tr, `giving up on the pause: ${waited.reason}`);
         break;                                               // stays exit 20 -> paused

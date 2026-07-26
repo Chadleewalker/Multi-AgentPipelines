@@ -33,7 +33,10 @@ D=$(bdq create "mid prio task"  -d "second" --acceptance ok --design "design-ref
 cd "$ROOT"
 
 CFG="$TMP/run.config.json"
-printf '{"targetRepoPath":"%s","targetRepoRemote":"%s","image":"pipeline-base:local"}\n' "$TGTW" "$REMOTEW" > "$CFG"
+# maxPauseCycles 2 keeps the pause scenario to ~14s AND makes it a regression test for the
+# cap itself: the cap is per-task, so it can only fire on the 3rd pause if the count
+# carried across the two relaunches. No other scenario here ever pauses.
+printf '{"targetRepoPath":"%s","targetRepoRemote":"%s","image":"pipeline-base:local","maxPauseCycles":2}\n' "$TGTW" "$REMOTEW" > "$CFG"
 
 # --- Stubs standing in for the container (T13/T14 will make these real) ---
 # Artifacts go where the container writes them: the workspace's .run/ (T13 collects).
@@ -54,9 +57,14 @@ mkdir -p "$RUN_DIR"
 printf '{"issueId":"%s","attempts":[{"number":1,"verifierResult":"fail","timestamp":"2026-07-25T12:00:00Z"},{"number":2,"verifierResult":"fail","timestamp":"2026-07-25T12:05:00Z"},{"number":3,"verifierResult":"fail","timestamp":"2026-07-25T12:10:00Z"}],"stuckState":"bailed after 3"}\n' "$ISSUE_ID" > "$RUN_DIR/status.json"
 exit 10
 EOF
+# Always rate-limited. The reset time is computed at RUN time, never hardcoded: a fixed
+# timestamp silently changes meaning as the wall clock passes it (a far-future date parks
+# the runner for hours; a past one makes it relaunch on a 5s cycle), and either way the
+# suite stops testing what it claims to. maxPauseCycles below bounds the loop.
 cat > "$TMP/stub-paused.sh" <<'EOF'
 mkdir -p "$RUN_DIR"
-printf '{"issueId":"%s","attempts":[],"rateLimitResetAt":"2026-07-26T00:00:00Z"}\n' "$ISSUE_ID" > "$RUN_DIR/status.json"
+RESET=$(date -u -d "@$(( $(date +%s) + 2 ))" +%Y-%m-%dT%H:%M:%SZ)
+printf '{"issueId":"%s","attempts":[],"rateLimitResetAt":"%s"}\n' "$ISSUE_ID" "$RESET" > "$RUN_DIR/status.json"
 exit 20
 EOF
 
@@ -111,10 +119,19 @@ OUT=$(runq "$TMP/stub-paused.sh" t12-paused)
 echo "$OUT" | grep -q "exit 20 -> paused" && pass "exit 20 -> paused" || fail "paused status wrong"
 echo "$OUT" | grep -q "issue stays in_progress" && pass "paused issue left in_progress (runner parks it)" || fail "paused transition wrong"
 st "$G" | grep -q in_progress && pass "paused issue is in_progress in Beads" || fail "paused issue state wrong: $(st "$G")"
+# The stop condition must actually fire. A permanently rate-limited task has to end the
+# run, not relaunch forever: the cap counts cycles for the whole task, so re-entering the
+# wait on each pause must not reset it.
+echo "$OUT" | grep -q "giving up on the pause" \
+  && pass "pause cap fires across relaunches (loop is bounded)" || fail "pause cap never fired"
+[ "$(echo "$OUT" | grep -c 'rate limit hit (pause')" = 3 ] \
+  && pass "exactly 3 pauses at maxPauseCycles=2 (count carried, not reset)" \
+  || fail "pause count wrong: $(echo "$OUT" | grep -c 'rate limit hit (pause')"
 
-# 9. One failure never blocks the next; results.json records every outcome.
-[ -f "$ROOT/runs/t12-stuck/results.json" ] && pass "results.json written per run" || fail "results.json missing"
-grep -q '"outcome"' "$ROOT/runs/t12-stuck/results.json" && pass "per-task outcomes recorded" || fail "outcomes missing"
+# 9. One failure never blocks the next; the run manifest records every outcome.
+# (T17 renamed this artifact results.json -> run.json; the field name is unchanged.)
+[ -f "$ROOT/runs/t12-stuck/run.json" ] && pass "run manifest written per run" || fail "run.json missing"
+grep -q '"outcome"' "$ROOT/runs/t12-stuck/run.json" && pass "per-task outcomes recorded" || fail "outcomes missing"
 
 # 10. Issue exported for the container as .run/issue.md content (4.10).
 ISSUE_MD=$(find "$ROOT/runs/t12-order/tasks" -name issue.md | head -1)
