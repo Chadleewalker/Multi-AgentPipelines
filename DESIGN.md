@@ -113,6 +113,16 @@ not by a script.
 
 - The user is the check on **what** gets built (plain-English intent); the AI owns **how
   it's verified** (it writes better tests). This division is the heart of the design.
+- **Developers may open the hood.** The plain-English criteria are the required gate for
+  everyone; a developer may additionally inspect the drafted test files before they
+  freeze, and challenging a test reopens the draft like any other approval feedback.
+  Optional by user, never required — Claude offers, never insists. (Added when the tool's
+  audience widened from its original non-programmer owner to senior developers.)
+- **The difficulty label and the queue order are the user's decisions**, proposed by
+  Claude: the trivial/medium/hard label is part of the approval pass (it sizes the
+  critics), and priority + dependencies are set by the user at issue creation — that,
+  plus which issues exist, is how a user chooses what a run works on (the runner has no
+  picker; it drains the ready queue as shaped).
 - The approval gate reopens only when a spec must deviate from the doc.
 - Drift flows upward: an agent reporting "the spec is wrong" is a first-class result, not a
   failure. It can trigger a spec fix (re-approve, re-freeze tests) or, when the cause is
@@ -572,3 +582,4 @@ development starts only after.
 | 2026-07-25 | v1.3.2: added `ONBOARDING.md` — the once-per-project checklist (git/GitHub + `defaultBranch`, `.gitattributes`, `tests/acceptance/`, `pipeline.config.json`, thin Dockerfile + image build, `bd init`, `CLAUDE.md` rewrite with the container section replacing yolo_docker guidance, hooks removed, vendored docs, `run.config.<project>.json`, sanity pass). `PLANNING.md` prerequisites now point at it. The harness gains a `/harness-pipeline:pipeline-onboard` skill that follows this file | Onboarding Hallertau took an evening of hand-work and one outright breakage (`master` vs `main`); the checklist makes it a repeatable step. Convention decided here: pipeline projects drop format hooks (they fight the closed network) and their `CLAUDE.md` must describe the pipeline container, not yolo_docker |
 | 2026-07-25 | v1.4: this repository onboarded as its own target (§1 amended — dogfooding sanctioned). Full ONBOARDING.md checklist applied: `pipeline.config.json` (Docker-free `verifyCommand`, empty dependencies), `tests/acceptance/`, thin Dockerfile + `pipeline-multiagentpipelines:local`, `bd init` (prefix `repo`), container section in `CLAUDE.md`, `run.config.multiagentpipelines.json`. Constraint recorded: acceptance tests for self-tasks may not use Docker; `bd init`'s SessionStart hook removed (no host `bd`; pipeline projects carry no hooks) | User decision: the pipeline's own backlog (e.g. the §3.6 memory plumbing) becomes shadow-trial material — real tasks, graded each morning |
 | 2026-07-25 | v1.4.1: §3.4 now names onboarding and points at `ONBOARDING.md` (config is written at onboarding, not "during planning" — wording predated the checklist); ONBOARDING.md gained the from-zero project path and the post-onboarding lifecycle | Doc navigation fix: DESIGN.md's body never referenced onboarding, so a reader of this doc alone could not find the setup path |
+| 2026-07-25 | v1.5: audience widened to senior developers (§3.3) — developers may inspect drafted tests before freeze (optional; prose criteria remain the gate for everyone); difficulty labels join the approval pass; priority/dependency order made explicitly the user's decision. PLANNING.md steps 1, 5, 6 updated to match. No change to run-time autonomy or budgets (subscription window stays the natural limit — §4.6–4.7 unchanged) | User decision: the pipeline is now a tool for senior software devs, not only its original non-programmer owner — high-level decisions belong to the humans, proposals to Claude |
