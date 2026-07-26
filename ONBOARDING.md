@@ -24,7 +24,10 @@ Four stages, in order. Each is interactive, each happens once except the last:
 2. **Write the design doc** — for a project the pipeline will seriously develop, a
    `DESIGN.md` in its repo: intent, architecture, decisions and why, amendable only via
    its change log (§3.1–3.2 of this pipeline's own DESIGN.md describe the session:
-   bounded interview, critics, dry-run decomposition as the readiness test). Small
+   bounded interview, critics, dry-run decomposition as the readiness test). Identify
+   each change-log row by a kebab-case slug — the issue id for a row a task produced, a
+   short descriptive name for a row a planning session produced — never by a version
+   number, which parallel agents cannot assign uniquely (§12). Small
    projects can live on the scaffold's `SPEC.md` alone and enter planning per-task —
    the doc layer is for work big enough to decompose.
 3. **Onboard** — `/harness-pipeline:pipeline-onboard`, which follows the checklist
