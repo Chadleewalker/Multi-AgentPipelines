@@ -54,7 +54,9 @@ real use. All are fixed.
 2. **The model was unpinned** — every container took whatever the account default was, so
    runs were not reproducible and quality could drift silently. Now `model: "opus"`, an
    alias resolved at call time, with the **resolved** id recorded in the status file,
-   manifest, report, and PR footer.
+   manifest, report, and PR footer. The pin itself has always held; the *record* took two
+   further defects to get right — see 5 (never written at all) and 8 (written, but naming
+   the wrong model).
 3. **A container artifact leaked into a PR** — the `node_modules` symlink the tools create
    inside the container. `.gitignore` matched the directory but not a symlink.
 4. **A self-nesting acceptance test** shaped the implementation badly (see above).
@@ -64,7 +66,8 @@ real use. All are fixed.
    warning, and the code phase's whole-file `JSON.parse` failed silently, meaning defect 2's
    resolved model id was in fact never recorded. Fixed at both ends: `pipeline/envelope.js`
    extracts the envelope bottom-up, and the entrypoint seeds the workspace trust flags so
-   the warning is not emitted in the first place.
+   the warning is not emitted in the first place. (The id it then started recording was
+   still the wrong one — defect 8.)
 6. **The pause loop had no working bound** (found 2026-07-26 by the full-suite re-run, not
    by a run). `pause.js` capped wait cycles at 96, but `run.js` re-entered `waitForWindow`
    fresh on every pause, so the counter restarted at 1 each time and the stop condition
@@ -88,6 +91,19 @@ real use. All are fixed.
    both halves of the channel are visible on the issue at review time. `collectArtifacts`
    now also copies `memory.md` (and `docs-err.txt`, per `repo-52m-note-2`), so a finished
    run still shows what the container was actually told.
+8. **The recorded model named the wrong model** (`repo-wxh`, found 2026-07-26 in run
+   `2026-07-26T16-47-15-326Z`). `envelope.js` took `Object.keys(modelUsage)[0]`, but
+   `modelUsage` enumerates *every* model the CLI billed and lists the cheap internal
+   helper first: both tasks of that run recorded `claude-haiku-4-5-20251001` while
+   `claude-opus-5` did 7897 of the 7912 output tokens. The pin was honoured throughout —
+   defect 2's *feature* worked and only its **record** lied, in the status file, the
+   manifest, the PR footer and the report, which is why nothing looked wrong. Worse,
+   `DESIGN.md` §4.3 had codified the first-key rule as a deliberate decision (change-log
+   `v1.8.3`), so the constitution agreed with the bug. Fixed at both: §4.3 now states an
+   ordered selection rule (pinned alias → sole key → greatest `outputTokens`, ties by name
+   → null), the entrypoint passes `${PIPELINE_MODEL:-}` through to `flatten`, and the
+   `2>/dev/null` on that call is gone so an alias matching nothing is visible in the run
+   log instead of silently falling back.
 
 ## Gotchas that cost real time
 
@@ -192,10 +208,10 @@ Planned from the shadow-run artifacts rather than the backlog. Snapshot:
 **`repo-52m` fixed defect 5 above at both ends.** `pipeline/envelope.js` is the single
 reader of the CLI's `--output-format json` envelope: `parse(text)` scans lines bottom-up
 and returns `{result, model}` from the first that parses to an object with a string
-`result` (`model` = the first key of `modelUsage`, else null), and
-`node envelope.js flatten <file>` rewrites a log to just its result text while printing
-the resolved model — a log with no envelope is left byte-identical and prints nothing, so
-stubs and caller-supplied commands need no special case. `status.js summary <file>` sets
+`result` (`model` selected from `modelUsage` per §4.3 — see defect 8 below; else null),
+and `node envelope.js flatten <file> [expected-alias]` rewrites a log to just its result
+text while printing the resolved model — a log with no envelope is left byte-identical and
+prints nothing, so stubs and caller-supplied commands need no special case. `status.js summary <file>` sets
 `changeSummary` from the envelope result, falling back to the raw file when there is none
 (trimmed, last 2000 chars); it is the only new writer, and `init`/`attempts`/`append`/
 `set`/`note` are untouched. The entrypoint now sends both agent phases through the JSON
@@ -209,6 +225,53 @@ Session learnings: critic panel earned its keep (Task C split in two, unverified
 subcommands caught, an unowned contract — nothing injects memory.md into the prompt —
 found and assigned); PLANNING.md step 5 amended — draft specs go to
 `docs/planning-draft-<date>.md`, never a scratchpad, so the user has one file to read.
+
+**`repo-wxh` then fixed defect 8** — the follow-on `repo-52m` left behind. `envelope.js`
+gains `chooseModel(modelUsage, alias)`, the ordered rule §4.3 now states, and `parse` takes
+an optional second argument (`parse(text)` is unchanged, so `status.js summary` and the
+frozen `repo-52m` suite are untouched — the `repo-wxh` suite shells out to that suite and
+asserts exit 0, since nothing else re-runs it). The `flatten` CLI takes an optional
+`[expected-alias]`; an empty or missing one means "no alias", which is the production
+default because `${PIPELINE_MODEL:-}` yields `""` on an unpinned run and `""` is a
+substring of every key. A supplied alias matching nothing prints a diagnostic naming the
+alias and the keys seen to **stderr** and still records the rule-3 choice — stdout stays
+the model id alone, so the entrypoint's `$(...)` capture is unaffected. `DESIGN.md` is
+amended to v1.9.1. Nothing under `runner/` changed: the manifest, report and PR footer all
+read the status file, so they were corrected by the one fix.
+
+## The spec-concern batch (frozen 2026-07-26)
+
+Two tasks frozen together, splitting §3.7 along §10's dividing line: the container writes
+the concern, the host surfaces it. They are sequenced, not batched — the runner reads the
+ready queue once before the task loop, so the host side cannot run alongside the container
+side.
+
+| Issue | Task | Prio | Notes |
+|---|---|---|---|
+| `repo-1cy` | spec-concern channel, container side: `specConcerns` + `status.js concern` + prompt (§3.7) | 1 | **Done** — see below |
+| `repo-dhp` | runner memory unit suite (`tests/unit/`, `scripts/test-runner-memory.sh`) | 2 | Frozen, not yet implemented — `tests/acceptance/repo-dhp/` is red by design |
+
+**`repo-1cy` shipped the container-side half of §3.7.** `status.schema.json` now carries
+an optional `specConcerns` array (max 5 entries, 1000 chars each — deliberately *not* the
+`memoryNotes` numbers: a concern is rarer than an insight and needs more room to be
+actionable), and `schemas/examples/status.valid.json` carries one so
+`scripts/test-status-schema.sh` exercises the field against a real validator on the host.
+`pipeline/status.js concern "<text>"` appends one entry with the same mechanism as `note`
+— head-truncating, replacing a malformed array, and silently no-opping past the cap so a
+concern can never fail a task. Both entrypoint phases now tell the agent the channel
+exists *and* that it cannot change the outcome; the frozen test asserts those literals
+against the **generated** `.run/prompt-<N>.md` and `.run/prompt-docs.md`, never against
+`entrypoint.sh` source, because a shell comment would satisfy the latter while leaving the
+agent never actually told. `CLAUDE.md`'s container section carries the same line beside
+the `status.js note` guidance. Nothing in the control path moved: the evidence-only
+invariant is enforced by an acceptance check that drives a failing run to exit 10 with a
+concern recorded, and that diffs `pipeline/verify.js` and all of `runner/` against the
+fork point.
+
+**Still open: the host side.** Nothing yet reads `specConcerns` after the container exits,
+so a concern raised today reaches only the status file — not the attempt log, the run
+manifest, the run report, or the PR body. Until that ships, an agent can say the spec is
+wrong and no human sees it where they already look. That is the separate task §3.7 names.
 
 ## What's next
 
@@ -243,8 +306,9 @@ found and assigned); PLANNING.md step 5 amended — draft specs go to
 2. **More shadow runs.** Three is a small sample. The numbers that matter for scaling are
    per-task active time, spec-defect rate, and how often tasks collide on shared files.
 3. **V2 — the spec pipeline** (`DESIGN.md` §3.2, §3.5): package the critic panel, the
-   decomposition agent, and the coverage check as a `/spec` skill, and add the
-   "the spec is wrong" channel V1 lacks. The panel's three charters already exist in
+   decomposition agent, and the coverage check as a `/spec` skill. (The "the spec is
+   wrong" channel is no longer wholly missing — `repo-1cy` shipped its container half;
+   what V1 still lacks is the host surfacing.) The panel's three charters already exist in
    `advisors/` and are run by hand from `PLANNING.md` step 2 — `/spec` automates
    dispatching them, not writing them.
 
@@ -330,6 +394,21 @@ is the number that matters for whether the habit sticks. Note what the sweep doe
 do: it does not run itself. Automating it (a post-merge hook, a schedule) was considered
 and deferred — `e2e.sh` opening a live PR means the trigger needs a policy, not just a
 hook, and 10 minutes is cheap enough that a named ritual may be sufficient.
+
+**Gap worth knowing:** `runner/memory.js` (both §3.6 channels) has no
+`scripts/test-runner-*.sh` suite — its coverage lives in the Docker-free acceptance tests
+at `tests/acceptance/repo-eyn/` and `tests/acceptance/repo-4gp/`, which drive it through
+the `PIPELINE_BD_CMD` stub seam. Fold it into a `test-runner-memory.sh` if the module
+grows past the two entry points. The same is true of `pipeline/envelope.js` and
+`status.js summary`: their coverage is `tests/acceptance/repo-52m/` and
+`tests/acceptance/repo-wxh/`, which drive the whole entrypoint with a `PIPELINE_AGENT_CMD`
+stub and a stub `verify.js` (never the real verifier — that would self-nest, the
+shadow-01 lesson). Note the seam between those two: a verifier run covers only the task's
+own directory, so `repo-wxh`'s suite shells out to `node tests/acceptance/repo-52m/test.js`
+and asserts exit 0. That is the only thing standing between a change to `envelope.js` and
+a silent regression in the one-argument `parse(text)` that `status.js summary` depends on
+— `scripts/test-entrypoint.sh` needs Docker, which the container cannot run. A later task
+touching this module should chain the same way.
 
 **Gap worth knowing:** `pipeline/envelope.js` and `status.js summary` have no
 `scripts/test-*.sh` suite — their coverage is `tests/acceptance/repo-52m/`, which drives

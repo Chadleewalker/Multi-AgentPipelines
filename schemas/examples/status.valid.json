@@ -17,5 +17,8 @@
   "memoryNotes": [
     "The widget config is generated at build time - editing config output by hand is overwritten.",
     "The acceptance suite assumes port 3000 is free."
+  ],
+  "specConcerns": [
+    "The spec's 'Done means' list requires the renamed widget in config output, but the frozen test asserts the OLD name - the two cannot both be satisfied."
   ]
 }
