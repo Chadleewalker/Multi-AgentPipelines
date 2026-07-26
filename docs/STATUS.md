@@ -283,10 +283,24 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-egress.sh` / `test-egress-check.sh` | the allowlist and the pre-run gate |
 | `scripts/test-verifier.sh` | tamper detection, frozen config, regression evidence |
 | `scripts/test-entrypoint.sh` | the container loop, all exit codes |
-| `scripts/test-runner-*.sh` | bootstrap, queue, workspace, container, pause, publish |
+| `scripts/test-runner-*.sh` | bootstrap, queue, workspace, container, pause, publish, memory |
 | `scripts/test-report.sh` | manifest schema, scrutiny ordering, idempotency |
 | `scripts/test-isolation.sh` | no push, read-only scaffolding, no egress, one credential |
 | `scripts/test-fixture.sh` | the fixture repo is a valid pipeline target |
+
+**`scripts/test-runner-memory.sh` is the one suite that needs no Docker** (repo-dhp): it
+drives both §3.6 memory channels plus the `shouldFileMemory` outcome gate through the
+`PIPELINE_BD_CMD` seam, so it runs anywhere — including inside a task container, where
+`scripts/test-*.sh` otherwise cannot run at all. It exists because that coverage used to
+live only inside two frozen per-task acceptance directories (`repo-eyn`, `repo-4gp`),
+which are artifacts of finished tasks and are never re-run; `runner/memory.js` was
+effectively untested going forward. **Its bd stub is a `.js` file spawned through
+`process.execPath`, never a `#!/bin/sh` script.** `runner/bd.js` spawns the seam command
+with `spawnSync` and no shell, and on the Windows host a shell script spawned that way
+returns status `null` with `EFTYPE` — so the obvious extraction is green in the container
+and red in the host sweep. The stub is preloaded into node with
+`NODE_OPTIONS=--require "<stub>"` (quoted: repo and temp paths may contain spaces), which
+works because node runs preloads before it resolves the main module.
 
 **Full re-run 2026-07-26**, after the five dogfood/queue PRs merged to `main`: all 18
 suites green, including `e2e.sh` (32 assertions, real PR opened and cleaned up). Two were

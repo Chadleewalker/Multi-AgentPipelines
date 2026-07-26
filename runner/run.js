@@ -18,7 +18,7 @@ const { readyQueue, claim, exportIssue, finish, outcomeFor, attemptNotes } = req
 const { prepare, hasCommits, collectArtifacts, discard } = require('./workspace');
 const { runTask } = require('./container');
 const { waitForWindow } = require('./pause');
-const { fileMemoryNotes } = require('./memory');
+const { fileMemoryNotes, shouldFileMemory } = require('./memory');
 const { publish } = require('./publish');
 const { writeManifest, writeReport } = require('./report');
 
@@ -197,10 +197,10 @@ async function main() {
     log.info(tr, `branch ${ws.branch}: ${commits ? 'has commits (push candidate)' : 'no commits (nothing to push)'}`);
 
     // ---- memory out-channel (§3.6): file the agent's proposed notes, host as sole
-    // Beads writer. Terminal outcomes only — never 'tampered' (an agent that failed the
-    // trust check does not seed project memory) and never 'paused' (not terminal).
+    // Beads writer. Which outcomes qualify is memory.js's rule, not the runner's —
+    // shouldFileMemory() states it once, where a Docker-free test can reach it.
     // Non-fatal by construction: it never throws and never touches the outcome.
-    if (['done', 'partial', 'failed', 'stuck'].includes(outcome.status)) {
+    if (shouldFileMemory(outcome.status)) {
       const mem = fileMemoryNotes(cfg, issue.id, artifacts.status);
       if (mem.filed) log.info(tr, `memory: filed ${mem.filed} note(s) via bd remember`);
       for (const err of mem.errors) log.error(tr, `memory: could not file a note — ${err}`);
