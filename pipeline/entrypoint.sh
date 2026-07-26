@@ -21,12 +21,13 @@ MODEL_ARG=""
 [ -n "${PIPELINE_MODEL:-}" ] && MODEL_ARG=" --model ${PIPELINE_MODEL}"
 AGENT_CMD="${PIPELINE_AGENT_CMD:-claude -p --dangerously-skip-permissions${MODEL_ARG}}"
 
-# When we own the invocation, ask the code phase for JSON so the RESOLVED model id can
-# be recorded (a `--model opus` alias hides which Opus actually ran). The human-readable
-# text is extracted back out below, so agent logs stay readable. A caller-supplied
-# PIPELINE_AGENT_CMD (stubs, overrides) owns its own flags and gets none of this.
-CODE_FORMAT=""
-[ -z "${PIPELINE_AGENT_CMD:-}" ] && CODE_FORMAT="--output-format json"
+# When we own the invocation, ask for JSON so the RESOLVED model id can be recorded (a
+# `--model opus` alias hides which Opus actually ran) and so the docs phase hands back a
+# summary with no CLI chatter around it. The human-readable text is extracted back out
+# (envelope.js), so agent logs stay readable. A caller-supplied PIPELINE_AGENT_CMD
+# (stubs, overrides) owns its own flags and gets none of this; extraction copes either way.
+AGENT_FORMAT=""
+[ -z "${PIPELINE_AGENT_CMD:-}" ] && AGENT_FORMAT="--output-format json"
 # Attempt cap (§4.6): tunable per run via run.config.json maxAttempts, which the
 # runner forwards as PIPELINE_MAX_ATTEMPTS. Anything unset or non-numeric falls back
 # to 3 — the cap must always be a positive integer or the retry loop breaks.
@@ -54,6 +55,26 @@ git config user.email >/dev/null 2>&1 || { git config user.email pipeline@localh
 
 node "$PIPE/status.js" init "$ISSUE_ID" || die30 "status init failed"
 # (resolved model is recorded after the first agent call, below)
+
+# The CLI treats an unseen directory as untrusted and prints a warning ahead of its own
+# output — noise that used to lead every PR body. Seed the trust + onboarding flags for
+# this workspace rather than filtering the symptom downstream. The merge preserves any
+# other keys in an existing config, and never touches (or prints) the token. Non-fatal:
+# a read-only or unwritable HOME must not fail a task.
+node -e '
+  const fs = require("fs");
+  const p = require("path").join(process.env.HOME || "/root", ".claude.json");
+  let j = {};
+  try { j = JSON.parse(fs.readFileSync(p, "utf8")); } catch { /* absent or unparsable */ }
+  if (!j || typeof j !== "object" || Array.isArray(j)) j = {};
+  if (!j.projects || typeof j.projects !== "object") j.projects = {};
+  const ws = process.argv[1];
+  j.projects[ws] = Object.assign({}, j.projects[ws], {
+    hasTrustDialogAccepted: true,
+    hasCompletedOnboarding: true,
+  });
+  fs.writeFileSync(p, JSON.stringify(j, null, 2) + "\n");
+' "$WS" 2>/dev/null || true
 
 while :; do
   DONE=$(node "$PIPE/status.js" attempts) || die30 "status read failed"
@@ -87,7 +108,7 @@ while :; do
       cat "$RUN/feedback.txt"
     fi
   } > "$RUN/prompt-$N.md"
-  if ! sh -c "$AGENT_CMD $CODE_FORMAT" < "$RUN/prompt-$N.md" > "$RUN/agent-$N.log" 2>&1; then
+  if ! sh -c "$AGENT_CMD $AGENT_FORMAT" < "$RUN/prompt-$N.md" > "$RUN/agent-$N.log" 2>&1; then
     # ---- rate-limit detection (§4.7, T10): a pause, never a failed attempt ----
     if grep -qiE 'usage limit|rate.?limit' "$RUN/agent-$N.log"; then
       EPOCH=$(grep -oiE 'usage limit reached\|[0-9]+' "$RUN/agent-$N.log" | grep -oE '[0-9]+$' | head -1)
@@ -100,25 +121,13 @@ while :; do
     die30 "agent command failed on attempt $N (see agent-$N.log)"
   fi
 
-  # Record the resolved model once, and flatten the JSON envelope back to plain text
-  # so agent-N.log stays readable for debugging. Fail-safe: if the shape ever changes,
-  # the log is left as-is and no model is recorded.
-  if [ -n "$CODE_FORMAT" ]; then
-    node -e '
-      const fs = require("fs");
-      const f = process.argv[1];
-      try {
-        const j = JSON.parse(fs.readFileSync(f, "utf8"));
-        const resolved = Object.keys(j.modelUsage || {})[0];
-        if (resolved) fs.writeFileSync(f + ".model", resolved);
-        if (typeof j.result === "string") fs.writeFileSync(f, j.result);
-      } catch { /* not JSON (e.g. an error page) — leave the log untouched */ }
-    ' "$RUN/agent-$N.log" 2>/dev/null || true
-    if [ -f "$RUN/agent-$N.log.model" ]; then
-      node "$PIPE/status.js" set model "$(cat "$RUN/agent-$N.log.model")" 2>/dev/null || true
-      rm -f "$RUN/agent-$N.log.model"
-    fi
-  fi
+  # Record the resolved model, and flatten the JSON envelope back to plain text so
+  # agent-N.log stays readable for debugging. Runs unconditionally: a log with no
+  # envelope (a stub, an error page, a caller-supplied command) is left byte-identical
+  # and prints no model, so there is nothing to guard on. The rate-limit grep above has
+  # already read the raw log.
+  MODEL=$(node "$PIPE/envelope.js" flatten "$RUN/agent-$N.log" 2>/dev/null) || MODEL=""
+  [ -n "$MODEL" ] && node "$PIPE/status.js" set model "$MODEL" 2>/dev/null
 
   # ---- verify phase: the authoritative gate (§4.4) ----
   node "$PIPE/verify.js"
@@ -141,13 +150,15 @@ while :; do
         echo "--- TASK SPEC ---"
         cat "$RUN/issue.md"
       } > "$RUN/prompt-docs.md"
-      if sh -c "$AGENT_CMD" < "$RUN/prompt-docs.md" > "$RUN/docs-out.txt" 2>&1; then
-        SUMMARY=$(tail -c 2000 "$RUN/docs-out.txt")
-        [ -n "$SUMMARY" ] && node "$PIPE/status.js" set changeSummary "$SUMMARY"
+      # stderr goes to its own file, never into docs-out.txt: this output becomes the PR
+      # body (§4.5), and CLI warnings on stderr used to lead every one of them. The file
+      # is kept for debugging and, like everything under .run/, is never committed.
+      if sh -c "$AGENT_CMD $AGENT_FORMAT" < "$RUN/prompt-docs.md" > "$RUN/docs-out.txt" 2> "$RUN/docs-err.txt"; then
+        node "$PIPE/status.js" summary "$RUN/docs-out.txt" || true
         git add -A
         git commit -qm "Task $ISSUE_ID: docs" || true
       else
-        node "$PIPE/status.js" set docsPhaseError "docs agent failed (see docs-out.txt); success stands"
+        node "$PIPE/status.js" set docsPhaseError "docs agent failed (see docs-out.txt / docs-err.txt); success stands"
       fi
       exit 0 ;;
     1)

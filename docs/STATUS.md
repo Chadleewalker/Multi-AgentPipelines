@@ -45,7 +45,7 @@ directs the critic to hunt for self-nesting test invocations, inherited environm
 
 ## Defects the trial found in the pipeline itself
 
-All four were invisible to three rounds of design review and appeared within minutes of
+All were invisible to three rounds of design review and appeared within minutes of
 real use. All are fixed.
 
 1. **`main` was hardcoded** in three separately-built components. the shadow-trial project uses `master`,
@@ -58,6 +58,13 @@ real use. All are fixed.
 3. **A container artifact leaked into a PR** — the `node_modules` symlink the tools create
    inside the container. `.gitignore` matched the directory but not a symlink.
 4. **A self-nesting acceptance test** shaped the implementation badly (see above).
+5. **CLI noise contaminated both contract artifacts** (`repo-52m`). The CLI printed an
+   untrusted-workspace warning ahead of its own output, so the docs phase — which merged
+   stderr into `docs-out.txt` and took a raw `tail -c 2000` — led every PR body with the
+   warning, and the code phase's whole-file `JSON.parse` failed silently, meaning defect 2's
+   resolved model id was in fact never recorded. Fixed at both ends: `pipeline/envelope.js`
+   extracts the envelope bottom-up, and the entrypoint seeds the workspace trust flags so
+   the warning is not emitted in the first place.
 
 ## Gotchas that cost real time
 
@@ -80,6 +87,13 @@ real use. All are fixed.
   probe, no Docker fallback — which is how the Docker-free acceptance tests exercise
   `runner/memory.js`. It takes absolute precedence over every other path in `bd()`, so
   **production must never set it**; it is the sibling of `PIPELINE_AGENT_CMD` (§4.3).
+- **The Claude CLI writes chatter around its output**, and a warning line on stdout is
+  enough to break a whole-file `JSON.parse`. Never parse an agent log as one document:
+  `pipeline/envelope.js` scans lines bottom-up for the first that parses to an object with
+  a string `result`. The rule is structural on purpose — no list of known warning strings
+  to maintain when a CLI upgrade invents new noise. Untrusted-workspace warnings are also
+  removed at source: the entrypoint seeds `hasTrustDialogAccepted` /
+  `hasCompletedOnboarding` for `$WS` into `$HOME/.claude.json` before the first agent call.
 - **Test suites share one Docker network.** Run them one at a time; concurrent runs tear
   `pipeline-net` down under each other and produce meaningless failures.
 - **Watch what else is using a port before killing it.** A `node server.js` on :3000 was
