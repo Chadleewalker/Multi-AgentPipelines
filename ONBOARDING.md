@@ -114,8 +114,24 @@ Copy this section in (adjust nothing but the project name):
       (§4.2); anything only on the local disk does not exist as far as a run is
       concerned.
 
-## After onboarding
+## After onboarding — the life of an onboarded project
 
-The project is a valid target. Each planning session then follows PLANNING.md:
-draft specs, freeze tests, create issues, declare new dependencies (which come back
-through steps 3–4 here when the image needs a rebuild).
+Onboarding is once, ever, per project — like wiring a house: run the electricity once,
+then just plug things in. Nothing above is about *what* gets built; it only makes the
+repo a place the pipeline can operate. You never redo it.
+
+**Adding features later is a planning session, not a re-onboarding.** Every time you
+want something new — next week, next year — open Claude in the project and follow
+PLANNING.md: describe it, approve the "Done means" list, tests are written and frozen
+for that task, the task joins the queue, the runner does it. Each session adds new
+frozen tests in a new `tests/acceptance/<issue-id>/` subfolder; old ones stay put as
+the permanent record of past promises.
+
+**The one case that touches the plumbing again:** a new feature needing a new
+ingredient (a package the project has never used). Containers can't download anything
+mid-run, so that planning session also updates the `dependencies` manifest and the
+Dockerfile and rebuilds the image — steps 3–4 above, reached through PLANNING.md
+step 7. Minutes of work, and only when the ingredient list actually changes.
+
+The steady rhythm is: **plan → run → review PRs in the morning → merge or send back** —
+and "send back" is itself just the next planning session.
