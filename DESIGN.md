@@ -306,7 +306,18 @@ source of truth.
    that writes the change summary into the status file and updates in-repo docs the change
    affects; if the docs phase itself errors after verification has passed, the success
    stands (docs failure is logged, never fatal). Phases of a task are scaffolding, not an
-   LLM decision. No leader agent inside.
+   LLM decision. No leader agent inside. **Agent output is a contract artifact, so it is
+   read structurally, never scraped.** When the entrypoint owns the invocation (no
+   `PIPELINE_AGENT_CMD`) both agent phases request `--output-format json`, and the
+   envelope reader (`pipeline/envelope.js`) takes the last line of the log that parses to
+   a JSON object with a string `result` — that result is the change summary, and the first
+   key of its `modelUsage` is the resolved model id recorded per 4.11. The rule is
+   deliberately structural: a CLI that prints warnings around its own output must never
+   require a list of known warning strings to filter, and a log with no envelope (a stub,
+   a caller-supplied command, an error page) falls back to its raw text unchanged. The
+   docs phase additionally keeps stderr out of the file its summary is read from, and the
+   entrypoint seeds this workspace's trust/onboarding flags into the CLI's config before
+   the first call so the untrusted-workspace warning is not emitted at all.
 4. **The verifier is scaffolding, not an agent.** Mounted read-only (a container-side test
    asserts it cannot be written), it receives the issue id via the `ISSUE_ID` environment
    variable and executes `<verifyCommand> tests/acceptance/<issue-id>/`; its pass/fail is
@@ -423,8 +434,11 @@ source of truth.
     or drop it), so the run loop can never re-pick a failed issue. Timeout kills treat
     the status file as best-effort (it may be half-written). Alongside the codes, the
     entrypoint maintains `/workspace/.run/status.json` — attempt summaries (number,
-    verifier result, timestamp), the docs-phase change summary, the rate-limit reset time
-    when known, and any proposed memory notes (`memoryNotes`, 3.6). Its schema is `status.schema.json`, checked into this repo, owned by the
+    verifier result, timestamp), the docs-phase change summary, the resolved model id
+    (4.3), the rate-limit reset time when known, and any proposed memory notes
+    (`memoryNotes`, 3.6). The summary and the model id are the two artifacts the host
+    reuses verbatim (PR body, manifest, report), so both are extracted deterministically
+    by scaffolding — 4.3's envelope rule — and never by an LLM re-reading agent prose. Its schema is `status.schema.json`, checked into this repo, owned by the
     entrypoint task and cited as a frozen input by the runner and report tasks.
 12. **Runner configuration, lifecycle ownership, and logs.** The runner reads
     `run.config.json` in this repo: target repo path and remote, image name, wall-clock
@@ -629,4 +643,5 @@ development starts only after.
 | 2026-07-25 | v1.7: the verify-attempt cap is tunable per run — `maxAttempts` in `run.config.json` (validated positive whole number), forwarded as `PIPELINE_MAX_ATTEMPTS`; the entrypoint falls back to 3 on unset/invalid. §3.5/4.3/4.6/4.7/4.10/4.12 and the 4.11 table reworded from the hardcoded 3 to "the attempt cap (default 3)". Implemented in the same change (config.js, container.js, entrypoint.sh) with two new entrypoint checks (cap=2 honored; invalid value falls back to 3) | User request: tune how many failed attempts feed forward before a task bails; default unchanged at 3 |
 | 2026-07-26 | v1.8: the §3.5 registry is built (`repo-qyd`) — `advisors/README.md` pins the charter format (`## Lens` / `## Checks` / `## Output`, one JSON fence matching the `advisories` item shape in `status.schema.json`) and `ambiguity.md` / `testability.md` / `scope.md` staff the slot-1 critic panel; `PLANNING.md` step 2 now names the charter to paste per difficulty label. Markdown only — no code reads `advisors/`, no phase changed, so V2's `/spec` skill still owns dispatch. (Renumbered from the PR's v1.7 at merge: the attempt-cap amendment claimed v1.7 on `main` while this task ran) | Dogfood queue task. The critic panel was described in three places and existed in none, so every planning session re-improvised the prompts; the shadow-01 self-nesting lesson had nowhere durable to live |
 | 2026-07-26 | v1.8.1: §3.6 In-channel built (`repo-eyn`, container side `repo-zdm`) — export moved to "at workspace prep" and pinned non-fatal: a `bd` failure logs, writes `(no memories recorded)`, and the run continues, so memory can never cost a task. Row added at merge review: the task's PR amended §3.6 wording without logging it | Change-protocol backfill — every DESIGN.md amendment gets a row, including ones made by the pipeline's own agents |
+| 2026-07-26 | v1.8.3: §4.3 gains the contract-artifact extraction rule and §4.11 names the resolved model id in the status file (`repo-52m`) — both agent phases request `--output-format json` when the entrypoint owns the invocation, and `pipeline/envelope.js` reads the last log line that parses to a JSON object with a string `result` (summary + `modelUsage`'s first key). Recorded as design, not comment: the rule is *structural on purpose* (no list of known CLI warnings to maintain), the docs phase keeps stderr out of the file its summary comes from because that text becomes the PR body (§4.5), and the workspace trust flags are seeded before the first call so the noise is removed at source | The v1.2 model-pinning feature had never actually recorded a resolved id — a CLI warning line broke the whole-file `JSON.parse` — and the same line led every PR body. A defect that silently disabled a shipped contract belongs in the constitution so the next reader knows the extraction rule is load-bearing |
 | 2026-07-26 | v1.8.2: §3.6 Out-channel built (`repo-4gp`) — `memory.fileMemoryNotes()` files each proposed note as `bd remember <text> --key <issue-id>-note-<n>`, called once per task from `run.js` after the pause/relaunch loop. Two rules recorded in §3.6 that the design had not stated: filing is gated to the terminal, trusted outcomes (`done|partial|failed|stuck` — never `tampered`, never `paused`), and the host re-enforces the schema bounds (first 20 notes, 500 chars each) on the agent-written file. §3.6's promotion rule now names the `memory notes: <count>` attempt-log line that makes filing visible at review | Dogfood queue task. The gate and the re-enforced bounds are design-level decisions — who may seed project memory, and how far the host trusts a file an agent wrote — so they belong in the constitution, not only in the code comments |

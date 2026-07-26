@@ -45,7 +45,7 @@ directs the critic to hunt for self-nesting test invocations, inherited environm
 
 ## Defects the trial found in the pipeline itself
 
-All four were invisible to three rounds of design review and appeared within minutes of
+All were invisible to three rounds of design review and appeared within minutes of
 real use. All are fixed.
 
 1. **`main` was hardcoded** in three separately-built components. the shadow-trial project uses `master`,
@@ -58,6 +58,13 @@ real use. All are fixed.
 3. **A container artifact leaked into a PR** — the `node_modules` symlink the tools create
    inside the container. `.gitignore` matched the directory but not a symlink.
 4. **A self-nesting acceptance test** shaped the implementation badly (see above).
+5. **CLI noise contaminated both contract artifacts** (`repo-52m`). The CLI printed an
+   untrusted-workspace warning ahead of its own output, so the docs phase — which merged
+   stderr into `docs-out.txt` and took a raw `tail -c 2000` — led every PR body with the
+   warning, and the code phase's whole-file `JSON.parse` failed silently, meaning defect 2's
+   resolved model id was in fact never recorded. Fixed at both ends: `pipeline/envelope.js`
+   extracts the envelope bottom-up, and the entrypoint seeds the workspace trust flags so
+   the warning is not emitted in the first place.
 
 ## Gotchas that cost real time
 
@@ -80,6 +87,13 @@ real use. All are fixed.
   probe, no Docker fallback — which is how the Docker-free acceptance tests exercise
   `runner/memory.js`. It takes absolute precedence over every other path in `bd()`, so
   **production must never set it**; it is the sibling of `PIPELINE_AGENT_CMD` (§4.3).
+- **The Claude CLI writes chatter around its output**, and a warning line on stdout is
+  enough to break a whole-file `JSON.parse`. Never parse an agent log as one document:
+  `pipeline/envelope.js` scans lines bottom-up for the first that parses to an object with
+  a string `result`. The rule is structural on purpose — no list of known warning strings
+  to maintain when a CLI upgrade invents new noise. Untrusted-workspace warnings are also
+  removed at source: the entrypoint seeds `hasTrustDialogAccepted` /
+  `hasCompletedOnboarding` for `$WS` into `$HOME/.claude.json` before the first agent call.
 - **Test suites share one Docker network.** Run them one at a time; concurrent runs tear
   `pipeline-net` down under each other and produce meaningless failures.
 - **Watch what else is using a port before killing it.** A `node server.js` on :3000 was
@@ -121,6 +135,31 @@ so the §3.6 promotion rule has something to act on at review time. `DESIGN.md` 
 to v1.8.2: the outcome gate and the host-side re-enforcement of the schema bounds are
 decisions about *who may seed project memory* and *how far the host trusts an
 agent-written file*, so they now live in §3.6 rather than only in code comments.
+
+## The 2026-07-26 queue (one task, from run artifacts)
+
+Planned from the shadow-run artifacts rather than the backlog. Snapshot:
+`docs/planning-draft-2026-07-26.md`.
+
+| Issue | Task | Prio | Notes |
+|---|---|---|---|
+| `repo-52m` | clean contract artifacts from agent CLI noise (§4.3, §4.11) | 1 | **Done** — `pipeline/envelope.js`, `status.js summary`, entrypoint trust seeding |
+
+**`repo-52m` fixed defect 5 above at both ends.** `pipeline/envelope.js` is the single
+reader of the CLI's `--output-format json` envelope: `parse(text)` scans lines bottom-up
+and returns `{result, model}` from the first that parses to an object with a string
+`result` (`model` = the first key of `modelUsage`, else null), and
+`node envelope.js flatten <file>` rewrites a log to just its result text while printing
+the resolved model — a log with no envelope is left byte-identical and prints nothing, so
+stubs and caller-supplied commands need no special case. `status.js summary <file>` sets
+`changeSummary` from the envelope result, falling back to the raw file when there is none
+(trimmed, last 2000 chars); it is the only new writer, and `init`/`attempts`/`append`/
+`set`/`note` are untouched. The entrypoint now sends both agent phases through the JSON
+path, keeps the docs phase's stderr in `.run/docs-err.txt` instead of merging it into the
+file the summary is read from (the code phase's log stays merged — the rate-limit grep
+reads it), and seeds `hasTrustDialogAccepted` / `hasCompletedOnboarding` for `$WS` into
+`$HOME/.claude.json` before the first call, merging into any existing config and never
+touching the token. `DESIGN.md` is amended to v1.8.3.
 
 Session learnings: critic panel earned its keep (Task C split in two, unverified `bd`
 subcommands caught, an unowned contract — nothing injects memory.md into the prompt —
@@ -185,4 +224,7 @@ Run individually, never concurrently. Each drives real Docker.
 `scripts/test-runner-*.sh` suite — its coverage lives in the Docker-free acceptance tests
 at `tests/acceptance/repo-eyn/` and `tests/acceptance/repo-4gp/`, which drive it through
 the `PIPELINE_BD_CMD` stub seam. Fold it into a `test-runner-memory.sh` if the module
-grows past the two entry points.
+grows past the two entry points. The same is true of `pipeline/envelope.js` and
+`status.js summary`: their coverage is `tests/acceptance/repo-52m/`, which drives the
+whole entrypoint with a `PIPELINE_AGENT_CMD` stub and a stub `verify.js` (never the real
+verifier — that would self-nest, the shadow-01 lesson).
