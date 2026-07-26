@@ -511,7 +511,7 @@ implementer inherits the why:
 - **Rate-limit pauses go global**: one task's usage-limit exit parks *every* running
   task (they share the subscription window); the runner resumes all parked workspaces
   when the window resets. Per-task pause mechanics (4.7) are reused unchanged.
-- **Sequential stays the overnight strategy.** Sequential maximizes *completed* work
+- **Sequential stays the strategy for long unattended runs.** Sequential maximizes *completed* work
   per budget: if the window dies mid-run, finished PRs exist. Parallel spreads the same
   budget across all started tasks — faster when the batch fits the window, but budget
   exhaustion leaves everything half-done and nothing reviewable until the next window.

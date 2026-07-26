@@ -531,7 +531,7 @@
         </thead>
         <tbody>
           <tr><td>V1 — the implementation loop</td><td><span class="tag ok">built &amp; proven</span></td><td>Runner, sandbox, verifier, report — proven by a scripted end-to-end pass (success, bail, and tamper scenarios) plus first real runs on a live project</td></tr>
-          <tr><td>Shadow trial</td><td><span class="tag warn">current phase</span></td><td>Real tasks, graded against a developer's own judgment each morning, before the pipeline gets real responsibility</td></tr>
+          <tr><td>Shadow trial</td><td><span class="tag warn">current phase</span></td><td>Real tasks, graded against a developer's own judgment after each run, before the pipeline gets real responsibility</td></tr>
           <tr><td>V2</td><td><span class="tag">planned</span></td><td>The planning session as a packaged skill, domain-specialist critics, an opt-in parallel-task knob</td></tr>
           <tr><td>V3</td><td><span class="tag">planned</span></td><td>Port to the office environment (network-share repos, local review mode)</td></tr>
         </tbody>
@@ -584,7 +584,7 @@ flowchart LR
   class CFG,FRZ,CLM,TL store
 </pre>
     </div>
-    <p>A brand-new project reaches its first overnight run in four stages — the first
+    <p>A brand-new project reaches its first autonomous run in four stages — the first
     three happen once, ever; the fourth is the rest of the project's life:</p>
     <ol class="steps">
       <li><span><b>Create it</b> — the scaffold skill. You and Claude discuss the
@@ -598,7 +598,7 @@ flowchart LR
       GitHub remote, integration branch recorded, frozen-test home, config, image, task
       database, container-aware instructions. Like wiring a house — done once.</span></li>
       <li><span><b>Plan and run, forever</b> — every future feature is a PLANNING.md
-      session and an overnight run. Never a re-onboarding; the one time the plumbing is
+      session and an autonomous run. Never a re-onboarding; the one time the plumbing is
       touched again is a new dependency, baked into the image during that planning
       session.</span></li>
     </ol>
@@ -618,7 +618,7 @@ flowchart LR
           code.</li>
           <li><b>Git initialized, dependencies installed</b>, and the approved spec
           built out.</li>
-          <li><b>Offers pipeline onboarding</b> — "will the overnight pipeline work
+          <li><b>Offers pipeline onboarding</b> — "will the pipeline work
           on this?" folds the next skill into the same sitting.</li>
         </ol>
       </div>
@@ -685,7 +685,7 @@ flowchart LR
           <tr><td>Difficulty label</td><td>Proposes</td><td><b>The developer</b> — it sizes the critics</td></tr>
           <tr><td>Acceptance tests</td><td>Writes them, before any code</td><td><b>Claude</b> — developer may inspect before freeze</td></tr>
           <tr><td>Priority &amp; dependencies</td><td>Proposes an order, with reasons</td><td><b>The developer</b> — this shapes the queue a run drains</td></tr>
-          <tr><td>Implementation, overnight</td><td>All of it</td><td><b>Claude alone</b>, steered by the frozen tests</td></tr>
+          <tr><td>Implementation, during a run</td><td>All of it</td><td><b>Claude alone</b>, steered by the frozen tests</td></tr>
           <tr><td>Pass / fail</td><td>—</td><td><b>Nobody</b> — the frozen verifier's exit code</td></tr>
           <tr><td>Merge, or send back</td><td>Assembles the PR and its evidence</td><td><b>The developer</b></td></tr>
         </tbody>
@@ -695,7 +695,7 @@ flowchart LR
       <strong>The empty cell is the design.</strong> Neither the agent that wrote the
       code nor anyone reading its claims decides whether a task passed — a deterministic
       script does, against tests frozen before the code existed. Everything trustworthy
-      about the overnight phase traces back to that row.
+      about the autonomous phase traces back to that row.
     </p>
   </section>
 
@@ -983,7 +983,7 @@ flowchart LR
   </section>
 
   <section>
-    <h2><span class="phase p-harness">Review</span> The morning after</h2>
+    <h2><span class="phase p-harness">Review</span> When the run finishes</h2>
     <p>
       The run report arrives ordered by how much scrutiny each task needs —
       <span class="tag bad">tampered</span> &gt; <span class="tag bad">stuck</span> &gt;
