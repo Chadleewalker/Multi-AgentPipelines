@@ -1,3 +1,6 @@
+// Copyright 2026 Chad Walker
+// SPDX-License-Identifier: Apache-2.0
+
 // Push and PR creation — DESIGN.md §4.5, §4.11 (T16).
 // The host holds every credential: the container never pushes. Push whenever the branch
 // has commits (so stuck/tampered/failed work survives for review); open a PR only for

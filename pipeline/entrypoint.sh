@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Chad Walker
+# SPDX-License-Identifier: Apache-2.0
+
 # Container entrypoint — the per-task coding loop (DESIGN.md §4.3, §4.6, §4.11; T8).
 # Runs inside the task container from the read-only /pipeline mount (§4.10).
 #

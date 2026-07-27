@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright 2026 Chad Walker
+// SPDX-License-Identifier: Apache-2.0
+
 // The verifier — DESIGN.md §4.4, built by T7. Deterministic scaffolding, no LLM.
 // Runs inside the task container, mounted read-only at /pipeline (§4.10).
 //

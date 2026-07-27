@@ -1,3 +1,6 @@
+// Copyright 2026 Chad Walker
+// SPDX-License-Identifier: Apache-2.0
+
 // Container launch + wall-clock enforcement — DESIGN.md §4.1, §4.2, §4.6, §4.10 (T14).
 // One fresh container per task. The host holds every credential and every timer; the
 // enforcer never lives inside the thing it may need to kill.

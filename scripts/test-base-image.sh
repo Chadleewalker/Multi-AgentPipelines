@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Chad Walker
+# SPDX-License-Identifier: Apache-2.0
+
 # T1 acceptance checks for the base image (docs/v1-backlog-draft.md T1; DESIGN.md §6).
 # Run from Git Bash:  bash scripts/test-base-image.sh [image-tag]
 # Exits 0 only if every check passes.

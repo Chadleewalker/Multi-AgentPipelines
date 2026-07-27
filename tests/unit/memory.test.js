@@ -1,3 +1,6 @@
+// Copyright 2026 Chad Walker
+// SPDX-License-Identifier: Apache-2.0
+
 // Unit suite for runner/memory.js — both DESIGN.md §3.6 memory channels plus the
 // outcome gate on the Out channel. Re-runnable: the sweep picks it up through
 // scripts/test-runner-memory.sh (repo-dhp). Its coverage was extracted from two frozen

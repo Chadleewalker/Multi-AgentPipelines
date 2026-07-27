@@ -1,3 +1,6 @@
+// Copyright 2026 Chad Walker
+// SPDX-License-Identifier: Apache-2.0
+
 // Beads queue integration — DESIGN.md §4.10, §4.11, §4.12 (T12).
 // The host runner is the SOLE Beads writer. Task order: the ready queue (open,
 // unblocked, dependencies satisfied), ranked by priority (0 = highest), FIFO within

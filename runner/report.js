@@ -1,3 +1,6 @@
+// Copyright 2026 Chad Walker
+// SPDX-License-Identifier: Apache-2.0
+
 // Run manifest + run report — DESIGN.md §4.9, §4.12 (T17).
 // The report is generated from the manifest + git, never hand-edited, and
 // regeneration from the same inputs is byte-identical.

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Chad Walker
+# SPDX-License-Identifier: Apache-2.0
+
 # T11 acceptance checks (docs/v1-backlog-draft.md T11; DESIGN.md 4.12, 4.8, 3.4, 6).
 # Runs the real runner bootstrap on the host from Git Bash - no WSL, no platform
 # timeout. Uses a throwaway target repo with bd initialized so stale-issue

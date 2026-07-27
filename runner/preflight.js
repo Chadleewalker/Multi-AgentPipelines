@@ -1,3 +1,6 @@
+// Copyright 2026 Chad Walker
+// SPDX-License-Identifier: Apache-2.0
+
 // Pre-run gates and lifecycle ownership — DESIGN.md §4.12, §4.8, §3.4 (T11).
 // The runner owns the run lifecycle end to end: bring the network + sidecar up,
 // prove the allowlist holds, assert the image exists, recover stale in-progress

@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright 2026 Chad Walker
+// SPDX-License-Identifier: Apache-2.0
+
 // The runner — host-side orchestrator (DESIGN.md §4.1, §4.12). T11: bootstrap only.
 // Deterministic scaffolding, never an LLM. Runs from Git Bash on Windows; no WSL,
 // no platform `timeout` (wall-clock is a Node timer + docker kill — T14).

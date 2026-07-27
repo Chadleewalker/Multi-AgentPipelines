@@ -1,3 +1,6 @@
+// Copyright 2026 Chad Walker
+// SPDX-License-Identifier: Apache-2.0
+
 // Per-task workspace preparation — DESIGN.md §4.2, §4.10 (T13).
 // The host supplies the repo: a fresh clone from the GitHub remote (so every branch
 // forks from canonical main), a task branch, `.run/` excluded from commits, and the

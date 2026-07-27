@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Chad Walker
+# SPDX-License-Identifier: Apache-2.0
+
 # repo-dhp acceptance checks — the re-runnable suite for runner/memory.js
 # (DESIGN.md 3.6, both memory channels; 4.4 verification).
 #

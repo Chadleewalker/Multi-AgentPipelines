@@ -1,3 +1,6 @@
+// Copyright 2026 Chad Walker
+// SPDX-License-Identifier: Apache-2.0
+
 // Beads access for the runner — the host is the SOLE Beads writer (DESIGN.md §4.10).
 // Uses host `bd` when installed (§6 prerequisite); otherwise falls back to running
 // `bd` inside the base image against the target repo, so a machine without bd

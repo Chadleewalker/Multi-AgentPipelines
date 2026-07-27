@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Chad Walker
+# SPDX-License-Identifier: Apache-2.0
+
 # T8 assertions — runs INSIDE the base image (invoked by test-entrypoint.sh).
 # Exercises pipeline/entrypoint.sh via PIPELINE_AGENT_CMD stubs (the §4.3 seam).
 # Copies each scenario's status.json to /out/<name>.json for host-side schema checks.

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Chad Walker
+# SPDX-License-Identifier: Apache-2.0
+
 # T12 acceptance checks (docs/v1-backlog-draft.md T12; DESIGN.md 4.10, 4.11, 4.12).
 # Real Beads, real ordering, real transitions. Task execution is stubbed via
 # PIPELINE_EXEC_STUB (T13/T14 replace it with the container).

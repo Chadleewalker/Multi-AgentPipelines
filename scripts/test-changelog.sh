@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Chad Walker
+# SPDX-License-Identifier: Apache-2.0
+
 # repo-006 acceptance checks — the re-runnable suite for the DESIGN.md §12 change-log
 # identity convention (slug refs, unique by construction — §12, §3.1).
 #

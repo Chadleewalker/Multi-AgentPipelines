@@ -1,3 +1,6 @@
+// Copyright 2026 Chad Walker
+// SPDX-License-Identifier: Apache-2.0
+
 // run.config.json loader — DESIGN.md §4.12 (T11).
 // Plain JS, Node built-ins only. Fails fast and by name on an invalid config.
 'use strict';

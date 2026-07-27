@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Chad Walker
+# SPDX-License-Identifier: Apache-2.0
+
 # T4 acceptance checks (docs/v1-backlog-draft.md T4; DESIGN.md s3.2 "V1 deliverable").
 # Structural bar only: every s3.2 step and every load-bearing convention is stated.
 # Followability is proven by the shadow-mode trial, not by this script.

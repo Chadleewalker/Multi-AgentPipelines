@@ -1,3 +1,6 @@
+// Copyright 2026 Chad Walker
+// SPDX-License-Identifier: Apache-2.0
+
 // Rate-limit pause/resume — DESIGN.md §4.7 (T15).
 // A usage limit is a pause, never a failure. The runner parks the task, waits for the
 // window (reset time when the container reported one, otherwise a probe on a fixed

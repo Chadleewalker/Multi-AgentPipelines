@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright 2026 Chad Walker
+// SPDX-License-Identifier: Apache-2.0
+
 // Agent-envelope reader — turns a raw agent log into the contract artifacts
 // (DESIGN.md §4.3, §4.11). Deterministic scaffolding, no LLM (hard rule 7).
 //

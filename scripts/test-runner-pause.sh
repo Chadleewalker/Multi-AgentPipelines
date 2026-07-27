@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Chad Walker
+# SPDX-License-Identifier: Apache-2.0
+
 # T15 acceptance checks (docs/v1-backlog-draft.md T15; DESIGN.md 4.7, 4.11).
 # REAL containers, REAL pause/resume. The in-container agent stub is a state machine
 # (counter in .run/) that fails once, then reports a usage limit, then succeeds - which

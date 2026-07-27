@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Chad Walker
+# SPDX-License-Identifier: Apache-2.0
+
 # Pre-run egress gate (DESIGN.md 4.8, built by T6).
 # Proves the allowlist is actually in force before any task container launches:
 # one throwaway container asserts (1) an allowed endpoint is reachable through the

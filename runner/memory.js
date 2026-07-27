@@ -1,3 +1,6 @@
+// Copyright 2026 Chad Walker
+// SPDX-License-Identifier: Apache-2.0
+
 // The memory "In" channel — DESIGN.md §3.6. At workspace prep the runner exports the
 // target project's Beads memories to `<runDir>/memory.md`, beside `issue.md`, as the
 // container-side mirror of `bd prime`. Read through the bd layer against

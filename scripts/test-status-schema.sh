@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Chad Walker
+# SPDX-License-Identifier: Apache-2.0
+
 # T3 acceptance checks (docs/v1-backlog-draft.md T3; DESIGN.md s4.11).
 # Run from Git Bash:  bash scripts/test-status-schema.sh
 set -u

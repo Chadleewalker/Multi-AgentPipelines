@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Chad Walker
+# SPDX-License-Identifier: Apache-2.0
+
 # T13 acceptance checks (docs/v1-backlog-draft.md T13; DESIGN.md 4.2, 4.10).
 # Real clones from a real (local bare) "remote", real branches, real collision
 # handling. Container execution is still stubbed (T14).

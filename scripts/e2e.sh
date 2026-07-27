@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Chad Walker
+# SPDX-License-Identifier: Apache-2.0
+
 # T21 — the V1 end-to-end pass (docs/v1-backlog-draft.md T21; DESIGN.md §7).
 #
 # Drives all three fixture scenarios through the REAL pipeline (real runner, real

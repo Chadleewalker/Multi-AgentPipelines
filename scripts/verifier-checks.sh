@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Chad Walker
+# SPDX-License-Identifier: Apache-2.0
+
 # T7 assertions — runs INSIDE the base image (invoked by test-verifier.sh).
 # Builds fixture repos and exercises pipeline/verify.js through every scenario.
 # Copies each scenario's verify.json to /out/<name>.json for host-side schema checks.

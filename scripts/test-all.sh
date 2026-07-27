@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Chad Walker
+# SPDX-License-Identifier: Apache-2.0
+
 # The full sweep: every test suite in this repo, one at a time, with a report.
 #
 # Why this exists: the suites that break are the ones nobody re-runs. T12 sat unrun

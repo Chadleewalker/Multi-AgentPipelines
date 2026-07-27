@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright 2026 Chad Walker
+# SPDX-License-Identifier: Apache-2.0
+
 # Deterministic agent stub: implements the fixture's shout mode (DESIGN.md §7).
 # Code phase -> satisfy the frozen acceptance test. Docs phase -> print a summary.
 set -u

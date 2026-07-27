@@ -77,3 +77,10 @@ on the shared base image, and `bd init` — [`PLANNING.md`](PLANNING.md) walks t
 - The container gets one credential and no route out beyond the Anthropic endpoints.
 
 `CLAUDE.md` states these as hard rules with the reasoning behind each.
+
+## License
+
+Copyright 2026 Chad Walker
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) and
+[NOTICE](NOTICE) for details.

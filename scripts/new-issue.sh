@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Chad Walker
+# SPDX-License-Identifier: Apache-2.0
+
 # Create a pipeline task issue with the five mandatory spec fields (DESIGN.md §3.1,
 # mapping in beads/issue-template.md). Refuses to create an issue missing any of:
 # title, description, acceptance criteria, design-ref.

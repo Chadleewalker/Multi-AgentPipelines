@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Chad Walker
+# SPDX-License-Identifier: Apache-2.0
+
 # T18 acceptance checks (docs/v1-backlog-draft.md T18; DESIGN.md 7, 3.1, 3.4).
 # Verifies the fixture repository is a valid pipeline target: config schema, frozen
 # tests on main, Beads issues with all five spec fields, image builds, and the

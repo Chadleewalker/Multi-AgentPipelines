@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Chad Walker
+# SPDX-License-Identifier: Apache-2.0
+
 # Closed task network + allowlist proxy sidecar lifecycle (DESIGN.md 4.8, 4.12).
 # V1 manual tool; the runner (T11) owns this lifecycle in real runs by shelling here.
 #

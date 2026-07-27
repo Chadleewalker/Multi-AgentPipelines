@@ -1,3 +1,6 @@
+// Copyright 2026 Chad Walker
+// SPDX-License-Identifier: Apache-2.0
+
 // Per-run log folder + trace IDs — DESIGN.md §4.12 (T11).
 // Everything a run produces lives under runs/<run-timestamp>/ (git-ignored):
 // run.log, per-task logs, collected status/verify files, run.json, report.md.

@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright 2026 Chad Walker
+# SPDX-License-Identifier: Apache-2.0
+
 # Deterministic agent stub: reports a usage limit on the first call, then succeeds.
 # Proves the pause/resume path (DESIGN.md §4.7): exit 20, park, relaunch, and the
 # attempt counter carries over because .run/ survives in the reused workspace.

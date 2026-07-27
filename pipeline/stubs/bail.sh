@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright 2026 Chad Walker
+# SPDX-License-Identifier: Apache-2.0
+
 # Deterministic agent stub: never satisfies the tests, so the task burns all three
 # attempts and bails (DESIGN.md §4.6). Writes something each attempt so the WIP commit
 # has real content to preserve.

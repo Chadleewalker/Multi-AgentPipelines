@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright 2026 Chad Walker
+// SPDX-License-Identifier: Apache-2.0
+
 // repo-006 — the change-log shape checker (DESIGN.md §12, §3.1).
 //
 // Enforces the identity convention for §12's table: every row has a `Ref` cell holding a

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Chad Walker
+# SPDX-License-Identifier: Apache-2.0
+
 # T2 assertions — runs INSIDE the base image (invoked by test-beads-roundtrip.sh).
 # Proves the beads/issue-template.md mapping: five-field round-trip, mandatory
 # design-ref, attempt-log appends, status vocabulary, and blocker-aware ready queue.

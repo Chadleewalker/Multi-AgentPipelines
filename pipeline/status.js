@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright 2026 Chad Walker
+// SPDX-License-Identifier: Apache-2.0
+
 // Status-file helper — sole writer of /workspace/.run/status.json inside the
 // container (schema: schemas/status.schema.json, DESIGN.md §4.11). Used by
 // entrypoint.sh so schema conformance lives in exactly one place.

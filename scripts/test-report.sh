@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright 2026 Chad Walker
+# SPDX-License-Identifier: Apache-2.0
+
 # T17 acceptance checks (docs/v1-backlog-draft.md T17; DESIGN.md 4.9, 4.12).
 # Ordering, schema conformance, content, and byte-identical regeneration are checked
 # against a synthetic multi-outcome manifest (fast, deterministic); a real end-to-end
