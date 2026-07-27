@@ -21,7 +21,7 @@ executor.
 
 | Repo | Role |
 |---|---|
-| `Chadleewalker/Multi-AgentPipelines` (this one, private) | the pipeline itself |
+| `Chadleewalker/Multi-AgentPipelines` (this one, public) | the pipeline itself |
 | `<private fixture repo>` (private) | disposable test bed for `scripts/e2e.sh` |
 | a separate private project | the shadow-trial target |
 
