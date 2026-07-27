@@ -185,6 +185,15 @@
     gap: 0.6rem;
   }
 
+  section > h3 {
+    font-family: var(--mono);
+    font-size: 0.94rem;
+    font-weight: 600;
+    letter-spacing: -0.005em;
+    margin: 1.6rem 0 0;
+    color: var(--ink);
+  }
+
   h2 .phase {
     font-size: 0.68rem;
     letter-spacing: 0.14em;
@@ -1571,6 +1580,113 @@ flowchart LR
       <p><strong>In interactive sessions</strong> (planning, review) the store is used
       directly — remembered insights are injected at session start, the standard way.
       The container-side plumbing shown here lands with the shadow trial.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="phase p-plan">Crews</span> The other shape an agent team takes</h2>
+    <p>
+      Everything above describes <strong>one</strong> agent, alone in a container, doing a
+      task somebody already specified. A <strong>crew</strong> is the opposite arrangement:
+      several agents in a chain, each owning one artifact, with ordinary code between them
+      — and it runs on the host, at planning time, before there is anything to implement.
+      Crews decide <em>what</em> gets built; the pipeline builds it. The join is the same
+      one the whole system turns on — a frozen spec, or in a data crew's case a frozen set
+      of numbers.
+    </p>
+    <div class="plate">
+<pre class="mermaid">
+flowchart LR
+  DOC[("Design document")]
+  subgraph CREW["Crew — host, planning time"]
+    direction LR
+    A1["Agent 1<br/>authors an artifact"]
+    A2["Agent 2<br/>builds on it"]
+    SC{{"Deterministic step<br/>schema check · simulation"}}
+    A3["Judge<br/>checks against the doc"]
+  end
+  OUT[("Frozen artifacts — spec, tests, or data")]
+  subgraph PIPE["Pipeline — container, run time"]
+    direction LR
+    CA["Coding agent"]
+    VER{{"Frozen verifier"}}
+  end
+  PR[("Pull requests + run report")]
+
+  DOC --> A1
+  A1 -->|"file"| A2
+  A2 -->|"file"| SC
+  SC --> A3
+  DOC ==>|"the spec itself, never<br/>the other agents' reasoning"| A3
+  A3 -->|"fail · routed by owner"| A1
+  A3 -->|"fail · routed by owner"| A2
+  A3 --> OUT
+  OUT --> CA
+  CA --> VER
+  VER --> PR
+
+  classDef agent stroke-width:1.75px
+  classDef script stroke-width:1.25px
+  classDef store stroke-width:1.25px
+  class A1,A2,A3,CA agent
+  class SC,VER script
+  class DOC,OUT,PR store
+</pre>
+    </div>
+    <div class="gloss">
+      <p><strong>The two halves obey the same rules</strong>, which is why they compose.
+      No model decides control flow in either — agents do fuzzy work and scaffolding decides
+      what happens next. Every handoff is a schema-checked file, never chat history, so any
+      stage can be re-run alone. Retries are bounded and a judge that keeps failing
+      <em>reports</em> rather than looping. And in both halves, an agent that could edit the
+      thing judging it would not be judged at all.</p>
+      <p><strong>A crew's agents are written the same way as this pipeline's specialists</strong>
+      — the <span class="tag">advisors/</span> charter format, one lens each, a JSON output
+      contract. That is deliberate: a lens proven useful in a crew can move into the pipeline
+      as a planning critic or a frozen test without being rewritten.</p>
+    </div>
+
+    <h3>Worked example — a game-tuning crew</h3>
+    <p>
+      Five agents that turn a game design document into the config file the game loads.
+      It is a <em>data</em> crew rather than a spec crew: its output is numbers, not tickets.
+    </p>
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th>Agent</th><th>Owns</th><th>What it produces</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Researcher</td><td>the physical model</td><td>Real-world physics scaled to the game's setting, with the arithmetic shown</td></tr>
+          <tr><td>Catalog Designer</td><td>the item catalog</td><td>Every item the player can acquire: mass, size class, fragility, spawn weight. Sets no prices</td></tr>
+          <tr><td>Economy Balancer</td><td>the parameters</td><td>Every tunable in the game, satisfying all of the design's balance rules at once. Prices the catalog; may not re-author it</td></tr>
+          <tr><td><em>simulator</em></td><td><em>— not an agent —</em></td><td>Deterministic 2D simulation. Runs the config, then sweeps hundreds of generated worlds against the design's stated targets</td></tr>
+          <tr><td>Playtester</td><td>the measurements</td><td>What the numbers actually did in play, where that contradicts the design, and a candidate value set</td></tr>
+          <tr><td>Spec Auditor</td><td>the verdict</td><td>Every balance rule recomputed, pass or fail with evidence — and a label saying whose artifact each failure belongs to</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="gloss">
+      <p><strong>The judge routes by ownership, and that was learned the hard way.</strong>
+      With a single return edge every failure went to the Balancer — so when a check failed
+      on the Designer's spawn weights, the Balancer did the only thing it could and emitted a
+      corrected copy of the catalog inside its own output. The audit passed. The project then
+      had two catalogs that disagreed, with the wrong one in the file everyone reads. Now
+      each check carries an owner, the Balancer's schema forbids extra keys, and it raises a
+      concern instead of editing data it does not own. The agent labels; the code dispatches.</p>
+      <p><strong>Adding the simulator changed what the crew could be wrong about.</strong>
+      Before it, the crew did constraint satisfaction: any value set that made sixteen
+      booleans true was as good as any other, which is how one storage capacity got widened
+      more than threefold to make a mass rule come out. Measurement made the claims
+      falsifiable — and immediately falsified several, including one of the design's central
+      mechanics, which turned out to be unreachable in nearly all of the parameter space.
+      That finding is worth more than a passing run.</p>
+      <p><strong>A failing verdict is a result, not a crash</strong> — the same contract the
+      pipeline's outcome table uses. The crew's first full run ended at 14 of 16 checks after
+      exhausting its revisions, wrote every artifact anyway, and said exactly which rules
+      could not be satisfied. Its recorded replay reproduces all 100 minutes, both revisions
+      included, in a tenth of a second and with no credentials — which is how somebody else
+      can check the work.</p>
     </div>
   </section>
 
