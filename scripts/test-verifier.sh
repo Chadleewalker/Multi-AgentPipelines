@@ -2,7 +2,7 @@
 # Copyright 2026 Chad Walker
 # SPDX-License-Identifier: Apache-2.0
 
-# T7 acceptance checks (docs/v1-backlog-draft.md T7; DESIGN.md 4.4, v1.0.2).
+# T7 acceptance checks (V1 backlog T7; DESIGN.md 4.4, v1.0.2).
 # Host driver: runs verifier-checks.sh inside the base image, then validates every
 # scenario's verify.json against schemas/verify.schema.json with ajv, and asserts
 # the verifier is scaffolding (no LLM invocation).

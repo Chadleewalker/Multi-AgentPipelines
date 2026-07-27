@@ -43,8 +43,10 @@ echo 'CLAUDE_CODE_OAUTH_TOKEN=...' > .env.pipeline
 # 2. prove the whole thing works, using scripted stubs — no model calls
 bash scripts/e2e.sh
 
-# 3. run real tasks against a configured project
-node runner/run.js --config run.config.example.json
+# 3. point a config at a project of your own, then run its queue
+#    (run.config.*.json is git-ignored — it names a local path and your remote)
+cp run.config.example.json run.config.myproject.json
+node runner/run.js --config run.config.myproject.json
 ```
 
 Adding a project of your own means giving it a `pipeline.config.json`, a thin Dockerfile

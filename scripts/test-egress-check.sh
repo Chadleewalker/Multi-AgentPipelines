@@ -2,7 +2,7 @@
 # Copyright 2026 Chad Walker
 # SPDX-License-Identifier: Apache-2.0
 
-# T6 acceptance checks (docs/v1-backlog-draft.md T6; DESIGN.md 4.8).
+# T6 acceptance checks (V1 backlog T6; DESIGN.md 4.8).
 # Proves the pre-run gate passes on a healthy network, stays under its 60s bound,
 # fails when the allowlist is made PERMISSIVE (the dangerous direction), and fails
 # when the sidecar is down. Run from Git Bash: bash scripts/test-egress-check.sh

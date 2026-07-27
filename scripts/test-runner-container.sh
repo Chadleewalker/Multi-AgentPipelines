@@ -2,7 +2,7 @@
 # Copyright 2026 Chad Walker
 # SPDX-License-Identifier: Apache-2.0
 
-# T14 acceptance checks (docs/v1-backlog-draft.md T14; DESIGN.md 4.1, 4.2, 4.6, 4.10, 4.11).
+# T14 acceptance checks (V1 backlog T14; DESIGN.md 4.1, 4.2, 4.6, 4.10, 4.11).
 # REAL containers running the REAL entrypoint on the closed network. Agent behavior is
 # stubbed inside the container via PIPELINE_AGENT_CMD (config agentCommand), so nothing
 # here burns the subscription window.

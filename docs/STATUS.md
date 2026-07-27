@@ -22,16 +22,19 @@ executor.
 | Repo | Role |
 |---|---|
 | `Chadleewalker/Multi-AgentPipelines` (this one, public) | the pipeline itself |
-| `<private fixture repo>` (private) | disposable test bed for `scripts/e2e.sh` |
+| a private `pipeline-fixture` repo | disposable test bed for `scripts/e2e.sh` — you create your own; see `scripts/test-fixture.sh` for what makes one valid |
 | a separate private project | the shadow-trial target |
 
 ## Shadow trial log
 
 | Run | Task | Outcome | Verdict |
 |---|---|---|---|
-| shadow-01 | `<task id>` npm test script | done, 2 attempts | **Rejected.** Green but wrong — see below. |
-| shadow-02 | `<task id>` re-run after fixing the gate | done, 1 attempt, 84s | Merged (PR #2) |
-| shadow-03 | `<task id>` in-turn undo feature | done, 1 attempt, 300s | Merged (PR #3) |
+| shadow-01 | task A — an npm test script | done, 2 attempts | **Rejected.** Green but wrong — see below. |
+| shadow-02 | task A re-run after fixing the gate | done, 1 attempt, 84s | Merged (PR #2) |
+| shadow-03 | task B — an in-turn undo feature | done, 1 attempt, 300s | Merged (PR #3) |
+
+(Task ids are from the trial project's own Beads database and are omitted here — the
+project is private.)
 
 **The finding that matters most:** in shadow-01 the acceptance test invoked `npm test`
 from inside `node --test`, so `NODE_TEST_CONTEXT` was inherited and the child run failed
@@ -48,8 +51,8 @@ directs the critic to hunt for self-nesting test invocations, inherited environm
 All were invisible to three rounds of design review and appeared within minutes of
 real use. All are fixed.
 
-1. **`main` was hardcoded** in three separately-built components. the shadow-trial project uses `master`,
-   so every run would have failed at workspace preparation. Now `defaultBranch` in
+1. **`main` was hardcoded** in three separately-built components. The shadow-trial project
+   uses `master`, so every run would have failed at workspace preparation. Now `defaultBranch` in
    `pipeline.config.json`, falling back to asking the remote.
 2. **The model was unpinned** — every container took whatever the account default was, so
    runs were not reproducible and quality could drift silently. Now `model: "opus"`, an
@@ -135,8 +138,8 @@ real use. All are fixed.
 - **Bind-mounted workspaces are host-owned**, so git's dubious-ownership guard blocks
   every git call inside the container. The entrypoint marks `$WS` a safe directory.
 - **`bd` takes its issue prefix from the working-directory name.** Mounting a repo at
-  `/repo` produces `repo-xxx` ids. Mount at a meaningful path (`/fix`, `/hal`) when
-  running `bd init`.
+  `/repo` produces `repo-xxx` ids. Mount at a meaningful path (`/fix`, or whatever names
+  the project) when running `bd init`.
 - **`node --test <dir>/` is broken on Node 22+** (MODULE_NOT_FOUND). Always pass the file.
 - **`PIPELINE_BD_CMD` stubs the whole bd layer.** Set it and `runner/bd.js` spawns that
   executable directly with the bare bd argument vector — no `-C` prefix, no host-`bd`
@@ -174,14 +177,15 @@ real use. All are fixed.
   issues `blocked` and `task/*` branches on the remote, so `test-fixture.sh` fails its
   ready-queue check. `cleanup_remote` + resetting the three issues to `open` restores it.
 - **Watch what else is using a port before killing it.** A `node server.js` on :3000 was
-  assumed to be a stale server and killed; it was a different app entirely, served over a
-  a private network link.
+  assumed to be a stale server from this project and killed; it belonged to an unrelated
+  app on the same machine. Identify the process, not just the port.
 
 ## The dogfood queue (planned 2026-07-25, first full PLANNING.md session)
 
 Four tasks specced, critic-reviewed, approved, and frozen for the pipeline to run on
 itself. Specs live in the Beads issues; tests at `tests/acceptance/<id>/` (all red by
-design until implemented). Snapshot: `docs/planning-draft-2026-07-25.md`.
+design until implemented). Its planning snapshot has since been deleted — superseded by
+the issues, per PLANNING.md step 5.
 
 | Issue | Task | Prio | Notes |
 |---|---|---|---|
@@ -215,8 +219,7 @@ trusts an agent-written file*, so they now live in §3.6 rather than only in cod
 
 ## The 2026-07-26 queue (one task, from run artifacts)
 
-Planned from the shadow-run artifacts rather than the backlog. Snapshot:
-`docs/planning-draft-2026-07-26.md`.
+Planned from the shadow-run artifacts rather than the backlog.
 
 | Issue | Task | Prio | Notes |
 |---|---|---|---|
@@ -366,7 +369,7 @@ actually emitted at run time.
 ## What's next
 
 **The queue drained again on 2026-07-26**, after `repo-4l8` (the epic filter, planned and
-frozen in session E — `docs/planning-draft-2026-07-26-e.md`) ran and passed on attempt 1.
+frozen in the fifth planning session that day) ran and passed on attempt 1.
 The only open issue left is `repo-iok` (the §3.7 host side), deliberately **blocked and
 deliberately unfrozen** —
 it cannot run in the same batch as its dependency (the runner reads the ready queue once,

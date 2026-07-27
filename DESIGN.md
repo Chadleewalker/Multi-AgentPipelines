@@ -11,9 +11,8 @@ and why, and what's out of scope. Task-level specs are derived from it (as Beads
 cite it — they don't repeat it. When reality disagrees with this doc, the doc gets amended
 (see "Change Protocol"), never silently ignored.
 
-Predecessor document: `<private handoff note>` (in the Harness repo). This doc
-supersedes it, merging the execution architecture it defined with the spec-layer design
-agreed on 2026-07-25.
+This document supersedes an earlier private handoff note, merging the execution
+architecture that note defined with the spec-layer design agreed on 2026-07-25.
 
 ## 1. Goal
 
@@ -163,8 +162,8 @@ during **onboarding** and read by the scaffolding. Onboarding — the once-per-p
 setup that makes any repo a valid target (this config, the frozen-test home, the
 per-project image, Beads, a container-aware `CLAUDE.md`) — is specified in
 `ONBOARDING.md` in this repo, which also documents the full path from an empty folder
-(scaffold → design doc → onboard → plan) and the life of a project afterward. The
-harness skill `<the ONBOARDING.md checklist>` follows that file. The config fields:
+(scaffold → design doc → onboard → plan) and the life of a project afterward. The config
+fields:
 
 - `verifyCommand` — the verifier invokes it with the test directory appended as the final
   argument: `<verifyCommand> tests/acceptance/<issue-id>/`.
@@ -265,7 +264,7 @@ phases is only *who holds the pen*, consistent with the sole-writer rule (4.10).
 | Anything a container-side coding agent must know (conventions, gotchas, API specifics) | Repo files (`CLAUDE.md`, `docs/`) | A fresh clone is the only guaranteed container input (4.10); repo files need no export step and are reviewed with the code |
 | Project insights and operational notes | Beads memory (`bd remember`) in the target repo's database | Structured, keyed, queryable; primed into every interactive session |
 | Per-task history (attempts, stuck-state) | The issue's attempt log | Unchanged (3.1) |
-| Machine-specific facts | `<untracked local notes>` | Harness rule; never syncs |
+| Machine-specific facts (paths, device names, local ports) | An untracked local note beside the repo | Never syncs, so a shared repo stays portable and free of one machine's details |
 
 **Access rule.** Interactive sessions on the host (planning, review) use `bd remember` /
 `bd prime` directly — the standard convention; task issues remain writable only through
@@ -574,23 +573,24 @@ spec (re-approve, re-freeze, unblock), fix the doc, or drop the task.
 
 ## 6. Environment and Constraints
 
-- **First target: the reference workstation** (Windows 11, Docker Desktop). The second environment's <another container workflow>
-  environment is a later port (see Phasing); nothing in V1 may hard-require it, but nothing
-  is built for it yet either.
+- **First target: a single developer workstation** (Windows 11, Docker Desktop). Other
+  environments — a machine whose repos live on a network share, or one already running a
+  different container workflow — are a later port (see Phasing); nothing in V1 may
+  hard-require one, but nothing is built for one yet either.
 - **Host prerequisites:** Docker Desktop, Git Bash, Node, the `gh` CLI (authenticated to
   GitHub), `bd` (the runner is the sole Beads writer and runs it host-side — 4.12; until
   it's installed, scripts fall back to running `bd` in the base image), and the Claude
   Code CLI with `CLAUDE_CODE_OAUTH_TOKEN` available on the host — the host itself makes
   the minimal rate-limit probe calls (4.7).
 - **Review happens as GitHub PRs.** Projects fed through the pipeline must have a GitHub
-  remote. (The work-PC port will need a local-branch review mode — its repos live on a
-  network share with no PR host. Out of scope for V1.)
-- **Docker on this machine runs from Git Bash**, not WSL (known issue: the WSL distro has
-  no Docker Desktop integration). The runner must not assume WSL.
+  remote. (An environment with no PR host — repos on a network share, say — would need a
+  local-branch review mode. Out of scope for V1.)
+- **Docker runs from Git Bash on the reference host**, not WSL (known issue: that machine's
+  WSL distro has no Docker Desktop integration). The runner must not assume WSL either way.
 - **Auth:** `CLAUDE_CODE_OAUTH_TOKEN` is passed to containers as an environment variable
   at `docker run` — never baked into an image layer. Headless `claude -p` honors it;
   interactive `claude` does not (known issue) — the pipeline is headless-only anyway.
-- **Runner implementation: Node.js.** Decision, per harness cross-platform rules: `node` is
+- **Runner implementation: Node.js.** Decision, for cross-platform reasons: `node` is
   the same command on Windows and Linux (no `python` vs `python3` split), handles JSON
   natively for Beads/Claude output, and can enforce wall-clock timeouts with timers +
   `docker kill` without relying on a platform `timeout` command. Plain JavaScript, no
@@ -621,15 +621,15 @@ substitute scripted stubs for the coding agent (a stub that never satisfies the 
 stub that edits a frozen test file), so the E2E pass does not depend on model behavior or
 burn the usage window; the success scenario may run either a stub or the real model.
 
-**Shadow-mode trial:** V1 then runs on tasks from an existing project the user would have
-done anyway (project to be named when the trial starts); after each run the output is
-graded against the user's own judgment. This calibrates the verification gates before the
+**Shadow-mode trial:** V1 then runs on tasks from an existing private project the user
+would have done anyway; after each run the output is graded against the user's own
+judgment. This calibrates the verification gates before the
 pipeline gets real responsibility — and its failure notes become the requirements list for
 the V2 critics.
 
-**V2 — the spec pipeline:** the design-doc session harness, doc-level critics, dry-run
+**V2 — the spec pipeline:** the design-doc session scaffolding, doc-level critics, dry-run
 decomposition, sized per-spec critic panels, and the coverage check — packaged as a
-`/spec` skill in the harness plugin, sibling to `/scaffold`, informed by shadow-trial
+`/spec` slash command sitting beside the planning playbook, informed by shadow-trial
 data. Includes the specialist registry and slots 1–2 of 3.5 (domain critics and domain
 test authors); run-time advisors (slot 3) only if the trial proves something resists
 determinism.
@@ -653,8 +653,9 @@ implementer inherits the why:
   both will pass their own tests and then conflict at merge.
 Built only after the shadow trial proves the sequential loop.
 
-**V3 — the second environment port:** <another container workflow> containers, network-share repos, local-branch
-review mode. Machine specifics stay in `<untracked local notes>`, per harness rules.
+**V3 — the second-environment port:** running under a host's existing container workflow,
+repos on a network share, and a local-branch review mode for hosts with no PR service.
+Machine specifics stay in an untracked local note, never in the repo.
 
 ## 8. Out of Scope (agreed)
 
@@ -668,7 +669,7 @@ review mode. Machine specifics stay in `<untracked local notes>`, per harness ru
 - Opening the container network beyond the enumerated Anthropic endpoints.
 - Cost accounting. There is no spend ceiling by design (see 4.6–4.7); real cost tracking
   is a possible V2+ addition if the pipeline ever moves to metered API billing.
-- The work-PC/<another container workflow> environment, until V3.
+- Any host environment other than the reference workstation, until V3.
 
 ## 9. Assumptions (approved with this doc)
 
@@ -752,7 +753,7 @@ version (`Status: READY v1.0`). The *document* still has a version; its *rows* n
 | 2026-07-25 | domain-specialists | added §3.5 domain specialists — three slots (planning critic / test author / run-time advisor), specialists are never gates, registry + per-task selection + schema'd output, escalation ladder toward determinism; V2 phasing | User goal: pluggable domain agents (physics, aesthetics). Shape decided now because the advisor slot spans three separately-built components and the frozen schemas would otherwise need a breaking change |
 | 2026-07-25 | memory-in-beads | added §3.6 memory — Beads is the memory store as well as the task queue (`bd remember`/`bd prime`, verified against bd 1.1.0 in the base image; no second database); knowledge hierarchy with repo files canonical for anything a container needs; container agents propose memories via a `memoryNotes` status-file field and read them via a runner-exported read-only `.run/memory.md`; host runner stays the sole Beads writer; promotion ladder from memory notes into repo files; plumbing ships with the shadow trial, not the V1 E2E pass. Touched §4.10 (input contract + sole-writer rule), §4.11 (status file), §9 (bd assumption) | User decision after the memory-design discussion: follow the upstream Beads convention (one database, memory beside tasks) with the pipeline's stricter access rule layered on top, instead of inventing a second store |
 | 2026-07-25 | planning-realign | `PLANNING.md` brought in line with v1.2/v1.0.2 — freeze step, pre-run checklist, and spec-change section now say integration branch (`defaultBranch`) instead of hardcoded `main`, freeze scope mentions `frozenPaths`, and the prerequisites list the full `pipeline.config.json` schema | Drift fix via the change protocol: the playbook still described the pre-v1.2 contract and would have frozen the shadow-trial project's tests against the wrong branch |
-| 2026-07-25 | onboarding-checklist | added `ONBOARDING.md` — the once-per-project checklist (git/GitHub + `defaultBranch`, `.gitattributes`, `tests/acceptance/`, `pipeline.config.json`, thin Dockerfile + image build, `bd init`, `CLAUDE.md` rewrite with the container section replacing <another container workflow> guidance, hooks removed, vendored docs, `run.config.<project>.json`, sanity pass). `PLANNING.md` prerequisites now point at it. The harness gains a `<the ONBOARDING.md checklist>` skill that follows this file | Onboarding the shadow-trial project took an evening of hand-work and one outright breakage (`master` vs `main`); the checklist makes it a repeatable step. Convention decided here: pipeline projects drop format hooks (they fight the closed network) and their `CLAUDE.md` must describe the pipeline container, not <another container workflow> |
+| 2026-07-25 | onboarding-checklist | added `ONBOARDING.md` — the once-per-project checklist (git/GitHub + `defaultBranch`, `.gitattributes`, `tests/acceptance/`, `pipeline.config.json`, thin Dockerfile + image build, `bd init`, `CLAUDE.md` rewrite with the container section replacing any other container-workflow guidance, hooks removed, vendored docs, `run.config.<project>.json`, sanity pass). `PLANNING.md` prerequisites now point at it | Onboarding the first shadow-trial project took an evening of hand-work and one outright breakage (`master` vs `main`); the checklist makes it a repeatable step. Convention decided here: pipeline projects drop format hooks (they fight the closed network) and their `CLAUDE.md` must describe the pipeline container, not whatever container workflow the host normally uses |
 | 2026-07-25 | dogfood-onboarding | this repository onboarded as its own target (§1 amended — dogfooding sanctioned). Full ONBOARDING.md checklist applied: `pipeline.config.json` (Docker-free `verifyCommand`, empty dependencies), `tests/acceptance/`, thin Dockerfile + `pipeline-multiagentpipelines:local`, `bd init` (prefix `repo`), container section in `CLAUDE.md`, `run.config.multiagentpipelines.json`. Constraint recorded: acceptance tests for self-tasks may not use Docker; `bd init`'s SessionStart hook removed (no host `bd`; pipeline projects carry no hooks) | User decision: the pipeline's own backlog (e.g. the §3.6 memory plumbing) becomes shadow-trial material — real tasks, graded each morning |
 | 2026-07-25 | onboarding-cross-ref | §3.4 now names onboarding and points at `ONBOARDING.md` (config is written at onboarding, not "during planning" — wording predated the checklist); ONBOARDING.md gained the from-zero project path and the post-onboarding lifecycle | Doc navigation fix: DESIGN.md's body never referenced onboarding, so a reader of this doc alone could not find the setup path |
 | 2026-07-25 | audience-senior-devs | audience widened to senior developers (§3.3) — developers may inspect drafted tests before freeze (optional; prose criteria remain the gate for everyone); difficulty labels join the approval pass; priority/dependency order made explicitly the user's decision. PLANNING.md steps 1, 5, 6 updated to match. No change to run-time autonomy or budgets (subscription window stays the natural limit — §4.6–4.7 unchanged) | User decision: the pipeline is now a tool for senior software devs, not only its original non-programmer owner — high-level decisions belong to the humans, proposals to Claude |
@@ -770,3 +771,4 @@ version (`Status: READY v1.0`). The *document* still has a version; its *rows* n
 | 2026-07-26 | repo-006 | §12 change-log rows are identified by a stable kebab-case slug in a new `Ref` column (`| Date | Ref | What changed | Why |`) instead of a version number: a pipeline task's row takes its issue id, an interactive row a short descriptive name. All 26 existing rows keep their date and their "why" verbatim and gain a ref; version tokens inside prose are left as history. Citations in the living docs move to the pinned form (the phrase change-log row plus a backticked slug), and `scripts/test-changelog.sh` / `tests/unit/changelog.test.js` — a Docker-free suite the sweep discovers by glob — enforce the shape, the slug syntax, uniqueness and the no-leading-version rule, reading `CHANGELOG_FILE` when set so the negative cases are exercisable | `repo-006`. Merging three PRs on 2026-07-26, two claimed the same version because each forked from a base where that number was free — a collision that recurs on every batch run touching this doc, and that the `repo-qyd` row already records happening once before. Numbers assigned by parallel agents cannot be unique by construction; an id the host assigns can be, so identity moves to where it is already unique instead of being renumbered by hand at each merge |
 | 2026-07-26 | epics-group-never-run | §3.1 admits Beads epics as a **grouping** device and §4.12 filters them out of the run: an epic holds a title and a design-ref, never acceptance criteria, frozen tests, a container run or a PR, and the runner skips ready-queue entries whose `issue_type` is `epic` and drains the rest. The 1:1 rule is untouched — one spec is still one issue, one run, one PR. Who calls something an epic stays a planning-time human decision (§3.3), like priority and the difficulty label; the system only *recognises* the type deterministically. Declared before the filter is implemented, the §3.7 sequencing | Asked during review: can one spec create several beads? No — but Beads offers hierarchy the pipeline was silently ignoring, and ignoring it is unsafe. Verified against bd 1.1.0 in a throwaway database: `bd ready` returns the epic itself ranked among its children, and closing every child leaves the parent open and ready — so an unfiltered runner would clone a workspace for a spec with no criteria, and would do it again on every subsequent run |
 | 2026-07-26 | repo-4l8 | §3.1/§4.12's epic filter is built (`repo-4l8`) — `queue.readyQueue()` drops ready entries whose `issue_type` is `epic`, keeps every other type including one that is absent, null or empty (fail-open: failing closed on a missing field would drain nothing at all against an older `bd`), preserves the priority-then-FIFO order of the survivors, and returns the skipped entries beside them. The queue-summary log line moves out of `run.js` into an exported `queue.queueSummary(issues, skipped)`, which appends a skipped-by-type clause and a running-non-task clause after the historic `ready queue: <n> task(s) — ` prefix. No rule changed — the filter is exactly what change-log row `epics-group-never-run` declared | `repo-4l8`. Declared-then-built, the §3.7 sequencing. The line-builder is extracted for the same reason `shouldFileMemory` was (change-log row `repo-dhp`): `run.js` reaches that line only after `loadToken` and the Docker preflight, so no Docker-free test could execute it where it sat, and the skip it announces is the whole point of a filter that removes work silently |
+| 2026-07-27 | publish-sanitize | the repository is decoupled from its author's private environment. §6 states a *reference host* rather than "the reference workstation", and §7's V3 is a generic second-environment port rather than one named container workflow; §3.6's machine-specific row points at an untracked local note instead of a named harness file; the predecessor-document line and the `/<setup plugin>:*` skill references are dropped from §3.4 and from `ONBOARDING.md`/`PLANNING.md`, which now describe the checklists as the tooling they are. Per-project runner configs (`run.config.<project>.json`) join `.env.pipeline` as git-ignored host-only files, with `run.config.example.json` the only committed template; `scripts/e2e.sh` and `scripts/test-fixture.sh` fail with a copy-this-file message when theirs is absent. Superseded planning snapshots are deleted and the suites that cited them by path now cite the backlog task number alone | The repo is public. Two kinds of content made that awkward: things a reader cannot use (a private plugin's skills, an absolute import path to one machine's disk) and things a reader should not see (a private fixture repo's URL, another private project's task ids, one workstation's directory layout). Neither was load-bearing — the checklists in this repo were always the source of truth the skills followed, and the runner has always read its target from a config file. Recorded because §6's environment claims and §3.6's knowledge-hierarchy table are design statements, not prose: a later port needs to know the Windows specifics are a *reference*, not a requirement |

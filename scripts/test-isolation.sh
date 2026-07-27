@@ -2,8 +2,7 @@
 # Copyright 2026 Chad Walker
 # SPDX-License-Identifier: Apache-2.0
 
-# T20 container isolation assertions (docs/v1-backlog-draft.md T20;
-# DESIGN.md 4.4, 4.5, 4.8, 4.12).
+# T20 container isolation assertions (V1 backlog T20; DESIGN.md 4.4, 4.5, 4.8, 4.12).
 # Runs a container configured EXACTLY as the runner configures one, and proves the
 # sandbox holds: no git push, no writes to the mounted scaffolding, no egress beyond
 # the allowlist, no credentials beyond the Anthropic token.

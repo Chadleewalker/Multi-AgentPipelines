@@ -15,8 +15,8 @@ Two rules frame everything below (§2, §3.3):
 
 ## Prerequisites (once per target project)
 
-These are done by the onboarding checklist — `ONBOARDING.md` in this repo (or the
-`<the ONBOARDING.md checklist>` skill, which follows it). Verify, don't redo:
+These are done by the onboarding checklist — `ONBOARDING.md` in this repo. Verify, don't
+redo:
 
 - The target repo has a GitHub remote and `pipeline.config.json` in its root (§3.4):
   `verifyCommand`, optional `regressionCommand`, optional `defaultBranch` (record it if
@@ -85,8 +85,9 @@ or the tests before going further, never during a run.
 ### 5. The user approves intent
 Write the drafted specs to **one reviewable file in the repo** —
 `docs/planning-draft-<YYYY-MM-DD>.md` — so the user has a single, findable thing to
-read (never a scratchpad or chat-only summary; the file is superseded by the Beads
-issues at freeze, like `docs/v1-backlog-draft.md`). The user reads the plain-English
+read (never a scratchpad or chat-only summary). The draft is **superseded by the Beads
+issues at freeze**: the issue is the canonical spec from then on, so the snapshot is
+disposable and can be deleted once the tasks have run. The user reads the plain-English
 spec — description, constraints, acceptance criteria in "Done means" form, and the
 difficulty label — and says whether it matches what they want. Adjust until yes. For a
 backlog decomposed from a design doc, this is a single list pass checking the slicing,

@@ -18,7 +18,7 @@ function haveHostBd() {
 // Docker Desktop on Windows needs a Windows-style mount source; Git Bash's MSYS
 // path conversion must also be disabled for container-side paths.
 function toMountPath(p) {
-  const m = /^\/([a-z])\/(.*)$/i.exec(p);            // /c/Code/... -> C:/Code/...
+  const m = /^\/([a-z])\/(.*)$/i.exec(p);            // /c/projects/... -> C:/projects/...
   if (m) return `${m[1].toUpperCase()}:/${m[2]}`;
   return p.replace(/\\/g, '/');
 }

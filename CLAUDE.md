@@ -4,11 +4,6 @@ A pipeline that works through a queue of development tasks autonomously, each in
 locked-down Docker container, and hands back pull requests plus a run report. The user
 approves intent before a run and reviews results after; nothing in between is interactive.
 
-This project was created with the <project harness>. The line below automatically
-loads the master rules every session — don't remove it.
-
-@<local harness rules file>
-
 ## Read these first, in this order
 
 | File | What it is |
@@ -49,7 +44,11 @@ pipeline unable to be trusted unattended.
 7. **No LLM in the runner, the verifier, or the report generator.** Control flow,
    timeouts, and outcomes are deterministic. Agents do fuzzy work only.
 
-## Environment (this machine)
+## Environment (the reference host)
+
+Everything below was built and proven on Windows 11 with Docker Desktop. Nothing in the
+design requires Windows — the runner is portable Node — but these are the constraints the
+code actually encodes, so a port should read them as the list of things to re-check.
 
 - **Windows 11 + Docker Desktop.** Docker Desktop must be running; the runner asserts it
   and fails fast.
@@ -67,8 +66,8 @@ pipeline unable to be trusted unattended.
 ## Running things
 
 ```bash
-# a real run against a target project
-node runner/run.js --config run.config.example.json
+# a real run against a target project (run.config.*.json is git-ignored — copy the example)
+node runner/run.js --config run.config.<project>.json
 
 # the full sweep — every suite, one at a time, with a summary table
 bash scripts/test-all.sh

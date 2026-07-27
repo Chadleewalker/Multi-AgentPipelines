@@ -2,9 +2,8 @@
 
 This is the once-per-project setup that turns any repo — freshly scaffolded or years
 old — into a valid pipeline target. It is the checklist form of DESIGN.md §3.4 and §6;
-when those sections change, this file changes with them. The harness skill
-`<the ONBOARDING.md checklist>` follows this document — this file is the source of truth,
-the skill is a wrapper.
+when those sections change, this file changes with them. If you wrap it in a slash command
+or a script, this file stays the source of truth and the wrapper follows it.
 
 Everything here happens interactively on the host, with the user. Run it once per
 project; PLANNING.md's per-session prerequisites then just verify it was done.
@@ -13,14 +12,13 @@ project; PLANNING.md's per-session prerequisites then just verify it was done.
 
 Four stages, in order. Each is interactive, each happens once except the last:
 
-1. **Create the project** — `<the scaffold step>` (a harness skill). The language
-   and main technologies (framework, data storage, hosting — whatever the project
-   actually has) are chosen together — Claude lays out the options with a
-   recommendation, the user decides — then Claude picks the matching template, writes
-   the project's `CLAUDE.md` (with the master-rules import), and gets a spec approved
-   before building anything. The scaffold asks "will
-   the pipeline work on this project?" — answer yes and stage 3 happens in
-   the same sitting. An existing project skips this stage entirely.
+1. **Create the project** — however you normally scaffold one. The language and main
+   technologies (framework, data storage, hosting — whatever the project actually has)
+   are chosen together — Claude lays out the options with a recommendation, the user
+   decides — then Claude writes the project's `CLAUDE.md` and gets a spec approved
+   before building anything. If you know at that point that the pipeline will work on
+   this project, stage 3 can happen in the same sitting. An existing project skips this
+   stage entirely.
 2. **Write the design doc** — for a project the pipeline will seriously develop, a
    `DESIGN.md` in its repo: intent, architecture, decisions and why, amendable only via
    its change log (§3.1–3.2 of this pipeline's own DESIGN.md describe the session:
@@ -30,9 +28,9 @@ Four stages, in order. Each is interactive, each happens once except the last:
    number, which parallel agents cannot assign uniquely (§12). Small
    projects can live on the scaffold's `SPEC.md` alone and enter planning per-task —
    the doc layer is for work big enough to decompose.
-3. **Onboard** — `<the ONBOARDING.md checklist>`, which follows the checklist
-   below: GitHub remote, integration branch recorded, frozen-test home, config, image,
-   task database, container-aware `CLAUDE.md`. Once, ever.
+3. **Onboard** — the checklist below: GitHub remote, integration branch recorded,
+   frozen-test home, config, image, task database, container-aware `CLAUDE.md`. Once,
+   ever.
 4. **Plan and run, forever** — every feature from here on is a PLANNING.md session and
    an autonomous run. See "the life of an onboarded project" at the end of this file.
 
@@ -90,16 +88,18 @@ matters is that both exist before planning tries to decompose anything.
 ### 6. The project's `CLAUDE.md` — rewrite for the pipeline
 The project's instructions ride into every container (fresh clone), so they must tell
 the truth about where the agent is running:
-- [ ] **Keep** the harness master-rules import line (it works on Windows, silently
-      no-ops in containers — that's expected).
+- [ ] **Keep any `@`-import of shared house rules pointing at a host-local path** — it
+      resolves on the host and silently no-ops in containers, which is expected. Note
+      that anything the container genuinely needs must live *in the repo*: a fresh clone
+      is the only guaranteed container input (§4.10).
 - [ ] **Spec authority:** if the project was scaffolded, its `CLAUDE.md` points at
       `SPEC.md`. For a pipeline project, task specs are Beads issues and the frozen
       tests are the proof — say so. Keep `SPEC.md`/design docs for intent if the
       project has them, but the pipeline verifies against `tests/acceptance/`, and
       the instructions must not send agents hunting for the wrong file.
-- [ ] **Replace** any "Working inside <another container workflow>" section (its "everyone pushes to
-      `main`" rule is the exact opposite of the pipeline's git isolation) with the
-      container section below.
+- [ ] **Replace** any section describing a different container workflow with the one
+      below. This matters most when the old one says agents push straight to the
+      integration branch — the exact opposite of the pipeline's git isolation.
 - [ ] **Remove hooks:** delete the `hooks` entry from `.claude/settings.json` and the
       `.claude/hooks/` folder. Scaffolded format hooks call `npx --yes prettier`,
       which tries the npm registry on every edit — blocked by the closed network.
@@ -138,13 +138,16 @@ Copy this section in (adjust nothing but the project name):
 ### 8. Pipeline-side wiring
 - [ ] Add `run.config.<project>.json` in this repo (copy `run.config.example.json`):
       target repo path and remote, image name, network/proxy names, wall-clock budget.
+      These are **git-ignored** — they name a path on your disk and a remote that may be
+      private, so only the example template is committed.
 
 ### 9. Final sanity pass
 - [ ] `pipeline.config.json` present and complete; `defaultBranch` correct.
 - [ ] `tests/acceptance/` committed and pushed on the integration branch.
 - [ ] Per-project image exists (`docker images`).
 - [ ] `bd ready` runs against the working copy.
-- [ ] `CLAUDE.md` carries the container section; no <another container workflow> section, no hooks.
+- [ ] `CLAUDE.md` carries the container section; no rival container-workflow section,
+      no hooks.
 - [ ] Everything committed and pushed — the container clones from the **remote**
       (§4.2); anything only on the local disk does not exist as far as a run is
       concerned.

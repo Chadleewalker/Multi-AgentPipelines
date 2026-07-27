@@ -4,7 +4,11 @@ runs/
 node_modules/
 .env
 .env.*
-!.env.Project
+
+# Per-project runner configs name a local path and a real remote — host-only.
+# Copy run.config.example.json to make your own (ONBOARDING.md step 8).
+run.config.*.json
+!run.config.example.json
 
 # Beads / Dolt files (added by bd init)
 .dolt/

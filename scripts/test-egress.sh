@@ -2,7 +2,7 @@
 # Copyright 2026 Chad Walker
 # SPDX-License-Identifier: Apache-2.0
 
-# T5 acceptance checks (docs/v1-backlog-draft.md T5; DESIGN.md 4.8).
+# T5 acceptance checks (V1 backlog T5; DESIGN.md 4.8).
 # Brings the closed network + proxy sidecar up, proves the allowlist policy holds
 # in both directions, then tears down. Run from Git Bash:
 #   bash scripts/test-egress.sh

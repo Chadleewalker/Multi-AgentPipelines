@@ -197,7 +197,7 @@
   .p-plan { color: var(--gate); }
   .p-impl { color: var(--flow); }
   .p-walls { color: var(--refuse); }
-  .p-harness { color: var(--human-stroke); }
+  .p-setup { color: var(--human-stroke); }
   .p-all { color: var(--ink); }
 
   section > p { max-width: var(--measure); margin: 0; color: var(--muted); }
@@ -964,21 +964,22 @@ flowchart LR
   </section>
 
   <section>
-    <h2><span class="phase p-harness">Setup</span> Where the harness fits</h2>
+    <h2><span class="phase p-setup">Setup</span> What happens before the first run</h2>
     <p>
-      Around the pipeline sits the harness — a plugin of skills every Claude session
-      loads. It creates projects, and it performs the once-per-project setup that turns a
-      repo into a valid pipeline target. The checklists live in this repo and the skills
-      follow them, so there is one source of truth. This repo is itself onboarded as a
+      Around the pipeline sit two interactive steps. One creates a project; the other is
+      the once-per-project setup that turns a repo into a valid pipeline target. Both are
+      checklists in this repo — <code>ONBOARDING.md</code> and <code>PLANNING.md</code> —
+      so if you wrap either in a slash command of your own, the checklist stays the single
+      source of truth and the wrapper follows it. This repo is itself onboarded as a
       target (dogfooding), so the pipeline can work through its own backlog.
     </p>
     <div class="plate">
 <pre class="mermaid">
 flowchart LR
-  subgraph HP["Harness — skills, always interactive"]
+  subgraph HP["Setup — always interactive"]
     direction TB
     SC["scaffold — create a project"]
-    OB["pipeline-onboard — once per project"]
+    OB["onboard — once per project"]
   end
   subgraph MR["This repo"]
     direction TB
@@ -1013,16 +1014,16 @@ flowchart LR
     <p>A brand-new project reaches its first autonomous run in four stages — the first
     three happen once, ever; the fourth is the rest of the project's life:</p>
     <ol class="steps">
-      <li><span><b>Create it</b> — the scaffold skill. You and Claude discuss the
-      language and main technologies (options and a recommendation, your call), the
+      <li><span><b>Create it</b> — however you scaffold a project. You and Claude discuss
+      the language and main technologies (options and a recommendation, your call), the
       project's rules file is written, and a plain-English spec is approved before
       anything is built. An existing project skips this.</span></li>
       <li><span><b>Write the design doc</b> — for anything big enough to decompose into
       a backlog: intent, architecture, decisions and why, changed only through its
       change log. Small projects live on the scaffold's spec alone.</span></li>
-      <li><span><b>Onboard it</b> — the pipeline-onboard skill, following ONBOARDING.md:
-      GitHub remote, integration branch recorded, frozen-test home, config, image, task
-      database, container-aware instructions. Like wiring a house — done once.</span></li>
+      <li><span><b>Onboard it</b> — the ONBOARDING.md checklist: GitHub remote,
+      integration branch recorded, frozen-test home, config, image, task database,
+      container-aware instructions. Like wiring a house — done once.</span></li>
       <li><span><b>Plan and run, forever</b> — every future feature is a PLANNING.md
       session and an autonomous run. Never a re-onboarding; the one time the plumbing is
       touched again is a new dependency, baked into the image during that planning
@@ -1039,17 +1040,16 @@ flowchart LR
           <li><b>Language &amp; main technologies discussed</b> — options with
           tradeoffs and a recommendation; the developer decides. Small tooling
           choices stay Claude's.</li>
-          <li><b>Project written</b> — from the matching template: the rules file
-          (loads the master rules in every future session), spec, README, starter
-          code.</li>
+          <li><b>Project written</b> — the rules file (loaded in every future
+          session), spec, README, starter code.</li>
           <li><b>Git initialized, dependencies installed</b>, and the approved spec
           built out.</li>
           <li><b>Offers pipeline onboarding</b> — "will the pipeline work
-          on this?" folds the next skill into the same sitting.</li>
+          on this?" folds the next step into the same sitting.</li>
         </ol>
       </div>
       <div class="skillcard">
-        <h3>pipeline-onboard — make it a target
+        <h3>onboard — make it a target
           <span class="runs">interactive · once per project, ever</span></h3>
         <ol>
           <li><b>GitHub remote</b> verified or created; the project's real
@@ -1066,14 +1066,14 @@ flowchart LR
           inside a sandbox learns where it is and what it must never touch; format
           hooks removed (they fight the closed network).</li>
           <li><b>Sanity pass</b> — everything committed and pushed, image present,
-          queue answering. The checklist lives in <code>ONBOARDING.md</code>; the
-          skill follows it, so there is one source of truth.</li>
+          queue answering. The checklist lives in <code>ONBOARDING.md</code>; any
+          wrapper follows it, so there is one source of truth.</li>
         </ol>
       </div>
     </div>
     <div class="gloss">
-      <p><strong>The skills are interactive</strong> — you and Claude together, which is
-      why they wear the same indigo as your decision points. Nothing the harness does
+      <p><strong>Both setup steps are interactive</strong> — you and Claude together,
+      which is why they wear the same indigo as your decision points. Nothing in setup
       runs unattended.</p>
       <p><strong>"Spec approved first" means Claude drafts, the human approves.</strong>
       From your plain-English description, Claude writes a "what it should do" list and
@@ -1095,7 +1095,7 @@ flowchart LR
   </section>
 
   <section>
-    <h2><span class="phase p-harness">Governance</span> Who decides what</h2>
+    <h2><span class="phase p-setup">Governance</span> Who decides what</h2>
     <p>
       The whole division of labor in one place. Claude proposes; humans hold every
       high-level call — except the last row, which belongs to no one on purpose.
@@ -1514,11 +1514,11 @@ stateDiagram-v2
       would be picked up again on every run, forever.
     </p>
     <p>A real task’s notes after two runs — this is the whole audit trail:</p>
-    <pre class="trail">run shadow-01-<task id>: outcome done
+    <pre class="trail">run shadow-01: outcome done
   attempt 1: fail at 2026-07-25T21:44:02Z
   attempt 2: pass at 2026-07-25T21:45:26Z
 PR: <private repo> PR #1
-run shadow-02-<task id>: outcome done
+run shadow-02: outcome done
   attempt 1: pass at 2026-07-25T22:03:14Z
 PR: <private repo> PR #2</pre>
   </section>
@@ -1670,7 +1670,7 @@ flowchart LR
   </section>
 
   <section>
-    <h2><span class="phase p-harness">Review</span> When the run finishes</h2>
+    <h2><span class="phase p-setup">Review</span> When the run finishes</h2>
     <p>
       The run report arrives ordered by how much scrutiny each task needs —
       <span class="tag bad">tampered</span> &gt; <span class="tag bad">stuck</span> &gt;

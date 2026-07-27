@@ -2,7 +2,7 @@
 # Copyright 2026 Chad Walker
 # SPDX-License-Identifier: Apache-2.0
 
-# T18 acceptance checks (docs/v1-backlog-draft.md T18; DESIGN.md 7, 3.1, 3.4).
+# T18 acceptance checks (V1 backlog T18; DESIGN.md 7, 3.1, 3.4).
 # Verifies the fixture repository is a valid pipeline target: config schema, frozen
 # tests on main, Beads issues with all five spec fields, image builds, and the
 # Dockerfile/manifest cross-check that keeps them from drifting.
@@ -13,6 +13,13 @@ CFG="$ROOT/run.config.fixture.json"
 FAIL=0
 pass() { echo "PASS  $1"; }
 fail() { echo "FAIL  $1"; FAIL=1; }
+
+# Git-ignored: it names a path on your disk and a repo that is probably private.
+if [ ! -f "$CFG" ]; then
+  fail "$CFG not found — cp run.config.example.json run.config.fixture.json and point it"
+  echo "      at your own disposable fixture repo. The checks below define what it must contain."
+  exit 1
+fi
 
 FIX=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).targetRepoPath)' "$CFG")
 REMOTE=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).targetRepoRemote)' "$CFG")

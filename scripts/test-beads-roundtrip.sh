@@ -2,7 +2,7 @@
 # Copyright 2026 Chad Walker
 # SPDX-License-Identifier: Apache-2.0
 
-# T2 acceptance checks (docs/v1-backlog-draft.md T2; DESIGN.md §3.1, §4.11, §4.12).
+# T2 acceptance checks (V1 backlog T2; DESIGN.md §3.1, §4.11, §4.12).
 # Host driver: runs the assertions inside the base image, where bd lives.
 # Run from Git Bash:  bash scripts/test-beads-roundtrip.sh [image-tag]
 set -u

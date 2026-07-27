@@ -2,7 +2,7 @@
 # Copyright 2026 Chad Walker
 # SPDX-License-Identifier: Apache-2.0
 
-# T8 acceptance checks (docs/v1-backlog-draft.md T8; DESIGN.md 4.3/4.6/4.11).
+# T8 acceptance checks (V1 backlog T8; DESIGN.md 4.3/4.6/4.11).
 # Host driver: runs entrypoint-checks.sh inside the base image, then validates the
 # scenario status files against status.schema.json and asserts the default agent
 # command is headless claude with permissions bypassed (4.3).

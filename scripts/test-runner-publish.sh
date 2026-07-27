@@ -2,7 +2,7 @@
 # Copyright 2026 Chad Walker
 # SPDX-License-Identifier: Apache-2.0
 
-# T16 acceptance checks (docs/v1-backlog-draft.md T16; DESIGN.md 4.5, 4.11).
+# T16 acceptance checks (V1 backlog T16; DESIGN.md 4.5, 4.11).
 # Real containers, real pushes to a LOCAL BARE REMOTE (no live GitHub). PR creation is
 # captured through the PIPELINE_GH_CMD seam, so the assembled body is inspected exactly
 # as `gh pr create` would receive it.

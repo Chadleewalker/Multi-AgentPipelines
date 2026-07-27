@@ -2,7 +2,7 @@
 # Copyright 2026 Chad Walker
 # SPDX-License-Identifier: Apache-2.0
 
-# T21 — the V1 end-to-end pass (docs/v1-backlog-draft.md T21; DESIGN.md §7).
+# T21 — the V1 end-to-end pass (V1 backlog T21; DESIGN.md §7).
 #
 # Drives all three fixture scenarios through the REAL pipeline (real runner, real
 # containers, real closed network, real GitHub) with ZERO interactive input, then
@@ -19,6 +19,14 @@
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CFG="$ROOT/run.config.fixture.json"
+# Git-ignored: it names a path on your disk and a repo that is probably private.
+if [ ! -f "$CFG" ]; then
+  echo "FAIL  $CFG not found."
+  echo "      This pass needs a disposable fixture repo of your own (see scripts/test-fixture.sh"
+  echo "      for what makes one valid). Then: cp run.config.example.json run.config.fixture.json"
+  echo "      and point targetRepoPath / targetRepoRemote / image at it."
+  exit 1
+fi
 KEEP=0; [ "${1:-}" = "--keep" ] && KEEP=1
 FAIL=0
 pass() { echo "PASS  $1"; }
