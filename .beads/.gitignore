@@ -3,6 +3,13 @@ dolt/
 embeddeddolt/
 proxieddb/
 
+# Git hooks installed by `bd hooks install --beads` (activated by a local
+# core.hooksPath, which is per-clone config and never committed). Host-only on purpose:
+# this repo is a target of its own pipeline, and DESIGN.md's `dogfood-onboarding` row
+# records that pipeline projects carry no committed hooks — they would land in the task
+# container, which has no `bd` and no network. Install them per machine instead.
+hooks/
+
 # Runtime files
 bd.sock
 bd.sock.startlock

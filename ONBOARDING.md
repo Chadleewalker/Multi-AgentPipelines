@@ -147,6 +147,15 @@ Copy this section in (adjust nothing but the project name):
       does not travel with a clone, so copy it to every machine you work from alongside
       `.env.pipeline`. `bash scripts/test-sanitize.sh` enforces it, and still runs its
       generic path/address/credential checks when the file is absent.
+- [ ] `bash scripts/install-hooks.sh` — once per clone, on every machine. Issues live in
+      `refs/dolt/data`, which `git pull` does **not** fetch, so without this a second
+      machine pulls the code and keeps a stale task queue with nothing to warn it. The
+      script installs bd's hooks host-only (`.beads/hooks/`, git-ignored, reached by a
+      local `core.hooksPath` that is never committed) and appends the `bd dolt pull` that
+      bd's own `post-merge` does not do — bd's handles JSONL import only, and skips even
+      that once `sync.remote` is set. Hooks are deliberately **not** committed: this repo
+      is a target of its own pipeline, and committed hooks would land in a task container
+      that has neither `bd` nor network. Set `BD_SKIP_AUTO_PULL=1` to skip a pull once.
 
 ### 9. Final sanity pass
 - [ ] `pipeline.config.json` present and complete; `defaultBranch` correct.
