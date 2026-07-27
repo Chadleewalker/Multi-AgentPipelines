@@ -71,9 +71,22 @@ neg() {
   fi
 }
 
-# case 2: an absolute user-home path in an ordinary text file
+# case 2: an absolute user-home path in an ordinary text file.
+# Assembled from parts at runtime. This suite scans every *tracked* file and this file is
+# one of them, so a literal user path written here would be reported as a finding in the
+# suite itself — which is exactly what happened the first time it was committed, because
+# until then the file was untracked and `git ls-files` never showed it to the checker.
+# Building the string avoids an allow-list escape hatch, which would otherwise be the
+# obvious way to silence a real finding.
 mkdir -p "$TMP/f2"
-printf 'see C:\\Users\\someone\\Projects\\thing for the layout\n' > "$TMP/f2/notes.md"
+DRIVE='C'
+HOMEDIR='Users'
+printf 'see %s:\\%s\\someone\\Projects\\thing for the layout\n' "$DRIVE" "$HOMEDIR" > "$TMP/f2/notes.md"
+if grep -q "$DRIVE:.$HOMEDIR.someone" "$TMP/f2/notes.md"; then
+  pass "case 2 fixture really contains the path"
+else
+  fail "case 2 fixture was not written correctly — the negative case cannot fire"
+fi
 neg "planted user path" "$TMP/f2"
 
 # case 3: a denylisted project name inside a file git treats as BINARY.
