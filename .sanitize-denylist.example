@@ -1,0 +1,21 @@
+# Publication denylist — copy to `.sanitize-denylist` (git-ignored) and fill in.
+#
+# One term per line. Blank lines and #-comments ignored. Terms are matched
+# case-insensitively as plain substrings against every tracked file, bytes and all —
+# including files git treats as binary, which is where the leak this suite exists for
+# actually hid. Checked by scripts/test-sanitize.sh.
+#
+# Put here the names that must never appear in a public tree: private project code names,
+# a client or employer, an internal host or service, a fixture repo. The real file is
+# git-ignored on purpose — committing the list of things you must not mention would publish
+# the list of things you must not mention.
+#
+# Because it is host-only, it does not travel with a clone. Copy it to each machine you
+# work from, the same way you copy `.env.pipeline` and `run.config.<project>.json`. Without
+# it the suite still runs every generic check (paths, emails, credentials) and prints a
+# NOTE saying the project-name checks were skipped.
+#
+# Examples — delete these and add your own:
+# SomePrivateProject
+# some-internal-host
+# ClientName

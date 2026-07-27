@@ -140,6 +140,13 @@ Copy this section in (adjust nothing but the project name):
       target repo path and remote, image name, network/proxy names, wall-clock budget.
       These are **git-ignored** — they name a path on your disk and a remote that may be
       private, so only the example template is committed.
+- [ ] If this pipeline repo is public, add `.sanitize-denylist` (copy
+      `.sanitize-denylist.example`): the private project names, hosts and clients that must
+      never appear in the tracked tree. Also **git-ignored**, because committing the list of
+      things you must not mention would publish exactly what it protects — which means it
+      does not travel with a clone, so copy it to every machine you work from alongside
+      `.env.pipeline`. `bash scripts/test-sanitize.sh` enforces it, and still runs its
+      generic path/address/credential checks when the file is absent.
 
 ### 9. Final sanity pass
 - [ ] `pipeline.config.json` present and complete; `defaultBranch` correct.

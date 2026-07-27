@@ -79,9 +79,10 @@ bash scripts/e2e.sh            # add --keep to leave branches and PRs up for ins
 bash scripts/test-verifier.sh
 bash scripts/test-runner-container.sh
 
-# the two suites that need no Docker — seconds, safe to run anywhere, even in a container
+# the three suites that need no Docker — seconds, safe to run anywhere, even in a container
 bash scripts/test-runner-memory.sh
 bash scripts/test-changelog.sh   # DESIGN.md §12 row identity (CHANGELOG_FILE re-aims it)
+bash scripts/test-sanitize.sh    # publication hygiene (SANITIZE_FIXTURE_DIR re-aims it)
 ```
 
 Suites are slow (real containers) and **share one Docker network** — run them one at a
@@ -148,6 +149,17 @@ note keys are cited so the trail back to the run survives.
   all of this — workspaces clone with `core.autocrlf=false` and `core.eol=lf`, so the
   container never sees CRLF at all.
 
+- **This repo documents the machinery, never the work done with it.** It is public and it
+  is used on private work; that one boundary is what lets both stay true. Worked examples,
+  findings and fixtures are either generic or name something you are happy to publish —
+  "the first real project", never its name. The leaks so far came in as *evidence*, not as
+  code: a shadow-trial project named in a change-log row, a side project named in a worked
+  example. Don't rely on reading for this — `scripts/test-sanitize.sh` enforces the generic
+  half (paths, addresses, credentials) and the host-only `.sanitize-denylist` the naming
+  half, and it reads bytes so a file git calls binary cannot hide in it again. Run it
+  before you publish anything. (change-log row `publish-sanitize-followup`; STATUS
+  "Why it reads bytes".)
+
 ## Changing the design
 
 If something here turns out to be wrong, amend `DESIGN.md` and add a row to its change
@@ -191,9 +203,12 @@ the pipeline working on the pipeline's own code. The rules:
   task are Docker-free by design. The exceptions are
   `sh scripts/test-runner-memory.sh` (`tests/unit/memory.test.js`), which stubs the whole
   `bd` layer through `PIPELINE_BD_CMD` and needs no Docker — run it if you touch
-  `runner/memory.js` — and `sh scripts/test-changelog.sh`
+  `runner/memory.js` — `sh scripts/test-changelog.sh`
   (`tests/unit/changelog.test.js`), which reads markdown only: run it if you add a
-  `DESIGN.md` change-log row. Any new Docker-free suite belongs beside them in
+  `DESIGN.md` change-log row — and `sh scripts/test-sanitize.sh`
+  (`tests/unit/sanitize.test.js`), which reads the tracked tree only: run it if you add a
+  path, an address or an example naming anything outside this repo. Any new Docker-free
+  suite belongs beside them in
   `tests/unit/`, and its seam stub must be a `.js` file invoked through
   `process.execPath`, never a `#!/bin/sh` script: `spawnSync` without a shell fails such a
   script with EFTYPE on the Windows host, so the suite would pass in here and fail in the

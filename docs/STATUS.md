@@ -482,9 +482,9 @@ design's central bet, and it is the first day it paid out repeatedly.
 
 ## Test suites
 
-All but two drive real Docker and share one network, so they must never run concurrently
-(`test-runner-memory.sh` and `test-changelog.sh` are the exceptions — see below; they need
-neither).
+All but three drive real Docker and share one network, so they must never run concurrently
+(`test-runner-memory.sh`, `test-changelog.sh` and `test-sanitize.sh` are the exceptions —
+see below; they need neither).
 **`scripts/test-all.sh` is the sweep** — it holds a lock, runs every suite sequentially,
 kills one that hangs (`--timeout`, default 900s), tears `pipeline-net` down if a suite
 leaks it, and writes per-suite logs plus a summary table to `runs/sweeps/<timestamp>/`.
@@ -508,8 +508,9 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-isolation.sh` | no push, read-only scaffolding, no egress, one credential |
 | `scripts/test-fixture.sh` | the fixture repo is a valid pipeline target |
 | `scripts/test-changelog.sh` | `DESIGN.md` §12 row identity — slug refs, uniqueness, citations |
+| `scripts/test-sanitize.sh` | publication hygiene — no machine paths, emails, credentials or denylisted names in the tracked tree |
 
-**`scripts/test-runner-memory.sh` is one of the two suites that need no Docker**
+**`scripts/test-runner-memory.sh` is one of the three suites that need no Docker**
 (repo-dhp): it
 drives both §3.6 memory channels plus the `shouldFileMemory` outcome gate through the
 `PIPELINE_BD_CMD` seam, so it runs anywhere — including inside a task container, where
@@ -524,7 +525,7 @@ and red in the host sweep. The stub is preloaded into node with
 `NODE_OPTIONS=--require "<stub>"` (quoted: repo and temp paths may contain spaces), which
 works because node runs preloads before it resolves the main module.
 
-**`scripts/test-changelog.sh` is the other** (repo-006): it reads markdown and nothing
+**`scripts/test-changelog.sh` is the second** (repo-006): it reads markdown and nothing
 else, so it needs no Docker, no network and no target repo. It checks §12's table shape
 (four cells per row, counted *after* masking backtick spans — one row carries
 `done|partial|failed|stuck` in a code span and so has three pipes that are not cell
@@ -537,6 +538,30 @@ and dash in a container, so shell-side parsing is exactly the kind of thing that
 green in one and red in the other. Set `CHANGELOG_FILE` to aim the checker at a fixture
 instead of `DESIGN.md`; that seam is what makes the negative cases falsifiable, since a
 duplicate-detector that is a no-op still passes "exits 0 on the good file".
+
+**`scripts/test-sanitize.sh` is the third** (change-log row `publish-sanitize-followup`):
+it enumerates the tracked tree with `git ls-files` and reads each file as a Buffer, so
+publication hygiene is checked rather than trusted. It fails on absolute user-home paths,
+absolute paths outside the standard toolchain, real email addresses and credential-shaped
+strings; placeholder segments (`path/to`, a literal ellipsis, angle-bracket slots, a
+generic scratch root) are allowed, which is what keeps the rule specific enough to leave
+switched on. Private *names* are not in it — they live in `.sanitize-denylist`, git-ignored
+with `.sanitize-denylist.example` committed as the template, because a committed list of
+things that must not be mentioned publishes exactly what it protects. Absent, the generic
+checks still run and the suite prints a `NOTE`, so a fresh clone is green. `SANITIZE_FIXTURE_DIR`
+aims it at a directory instead of the tracked tree; that seam is what makes the negative
+cases falsifiable.
+
+**Why it reads bytes and never skips a "binary" file.** This suite exists because
+`publish-sanitize` missed a private project name in `tests/acceptance/repo-006/test.js`,
+and so did the first automated sweep that went looking for it: that file masks backtick
+spans with a **literal NUL byte**, so git classifies it as binary and `git grep` skips it
+by default — it is the only binary file in the repo, and it was the one holding the leak.
+A hand pass and a `git grep` pass failed on the same file for the same reason. Negative
+case 3 in the wrapper plants a term in a file containing a NUL and fails the suite if the
+checker does not find it, so that specific blindness cannot come back. This is the
+"assert the artifact is *right*, not merely present" rule (§3.6) applied to an audit: a
+scanner reporting zero findings and a scanner that cannot see the file look identical.
 
 **Full re-run 2026-07-26**, after the five dogfood/queue PRs merged to `main`: all 18
 suites green, including `e2e.sh` (32 assertions, real PR opened and cleaned up). Two were

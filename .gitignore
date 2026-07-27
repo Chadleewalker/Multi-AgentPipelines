@@ -10,6 +10,11 @@ node_modules/
 run.config.*.json
 !run.config.example.json
 
+# The publication denylist names the private things that must never appear in this public
+# tree, so committing it would publish exactly what it protects. Host-only; copy
+# .sanitize-denylist.example to make your own (scripts/test-sanitize.sh).
+.sanitize-denylist
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db
