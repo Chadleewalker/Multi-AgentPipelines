@@ -6,7 +6,14 @@
 # Issue prefix for this repository (used by bd init)
 # If not set, bd init will auto-detect from directory name
 # Example: issue-prefix: "myproject" creates issues like "myproject-1", "myproject-2", etc.
-# issue-prefix: ""
+# Pinned to "repo" to match every existing issue. The live prefix is held in the database
+# (`issue_prefix`, visible via `bd config list`) and travels with `bd dolt pull`, so this
+# key is not what names issues day to day — it is the safety net for `bd init` on a fresh
+# clone, which runs BEFORE the database arrives and otherwise derives the prefix from the
+# working-directory name ("Multi-AgentPipelines" on the host). Without it, init announces
+# the wrong prefix and a queue created before the first pull would carry it.
+# (STATUS.md: "bd takes its issue prefix from the working-directory name".)
+issue-prefix: "repo"
 
 # Use no-db mode: JSONL-only, no Dolt database
 # When true, .beads/issues.jsonl is the only local store
