@@ -7,12 +7,64 @@
 // installed still works. Either way the canonical database is the working copy at
 // cfg.targetRepoPath (§4.12) — never a task branch.
 'use strict';
+const fs = require('fs');
+const path = require('path');
 const { spawnSync } = require('child_process');
 
-let hostBd = null; // memoized probe
-function haveHostBd() {
-  if (hostBd === null) hostBd = spawnSync('bd', ['version'], { encoding: 'utf8' }).status === 0;
+// An npm-installed `bd` on Windows is a pair of shims — an extensionless /bin/sh script
+// and a `.cmd` batch file — and spawnSync can execute NEITHER: the first returns ENOENT,
+// the second EINVAL (Node refuses to run a batch file without a shell). The probe then
+// answered "no host bd" forever and every call silently took the Docker fallback, one
+// container per bd invocation; suites that drive their own `docker run … bd` against the
+// same fixture deadlocked against it and were killed at 900s. Nothing errored anywhere —
+// the fallback is fail-safe, so it degraded quietly for every run after bd was reinstalled.
+//
+// A shell is NOT the fix. bd carries agent-authored text — attempt notes, memories, spec
+// concerns — and cmd.exe would mangle any quote or metacharacter in it. Instead resolve
+// the shim's JS entry point and run it with process.execPath, the same move the unit
+// suites' bd stub makes and for the same reason: the node binary behaves identically on
+// both platforms.
+
+// Both shim flavours name their target relative to the shim's own directory:
+//   sh   ->  exec node  "$basedir/node_modules/@beads/bd/bin/bd.js" "$@"
+//   cmd  ->  "%_prog%"  "%dp0%\node_modules\@beads\bd\bin\bd.js" %*
+// Exported for tests/unit/bd-shim.test.js — the probe itself depends on the host, but
+// this parsing does not, so it is the part that can be pinned.
+function shimTarget(text, dir) {
+  const m = /(?:\$basedir|%dp0%)[\\/]([^"'\s]+\.js)/.exec(String(text || ''));
+  if (!m) return null;
+  return path.join(dir, m[1].replace(/\\/g, '/'));
+}
+
+// { cmd, pre } — how to invoke host bd, or null when there is none. Memoized: the probe
+// costs a process spawn and the answer cannot change inside one run.
+let hostBd; // undefined = not probed yet, null = no host bd
+function hostBdSpec() {
+  if (hostBd !== undefined) return hostBd;
+  hostBd = null;
+  // A real executable on PATH (every POSIX host, and a native bd.exe on Windows).
+  if (spawnSync('bd', ['version'], { encoding: 'utf8' }).status === 0) {
+    hostBd = { cmd: 'bd', pre: [] };
+    return hostBd;
+  }
+  for (const dir of (process.env.PATH || '').split(path.delimiter).filter(Boolean)) {
+    for (const name of ['bd', 'bd.cmd']) {
+      let text;
+      try { text = fs.readFileSync(path.join(dir, name), 'utf8'); } catch { continue; }
+      const js = shimTarget(text, dir);
+      // Verify by running it: a shim that names a target which was uninstalled, or a
+      // parse that produced a plausible-but-wrong path, must not be trusted on shape.
+      if (js && spawnSync(process.execPath, [js, 'version'], { encoding: 'utf8' }).status === 0) {
+        hostBd = { cmd: process.execPath, pre: [js] };
+        return hostBd;
+      }
+    }
+  }
   return hostBd;
+}
+
+function haveHostBd() {
+  return hostBdSpec() !== null;
 }
 
 // Docker Desktop on Windows needs a Windows-style mount source; Git Bash's MSYS
@@ -34,8 +86,10 @@ function bd(cfg, args, opts = {}) {
       ...opts,
     });
   }
-  if (haveHostBd()) {
-    return spawnSync('bd', ['-C', cfg.targetRepoPath, ...args], { encoding: 'utf8', ...opts });
+  const host = hostBdSpec();
+  if (host) {
+    return spawnSync(host.cmd, [...host.pre, '-C', cfg.targetRepoPath, ...args],
+      { encoding: 'utf8', ...opts });
   }
   const mount = `${toMountPath(cfg.targetRepoPath)}:/repo`;
   return spawnSync(
@@ -55,4 +109,4 @@ function bdJson(cfg, args) {
   }
 }
 
-module.exports = { bd, bdJson, haveHostBd, toMountPath };
+module.exports = { bd, bdJson, haveHostBd, toMountPath, shimTarget };
