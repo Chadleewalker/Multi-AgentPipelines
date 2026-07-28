@@ -23,7 +23,8 @@ Three phases joined by a task queue:
    the verifier runs the frozen tests, and it retries at most three times.
 3. **Review** (with you) — verified work arrives as a pull request carrying the spec, a
    change summary, and the verification evidence. Failed work arrives as a pushed branch
-   with its full attempt history.
+   with its full attempt history. If an agent thinks the spec it was given is wrong, that
+   comes back with the work as a note for you — it never changes whether the task passed.
 
 The design's central bet: **an agent never judges its own work.** Verification is a
 deterministic script running tests that were frozen before the code was written.

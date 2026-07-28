@@ -4,7 +4,7 @@ Where the build actually is. Update this when something changes — it is the fi
 session reads to pick up the thread, and unlike a machine-local memory folder it travels
 with the repo.
 
-_Last updated: 2026-07-26_
+_Last updated: 2026-07-28_
 
 ## Where things stand
 
@@ -429,7 +429,9 @@ its dependency (the runner reads the ready queue once, before the task loop), an
 tests weeks before the run that executes them is how suites go stale. Both are discharged
 — its 92 acceptance checks were written in the planning session of 2026-07-28
 (`docs/planning-draft-2026-07-28.md`), immediately before the run, and verified red on the
-host first: 47 fail, 45 pass, with every invariant that already held passing.
+host first: 47 fail, 45 pass, with every invariant that already held passing. **It ran on
+2026-07-28 and passed on attempt 1**, so §3.7 is built end to end and the queue is drained
+with nothing open behind it.
 
 **Ten tasks ran on 2026-07-26, all `done`, every one on the first attempt.** `repo-qyd`
 5.2, `repo-eyn` 2.6, `repo-zdm` 3.2, `repo-4gp` 4.8, `repo-52m` 6.8, `repo-dhp` 9.1,
@@ -499,8 +501,9 @@ design's central bet, and it is the first day it paid out repeatedly.
    per-task active time, spec-defect rate, and how often tasks collide on shared files.
 3. **V2 — the spec pipeline** (`DESIGN.md` §3.2, §3.5): package the critic panel, the
    decomposition agent, and the coverage check as a `/spec` skill. (The "the spec is
-   wrong" channel is no longer wholly missing — `repo-1cy` shipped its container half;
-   what V1 still lacks is the host surfacing.) The panel's three charters already exist in
+   wrong" channel is no longer a gap at all — `repo-1cy` shipped the container half and
+   `repo-iok` the host surfacing, so a concern raised in a run now reaches the attempt log,
+   the manifest, the report and the PR body.) The panel's three charters already exist in
    `advisors/` and are run by hand from `PLANNING.md` step 2 — `/spec` automates
    dispatching them, not writing them.
 
