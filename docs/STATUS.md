@@ -125,6 +125,37 @@ real use. All are fixed.
    cannot execute its own stub reports genuine-looking failures rather than announcing a
    broken harness, which is the same "plausible and wrong" family as defect 8.
 
+10. **Two suites accused the wrong component** (found 2026-07-27 by the sweep, after the
+    publication-sanitize work). Both were green the day before, both went red for reasons
+    that had nothing to do with what they printed, and both cost an investigation that
+    started at the wrong end.
+
+    `test-beads-roundtrip` reported **"new-issue.sh broken when run from the host (MSYS
+    path conversion?)"**. `new-issue.sh` was fine. It extracts the new issue id with
+    `tail -1`, and `bd` had been upgraded on the host from 1.1.0 to 1.1.2, which prints the
+    id followed by a **trailing blank line** — so the last line was empty and `HOSTID` came
+    back unset. The suite had never exercised that path before, because until that day
+    there was no host `bd` at all and `new-issue.sh` silently took its container branch.
+    Two things compounded it: the suite discards the command's stderr, so there was no
+    diagnostic to read; and its failure message *names a specific cause* it never actually
+    tested, which sent the first three hypotheses (schema migration, `-C` path handling,
+    working directory) chasing nothing. Fixed by matching the id's **shape** rather than
+    its position — the same rule the agent-log envelope already follows.
+
+    `e2e` reported **"main moved!"**. `main` had not moved. The check compared local `main`
+    to `origin/main`, which measures how up to date the clone is, not what the run did — an
+    unrelated commit pushed to the fixture repo from another machine failed it. Fixed by
+    recording `main`'s SHA after the reset and comparing it after the run, and by printing
+    both SHAs when it fails.
+
+    The general lesson is about **assertion honesty**, and it is the mirror of defects 8
+    and 9. Those were checks that stayed silent when they should have failed; these are
+    checks that failed while naming a cause they had not established. A red suite that
+    blames the wrong component is not a cheap false alarm — it spends the investigation
+    budget the suite exists to save, and it teaches you to distrust the sweep. An assertion
+    should measure the thing its label claims and, when it fails, report the values it
+    compared rather than a guess at why.
+
 ## Gotchas that cost real time
 
 - **MSYS path conversion.** Git Bash rewrites container-side paths in `docker` arguments

@@ -94,6 +94,9 @@ OPEN_OK=1
 for id in "$S" "$B" "$T"; do [ "$(status_of "$id")" = "open" ] || OPEN_OK=0; done
 [ "$OPEN_OK" = 1 ] && pass "all three issues open, no stale task branches on the remote" \
                    || fail "fixture not in a clean planning state"
+# Baseline for step 6. Taken AFTER the reset so it measures the run, and taken as a SHA so
+# the check cannot be confused by an out-of-date clone — see the note there.
+MAIN_BEFORE="$(git -C "$FIX" rev-parse main)"
 
 step "1. container isolation assertions (T20) run as part of the pass"
 if bash "$ROOT/scripts/test-isolation.sh" "$IMAGE" >/dev/null 2>&1; then
@@ -157,8 +160,16 @@ fi
 grep -q "TAMPERED" "$REPORT" 2>/dev/null && pass "report labels the tampered outcome" || fail "report label missing"
 
 step "6. main was never touched"
-[ "$(git -C "$FIX" rev-parse main)" = "$(git -C "$FIX" rev-parse origin/main)" ] \
-  && pass "fixture main unchanged (local == origin)" || fail "main moved!"
+# Compare main against the SHA recorded at step 0, not against origin/main. The old check
+# asserted "local == origin/main", which is a statement about how up to date this clone is,
+# not about what the run did: pushing an unrelated commit to the fixture from another
+# machine made it fail with "main moved!" while local main had not moved at all. A check
+# that fails for a reason it does not name is worse than no check — it trains you to
+# dismiss it. This measures exactly what the step claims.
+MAIN_AFTER="$(git -C "$FIX" rev-parse main)"
+[ "$MAIN_AFTER" = "$MAIN_BEFORE" ] \
+  && pass "fixture main unchanged across the run ($MAIN_BEFORE)" \
+  || fail "main moved: $MAIN_BEFORE -> $MAIN_AFTER"
 
 step "7. zero interactive input"
 grep -rq "read -p\|read -r -p" "$ROOT/runner/" "$ROOT/pipeline/" \

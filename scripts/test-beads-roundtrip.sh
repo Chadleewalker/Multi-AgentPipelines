@@ -22,8 +22,14 @@ HOSTTMP="$(mktemp -d)"
   TMPW="$HOSTTMP"; command -v cygpath >/dev/null 2>&1 && TMPW="$(cygpath -m "$HOSTTMP")"
   MSYS_NO_PATHCONV=1 docker run --rm -v "$TMPW:/fix" -w /fix "$IMAGE" bd init >/dev/null 2>&1
 )
+# Match the id by SHAPE, not by position. `tail -1` was wrong: bd 1.1.2 prints the new id
+# followed by a trailing blank line (1.1.0 printed the id alone), so the last line is empty
+# and HOSTID came back unset — reported here as "new-issue.sh broken", which it was not.
+# Same rule as the agent-log envelope (CLAUDE.md): never take a fixed line, identify the
+# value you want. A future bd that adds a footer cannot break this the way it broke that.
 HOSTID=$(bash "$ROOT/scripts/new-issue.sh" -C "$HOSTTMP" -t "host smoke" -d "created from the host" \
-  -a "round-trips" -r "DESIGN.md 3.1" 2>/dev/null | tr -d '\r' | tail -1)
+  -a "round-trips" -r "DESIGN.md 3.1" 2>/dev/null | tr -d '\r' \
+  | grep -oE '^[a-z][a-z0-9]*-[a-z0-9]+$' | tail -1)
 if [ -n "$HOSTID" ]; then
   echo "PASS  new-issue.sh works from the Windows host ($HOSTID)"
 else
