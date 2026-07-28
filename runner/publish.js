@@ -7,6 +7,7 @@
 // verified success (exit 0 — "done" and "partial" alike, with partial flagged).
 'use strict';
 const { spawnSync } = require('child_process');
+const { specConcerns, oneLine } = require('./concerns');
 
 const git = (dir, args) => spawnSync('git', args, { cwd: dir, encoding: 'utf8' });
 
@@ -35,6 +36,21 @@ function buildPrBody({ issueMarkdown, status, verify, outcome, branch, runId }) 
   lines.push('');
   lines.push(((status && status.changeSummary) || '(no change summary produced)').trim());
   lines.push('');
+  // Spec concerns after the change summary (§3.7): a reviewer reads what the task claims
+  // to have done, then what the agent says is wrong with the task itself. Bounded by
+  // concerns.js. This never decided whether this PR exists — that is §4.5's rule alone.
+  const raised = specConcerns(status);
+  if (raised.length) {
+    lines.push('## Spec concerns');
+    lines.push('');
+    lines.push('The agent reported that the frozen spec or its tests may themselves be ' +
+      'wrong (DESIGN.md §3.7). This is **evidence only**: it changed no outcome, no exit ' +
+      'code and no Beads transition, and it did not decide whether this PR was opened. ' +
+      'Changing a spec is a decision for the reviewer.');
+    lines.push('');
+    for (const c of raised) lines.push(`- ${oneLine(c)}`);
+    lines.push('');
+  }
   lines.push('## Verification evidence');
   lines.push('');
   if (verify) {

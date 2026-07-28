@@ -59,6 +59,12 @@
             "items": { "type": "string" }
           },
           "stuckState": { "type": "string" },
+          "specConcerns": {
+            "description": "Concerns the agent raised about the frozen spec or its tests (3.7). Evidence only - never affects the outcome, the Beads transition, or publication. Bounded host-side by runner/concerns.js, which is why the limits are repeated here: the field is agent-written and the host does not trust it to have obeyed its own schema.",
+            "type": "array",
+            "maxItems": 5,
+            "items": { "type": "string", "maxLength": 1000 }
+          },
           "error": { "type": "string" }
         }
       }

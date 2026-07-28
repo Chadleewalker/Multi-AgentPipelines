@@ -332,12 +332,25 @@ to escape a task it dislikes by declaring the spec broken. What a concern does i
 the human at review time, where changing a spec is legal. That is §3.3's approval gate
 reopened deliberately, rather than a run rewriting its own definition of done.
 
+**The host re-enforces the bounds, in exactly one place.** `runner/concerns.js` is the
+only host code that knows the numbers. `specConcerns(status)` drops entries that are not
+strings or are blank after trimming — *before* the cap, so a stray blank cannot displace a
+real concern — truncates each survivor to its first 1000 characters, and returns the first
+five in input order; `manifestFields(status)` wraps that as the record fragment the
+manifest spreads, yielding no key at all when there is nothing to say. All four surfaces
+come through it: four copies of "first 5, first 1000 chars" would be four chances to
+drift. The host re-bounds even though `pipeline/status.js` already caps on the way in,
+because the status file is written by the agent and the host does not trust it to have
+obeyed its own schema. Malformed input is silently nothing — neither function throws, the
+`docsPhaseError` posture — so a concern can never fail a task from either side.
+
 **Phasing.** Like §3.6, the contract is decided here because it spans the entrypoint, the
 runner, and `status.schema.json` — §10's dividing line — and it is declared before either
 half is built, so no container has to invent it. The container-side half (the schema
-field, the writer, the prompt text) and the host-side half (surfacing) are separate
-tasks, sequenced: the host side cannot run in the same batch, since the runner reads the
-ready queue once before the task loop.
+field, the writer, the prompt text) and the host-side half (surfacing) were separate
+tasks, sequenced: the host side could not run in the same batch, since the runner reads
+the ready queue once before the task loop. Both have shipped — change-log rows `repo-1cy`
+and `repo-iok`.
 
 ## 4. The Implementation Phase (the execution layer)
 
@@ -472,7 +485,9 @@ source of truth.
 9. **The run report is a first-class deliverable.** Generated at the end of every run from
    the run manifest + Beads + git (see 4.12) into the run's log folder, as markdown,
    regeneration-idempotent, never hand-edited. Per task: report status (see the 4.11 table), branch, what changed,
-   verification evidence, attempt notes. Ordered by scrutiny needed:
+   verification evidence, attempt notes, and any spec concerns the agent raised (3.7) —
+   those render *above* what changed, because "the agent thinks this spec is wrong"
+   outranks "here is what it built". Ordered by scrutiny needed:
    **tampered > stuck > partial > failed > done-with-retries > done-first-try**, ties
    broken by attempt count then diff size. "Paused" appears in a final report only if the
    operator stopped the run before a window reset; otherwise the run ends only when the
@@ -551,7 +566,9 @@ source of truth.
     machine) its state is not pushed anywhere. **The runner writes a per-run manifest**
     — `runs/<run-timestamp>/run.json`, schema `run.schema.json` checked into this repo,
     owned by the runner task — recording per task: issue id, branch, exit code (or
-    `killed`), the derived 4.11 outcome, attempt count, and PR URL if any. The report
+    `killed`), the derived 4.11 outcome, attempt count, PR URL if any, and any spec
+    concerns the agent raised (3.7 — optional and bounded host-side, with no key at all
+    when there are none). The report
     generator reads the manifest (plus Beads + git) as a frozen input; Beads alone
     cannot reconstruct report statuses, since stuck/tampered/failed all map to blocked.
     Per-run logs, trace IDs, collected status files, the manifest, and the run report
@@ -774,3 +791,4 @@ version (`Status: READY v1.0`). The *document* still has a version; its *rows* n
 | 2026-07-27 | publish-sanitize | the repository is decoupled from its author's private environment. §6 states a *reference host* rather than "the reference workstation", and §7's V3 is a generic second-environment port rather than one named container workflow; §3.6's machine-specific row points at an untracked local note instead of a named harness file; the predecessor-document line and the `/<setup plugin>:*` skill references are dropped from §3.4 and from `ONBOARDING.md`/`PLANNING.md`, which now describe the checklists as the tooling they are. Per-project runner configs (`run.config.<project>.json`) join `.env.pipeline` as git-ignored host-only files, with `run.config.example.json` the only committed template; `scripts/e2e.sh` and `scripts/test-fixture.sh` fail with a copy-this-file message when theirs is absent. Superseded planning snapshots are deleted and the suites that cited them by path now cite the backlog task number alone | The repo is public. Two kinds of content made that awkward: things a reader cannot use (a private plugin's skills, an absolute import path to one machine's disk) and things a reader should not see (a private fixture repo's URL, another private project's task ids, one workstation's directory layout). Neither was load-bearing — the checklists in this repo were always the source of truth the skills followed, and the runner has always read its target from a config file. Recorded because §6's environment claims and §3.6's knowledge-hierarchy table are design statements, not prose: a later port needs to know the Windows specifics are a *reference*, not a requirement |
 | 2026-07-27 | publish-sanitize-followup | publication hygiene becomes deterministic scaffolding instead of a hand pass. New Docker-free suite `scripts/test-sanitize.sh` with `tests/unit/sanitize.test.js` reads every tracked file as bytes — never skipping one for being binary — and fails on absolute user-home paths, absolute paths outside the standard toolchain, real email addresses and credential-shaped strings, with placeholder segments (`path/to`, a literal ellipsis, angle-bracket slots, a generic scratch root) allowed so the rule stays specific enough to leave on. Private *names* live in `.sanitize-denylist`, git-ignored with `.sanitize-denylist.example` committed as the template, because committing the list of things that must not be mentioned would publish exactly what it protects; absent, the generic checks still run and the suite prints a NOTE. `docs/pipeline-map.html`'s Crews worked example is generalised — all three lessons kept, the project name and its identifying specifics dropped. `tests/acceptance/repo-006/test.js` is amended after close: two E5 fingerprints re-taken from the sanitized §12 text, and the row count widened from an exact 27 to at least 27 | The `publish-sanitize` pass missed a private project name in a frozen acceptance test, and so did the first automated sweep that went looking for it: that file carries a literal NUL byte, so git classifies it binary and `git grep` skips it by default. A boundary that eyes have now failed twice — this repo documents the *machinery*, never the *work done with it* — is exactly the kind of rule §7's no-LLM-in-the-scaffolding principle says to make mechanical. Amending a closed task's frozen test is legal here and nowhere else: §3.1's freeze binds a task during its run so the thing being judged cannot edit its judge, and `repo-006` merged long ago; the widened assertion was the spent half of E5 (it proved that task added exactly one row), while the ordered fingerprint check carrying E5's stated meaning — no pre-existing row was lost — is untouched |
 | 2026-07-28 | bd-npm-shim | `runner/bd.js` resolves host `bd` through the npm shim instead of giving up on it. `spawnSync('bd')` can execute neither Windows shim npm writes — the extensionless `/bin/sh` script returns ENOENT, the `.cmd` batch file EINVAL — so `haveHostBd()` answered "no host bd" forever and every runner Beads call took the Docker fallback, one container per invocation. The probe now falls back to reading the shim, extracting its `.js` entry point (`shimTarget`, exported and pinned by `scripts/test-bd-shim.sh`), and running it with `process.execPath`, verifying by execution rather than by shape. A shell was rejected as the fix: `bd` carries agent-authored text — attempt notes, memories, spec concerns (§3.6, §3.7) — and `cmd.exe` would mangle any quote or metacharacter in it | Found by the sweep of 2026-07-28: four runner suites were killed at 900s after `bd` was reinstalled as an npm shim that morning. Each drives its own `docker run … bd` against a fixture repo, and the runner's fallback opened a *second* container on the same embedded Dolt database; the two deadlocked with no timeout on either side. Nothing errored — the fallback is fail-safe, so a silent degradation of every Beads call presented as four unrelated hangs. The new suite asserts the differential that was the bug (wherever the shell resolves `bd`, the runner must too), never a flat "host bd exists", which would fail on a machine where the Docker fallback is the supported path |
+| 2026-07-28 | repo-iok | §3.7's host-side half built (`repo-iok`) — the four surfaces now read `specConcerns`: the Beads attempt log (a `spec concerns: <n>` line plus one indented line per concern carrying its full text, newlines collapsed, placed last because it is the only multi-line entry), the run manifest (`tasks[].specConcerns` in `run.schema.json`, optional, `maxItems` 5 with `maxLength` 1000 on the items, no key when there are none), the run report (a `**Spec concerns**` section above what changed) and the PR body (a `## Spec concerns` section after the change summary). §3.7 gains the rule the code enforces: the bounds are re-enforced host-side in `runner/concerns.js` and nowhere else, junk dropped before the cap of five so a blank cannot displace a real concern, malformed input silently nothing. §4.9 and §4.12 name the new field in their per-task enumerations. Nothing in the control path moved — the outcome, the exit code, the Beads transition and the push/PR decision all read exactly what they read before | `repo-iok`. Declared-then-built, the §3.7 sequencing; the channel had a writer and no reader, and a concern nobody reads is not a channel. The bounds live in one module because four copies of "first 5, first 1000 chars" are four chances to drift, and because the malformed cases are only testable where they are stated once. Two testability findings shaped the tests: `writeManifest` spreads whatever it is handed, so the manifest criterion asserts an exported record fragment (`manifestFields`) that can actually fail, and re-asserting the §4.11 table proves nothing about evidence-only — so the proof is a differential, driving `queue.finish()` through the `PIPELINE_BD_CMD` seam and requiring the non-`note` bd argv to be byte-identical with and without a concern-carrying status, for all six outcomes |

@@ -24,6 +24,7 @@ const { prepare, hasCommits, collectArtifacts, discard } = require('./workspace'
 const { runTask } = require('./container');
 const { waitForWindow } = require('./pause');
 const { fileMemoryNotes, shouldFileMemory } = require('./memory');
+const { manifestFields } = require('./concerns');
 const { publish } = require('./publish');
 const { writeManifest, writeReport } = require('./report');
 
@@ -253,6 +254,11 @@ async function main() {
         },
       } : {}),
       ...(artifacts.status && artifacts.status.stuckState ? { stuckState: artifacts.status.stuckState } : {}),
+      // Spec concerns, bounded, or no key at all (§3.7, §4.12). concerns.js owns the
+      // bounds and the malformed cases; the record fragment is spread so nothing here
+      // has to know either. Read AFTER the outcome and the publish decision above, and
+      // used by neither — a concern is evidence, never a gate (§3.5).
+      ...manifestFields(artifacts.status),
       attemptNotes: notes,
     });
 

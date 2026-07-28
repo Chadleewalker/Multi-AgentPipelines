@@ -7,6 +7,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const { specConcerns, oneLine } = require('./concerns');
 
 // Scrutiny order (§4.9): tampered > stuck > partial > failed > done-with-retries >
 // done-first-try, ties broken by attempt count then diff size.
@@ -80,6 +81,21 @@ function renderReport(manifest) {
     if (t.model) facts.push(`Model: ${t.model}`);
     for (const f of facts) L.push(`- ${f}`);
     L.push('');
+
+    // Spec concerns ABOVE what changed (§3.7, §4.9): scrutiny is the report's organising
+    // principle, and "the agent thinks this spec is wrong" outranks "here is what it
+    // built". Re-bounded through concerns.js because the manifest is agent-derived data.
+    const raised = specConcerns(t);
+    if (raised.length) {
+      L.push('**Spec concerns**');
+      L.push('');
+      L.push('_Raised by the agent against its own frozen spec (DESIGN.md §3.7). ' +
+        'Evidence only — it changed no outcome and no Beads transition; changing a spec ' +
+        'is a decision for you._');
+      L.push('');
+      for (const c of raised) L.push(`- ${oneLine(c)}`);
+      L.push('');
+    }
 
     L.push('**What changed**');
     L.push('');

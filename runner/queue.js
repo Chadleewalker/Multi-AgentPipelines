@@ -7,6 +7,7 @@
 // the same priority. Terminal transitions come from the §4.11 outcome table.
 'use strict';
 const { bd, bdJson } = require('./bd');
+const { specConcerns, oneLine } = require('./concerns');
 
 // §4.11 outcome table: exit code -> {report status, Beads status}. 'killed' is the
 // host-observed wall-clock kill, which produces no exit code.
@@ -139,6 +140,17 @@ function attemptNotes(runId, outcome, status, memoryIn) {
   }
   if (memoryIn === null) lines.push('  memory in: export failed');
   else if (typeof memoryIn === 'number') lines.push(`  memory in: ${memoryIn}`);
+  // Spec concerns LAST (§3.7): it is the only multi-line entry, so putting it above the
+  // compact facts would bury them under a wall of text. Unlike memory notes, which log a
+  // count alone, each concern carries its full text — a memory note is an idea, a concern
+  // is an accusation about the spec, and for a stuck task (no PR, and `runs/` ages out)
+  // the Beads issue is the only artifact a human still has in a month. The bounds are
+  // concerns.js's, never re-stated here; evidence only, so this cannot move an outcome.
+  const raised = specConcerns(status);
+  if (raised.length) {
+    lines.push(`  spec concerns: ${raised.length}`);
+    for (const c of raised) lines.push(`    - ${oneLine(c)}`);
+  }
   return [lines.join('\n')];
 }
 

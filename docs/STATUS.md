@@ -293,9 +293,10 @@ report and PR footer all read the status file, so they were corrected by the one
 ## The spec-concern batch (frozen 2026-07-26)
 
 Two tasks frozen together, splitting §3.7 along §10's dividing line: the container writes
-the concern, the host surfaces it. They are sequenced, not batched — the runner reads the
-ready queue once before the task loop, so the host side cannot run alongside the container
-side.
+the concern, the host surfaces it. They were sequenced, not batched — the runner reads the
+ready queue once before the task loop, so the host side could not run alongside the
+container side. It was planned and frozen separately on 2026-07-28 as `repo-iok`, and
+§3.7 is now built end to end.
 
 | Issue | Task | Prio | Notes |
 |---|---|---|---|
@@ -319,10 +320,31 @@ invariant is enforced by an acceptance check that drives a failing run to exit 1
 concern recorded, and that diffs `pipeline/verify.js` and all of `runner/` against the
 fork point.
 
-**Still open: the host side.** Nothing yet reads `specConcerns` after the container exits,
-so a concern raised today reaches only the status file — not the attempt log, the run
-manifest, the run report, or the PR body. Until that ships, an agent can say the spec is
-wrong and no human sees it where they already look. That is the separate task §3.7 names.
+**`repo-iok` closed it with the host side.** `runner/concerns.js` is the whole of the new
+logic: `specConcerns(status)` bounds the field (non-strings and blanks dropped *before* the
+cap of five, so a stray empty entry cannot displace a real concern; survivors head-cut at
+1000 characters; input order kept) and `manifestFields(status)` wraps it as the record
+fragment `run.js` spreads onto a task. All four surfaces go through that one module, and
+the frozen suite's gate on "the bounds live in one place" is behavioural, not source-level:
+one hostile fixture — junk interleaved among seven concerns, plus a 1500-character entry
+whose 1001st character is a distinctive `Z` — is driven through the attempt log, the
+manifest, the report, and the bytes `gh` actually received, and each must show the same
+five survivors, cut at exactly 1000, in order. A fixture of plausible agent output could
+not have discriminated: `pipeline/status.js` caps on the way in, so it passes against a
+host that bounds nothing at all.
+
+Nothing in the control path moved, and that is asserted rather than asserted-by-eye. The
+§4.11 table is only a regression pin; the real proof is a differential — `queue.finish()`
+driven through the `PIPELINE_BD_CMD` seam, requiring the non-`note` bd argv to be
+byte-identical with and without a concern-carrying status for all six outcomes — plus a
+publication leg against a real bare remote: a stuck task carrying concerns is still pushed,
+still gets no PR, and the `gh` stub is never invoked. Recorded in change-log row `repo-iok`.
+
+**Where the run-level proof lives.** `scripts/test-report.sh` gained a spec-concerns case
+(hostile fixture → manifest → report → attempt log, plus `ajv` against `run.schema.json`),
+because the frozen suite cannot reach `run.js` — `loadToken` and the Docker preflight sit
+in front of it — so its wiring check is labelled weak and *the deferral is itself gated*:
+the frozen test fails unless that host case exists. Do not delete it.
 
 ## Change-log rows are identified by a slug (`repo-006`, 2026-07-26)
 
@@ -401,12 +423,13 @@ actually emitted at run time.
 
 **The queue drained again on 2026-07-26**, after `repo-4l8` (the epic filter, planned and
 frozen in the fifth planning session that day) ran and passed on attempt 1.
-The only open issue left is `repo-iok` (the §3.7 host side), deliberately **blocked and
-deliberately unfrozen** —
-it cannot run in the same batch as its dependency (the runner reads the ready queue once,
-before the task loop), and freezing tests weeks before the run that executes them is how
-suites go stale. Its acceptance tests get written in the planning session immediately
-before that run.
+`repo-iok` (the §3.7 host side) was the last open issue, and it was held **blocked and
+deliberately unfrozen** until then for two reasons: it could not run in the same batch as
+its dependency (the runner reads the ready queue once, before the task loop), and freezing
+tests weeks before the run that executes them is how suites go stale. Both are discharged
+— its 92 acceptance checks were written in the planning session of 2026-07-28
+(`docs/planning-draft-2026-07-28.md`), immediately before the run, and verified red on the
+host first: 47 fail, 45 pass, with every invariant that already held passing.
 
 **Ten tasks ran on 2026-07-26, all `done`, every one on the first attempt.** `repo-qyd`
 5.2, `repo-eyn` 2.6, `repo-zdm` 3.2, `repo-4gp` 4.8, `repo-52m` 6.8, `repo-dhp` 9.1,
@@ -535,7 +558,7 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-verifier.sh` | tamper detection, frozen config, regression evidence |
 | `scripts/test-entrypoint.sh` | the container loop, all exit codes |
 | `scripts/test-runner-*.sh` | bootstrap, queue, workspace, container, pause, publish, memory |
-| `scripts/test-report.sh` | manifest schema, scrutiny ordering, idempotency |
+| `scripts/test-report.sh` | manifest schema, scrutiny ordering, idempotency, spec-concern surfacing (§3.7) |
 | `scripts/test-isolation.sh` | no push, read-only scaffolding, no egress, one credential |
 | `scripts/test-fixture.sh` | the fixture repo is a valid pipeline target |
 | `scripts/test-changelog.sh` | `DESIGN.md` §12 row identity — slug refs, uniqueness, citations |

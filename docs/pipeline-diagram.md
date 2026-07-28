@@ -182,3 +182,9 @@ place the closed-network policy would have to be revisited deliberately.
 in review, so the loop can never re-pick it. **No advisor verdict appears in this table** —
 that is the point. Advisory notes ride along in the PR body and the run report as
 evidence for you, and change none of these outcomes.
+
+**A spec concern does not appear in this table either.** An agent that believes its frozen
+spec is wrong says so (§3.7), and the host surfaces that in the attempt log, the manifest,
+the report and the PR body — evidence for you at review, where changing a spec is legal.
+Every column above reads exactly what it read before: an agent must not be able to escape a
+task it dislikes by declaring the spec broken.
