@@ -143,10 +143,12 @@ Copy this section in (adjust nothing but the project name):
 - [ ] If this pipeline repo is public, add `.sanitize-denylist` (copy
       `.sanitize-denylist.example`): the private project names, hosts and clients that must
       never appear in the tracked tree. Also **git-ignored**, because committing the list of
-      things you must not mention would publish exactly what it protects — which means it
-      does not travel with a clone, so copy it to every machine you work from alongside
-      `.env.pipeline`. `bash scripts/test-sanitize.sh` enforces it, and still runs its
-      generic path/address/credential checks when the file is absent.
+      things you must not mention would publish exactly what it protects — so it does not
+      travel with a clone. Put it on the machines that actually host the private work, since
+      those are the only ones where such a name can get written into the repo; a machine
+      that has never seen a project cannot leak it. `bash scripts/test-sanitize.sh` enforces
+      it, and where the file is absent it still runs every generic path, address and
+      credential check and prints a `NOTE` saying the name checks were skipped.
 - [ ] `bash scripts/install-hooks.sh` — once per clone, on every machine. Issues live in
       `refs/dolt/data`, which `git pull` does **not** fetch, so without this a second
       machine pulls the code and keeps a stale task queue with nothing to warn it. The
