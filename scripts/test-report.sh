@@ -158,13 +158,17 @@ fi
 
 # Value assertions in node: the expected entries include a 1000-character string, which
 # no amount of grep quoting makes readable.
-while IFS= read -r line; do
-  case "$line" in
-    'ok '*) pass "${line#ok }" ;;
-    'no '*) fail "${line#no }" ;;
-    *) fail "spec-concerns checker produced no verdict: $line" ;;
-  esac
-done < <(node -e '
+#
+# CAPTURED, never streamed into `while read`. A read loop over a crashed checker iterates
+# zero times, so every assertion below would vanish and the suite would still print ALL
+# CHECKS PASSED and exit 0 — a harness that cannot run reporting success rather than
+# announcing itself broken, which is the failure family this repo keeps paying for. The
+# exit status and the verdict COUNT are both checked before any verdict is read, so a
+# checker that dies half way through is as red as one that reports a failure. Raise
+# CONC_EXPECTED when you add an assertion; that is deliberate, and it is what makes a
+# silently-dropped check impossible.
+CONC_EXPECTED=11
+CONC_OUT="$(node -e '
 const fs = require("fs");
 const { attemptNotes } = require(process.argv[1] + "/runner/queue");
 const dir = process.argv[2];
@@ -204,7 +208,23 @@ t("attempt log puts the concern block last, after memory in",
 t("attempt log carries the full concern text, cut at 1000",
   want.every((w) => note.includes(w)) && !note.includes(A + "Z"));
 console.log(out.join("\n"));
-' "$ROOT" "$TMP/conc")
+' "$ROOT" "$TMP/conc")" || fail "spec-concerns checker crashed instead of reporting (exit $?)"
+
+CONC_SEEN="$(printf '%s\n' "$CONC_OUT" | grep -c '^\(ok\|no\) ' || true)"
+[ "$CONC_SEEN" -eq "$CONC_EXPECTED" ] \
+  && pass "spec-concerns checker ran all $CONC_EXPECTED assertions" \
+  || fail "spec-concerns checker produced $CONC_SEEN verdicts, expected $CONC_EXPECTED"
+
+while IFS= read -r line; do
+  case "$line" in
+    'ok '*) pass "${line#ok }" ;;
+    'no '*) fail "${line#no }" ;;
+    '') : ;;                        # trailing newline from the heredoc, not a verdict
+    *) fail "spec-concerns checker produced no verdict: $line" ;;
+  esac
+done <<CONC_EOF
+$CONC_OUT
+CONC_EOF
 
 if [[ $FAIL -eq 0 ]]; then echo "== ALL T17 CHECKS PASSED =="; else echo "== T17 CHECKS FAILED =="; fi
 exit $FAIL
