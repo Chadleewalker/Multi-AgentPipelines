@@ -8,6 +8,13 @@ or a script, this file stays the source of truth and the wrapper follows it.
 Everything here happens interactively on the host, with the user. Run it once per
 project; PLANNING.md's per-session prerequisites then just verify it was done.
 
+The wrapper that exists today is the `onboard` skill (`.claude/skills/onboard/`), run from
+this repo against a target path. It executes the checklist below and adds a read-only
+readiness assessment for codebases that predate this way of working — where the checklist
+assumes a repo someone just scaffolded, and the real question is whether the code can be
+verified at all. Following this file by hand is equally valid; the skill is a convenience,
+not a gate (change-log row `onboard-skill`).
+
 ## Starting from nothing — the whole path for a brand-new project
 
 Four stages, in order. Each is interactive, each happens once except the last:
