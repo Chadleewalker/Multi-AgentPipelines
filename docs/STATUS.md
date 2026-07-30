@@ -458,6 +458,18 @@ before the task loop), and freezing tests weeks before the run that executes the
 suites go stale. Its acceptance tests get written in the planning session immediately
 before that run.
 
+**The planning session of 2026-07-29 added two more**, both frozen —
+`repo-jur` (per-project network and proxy, above) and `repo-os9` (refuse a second run
+against the *same* project, which is the remaining way to corrupt a run once different
+projects stop colliding). `repo-jur` ran on 2026-07-30 and passed on attempt 1;
+`repo-os9` depends on it and is next. Two things a task cannot do for itself follow the
+merge: run `bash scripts/test-all.sh` (criterion 6 is a promise about the dozen suites
+that hard-code `pipeline-net`, and no frozen test can keep it), and **strip the
+`"network"` and `"proxyName"` lines from every existing `run.config.*.json`** — they are
+git-ignored, so no task can edit them, and until they are stripped they keep explicitly
+asking for the shared pair and keep colliding. The log line `networkUp` now writes is how
+you confirm the derivation took effect.
+
 **Ten tasks ran on 2026-07-26, all `done`, every one on the first attempt.** `repo-qyd`
 5.2, `repo-eyn` 2.6, `repo-zdm` 3.2, `repo-4gp` 4.8, `repo-52m` 6.8, `repo-dhp` 9.1,
 `repo-1cy` 4.9, `repo-wxh` 5.5, `repo-006` 9.7, `repo-4l8` 5.1 — **minutes of active
@@ -550,9 +562,13 @@ design's central bet, and it is the first day it paid out repeatedly.
   starts, so two tasks touching the same file produce a conflict once the first merges
   (seen with PRs #2 and #3). Options: fork from latest, or partition concurrency by
   declared path ownership. Needed before any large wave.
-- **No concurrency at all** — the runner is a sequential `for` loop, by design. Note that
-  parallelism does not multiply subscription capacity: N containers exhaust the same usage
-  window N times faster, then all park.
+- **No concurrency *within* a run** — the runner is a sequential `for` loop, by design.
+  Since `repo-jur` several runner processes, one per project, can be in flight at once
+  (each still sequential over its own queue); what is unbuilt is one runner working
+  several tasks of one project at once (§7, change-log row `parallelism-v2`). Note that
+  neither multiplies subscription capacity: N containers exhaust the same usage window N
+  times faster, then all park — concurrency across projects buys elapsed time, not
+  throughput.
 - **No review triage.** Hundreds of PRs would exceed human review capacity; an auto-merge
   policy for clean, small, green diffs would be needed.
 - **Run-time advisors (slot 3)** are unbuilt. The sockets exist: `advisories` in
