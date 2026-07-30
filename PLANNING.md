@@ -143,10 +143,40 @@ Claude writes the tests **now, before any code exists**, from the spec alone (§
 - "Tests" means machine-checkable evidence broadly: unit tests, build-succeeds, a command
   producing expected output on sample input, a smoke check hitting an endpoint.
 
-### 4. Coverage check
+### 4. Coverage check, then prove the tests can fail
 Pair them up (§3.2): every acceptance criterion names the test that proves it; every test
 names the criterion it serves. **An orphan on either side is a spec bug** — fix the spec
 or the tests before going further, never during a run.
+
+Then run the freeze gate (§3.2, move 1) — **before** the approval pass, so a test that
+cannot fail is caught before the user signs off on it:
+
+```bash
+node scripts/freeze-gate.js --repo <target-repo> \
+  --tests tests/acceptance/<issue-id>/ --spec docs/planning-draft-<date>.md
+```
+
+The tests exist and the implementation does not, which is exactly the state a task branch
+forks from — so **they must be red**. A test green here is satisfied by an empty diff: it
+would pass a correct submission, a broken one, and no submission at all.
+
+- **exit 0 — red.** The tests discriminate. Proceed.
+- **exit 1 — green.** A spec bug. Either the criterion is not discriminating and needs
+  rewriting, or it is a **guard** ("existing behaviour X still holds"), which is legal but
+  must be labelled `[guard]` in the spec. The gate counts labelled guards and prints the
+  count; that count belongs in the approval pass, so a spec that is all guards is visible
+  rather than silent.
+- **exit 2 — could not tell.** The command also fails against the **control**
+  (`tests/acceptance/_control/`, one trivially-passing test committed at onboarding), so its
+  exit code says nothing about *these* tests — the harness is broken independently of the
+  spec. Its own bug, and **never** a pass. Fix it and re-run.
+  If the project has no control fixture the gate says so in its report and falls back to
+  probing with an empty directory, which proves very little: a good runner is *supposed* to
+  fail when it finds no tests. Add the fixture rather than reading anything into that.
+
+A pure refactor's only honest criteria are guards, which is why they are labelled rather
+than forbidden — and a spec that is *nothing but* guards is the sign that the task has no
+behavioural signature at all (see `docs/IDEAS.md`).
 
 ### 5. The user approves intent
 Write the drafted specs to **one reviewable file in the repo** —

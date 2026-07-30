@@ -61,6 +61,16 @@ matters is that both exist before planning tries to decompose anything.
       land here during planning (PLANNING.md step 6), are committed to the integration
       branch before a run, and are diffed against the fork point by the verifier —
       any change during a run, by anyone, is the "tampered" outcome (§4.4).
+- [ ] Create `tests/acceptance/_control/` holding **one trivially-passing test** in the
+      project's own test language (a script that exits 0 and asserts nothing). This is the
+      freeze gate's control (§3.2, move 1): before a spec is frozen its tests must be **red**,
+      but a suite that cannot load exits non-zero exactly like a real assertion failure, so
+      the gate runs the verify command against this directory too and only trusts a red when
+      the control is green. **It must not test anything** — anything it asserted could break
+      for reasons unrelated to the harness, and a control that can fail for its own reasons is
+      not a control. An empty directory cannot do the job: a good runner is *supposed* to fail
+      on "no test files found", so the gate would be unable to discriminate on exactly the
+      projects it works best for.
 - [ ] Create `docs/IDEAS.md` — the project's own idea inbox. Copy the structure from
       this pipeline repo's `docs/IDEAS.md`: a flat list of parked "this should probably
       become a design someday" notes, plus **Promoted** and **Dropped** tables. It costs

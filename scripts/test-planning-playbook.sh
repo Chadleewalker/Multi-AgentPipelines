@@ -44,6 +44,16 @@ ck "lint runs before the critics"    "Run the mechanical checks, then the critic
 ck "lint command is given"           "scripts/spec-lint.js"
 ck "lint exit codes stated"          "could not run"
 
+# The freeze gate runs before the approval pass (move 1), and all three of its verdicts are
+# spelled out — an exit code with no stated meaning sends a reader to the source.
+ck "freeze gate is in the playbook"  "prove the tests can fail"
+ck "freeze gate command is given"    "scripts/freeze-gate.js"
+ck "gate runs before approval"       "before.*the approval pass"
+ck "gate: red proceeds"              "exit 0 — red"
+ck "gate: green is a spec bug"       "exit 1 — green"
+ck "gate: indeterminate is not a pass" "exit 2 — could not tell"
+ck "guards are labelled and counted" "\[guard\]"
+
 # Criteria drafted against the code, in fresh context (move 5).
 ck "draft splits intent from criteria" "in two halves, in different contexts"
 ck "criteria drafted in fresh context" "fresh context, against the code"
