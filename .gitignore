@@ -20,3 +20,10 @@ run.config.*.json
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# Agent hooks are host-only: this repo is cloned into task containers that have no bd.
+# Enforced by scripts/test-agent-hooks.sh (change-log row `agent-hooks-untracked`).
+.codex/hooks.json
+.claude/hooks/
+.codex/hooks/
+.claude/settings.local.json

@@ -513,9 +513,9 @@ design's central bet, and it is the first day it paid out repeatedly.
 
 ## Test suites
 
-All but three drive real Docker and share one network, so they must never run concurrently
-(`test-runner-memory.sh`, `test-changelog.sh` and `test-sanitize.sh` are the exceptions —
-see below; they need neither).
+All but four drive real Docker and share one network, so they must never run concurrently
+(`test-runner-memory.sh`, `test-changelog.sh`, `test-sanitize.sh` and
+`test-agent-hooks.sh` are the exceptions — see below; they need neither).
 **`scripts/test-all.sh` is the sweep** — it holds a lock, runs every suite sequentially,
 kills one that hangs (`--timeout`, default 900s), tears `pipeline-net` down if a suite
 leaks it, and writes per-suite logs plus a summary table to `runs/sweeps/<timestamp>/`.
@@ -540,8 +540,9 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-fixture.sh` | the fixture repo is a valid pipeline target |
 | `scripts/test-changelog.sh` | `DESIGN.md` §12 row identity — slug refs, uniqueness, citations |
 | `scripts/test-sanitize.sh` | publication hygiene — no machine paths, emails, credentials or denylisted names in the tracked tree |
+| `scripts/test-agent-hooks.sh` | container hygiene — no tracked file configures an agent hook |
 
-**`scripts/test-runner-memory.sh` is one of the three suites that need no Docker**
+**`scripts/test-runner-memory.sh` is one of the four suites that need no Docker**
 (repo-dhp): it
 drives both §3.6 memory channels plus the `shouldFileMemory` outcome gate through the
 `PIPELINE_BD_CMD` seam, so it runs anywhere — including inside a task container, where
@@ -582,6 +583,23 @@ things that must not be mentioned publishes exactly what it protects. Absent, th
 checks still run and the suite prints a `NOTE`, so a fresh clone is green. `SANITIZE_FIXTURE_DIR`
 aims it at a directory instead of the tracked tree; that seam is what makes the negative
 cases falsifiable.
+
+**`scripts/test-agent-hooks.sh` is the fourth** (change-log row `agent-hooks-untracked`):
+it enumerates the tracked tree and fails on any committed agent hook — a file under
+`.claude/hooks/` or `.codex/hooks/`, a `hooks.json`, or a `settings*.json` carrying a
+`hooks` property. This repo is a target of its own pipeline, so a committed hook is cloned
+into a task container that has no `bd` and no network, and fires on every session there.
+The rule was already written down — `ONBOARDING.md`'s "remove hooks" step — and it still
+lost: `bd` rewrites `.claude/settings.json` when it re-initialises, so the `bd prime`
+SessionStart entry that onboarding deleted came back in a later commit and sat there
+unnoticed. **A checklist step cannot beat a tool that regenerates the file**, which is the
+general lesson: a one-time removal of something a tool re-creates needs scaffolding, not
+discipline. Hooks stay welcome on the host in `.claude/settings.local.json`, git-ignored —
+the exemption is being untracked, not being spelled `.local`, so the checker still flags
+that file if it is ever committed. `AGENT_HOOKS_FIXTURE_DIR` aims it at a directory
+instead of the tracked tree. One negative case plants a `hooks` key in a settings file
+that is *not* valid JSON, because a checker inspecting only parsed JSON would report
+"cannot be checked", exit 0, and allow the thing it exists to stop.
 
 **Why it reads bytes and never skips a "binary" file.** This suite exists because
 `publish-sanitize` missed a private project name in `tests/acceptance/repo-006/test.js`,

@@ -100,10 +100,17 @@ the truth about where the agent is running:
 - [ ] **Replace** any section describing a different container workflow with the one
       below. This matters most when the old one says agents push straight to the
       integration branch — the exact opposite of the pipeline's git isolation.
-- [ ] **Remove hooks:** delete the `hooks` entry from `.claude/settings.json` and the
-      `.claude/hooks/` folder. Scaffolded format hooks call `npx --yes prettier`,
-      which tries the npm registry on every edit — blocked by the closed network.
+- [ ] **Remove hooks — from the *tracked* tree, not from your machine.** Move the `hooks`
+      entry out of `.claude/settings.json` into `.claude/settings.local.json` (git-ignored),
+      and untrack `.claude/hooks/` and `.codex/hooks.json` while leaving them on disk.
+      Two reasons they cannot ship: scaffolded format hooks call `npx --yes prettier`,
+      which tries the npm registry on every edit — blocked by the closed network — and
+      `bd`'s own hooks call `bd`, which is not installed in a task container at all.
       Formatting for pipeline projects is a verifier/regression concern or nothing.
+      **Expect this one to come back.** `bd` rewrites `.claude/settings.json` whenever it
+      re-initialises, and in this repo the deleted SessionStart hook returned in a later
+      commit and went unnoticed for weeks. `scripts/test-agent-hooks.sh` is what catches
+      the recurrence; a target project that wants the same guard can copy it.
 
 Copy this section in (adjust nothing but the project name):
 
