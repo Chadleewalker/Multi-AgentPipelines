@@ -462,9 +462,15 @@ source of truth.
    only, each one listed in config — may not. The starting allowlist is
    `api.anthropic.com` plus whatever auth endpoints empirical testing of headless
    `claude -p` shows are required; the enumeration is finalized (within the policy) by the
-   network task. A **pre-run egress check** (throwaway container: allowed endpoint
+   network task. **The network and the sidecar are per project, never per pipeline** — a
+   run acts only on the plumbing it owns, so a second runner process against a different
+   project can be in flight without either one creating, restarting or destroying the
+   other's (4.12 says where the names come from). The proxy *image* stays shared: the
+   allowlist is identical for every project, and the policy above is what may not vary.
+   A **pre-run egress check** (throwaway container: allowed endpoint
    reachable, at least two non-allowlisted hosts unreachable, bounded under 60 seconds)
-   runs before every run and **aborts the run** on failure. Dependencies are baked into
+   runs before every run, **against that run's own network and proxy** — a gate that
+   passes against different plumbing proves nothing — and **aborts the run** on failure. Dependencies are baked into
    the image at planning time (see 3.4). Knowledge gaps are mitigated in the repo
    (vendored docs, `CLAUDE.md` conventions, API details attached to the issue at planning
    time). Tasks needing live internet research belong in the interactive queue, not the
@@ -526,11 +532,22 @@ source of truth.
     default, the attempt cap (`maxAttempts`, default 3 — see 4.6), probe interval,
     network/proxy identifiers, and an optional `agentCommand`
     override (passed into containers as `PIPELINE_AGENT_CMD` — how the E2E pass injects
-    its stubs). **The runner owns the run lifecycle end to end:** at run start it creates
+    its stubs). **The network and proxy names are per project and have no shared
+    default:** `network` / `proxyName` are used verbatim when a config gives them, and
+    otherwise **derived from the project segment of the config's own file name**
+    (`run.config.<project>.json`), sanitised to one lower-case DNS label because the proxy
+    name is the host part of every container's `HTTPS_PROXY`. A bare `run.config.json` has
+    no project segment and keeps the historical `pipeline-net` / `pipeline-proxy`, which is
+    what the test suites use; running two projects at once therefore means giving each
+    config a project segment. Derivation is a pure function of the file name — never the
+    pid, the clock or a random suffix, because setup, every task container and teardown
+    must all compute the same name, in one process or in several, across a pause and
+    resume. **The runner owns the run lifecycle end to end:** at run start it creates
     the internal network and proxy sidecar, invokes the pre-run egress check (aborting on
     failure), and resets any issue left in-progress by an abnormal earlier end (operator
     stop, crash) back to open with an attempt-log note; at run end it tears the network
-    and sidecar down. Task order: Beads' ready queue (open, unblocked, dependencies
+    and sidecar down — its own, and only its own. It names both in `run.log` where it
+    brings them up, so a `docker ps` during two concurrent runs can be read against it. Task order: Beads' ready queue (open, unblocked, dependencies
     satisfied), **with `issue_type: "epic"` excluded**, ranked by Beads priority,
     first-in-first-out within the same priority. The type filter is what keeps an epic out
     of the run (§3.1): `bd ready` returns the parent alongside its children and never
@@ -639,6 +656,9 @@ determinism.
 implementer inherits the why:
 - **One runner juggling N containers, never N runners** — the sole-Beads-writer rule
   (4.10) and claim-based double-pick prevention survive only inside a single process.
+  That is a statement about *one project's* queue: several runners, one per project, are
+  a different thing and are already supported (change-log row `repo-jur`), because each
+  has its own queue, network and proxy.
 - **Rate-limit pauses go global**: one task's usage-limit exit parks *every* running
   task (they share the subscription window); the runner resumes all parked workspaces
   when the window resets. Per-task pause mechanics (4.7) are reused unchanged.
@@ -673,7 +693,12 @@ Machine specifics stay in an untracked local note, never in the repo.
 
 ## 9. Assumptions (approved with this doc)
 
-- One pipeline instance runs at a time on one machine; no multi-machine coordination.
+- ~~One pipeline instance runs at a time on one machine~~; no multi-machine coordination.
+  **Amended (change-log row `repo-jur`):** one runner process *per project* may run at a
+  time on one machine, several of them at once — the network and the proxy sidecar are per
+  project (4.8), and each project's queue is its own Beads database inside its own repo, so
+  nothing is shared between them but the subscription window. Two runners against the *same*
+  project remains excluded: that would put two writers on one queue (4.10).
 - Target projects are git repos with a GitHub remote; their test framework choices are
   recorded in `pipeline.config.json` at planning time.
 - Beads (`bd`) is adopted as the work database from day one, even though V1 barely
@@ -776,3 +801,4 @@ version (`Status: READY v1.0`). The *document* still has a version; its *rows* n
 | 2026-07-28 | bd-npm-shim | `runner/bd.js` resolves host `bd` through the npm shim instead of giving up on it. `spawnSync('bd')` can execute neither Windows shim npm writes — the extensionless `/bin/sh` script returns ENOENT, the `.cmd` batch file EINVAL — so `haveHostBd()` answered "no host bd" forever and every runner Beads call took the Docker fallback, one container per invocation. The probe now falls back to reading the shim, extracting its `.js` entry point (`shimTarget`, exported and pinned by `scripts/test-bd-shim.sh`), and running it with `process.execPath`, verifying by execution rather than by shape. A shell was rejected as the fix: `bd` carries agent-authored text — attempt notes, memories, spec concerns (§3.6, §3.7) — and `cmd.exe` would mangle any quote or metacharacter in it | Found by the sweep of 2026-07-28: four runner suites were killed at 900s after `bd` was reinstalled as an npm shim that morning. Each drives its own `docker run … bd` against a fixture repo, and the runner's fallback opened a *second* container on the same embedded Dolt database; the two deadlocked with no timeout on either side. Nothing errored — the fallback is fail-safe, so a silent degradation of every Beads call presented as four unrelated hangs. The new suite asserts the differential that was the bug (wherever the shell resolves `bd`, the runner must too), never a flat "host bd exists", which would fail on a machine where the Docker fallback is the supported path |
 | 2026-07-29 | push-syncs-beads | `scripts/install-hooks.sh` now installs a `pre-push` block as well, running `bd dolt push` so the issue database leaves the machine with the code. Unlike the `post-merge` auto-pull it **fails** the push when the database does not go; `BD_SKIP_AUTO_PUSH=1 git push` is the single-command override. Task workspaces are unaffected — they are plain clones with no `core.hooksPath`, so publishing a task branch is never gated on the issue database | bd's own `pre-push` hook runs, prints nothing and exits 0 having pushed no database, verified by running it and watching `refs/dolt/data` on the remote not move. So `git push` shipped code while the queue stayed local: the same silent drift the auto-pull block exists to fix, in the other direction, and the second time a hook that was present and healthy-looking did nothing. Failing is right here where it was wrong for `post-merge` — that hook runs after the merge has happened, so refusing would report a fait accompli, while pre-push runs before anything has left the machine, making a blocked push free and the only way code and issues cannot arrive separately |
 | 2026-07-29 | agent-hooks-untracked | agent hooks are host-only and it is now enforced. The `hooks` entry moves from `.claude/settings.json` to the git-ignored `.claude/settings.local.json`, `.codex/hooks.json` is untracked and git-ignored while staying on disk, and a new Docker-free suite `scripts/test-agent-hooks.sh` / `tests/unit/agent-hooks.test.js` fails on any tracked file under `.claude/hooks/` or `.codex/hooks/`, any tracked `hooks.json`, or any tracked `settings*.json` carrying a `hooks` property. `AGENT_HOOKS_FIXTURE_DIR` re-aims it so the negative cases are exercisable; `ONBOARDING.md`'s "remove hooks" step now says move rather than delete, and warns that it recurs | The `dogfood-onboarding` row records this hook being removed at onboarding. It came back: `bd` rewrites `.claude/settings.json` when it re-initialises, so the `bd prime` SessionStart entry returned in a later commit and shipped into every task workspace for weeks — a hook calling `bd` inside a container that has neither `bd` nor a network. The general lesson, and the reason this became scaffolding rather than a firmer checklist line: **a one-time removal of something a tool regenerates is not a fix**, it is a countdown. The exemption for `.claude/settings.local.json` is that git ignores it, not that it is spelled `.local`, so the checker still flags it if it is ever committed |
+| 2026-07-30 | repo-jur | the task network and the proxy sidecar are **per project**, so several runner processes — one per project, each still a sequential loop over its own queue — can be in flight at once. `scripts/pipeline-net.sh` and `scripts/egress-check.sh` read `PIPELINE_NET` / `PIPELINE_PROXY` / `PIPELINE_PROXY_PORT` from the environment (the idiom `BASE_IMG` already used), each falling back to today's `pipeline-net` / `pipeline-proxy` / `3128` when unset, which is what keeps the dozen Docker suites that hard-code those names green. `runner/preflight.js` grows `networkUp(repoRoot, cfg, log, traceId)` / `networkDown(repoRoot, cfg)` / `egressCheck(repoRoot, cfg)`, the single seam that hands those three variables down; `networkUp` names the network and the sidecar in `run.log`. `run.config.json`'s `network` / `proxyName` lose their DEFAULTS entries and are instead derived from the project segment of the config file's own name, sanitised to one lower-case DNS label (a lossy sanitisation is pinned with an 8-hex digest of the original, so two project names that reduce to the same label still differ); a bare `run.config.json` keeps the historical pair, and `run.config.example.json` no longer pins either. §4.8 and §4.12 amended, and §9's "one pipeline instance runs at a time on one machine" with it — one runner *per project*, several at once, is what that now means. A fifth Docker-free suite, `scripts/test-network-names.sh` / `tests/unit/network-names.test.js`, keeps the runner half covered once the frozen acceptance directory stops being re-run; the scripts' own defaults stay covered by the Docker suites that run them for real, since a fake `docker` on PATH that failed to intercept would either drive the live daemon or report every check as a genuine failure. The proxy *image* tag `pipeline-proxy:local` stays shared, and the allowlist is untouched (hard rule 6: names move, policy does not) | Both names were constants in two scripts, so the `network`/`proxyName` fields already in every config reached the task container and nothing else. Starting a second run ran an unconditional `docker rm -f pipeline-proxy` — destroying the first run's only route to Anthropic — and finishing either run removed the network and sidecar for both. Neither failure announced itself: the surviving run just lost its plumbing and its agent began failing in ways that read as the model's fault. A shared *default* is the same bug one step back, which is why derivation replaced the DEFAULTS entries rather than backing them up, and why it is a pure function of the file name — a pid- or clock-derived name passes every uniqueness check and then orphans the network, because teardown computes a different name than setup did. Not the intra-run parallelism of §7 (change-log row `parallelism-v2`), which stays out of scope |

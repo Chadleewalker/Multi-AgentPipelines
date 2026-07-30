@@ -144,9 +144,15 @@ Copy this section in (adjust nothing but the project name):
 
 ### 8. Pipeline-side wiring
 - [ ] Add `run.config.<project>.json` in this repo (copy `run.config.example.json`):
-      target repo path and remote, image name, network/proxy names, wall-clock budget.
+      target repo path and remote, image name, wall-clock budget.
       These are **git-ignored** — they name a path on your disk and a remote that may be
       private, so only the example template is committed.
+      **Name the file after the project, not `run.config.json`**: the task network and the
+      allowlist proxy are per project, and the runner derives both names from that
+      `<project>` segment when the config gives none (change-log row `repo-jur`). Two
+      projects whose configs are both called `run.config.json` share one network and one
+      sidecar, so starting the second run destroys the first run's route to Anthropic.
+      Set `network` / `proxyName` explicitly only if you want particular names.
 - [ ] If this pipeline repo is public, add `.sanitize-denylist` (copy
       `.sanitize-denylist.example`): the private project names, hosts and clients that must
       never appear in the tracked tree. Also **git-ignored**, because committing the list of

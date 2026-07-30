@@ -160,6 +160,13 @@ flowchart LR
   class BL blocked
 ```
 
+The sandbox is **per project**. The network and the proxy take their names from the run
+config — derived from the project segment of `run.config.<project>.json` when it names
+neither — so two runner processes against two projects draw two copies of this diagram
+side by side, and neither one's `up` or `down` touches the other's plumbing (change-log
+row `repo-jur`). The proxy *image* is shared; only the running container and the network
+are per project.
+
 A specialist that needs a different model or a different tool changes nothing structural:
 the coding agent is already swappable through `agentCommand` → `PIPELINE_AGENT_CMD`, and
 the contract is only "a shell command that reads a prompt on stdin and edits files." A

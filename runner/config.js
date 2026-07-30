@@ -4,12 +4,11 @@
 // run.config.json loader — DESIGN.md §4.12 (T11).
 // Plain JS, Node built-ins only. Fails fast and by name on an invalid config.
 'use strict';
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
 const DEFAULTS = {
-  network: 'pipeline-net',
-  proxyName: 'pipeline-proxy',
   proxyPort: 3128,
   wallClockMinutes: 240,        // §4.6 default 4 hours of ACTIVE time
   maxAttempts: 3,               // §4.6 verify-attempt cap -> PIPELINE_MAX_ATTEMPTS
@@ -24,6 +23,56 @@ const DEFAULTS = {
   model: 'opus',
 };
 const REQUIRED = ['targetRepoPath', 'targetRepoRemote', 'image'];
+
+// ---- per-project network + proxy names (§4.8, §4.12) -------------------------------
+// The task network and the proxy sidecar are per project, not per pipeline: two runner
+// processes against different projects must not create, restart or destroy each other's
+// plumbing. So `network` / `proxyName` have no shared default — a default that collides
+// silently is the bug this replaces. When a config names neither, both are DERIVED from
+// the project segment of the config's own file name, `run.config.<project>.json`.
+//
+// Why the file name and nothing else: the same names have to be computed by the `up` at
+// run start, by every task container, and by the `down` at run end — in one process or in
+// several, before and after a pause/resume. Anything drawn from the pid, the clock or a
+// random suffix satisfies "unique" and then orphans the network, because teardown
+// computes a different name than setup did.
+//
+// A bare `run.config.json` has no project segment and keeps the historical shared names
+// (the runner's own suites generate exactly that), which is why running two projects at
+// once means giving each config a project segment.
+const DEFAULT_SLUG = 'pipeline';
+const CONFIG_NAME_RE = /^run\.config\.(.+)\.json$/i;
+const SLUG_MAX = 40;
+
+// Docker accepts `[a-zA-Z0-9][a-zA-Z0-9_.-]*`, but the proxy name is also the host part
+// of every task container's HTTPS_PROXY, so the result has to survive DNS as well: one
+// lower-case label of letters, digits and inner hyphens. A name Docker takes and DNS
+// mishandles (an underscore, a trailing hyphen, mixed case) fails inside the container,
+// where no host-side check is looking.
+function slugifySegment(segment) {
+  let s = String(segment).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  if (s.length > SLUG_MAX) s = s.slice(0, SLUG_MAX).replace(/-+$/, '');
+  return s;
+}
+
+// Sanitising is lossy — "My Project" and "my+project" reduce to the same label, and that
+// is another silent collision between two projects. When the segment had to be changed
+// at all, pin the original with a short digest of it: still a pure function of the file
+// name, still legal, and now distinct per project.
+function slugForSegment(segment) {
+  const clean = slugifySegment(segment);
+  if (clean === String(segment)) return clean;
+  const digest = crypto.createHash('sha1').update(String(segment)).digest('hex').slice(0, 8);
+  return clean ? `${clean}-${digest}` : `p-${digest}`;
+}
+
+// { network, proxyName } for a config path, ignoring what the config says — loadConfig
+// applies these only where the config named nothing.
+function deriveNames(configPath) {
+  const m = CONFIG_NAME_RE.exec(path.basename(configPath));
+  const slug = m ? slugForSegment(m[1]) : DEFAULT_SLUG;
+  return { network: `${slug}-net`, proxyName: `${slug}-proxy` };
+}
 
 function loadConfig(file) {
   const p = path.resolve(file || path.join(__dirname, '..', 'run.config.json'));
@@ -51,7 +100,18 @@ function loadConfig(file) {
   if (raw.maxPauseCycles !== undefined && !(Number.isInteger(raw.maxPauseCycles) && raw.maxPauseCycles > 0)) {
     throw new Error(`run.config.json: 'maxPauseCycles' must be a positive whole number`);
   }
+  for (const k of ['network', 'proxyName']) {
+    if (raw[k] !== undefined && (typeof raw[k] !== 'string' || !raw[k].trim())) {
+      throw new Error(`run.config.json: '${k}' must be a non-empty string when present`);
+    }
+  }
   const cfg = { ...DEFAULTS, ...raw, configPath: p };
+  // An explicit name always wins; derivation fills only what the config left out.
+  const derived = deriveNames(p);
+  if (!cfg.network) cfg.network = derived.network;
+  if (!cfg.proxyName) cfg.proxyName = derived.proxyName;
+  // Built from whichever name won. Deriving the name but building the URL from anything
+  // else would leave every task container proxying to a host that is not there.
   cfg.proxyUrl = `http://${cfg.proxyName}:${cfg.proxyPort}`;
   return cfg;
 }
@@ -66,4 +126,4 @@ function loadToken(repoRoot) {
   return process.env.CLAUDE_CODE_OAUTH_TOKEN || '';
 }
 
-module.exports = { loadConfig, loadToken, DEFAULTS };
+module.exports = { loadConfig, loadToken, deriveNames, DEFAULTS };
