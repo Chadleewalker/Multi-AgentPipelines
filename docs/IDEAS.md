@@ -81,6 +81,18 @@ Two hard boundaries, both inherited:
 
 <!-- Newest at the top. Nothing here is committed to. -->
 
+- **Give the docs phase a merge strategy, or batched runs will always conflict** — file-ownership
+  constraints in a spec keep *code* disjoint across a batch, and on 2026-07-30 three chained tasks
+  touched three different code areas with no collision at all. Every one of them also edited the
+  target's DESIGN.md, README.md and SPEC.md, because the docs phase always does, so every
+  merge after the first conflicted — in documentation only, never in code.
+  The change-log half resolved cleanly and is evidence the convention works: both sides appended a
+  row carrying its own slug, so keeping both was correct and neither renumbered the other
+  (change-log row `repo-006`). The prose sections have no such convention, and that is the gap.
+  Options worth weighing: an append-only convention for the doc sections a task may touch; a docs
+  phase that writes to a per-task file the host merges; or simply accepting the conflicts and
+  saying so in the playbook, since resolving them took one pass and no judgment. Filed rather than
+  fixed because which of those is right depends on how large batches get. 2026-07-30
 - **Make the sweep count passes in both of the repo's vocabularies** — `scripts/test-all.sh`
   counts a suite's checks with `grep -c '^PASS[[:space:]]'`, but the repo announces a passing
   check two ways: wrapper scripts print `PASS `, while several inner Node checkers print
