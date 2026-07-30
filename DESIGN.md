@@ -116,10 +116,13 @@ results.
    dependency order, labeling each task trivial / medium / hard. One spec = one issue = one
    container run = one PR the user can review in a few minutes; the decomposer splits
    anything bigger.
-3. **Per-spec pipeline.** Draft → critics sized to the difficulty label (none for trivial,
-   light for medium, full panel for hard: ambiguity, testability, scope) → the pipeline
-   writes the acceptance tests → a coverage check pairs every "Done means" item with a test
-   and every test with an item; orphans on either side are spec bugs.
+3. **Per-spec pipeline.** Draft → mechanical pre-checks → critics sized to the difficulty
+   label (**one testability pass minimum, always**; the full panel — ambiguity, testability,
+   scope — for hard) → the pipeline writes the acceptance tests → a coverage check pairs
+   every "Done means" item with a test and every test with an item; orphans on either side
+   are spec bugs → the freeze gate runs the tests against the fork point and requires each
+   to be red. The label decides critic *depth*, never *existence*; see "Below the panel"
+   below for why, and for the checks that run before any critic reads the spec.
 4. **Approval and freeze.** The user approves intent at the design-doc level once; the
    decomposed backlog is reviewed as a single list pass (checking the slicing, not
    re-litigating intent). On approval: tests committed and frozen, Beads issues created,
@@ -127,6 +130,63 @@ results.
 
 Small standalone chores may skip the doc layer and enter at step 3 with just a spec — but
 large, doc-first projects are the default path.
+
+**Below the panel.** §3.5's escalation ladder — judgment migrates leftward into frozen
+tests as a check proves itself — applies to the panel itself. The first full panel run
+against a real backlog returned `concerns` on **every spec in the batch**, and most of what
+it found was mechanically detectable: criteria that no implementation could satisfy,
+criteria ordering the agent to edit a frozen path, and criteria already true at the fork
+point. A panel that catches everything is not a triumph, it is a measurement of how much
+work is sitting above the line that could be below it. Five moves, in the order they take
+work off the critics:
+
+1. **Every criterion must fail at the fork point.** A frozen test that is green against the
+   unmodified integration branch is non-discriminating *by construction*: it cannot detect
+   the thing it exists to catch, and passes a correct implementation, a broken one and an
+   empty diff alike. The freeze therefore runs the tests against the fork-point commit and
+   requires red. Two rules keep the gate honest. **Red is not one state** — a test that
+   fails to *load* is a broken harness, not a discriminating test, so the gate separates an
+   assertion failure from a load or collection error and treats the latter as its own spec
+   bug (the failure mode §4.11's artifact rule already names: plausible, well-formed and
+   false). And a criterion may be a **guard** — "existing behaviour X still holds" — which
+   is legitimately green; guards stay legal, must be labelled, and their **count is reported
+   in the approval pass**, so a spec that is all guards is visible rather than silent.
+2. **A minimum of one critic, always.** The old rule exempted `trivial` specs from review
+   entirely. That was self-referential: the difficulty label is chosen by whoever drafted
+   the spec, *before* any review, and the critic whose charter includes checking whether the
+   label fits is the scope critic — precisely the one the label skips. So `trivial` and
+   `medium` both take one testability pass, and `hard` takes the full panel.
+3. **Two mechanical checks before any critic reads the spec.** Neither needs judgment.
+   (a) *Does any criterion name a path in the target's `frozenPaths`?* Such a criterion
+   orders the agent to tamper, and the task ends `tampered` on every attempt before a test
+   result exists. (b) *Does any criterion cite a configuration key the target does not
+   define?* That is the unsatisfiable-criterion class outright. (a) is portable and is built
+   first; (b) is not — it needs the target to declare where its configuration lives and how
+   keys are spelled, which differs by language and engine, so it comes last and adds a
+   `pipeline.config.json` field.
+4. **A disposition per finding.** A critic never gates (§3.5), but a finding that is
+   silently dropped is indistinguishable from one that was considered and rejected. Every
+   `details[]` entry gets one line in the planning draft — accepted, rejected with a reason,
+   or deferred. It costs nothing and it is the only thing that makes the panel auditable.
+5. **Criteria are drafted against the code, in fresh context.** This one sits *upstream* of
+   the panel rather than below it. Every strong finding in that first run came from a critic
+   doing archaeology in the implementation — the critics were not smarter than the drafter,
+   they were **unprimed and reading the code**, while the drafter was many specs deep in one
+   session. So the draft step splits: intent is written in session, where the history is
+   needed, and the "Done means" list is written in fresh context after reading the code the
+   criteria touch. The panel then reviews criteria that have already met the implementation
+   once.
+
+**What is deliberately not changed.** Critics keep fresh context, with no caching and no
+summaries passed between them. A critic primed with the drafter's reasoning inherits the
+drafter's blind spots, and independence is the active ingredient — the cost is what buys it.
+Batching two *closely related* specs into one critic is allowed and roughly halves the cost
+where specs share a subject, but it is not free: both are then seen through one lens, so a
+blind spot common to both survives. Never batch unrelated specs to save money.
+
+*Built* in the amendment that declared this: moves 2, 4 and 5, all of which are playbook
+text. Moves 1, 3(a) and 3(b) are declared here and built after, in that order — the §3.7
+declared-then-built sequencing.
 
 **Upstream of step 1: the idea inbox.** Each repo — this one and every target — carries a
 `docs/IDEAS.md`, a flat list of parked notes saying *a design might be wanted here
@@ -822,3 +882,4 @@ version (`Status: READY v1.0`). The *document* still has a version; its *rows* n
 | 2026-07-29 | agent-hooks-untracked | agent hooks are host-only and it is now enforced. The `hooks` entry moves from `.claude/settings.json` to the git-ignored `.claude/settings.local.json`, `.codex/hooks.json` is untracked and git-ignored while staying on disk, and a new Docker-free suite `scripts/test-agent-hooks.sh` / `tests/unit/agent-hooks.test.js` fails on any tracked file under `.claude/hooks/` or `.codex/hooks/`, any tracked `hooks.json`, or any tracked `settings*.json` carrying a `hooks` property. `AGENT_HOOKS_FIXTURE_DIR` re-aims it so the negative cases are exercisable; `ONBOARDING.md`'s "remove hooks" step now says move rather than delete, and warns that it recurs | The `dogfood-onboarding` row records this hook being removed at onboarding. It came back: `bd` rewrites `.claude/settings.json` when it re-initialises, so the `bd prime` SessionStart entry returned in a later commit and shipped into every task workspace for weeks — a hook calling `bd` inside a container that has neither `bd` nor a network. The general lesson, and the reason this became scaffolding rather than a firmer checklist line: **a one-time removal of something a tool regenerates is not a fix**, it is a countdown. The exemption for `.claude/settings.local.json` is that git ignores it, not that it is spelled `.local`, so the checker still flags it if it is ever committed |
 | 2026-07-30 | repo-jur | the task network and the proxy sidecar are **per project**, so several runner processes — one per project, each still a sequential loop over its own queue — can be in flight at once. `scripts/pipeline-net.sh` and `scripts/egress-check.sh` read `PIPELINE_NET` / `PIPELINE_PROXY` / `PIPELINE_PROXY_PORT` from the environment (the idiom `BASE_IMG` already used), each falling back to today's `pipeline-net` / `pipeline-proxy` / `3128` when unset, which is what keeps the dozen Docker suites that hard-code those names green. `runner/preflight.js` grows `networkUp(repoRoot, cfg, log, traceId)` / `networkDown(repoRoot, cfg)` / `egressCheck(repoRoot, cfg)`, the single seam that hands those three variables down; `networkUp` names the network and the sidecar in `run.log`. `run.config.json`'s `network` / `proxyName` lose their DEFAULTS entries and are instead derived from the project segment of the config file's own name, sanitised to one lower-case DNS label (a lossy sanitisation is pinned with an 8-hex digest of the original, so two project names that reduce to the same label still differ); a bare `run.config.json` keeps the historical pair, and `run.config.example.json` no longer pins either. §4.8 and §4.12 amended, and §9's "one pipeline instance runs at a time on one machine" with it — one runner *per project*, several at once, is what that now means. A fifth Docker-free suite, `scripts/test-network-names.sh` / `tests/unit/network-names.test.js`, keeps the runner half covered once the frozen acceptance directory stops being re-run; the scripts' own defaults stay covered by the Docker suites that run them for real, since a fake `docker` on PATH that failed to intercept would either drive the live daemon or report every check as a genuine failure. The proxy *image* tag `pipeline-proxy:local` stays shared, and the allowlist is untouched (hard rule 6: names move, policy does not) | Both names were constants in two scripts, so the `network`/`proxyName` fields already in every config reached the task container and nothing else. Starting a second run ran an unconditional `docker rm -f pipeline-proxy` — destroying the first run's only route to Anthropic — and finishing either run removed the network and sidecar for both. Neither failure announced itself: the surviving run just lost its plumbing and its agent began failing in ways that read as the model's fault. A shared *default* is the same bug one step back, which is why derivation replaced the DEFAULTS entries rather than backing them up, and why it is a pure function of the file name — a pid- or clock-derived name passes every uniqueness check and then orphans the network, because teardown computes a different name than setup did. Not the intra-run parallelism of §7 (change-log row `parallelism-v2`), which stays out of scope |
 | 2026-07-30 | idea-inbox | §3.2 gains an **idea inbox** upstream of the spec pipeline: every repo — this one and every onboarded target — carries a `docs/IDEAS.md` holding parked "a design might be wanted here someday" notes, with **Promoted** and **Dropped** tables recording what left and why. It has no gate, no owner and no obligations; nothing is built from an entry directly, and an idea that graduates leaves through step 1 like anything else, so §3.1's `design-ref` rule still catches a skipped decision. `PLANNING.md` gains step 0 (read the inbox for candidates, move graduates to Promoted, move declines to Dropped with the reason) and `ONBOARDING.md` §2 the checklist line that creates one. Inboxes are **per repo, never central** | The three levels in §3.1 each demand a formed thought, and forming one costs an interview or a planning session — paid at the moment the idea occurs, which is the moment there is least appetite for it. The failure this prevents is a *misfiled* idea rather than a lost one: the only cheap home that existed was a Beads issue, and an issue is a commitment that appears in `bd ready` — the queue the runner drains unattended — so the inbox would have been able to start a container. Per-repo is forced rather than preferred (change-log row `publish-sanitize`): this repo is public and documents the machinery, never the work done with it, so a target project's ideas cannot be filed here without leaking the name the boundary protects |
+| 2026-07-30 | spec-panel-below-line | §3.2 gains **"Below the panel"** — five moves that take spec-quality work off the critic panel and put it where it is mechanical or upstream, after the first full panel run on a real backlog returned `concerns` on every spec in the batch. **Built here**, all playbook text: (2) the `trivial` no-critics exemption is **deleted** — the label decides critic depth, never existence, so `trivial` and `medium` both take one testability pass; (4) every critic `details[]` finding carries a **disposition** (accepted / rejected-with-reason / deferred) into the planning draft; (5) step 1 **splits in two** — intent drafted in session, the "Done means" list drafted in fresh context after reading the code the criteria touch. **Declared here, built after** in this order: (1) a freeze gate running each frozen test against the fork-point commit and requiring **red**, distinguishing an assertion failure from a load error and exempting explicitly-labelled **guard** criteria whose count is reported in the approval pass; (3a) a check that no criterion names a path in the target's `frozenPaths`; (3b) a check that no criterion cites a configuration key the target does not define, which needs a new `pipeline.config.json` field and comes last. Critics keep fresh context with no caching between them; batching two closely-related specs is allowed with its cost stated. `scripts/test-planning-playbook.sh` gains a `PLAYBOOK_FILE` seam and an anti-regression grep asserting the deleted exemption stays deleted | The panel catching every spec is not a triumph, it is a measurement of how much work sits above the line that could be below it — §3.5's escalation ladder pointed at the panel itself. The `trivial` exemption was **self-referential**: the label is chosen by the drafter before any review, and the critic whose charter checks whether the label fits is the scope critic, exactly the one the label skips. The fork-point gate is the "assert the artifact is right, not merely present" rule turned on specs rather than on artifacts — a criterion green against unmodified `main` passes a correct implementation, a broken one and an empty diff alike — and it needs the load-error carve-out because a suite that cannot execute reports genuine-looking failures, which this repo has already shipped once. Guards are labelled rather than banned because a pure refactor's only honest criteria *are* guards. Move 5 is the one aimed at the cause instead of the filter: every strong finding in that run came from a critic doing archaeology in the implementation, so the critics were not smarter than the drafter, they were unprimed and reading the code |

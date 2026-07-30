@@ -43,9 +43,24 @@ design section, which is the definition of scope creep (§3.1). When one graduat
 to the file's **Promoted** table; when the session concludes one is not wanted, move it to
 **Dropped** with the reason, so it doesn't come back every few months.
 
-### 1. Draft the spec
-For each candidate task, draft the five spec fields (§3.1, mapping in
-`beads/issue-template.md`):
+### 1. Draft the spec — in two halves, in different contexts
+The five spec fields (§3.1, mapping in `beads/issue-template.md`) are **not all drafted the
+same way**. Intent needs the session's history; criteria need the code.
+
+- **1a. Intent, here in session.** Description, constraints and `design-ref` come out of the
+  discussion, as they always have.
+- **1b. The "Done means" list, in fresh context, against the code.** Open a fresh subagent
+  or session, have it read the implementation the criteria will touch, and write the
+  acceptance criteria there — not from what you remember the code doing.
+
+**Why the split** (§3.2, "Below the panel", move 5): in the first full panel run on a real
+backlog, every strong finding came from a critic doing archaeology in the implementation.
+The critics were not smarter than the drafter; they were unprimed and reading the code,
+while the drafter was many specs deep in one sitting. Doing that reading *before* the
+criteria are written moves the same work upstream of the panel, where it is cheaper. The
+cost is one context switch per spec and no tooling.
+
+The five fields:
 - **Description** — what this task delivers, plain English.
 - **Constraints** — what the implementation must not do or must respect.
 - **Acceptance criteria** — the "Done means" list: 3–6 concrete, machine-checkable
@@ -60,27 +75,45 @@ user can review in a few minutes (§3.2). Note dependencies between tasks. The l
 a proposal — it appears in the approval pass (step 5) and the user may change it, since
 it decides how much critique the spec receives.
 
-### 2. Run the critics, sized to the difficulty label
+### 2. Run the critics — the label decides depth, never existence
 Critic effort scales with difficulty (§3.2) — in V1 the "critics" are fresh-context
 Claude reviews (subagents or a fresh session), not tooling. Each one is run by pasting a
 charter from [`advisors/`](advisors/README.md) verbatim as the review prompt, together
 with the draft spec; the charters are written for a reader with no session history, so
 give each critic its own fresh context and don't summarise the discussion that produced
 the spec:
-- **trivial** — no critics; go straight to tests.
-- **medium** — one light pass, normally [`advisors/testability.md`](advisors/testability.md)
-  ("which acceptance criteria are ambiguous or not actually machine-checkable?"), since
-  untestable criteria are the failure that most often survives review.
+- **trivial and medium** — one pass, normally
+  [`advisors/testability.md`](advisors/testability.md) ("which acceptance criteria are
+  ambiguous or not actually machine-checkable?"), since untestable criteria are the failure
+  that most often survives review.
 - **hard** — the full panel, each as an independent review:
   [`advisors/ambiguity.md`](advisors/ambiguity.md) (where would two engineers build
   different things?), [`advisors/testability.md`](advisors/testability.md) (which criteria
   can't a script verify?), [`advisors/scope.md`](advisors/scope.md) (is this secretly
   several tasks?).
 
+**There is no zero-critic tier, and `trivial` does not exempt a spec from review.** The old
+rule did exempt it, and the exemption was self-referential: the difficulty label is chosen
+by whoever drafted the spec, before any review, and the critic whose charter includes
+checking whether the label fits is the scope critic — the one the label skips. A spec
+labelled `trivial` by a drafter who misjudged it received exactly no review of that
+judgement (§3.2, "Below the panel", move 2).
+
+**Batching:** two *closely related* specs may go to one critic, which roughly halves the
+cost where they share a subject. It is not free — both are then seen through one lens, so a
+blind spot common to both survives. Never batch unrelated specs to save money.
+
 Each critic returns one JSON object — `advisor` / `verdict` (`ok`, `concerns`, `error`) /
 `summary` / `details[]` — the same shape as an `advisories` entry in the status file.
 **A critic never gates** (§3.5): `concerns` is a list of decisions for you and the user,
 not a veto. Revise the draft against the critiques before showing it to the user.
+
+**Record a disposition for every finding.** One line per `details[]` entry, carried into
+the planning draft at step 5: **accepted** (and what changed), **rejected** (and why), or
+**deferred** (and until what). A finding that is silently dropped is indistinguishable from
+one that was considered and rejected, and the difference matters most at the hour when
+specs actually get skipped. This is the only thing that makes the panel auditable — a
+critic that never gates leaves no other trace (§3.2, move 4).
 
 ### 3. Write the acceptance tests
 Claude writes the tests **now, before any code exists**, from the spec alone (§2, §4.4):
@@ -107,6 +140,12 @@ spec — description, constraints, acceptance criteria in "Done means" form, and
 difficulty label — and says whether it matches what they want. Adjust until yes. For a
 backlog decomposed from a design doc, this is a single list pass checking the slicing,
 not a re-litigation of intent (§3.3).
+
+**The draft carries the panel's dispositions.** Every critic finding from step 2 appears in
+this file with what was done about it — accepted, rejected with a reason, or deferred. The
+user is approving intent, not auditing reviews, so this is not something they have to read;
+it is there so that "the panel raised nine things and all nine were handled" is a claim
+anyone can check later instead of taking on trust.
 
 **Developers may go deeper (§3.3):** the plain-English criteria are the required gate,
 but the actual test files from step 3 are open for inspection — a developer who wants

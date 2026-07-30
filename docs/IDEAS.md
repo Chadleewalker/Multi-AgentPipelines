@@ -81,7 +81,23 @@ Two hard boundaries, both inherited:
 
 <!-- Newest at the top. Nothing here is committed to. -->
 
-*(empty — add entries above this line as they occur to you)*
+- **Say somewhere that a pure refactor cannot be frozen** — the freeze model assumes a task
+  changes observable behaviour, because that is what an acceptance test can witness. A
+  refactor's defining property is that observable behaviour does *not* change, so the whole
+  class — deduplicate two implementations, collapse one rule into one place, extract a
+  helper — has no honest criteria available. Two implementations that agree, and one that
+  delegates to the other, are indistinguishable from outside; the only possible assertion
+  is on source text, which freezes a decision instead of an outcome and fails on the next
+  legitimate refactor.
+  `advisors/testability.md` already rejects that criterion shape and did so correctly, but
+  rejecting it is all the charter can do: it leaves a task whose entire purpose was
+  structural with nothing at all, and no charter is the right place to say "this task
+  should not exist." The workaround is known and good — fold the refactor into a later task
+  that has a behavioural reason to touch the same code, so the cleanup rides along with
+  something witnessable — but it currently lives in one project's planning draft, so every
+  other project rediscovers it by spending a session drafting a spec that cannot be frozen
+  and a panel pass rejecting it. §3.1 or §3.2 is the natural home. 2026-07-30
+  *Found by the critic panel on the first real project, 2026-07-30.*
 
 ---
 
