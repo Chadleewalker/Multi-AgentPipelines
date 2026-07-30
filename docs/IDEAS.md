@@ -81,6 +81,23 @@ Two hard boundaries, both inherited:
 
 <!-- Newest at the top. Nothing here is committed to. -->
 
+- **Make the sweep count passes in both of the repo's vocabularies** — `scripts/test-all.sh`
+  counts a suite's checks with `grep -c '^PASS[[:space:]]'`, but the repo announces a passing
+  check two ways: wrapper scripts print `PASS `, while several inner Node checkers print
+  `ok - <label>`. Those checkers are invisible to the counter. Observed on 2026-07-30: the
+  summary reported `2` for `test-bd-shim`, `test-network-names` and `test-runner-memory`,
+  which had actually run **10**, **34** and **30** checks.
+  **Only the pass side is affected, and nothing unsafe follows.** The verdict comes from the
+  suite's exit code, so a red suite still reads red; and the same checkers print `FAIL - `
+  on failure, which `^FAIL[[:space:]]` *does* match, so the secondary net beside it — "a suite
+  that prints FAIL but exits 0 is itself broken" — keeps working. The asymmetry is the whole
+  bug: failures are counted in both vocabularies, successes in only one.
+  What breaks is the `ASSERTS` column's actual job, which is to make coverage quietly
+  disappearing *visible*. For a third of the suites it cannot do that — one could fall from 34
+  real checks to 3 and the number would still read `2`, because it was never reading them.
+  Fix is small (count `ok - ` too, or standardise on one vocabulary). Filed rather than fixed
+  because which convention should win is a decision, not a patch. 2026-07-30
+
 - **Say somewhere that a pure refactor cannot be frozen** — the freeze model assumes a task
   changes observable behaviour, because that is what an acceptance test can witness. A
   refactor's defining property is that observable behaviour does *not* change, so the whole
