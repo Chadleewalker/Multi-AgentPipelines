@@ -5,6 +5,14 @@
 # Install the per-machine git hooks that keep the code and the issue database in step.
 # Idempotent — safe to re-run, and re-running is how you pick up a change to this script.
 #
+# Both directions are covered, because the drift is symmetric:
+#   post-merge -> `bd dolt push` has happened elsewhere; pull the issues after the code.
+#   pre-push   -> issues changed here; push them WITH the code, not eventually.
+# `bd`'s own hooks do neither. Its post-merge handles JSONL import only, and its pre-push
+# runs, prints nothing and exits 0 having pushed no database — verified against bd 1.1.2 by
+# running the hook and watching `refs/dolt/data` on the remote not move. A hook that exists
+# and does nothing is the worst version of this: it looks installed.
+#
 # Why this is a script and not committed hooks. Issues live in `refs/dolt/data`, which
 # `git pull` does not fetch, so a second machine pulls the code and silently keeps a stale
 # task queue — this repo lost its beads that way once already. The fix is a `post-merge`
@@ -82,6 +90,72 @@ if [ -x "$HOOK" ]; then
   echo "PASS  hook is executable"
 else
   echo "FAIL  hook is not executable — git will silently skip it"
+  exit 1
+fi
+
+# ---- pre-push: send the issue database with the code ------------------------------
+PUSH_MARK='# --- BEGIN AUTO-PUSH (scripts/install-hooks.sh) ---'
+PUSH_HOOK="$ROOT/.beads/hooks/pre-push"
+
+[ -f "$PUSH_HOOK" ] || { echo "FAIL  $PUSH_HOOK was not created by 'bd hooks install'"; exit 1; }
+
+if grep -qF "$PUSH_MARK" "$PUSH_HOOK"; then
+  TMP="$PUSH_HOOK.tmp.$$"
+  sed "/$(printf '%s' "$PUSH_MARK" | sed 's/[].[^$*\/]/\\&/g')/,\$d" "$PUSH_HOOK" > "$TMP" || { rm -f "$TMP"; exit 1; }
+  mv "$TMP" "$PUSH_HOOK" || exit 1
+fi
+
+cat >> "$PUSH_HOOK" <<'BLOCK'
+# --- BEGIN AUTO-PUSH (scripts/install-hooks.sh) ---
+# Appended outside bd's markers, so `bd hooks install` upgrades preserve it.
+# Re-run scripts/install-hooks.sh to update this block; do not hand-edit.
+#
+# This one FAILS the push when the database does not go, which is the opposite of the
+# post-merge block's "never fail the hook" — deliberately. post-merge runs after the merge
+# has already happened, so refusing there would report a fait accompli as an error.
+# pre-push runs before anything has left the machine, so failing is free and it is the
+# only way the code and the issues cannot arrive separately. Escape hatch when you
+# genuinely want the code alone: BD_SKIP_AUTO_PUSH=1 git push
+if command -v bd >/dev/null 2>&1 && [ -z "${BD_SKIP_AUTO_PUSH:-}" ]; then
+  # Only when a remote is configured; a fresh clone without one would otherwise fail
+  # every push. Note this hook is reached only from a clone that ran install-hooks.sh —
+  # the runner's task workspaces are plain clones with no core.hooksPath, so publishing a
+  # task branch is never blocked by the issue database.
+  if bd dolt remote list 2>/dev/null | grep -q .; then
+    echo "beads: pushing issue database…"
+    _bd_push_rc=0
+    if command -v timeout >/dev/null 2>&1; then
+      timeout "${BEADS_PUSH_TIMEOUT:-120}" bd dolt push || _bd_push_rc=$?
+    else
+      bd dolt push || _bd_push_rc=$?
+    fi
+    if [ "$_bd_push_rc" -ne 0 ]; then
+      echo >&2 "beads: 'bd dolt push' failed or timed out (rc=$_bd_push_rc)."
+      echo >&2 "       BLOCKING the code push so the issues cannot fall behind it."
+      echo >&2 "       Fix: run 'bd dolt push' by hand, then push again."
+      echo >&2 "       Override once: BD_SKIP_AUTO_PUSH=1 git push"
+      exit 1
+    fi
+  fi
+fi
+exit 0
+BLOCK
+
+chmod +x "$PUSH_HOOK" 2>/dev/null
+
+# Same rule as above: assert it is *right*, not merely present. A pre-push hook that runs
+# and pushes nothing is exactly what bd already ships.
+if grep -qF "$PUSH_MARK" "$PUSH_HOOK" && grep -q "bd dolt push" "$PUSH_HOOK"; then
+  echo "PASS  pre-push will run 'bd dolt push' before every git push"
+else
+  echo "FAIL  the auto-push block is missing from $PUSH_HOOK"
+  exit 1
+fi
+
+if [ -x "$PUSH_HOOK" ]; then
+  echo "PASS  pre-push hook is executable"
+else
+  echo "FAIL  pre-push hook is not executable — git will silently skip it"
   exit 1
 fi
 
