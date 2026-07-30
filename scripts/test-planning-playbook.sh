@@ -38,6 +38,12 @@ fi
 ck "minimum one critic stated"       "no zero-critic tier"
 ck "label decides depth not existence" "decides depth, never existence"
 
+# The mechanical lint runs before the critics (move 3a), and the playbook names the
+# command and the exit codes — an instruction a reader cannot execute is not an instruction.
+ck "lint runs before the critics"    "Run the mechanical checks, then the critics"
+ck "lint command is given"           "scripts/spec-lint.js"
+ck "lint exit codes stated"          "could not run"
+
 # Criteria drafted against the code, in fresh context (move 5).
 ck "draft splits intent from criteria" "in two halves, in different contexts"
 ck "criteria drafted in fresh context" "fresh context, against the code"

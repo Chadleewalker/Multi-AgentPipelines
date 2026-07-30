@@ -75,7 +75,25 @@ user can review in a few minutes (§3.2). Note dependencies between tasks. The l
 a proposal — it appears in the approval pass (step 5) and the user may change it, since
 it decides how much critique the spec receives.
 
-### 2. Run the critics — the label decides depth, never existence
+### 2. Run the mechanical checks, then the critics
+
+**First, the lint — it costs nothing and needs no judgment (§3.2, move 3):**
+
+```bash
+node scripts/spec-lint.js --repo <target-repo> <draft-spec-file>
+```
+
+It reports any line naming a path in the target's `frozenPaths`. Such a criterion orders
+the agent to edit a file the verifier diffs against the fork point, so the task ends
+`tampered` on **every** attempt, before any test result exists — two drafts in the first
+real panel run did exactly this. Exit codes: `0` clean, `1` findings, `2` could not run
+(a `2` is never a pass — it means the lint never looked).
+
+The acceptance directory is deliberately *not* flagged: planning writes tests there, so
+naming it is normal. Findings are reported, not enforced — each one takes a disposition
+below, the same as a critic's.
+
+**Then the critics — the label decides depth, never existence.**
 Critic effort scales with difficulty (§3.2) — in V1 the "critics" are fresh-context
 Claude reviews (subagents or a fresh session), not tooling. Each one is run by pasting a
 charter from [`advisors/`](advisors/README.md) verbatim as the review prompt, together
