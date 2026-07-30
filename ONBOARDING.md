@@ -56,11 +56,20 @@ matters is that both exist before planning tries to decompose anything.
       (shell scripts run inside Linux containers; a CRLF checkout on Windows breaks
       them and can read as tampering).
 
-### 2. The frozen-test home
+### 2. The frozen-test home and the idea inbox
 - [ ] Create `tests/acceptance/` with a short README stating the freeze rules: tests
       land here during planning (PLANNING.md step 6), are committed to the integration
       branch before a run, and are diffed against the fork point by the verifier —
       any change during a run, by anyone, is the "tampered" outcome (§4.4).
+- [ ] Create `docs/IDEAS.md` — the project's own idea inbox. Copy the structure from
+      this pipeline repo's `docs/IDEAS.md`: a flat list of parked "this should probably
+      become a design someday" notes, plus **Promoted** and **Dropped** tables. It costs
+      nothing to add to and commits to nothing; PLANNING.md step 0 reads it for
+      candidates.
+      **Each project keeps its own** — ideas about a target project must never be filed
+      in the pipeline repo, which is public and documents the machinery, never the work
+      done with it. This is the same boundary that makes `run.config.<project>.json`
+      git-ignored there.
 
 ### 3. `pipeline.config.json` (§3.4)
 - [ ] Write it in the repo root:

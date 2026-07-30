@@ -28,6 +28,21 @@ redo:
 
 ## The Session, Step by Step
 
+### 0. Read the idea inbox
+Open [`docs/IDEAS.md`](docs/IDEAS.md) — in *this* repo when the session is about the
+pipeline, in the target project's repo otherwise — and see whether anything parked there
+belongs in this session. It is where "that's probably a good idea" gets written down
+between sessions, so it is the only place a candidate can be waiting that nobody has
+mentioned out loud.
+
+Nothing there is a commitment and nothing there is obliged to be picked; an inbox entry is
+a reminder that a design might be wanted, never a spec in waiting. An idea that *is* picked
+goes through the whole path like anything else — a `DESIGN.md` section and its change-log
+row first, then step 1 below — because an idea implemented straight from the inbox cites no
+design section, which is the definition of scope creep (§3.1). When one graduates, move it
+to the file's **Promoted** table; when the session concludes one is not wanted, move it to
+**Dropped** with the reason, so it doesn't come back every few months.
+
 ### 1. Draft the spec
 For each candidate task, draft the five spec fields (§3.1, mapping in
 `beads/issue-template.md`):

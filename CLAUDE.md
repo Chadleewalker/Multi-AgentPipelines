@@ -11,6 +11,7 @@ approves intent before a run and reviews results after; nothing in between is in
 | `DESIGN.md` | **Authoritative.** Every architectural decision and why, the outcome contract, the change log. When reality disagrees with it, amend it — never silently ignore it. |
 | `docs/STATUS.md` | Where the build actually is, what's proven, known gotchas, what's next. Start here to pick up the thread. |
 | `PLANNING.md` | The playbook for a planning session: how a task spec and its frozen tests get written and approved. |
+| `docs/IDEAS.md` | The idea inbox — parked "this should probably become a design someday" notes. Costs nothing to add to, commits to nothing, and is where a planning session looks for candidates. Not a backlog: an entry here is not work. |
 | `docs/pipeline-diagram.md` | The same design as diagrams — compact mermaid, for someone about to change the code. **Task docs phases keep it current**, so amend it in the same PR that changes the shape it draws. |
 | `docs/pipeline-map.html` | The whole system explained for a reader rather than a maintainer: one page, nine diagrams, pan/zoom. Hand-maintained and **not** updated by task docs phases — check it against `DESIGN.md` when you touch it, because nothing else will. |
 
