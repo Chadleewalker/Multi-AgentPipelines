@@ -4,7 +4,7 @@ Where the build actually is. Update this when something changes — it is the fi
 session reads to pick up the thread, and unlike a machine-local memory folder it travels
 with the repo.
 
-_Last updated: 2026-07-26_
+_Last updated: 2026-07-30_
 
 ## Where things stand
 
@@ -185,7 +185,9 @@ real use. All are fixed.
   removed at source: the entrypoint seeds `hasTrustDialogAccepted` /
   `hasCompletedOnboarding` for `$WS` into `$HOME/.claude.json` before the first agent call.
 - **Test suites share one Docker network.** Run them one at a time; concurrent runs tear
-  `pipeline-net` down under each other and produce meaningless failures.
+  `pipeline-net` down under each other and produce meaningless failures. Real runs no
+  longer share it (`repo-jur` made the network and sidecar per project), but the suites
+  deliberately still use the default pair, so this stays true of them.
 - **Never hardcode a timestamp in a fixture.** `test-runner-queue.sh` pinned
   `rateLimitResetAt: "2026-07-26T00:00:00Z"`. It was written at T12, when exit 20 just
   mapped to `paused`; T15 then added the real pause loop and the same constant silently
@@ -397,6 +399,54 @@ via `process.execPath` (never a `#!/bin/sh` one — that is defect 9's EFTYPE tr
 Docker suite `scripts/test-runner-queue.sh` remains the only thing that proves the line is
 actually emitted at run time.
 
+## Network and proxy are per project (`repo-jur`, 2026-07-30)
+
+Two runner processes against different projects used to destroy each other's plumbing.
+`pipeline-net` and `pipeline-proxy` were constants in `scripts/pipeline-net.sh` and again
+in `scripts/egress-check.sh`, so the `network` / `proxyName` fields already sitting in
+every `run.config.*.json` reached the task container (`runner/container.js`) and nothing
+else. Starting a second run ran an unconditional `docker rm -f pipeline-proxy` — the first
+run's only route to Anthropic — and finishing either run removed the network and the
+sidecar for both. **Neither failure announced itself**: the surviving run simply lost its
+plumbing, and its agent started failing in ways that read as the model's fault.
+
+Both scripts now take `PIPELINE_NET`, `PIPELINE_PROXY` and `PIPELINE_PROXY_PORT` from the
+environment — the idiom `BASE_IMG` already used there — each **defaulting to today's
+value**, which is what keeps the dozen Docker suites that hard-code those names in their
+cleanup traps green without an edit. `runner/preflight.js` is the only seam that sets
+them: `networkUp(repoRoot, cfg, log, traceId)`, `networkDown(repoRoot, cfg)` and
+`egressCheck(repoRoot, cfg)`. The gate moving with the run matters as much as the
+container did — an egress check that passes against another project's network proves
+nothing about this one.
+
+Where the names come from is the part worth remembering. A shared *default* is the same
+bug one step back, so `network` / `proxyName` were **removed from `DEFAULTS`** rather than
+kept as a fallback: when a config names neither, both are derived from the project segment
+of the config file's own name (`run.config.<project>.json`), sanitised to one lower-case
+DNS label — DNS, not merely Docker, because the proxy name is the host part of every
+container's `HTTPS_PROXY`, so an underscore or a capital fails at run time inside the
+container where no host-side check is watching. Derivation is a **pure function of the
+file name**: a pid-, clock- or random-derived name passes every uniqueness check and then
+orphans the network, because teardown computes a different name than setup did. A lossy
+sanitisation is pinned with an 8-hex digest of the original, so two project names that
+reduce to the same label still get different networks. A bare `run.config.json` — what the
+runner's own suites generate — has no project segment and keeps the historical pair, which
+is the other half of why the suites stay green; running two projects at once therefore
+means naming each config `run.config.<project>.json`, and `run.config.example.json` no
+longer pins either field. The proxy **image** tag `pipeline-proxy:local` stays shared
+(identical content per project) and the allowlist is untouched: names move, policy does
+not (hard rule 6).
+
+This is several independent runner processes, one per project, each still a sequential
+loop over its own queue — **not** the intra-run parallelism of §7 (change-log row
+`parallelism-v2`), which is still out of scope.
+
+The runner half of it stays covered by `scripts/test-network-names.sh` (Docker-free, see
+the test-suite section); the scripts' own defaults are covered where they always were, by
+the Docker suites that run them for real. **The host sweep is the obligation this task
+cannot discharge from inside a container**: `bash scripts/test-all.sh` is what proves the
+dozen suites that hard-code `pipeline-net` in a cleanup trap are still green.
+
 ## What's next
 
 **The queue drained again on 2026-07-26**, after `repo-4l8` (the epic filter, planned and
@@ -513,9 +563,10 @@ design's central bet, and it is the first day it paid out repeatedly.
 
 ## Test suites
 
-All but four drive real Docker and share one network, so they must never run concurrently
-(`test-runner-memory.sh`, `test-changelog.sh`, `test-sanitize.sh` and
-`test-agent-hooks.sh` are the exceptions — see below; they need neither).
+All but five drive real Docker and share one network, so they must never run concurrently
+(`test-runner-memory.sh`, `test-changelog.sh`, `test-sanitize.sh`,
+`test-agent-hooks.sh` and `test-network-names.sh` are the exceptions — see below; they need
+neither).
 **`scripts/test-all.sh` is the sweep** — it holds a lock, runs every suite sequentially,
 kills one that hangs (`--timeout`, default 900s), tears `pipeline-net` down if a suite
 leaks it, and writes per-suite logs plus a summary table to `runs/sweeps/<timestamp>/`.
@@ -541,8 +592,9 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-changelog.sh` | `DESIGN.md` §12 row identity — slug refs, uniqueness, citations |
 | `scripts/test-sanitize.sh` | publication hygiene — no machine paths, emails, credentials or denylisted names in the tracked tree |
 | `scripts/test-agent-hooks.sh` | container hygiene — no tracked file configures an agent hook |
+| `scripts/test-network-names.sh` | per-project network and proxy names — derivation, and that they reach the scripts |
 
-**`scripts/test-runner-memory.sh` is one of the four suites that need no Docker**
+**`scripts/test-runner-memory.sh` is one of the five suites that need no Docker**
 (repo-dhp): it
 drives both §3.6 memory channels plus the `shouldFileMemory` outcome gate through the
 `PIPELINE_BD_CMD` seam, so it runs anywhere — including inside a task container, where
@@ -600,6 +652,19 @@ that file if it is ever committed. `AGENT_HOOKS_FIXTURE_DIR` aims it at a direct
 instead of the tracked tree. One negative case plants a `hooks` key in a settings file
 that is *not* valid JSON, because a checker inspecting only parsed JSON would report
 "cannot be checked", exit 0, and allow the thing it exists to stop.
+
+**`scripts/test-network-names.sh` is the fifth** (`repo-jur`): it computes the per-project
+network and proxy names from a set of temp config files and drives
+`preflight.networkUp` / `networkDown` / `egressCheck` against a recording stand-in for
+`scripts/pipeline-net.sh`, so it needs no Docker and no daemon. It asserts the names are
+own, hostname-safe and **identical in a separate process**, that a bare `run.config.json`
+keeps the historical pair, that an explicit name wins, that `proxyUrl` follows whichever
+name won, and that a config carrying no names *throws* rather than falling back. What it
+deliberately leaves alone is whether the two real scripts default correctly: that needs a
+fake `docker` earlier on PATH than the real one, and a PATH stub that failed to intercept
+would either drive the live daemon or report every check as a genuine failure — so the
+scripts stay covered by the suites that run them for real. Its coverage was extracted from
+`tests/acceptance/repo-jur/`, which like every frozen acceptance directory is never re-run.
 
 **Why it reads bytes and never skips a "binary" file.** This suite exists because
 `publish-sanitize` missed a private project name in `tests/acceptance/repo-006/test.js`,

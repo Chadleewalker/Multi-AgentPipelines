@@ -8,10 +8,18 @@
 # proxy, (2) two non-allowlisted hosts are NOT, (3) there is no direct egress at all.
 # Bounded under 60 seconds. Exit 0 = policy holds; non-zero = ABORT THE RUN.
 # The runner (T11) invokes this after `pipeline-net.sh up` and before the first task.
+#
+# The network, proxy and port are per project and come from the environment, defaulting to
+# the historical shared pair when unset (change-log row `repo-jur`). The gate has to probe
+# the SAME plumbing the run's tasks will use — passing against another project's network
+# proves nothing about this one.
 set -u
 BASE_IMG="${BASE_IMG:-pipeline-base:local}"
 BOUND=60
-PROXY=http://pipeline-proxy:3128
+NET="${PIPELINE_NET:-pipeline-net}"
+PROXY_NAME="${PIPELINE_PROXY:-pipeline-proxy}"
+PROXY_PORT="${PIPELINE_PROXY_PORT:-3128}"
+PROXY="http://$PROXY_NAME:$PROXY_PORT"
 
 PROBE_CMD='
   code() { curl -s -m 10 -o /dev/null -w "%{http_code}" "$1" 2>/dev/null || true; }
@@ -29,7 +37,7 @@ PROBE_CMD='
 '
 
 run_probes() {
-  docker run --rm --network pipeline-net \
+  docker run --rm --network "$NET" \
     -e HTTPS_PROXY="$PROXY" -e HTTP_PROXY="$PROXY" -e NO_PROXY=localhost,127.0.0.1 \
     "$BASE_IMG" sh -c "$PROBE_CMD"
 }
@@ -37,7 +45,7 @@ run_probes() {
 # Self-enforced wall bound: prefer coreutils timeout (present in Git Bash); the
 # per-curl -m limits keep the worst case under the bound even without it.
 if command -v timeout >/dev/null 2>&1; then
-  timeout "$BOUND" docker run --rm --network pipeline-net \
+  timeout "$BOUND" docker run --rm --network "$NET" \
     -e HTTPS_PROXY="$PROXY" -e HTTP_PROXY="$PROXY" -e NO_PROXY=localhost,127.0.0.1 \
     "$BASE_IMG" sh -c "$PROBE_CMD"
 else

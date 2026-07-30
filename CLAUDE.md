@@ -79,11 +79,12 @@ bash scripts/e2e.sh            # add --keep to leave branches and PRs up for ins
 bash scripts/test-verifier.sh
 bash scripts/test-runner-container.sh
 
-# the four suites that need no Docker — seconds, safe to run anywhere, even in a container
+# the five suites that need no Docker — seconds, safe to run anywhere, even in a container
 bash scripts/test-runner-memory.sh
 bash scripts/test-changelog.sh     # DESIGN.md §12 row identity (CHANGELOG_FILE re-aims it)
 bash scripts/test-sanitize.sh      # publication hygiene (SANITIZE_FIXTURE_DIR re-aims it)
 bash scripts/test-agent-hooks.sh   # no tracked agent hooks (AGENT_HOOKS_FIXTURE_DIR re-aims it)
+bash scripts/test-network-names.sh # per-project network + proxy names (§4.8) reach the scripts
 ```
 
 Suites are slow (real containers) and **share one Docker network** — run them one at a
@@ -208,10 +209,14 @@ the pipeline working on the pipeline's own code. The rules:
   (`tests/unit/changelog.test.js`), which reads markdown only: run it if you add a
   `DESIGN.md` change-log row — `sh scripts/test-sanitize.sh`
   (`tests/unit/sanitize.test.js`), which reads the tracked tree only: run it if you add a
-  path, an address or an example naming anything outside this repo — and
+  path, an address or an example naming anything outside this repo —
   `sh scripts/test-agent-hooks.sh` (`tests/unit/agent-hooks.test.js`), also tracked-tree
   only: run it if you touch `.claude/` or `.codex/`, because a committed agent hook runs
-  inside this container, where there is no `bd`. Any new Docker-free
+  inside this container, where there is no `bd` — and
+  `sh scripts/test-network-names.sh` (`tests/unit/network-names.test.js`), which computes
+  names and runs a recording stand-in for `scripts/pipeline-net.sh`: run it if you touch
+  `runner/config.js`, `runner/preflight.js` or either network script, because a run that
+  falls back to the shared network destroys a concurrent run's route out. Any new Docker-free
   suite belongs beside them in
   `tests/unit/`, and its seam stub must be a `.js` file invoked through
   `process.execPath`, never a `#!/bin/sh` script: `spawnSync` without a shell fails such a

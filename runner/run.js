@@ -104,14 +104,14 @@ async function main() {
   const pre = preflight(cfg, REPO_ROOT, log);
   if (!pre.ok) {
     log.error(t, `PREFLIGHT FAILED — no tasks launched: ${pre.reason}`);
-    networkDown(REPO_ROOT);
+    networkDown(REPO_ROOT, cfg);
     process.exit(1);
   }
   log.info(t, `preflight passed${pre.recovered.length ? ` (recovered: ${pre.recovered.join(', ')})` : ''}`);
 
   if (args.dryRun) {
     log.info(t, 'dry run: stopping before the task loop');
-    networkDown(REPO_ROOT);
+    networkDown(REPO_ROOT, cfg);
     log.info(t, `run finished; artifacts in ${log.dir}`);
     return;
   }
@@ -120,7 +120,7 @@ async function main() {
   const q = readyQueue(cfg);
   if (!q.ok) {
     log.error(t, `cannot read the Beads ready queue: ${q.error}`);
-    networkDown(REPO_ROOT);
+    networkDown(REPO_ROOT, cfg);
     process.exit(1);
   }
   log.info(t, queueSummary(q.issues, q.skipped));
@@ -273,7 +273,7 @@ async function main() {
   const reportFile = writeReport(log.dir, manifest);
   log.info(t, `run report: ${reportFile}`);
 
-  networkDown(REPO_ROOT);
+  networkDown(REPO_ROOT, cfg);
   log.info(t, `run finished; artifacts in ${log.dir}`);
 }
 
