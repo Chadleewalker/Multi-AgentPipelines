@@ -81,6 +81,22 @@ Two hard boundaries, both inherited:
 
 <!-- Newest at the top. Nothing here is committed to. -->
 
+- **Have the docs phase tick the box, not just write the note** — four times in one day the
+  documentation phase updated a checklist item's prose and left its checkbox unticked, including
+  once where the task itself had just built the gate the box was waiting for. The failure is
+  consistent and one-directional: notes get updated, the state marker does not. It matters because
+  the checklist is what a planning session reads to choose the next task, so a stale box is not a
+  cosmetic lag — it is a spec cut against a false picture. It cost a full planning cycle on
+  2026-07-31: a task was drafted, criteria written in fresh context, and a critic panel run, before
+  anyone noticed both deliverables had shipped days earlier and were already guarded.
+  Worth having because it is cheap to attempt — the docs prompt already asks for the notes — and
+  because the alternative is auditing the checklist by hand before every planning session, which is
+  what had to happen instead. Note the honest difficulty: deciding a box is tickable means judging
+  whether a claim is *gated*, not merely true, and an agent that ticks boxes optimistically is worse
+  than one that never ticks any. Possibly the right shape is narrower — have the docs phase report
+  *candidate* ticks as evidence, the way  and  already report, and leave the edit to
+  the host. 2026-07-31
+
 - **Let a task report progress while it is still running, roughly every 10 minutes** — right now
   a container is opaque from the outside: nothing is visible until it exits and the run report is
   written. A task that has been going for an hour is indistinguishable from a task that is wedged,
