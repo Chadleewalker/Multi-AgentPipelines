@@ -494,6 +494,82 @@ context was available. That is weaker than §3.2 asks for, and the panel's value
 from being unprimed. Eight-for-eight on specs reviewed by their author is a claim about the
 execution half of the pipeline, not about the planning half.
 
+## Intra-run parallelism, planned 2026-07-31 (three tasks, three batches)
+
+The §7 concurrency knob was planned against `docs/parallelism-findings-2026-07-31.md`. The
+session opened intending to freeze **one** hard parallelism task alongside `repo-sls`. The
+critic panel returned `concerns` from all three charters — **30 findings** — and two were
+premise-breaking rather than cosmetic, so the shape changed twice mid-session.
+
+| Batch | Issue | Task | State |
+|---|---|---|---|
+| 1 | `repo-sls` | bound every runner `bd` call | **frozen**, ready |
+| 1 | `repo-os9` | refuse a second run against one project | already frozen, ready |
+| 2 | `repo-teq` | the bounded worker pool (the `concurrency` knob) | approved intent, blocked, unfrozen |
+| 3 | `repo-i9y` | park the whole run, not each task | approved intent, blocked, unfrozen |
+
+**The two findings that changed the plan**, both worth keeping because both are about *how the
+batching discipline fails*, not about parallelism:
+
+1. **The claimed file-disjointness was false, and the first draft resolved it in the wrong
+   direction.** `repo-sls`'s approved criterion is "the bound is configurable with a documented
+   default"; §4.12 puts every production tunable in `run.config.json`, which is
+   `runner/config.js` — which the parallelism task also owned. The draft "resolved" the clash by
+   demoting `repo-sls`'s knob to an environment variable, and `PIPELINE_*` is reserved for test
+   seams. That is batching convenience bending the configuration contract, and the scope critic
+   named it as such. The fix was to stop batching them: `repo-sls` runs first, alone, keeping
+   its field. **File ownership stated in a spec is only worth something if the statement is
+   checked** — this one was asserted by the drafter and was wrong.
+2. **The parallelism task was two tasks.** The pool and the run-level park pass and fail
+   independently. The argument for keeping them together — "the intermediate state is unsafe,
+   because N tasks would each run their own pause loop" — did not survive inspection: the knob
+   is opt-in and defaults to 1, so `main` is never in that state unless someone asks for it.
+
+**The finding that mattered most is a testability one, and it generalises.** Five of the six
+original criteria described `runner/run.js`'s task loop, and **nothing Docker-free can execute
+that loop**: `run.js` calls `main()` at module scope, and `main()` sits behind `loadToken` and a
+Docker preflight that always fails in a task container. Frozen as written, those criteria could
+only have become greps of `run.js`'s source — which every previous task that touched `run.js`
+already conceded in writing (`repo-4l8` F6, `repo-iok` A3-weak). So `repo-teq` now carries an
+explicit constraint: **the scheduler is an exported function and `main()` is guarded behind
+`require.main === module`.** The critic's alternative — a `PIPELINE_SKIP_PREFLIGHT` seam — was
+rejected: a production flag that skips the egress gate is a hard-rule-6 hazard.
+
+Two more that are the "assert the artifact is *right*" rule biting again, in a new place —
+**assertions that cannot fail**:
+
+- *"No two `bd` invocations overlap"* was a criterion. It cannot fail: `spawnSync` blocks the
+  event loop, so in a single-threaded runner no serialisation and full serialisation both pass.
+  It was a property of the *runtime* asserted as a property of the *code*. It moved to
+  `repo-sls` as the constraint that actually protects it — **the bound must keep `bd()`
+  synchronous**, never an async spawn — because that synchrony is what the sole-writer rule will
+  rest on the moment a worker pool exists.
+- *"A container already running is not killed"* was a criterion. `PIPELINE_EXEC_STUB` replaces
+  the entire function that owns the kill timer, so no Docker-free test has an implementation it
+  could contradict. It is a host obligation now, not a check.
+
+**Blast radius nobody had counted.** Three runner Docker suites make **50 literal `grep -q`
+assertions** against log strings `run.js` and `pause.js` emit, and four frozen acceptance suites
+assert that `fileMemoryNotes`, `queueSummary` and `shouldFileMemory` appear on non-comment lines
+of `run.js`. This repo declares no `regressionCommand` and nothing re-runs a frozen directory,
+so a loop restructure can invalidate all of it silently. `repo-teq` carries those identifiers as
+a constraint *and* as a guard criterion; the log-string repair is a named host obligation.
+
+**`repo-sls` is frozen** at `tests/acceptance/repo-sls/` (28 checks; freeze gate RED against a
+green control, 2 guards declared and verified). Two results there were fixed rather than
+accepted, both the panel's own lesson applied to the tests themselves: a guard failed because
+Node resolves `argv[1]` to an absolute path under `--require`, so the assertion was measuring
+the harness rather than the seam; and `an explicit bdTimeoutMs wins` passes *today*, because
+`loadConfig` spreads unknown fields straight through — the discriminating half of that criterion
+is the **default**, not the override.
+
+**What is not frozen, deliberately.** `repo-teq` and `repo-i9y` have approved intent and no
+tests. Neither can run until the batch before it merges, and freezing tests weeks before the run
+that executes them is how suites go stale (the T12 failure — three staleness bugs in a suite
+nobody re-ran). Their acceptance tests get written in the planning session immediately before
+their own run, which is PLANNING.md's rule and the same posture `repo-iok` and `repo-sls` itself
+have held since 2026-07-28.
+
 ## What's next
 
 **The queue drained again on 2026-07-26**, after `repo-4l8` (the epic filter, planned and
