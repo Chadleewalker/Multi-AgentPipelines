@@ -575,7 +575,7 @@ premise-breaking rather than cosmetic, so the shape changed twice mid-session.
 | 1 | `repo-os9` | refuse a second run against one project | **built** (above), pending the host sweep |
 | 1 | `repo-sls` | bound every runner `bd` call | **shipped** 2026-07-31, passed on attempt 1 (below) |
 | 1 | `repo-os9` | refuse a second run against one project | already frozen, ready |
-| 2 | `repo-teq` | the bounded worker pool (the `concurrency` knob) | approved intent, blocked, unfrozen |
+| 2 | `repo-teq` | the bounded worker pool (the `concurrency` knob) | **shipped** 2026-07-31, passed on attempt 1 (below) |
 | 3 | `repo-i9y` | park the whole run, not each task | approved intent, blocked, unfrozen |
 
 **The two findings that changed the plan**, both worth keeping because both are about *how the
@@ -722,6 +722,54 @@ permission classifier, so both of this repo's PRs and both of the target's are o
 (`repo-teq`, `repo-i9y`, `repo-diy`, `repo-ixa`) are blocked *and* unfrozen, and `repo-teq` genuinely
 builds on `repo-sls`, so nothing further can run until those merge.
 
+## The bounded worker pool (`repo-teq`, 2026-07-31)
+
+Batch 2's task ran and passed on attempt 1. `run.config.json` now carries **`concurrency`**,
+default **1** and capped at a literal **3**, and one runner process works that many task
+containers of its project at once instead of a strict `for` loop. Default behaviour is the
+sequential loop unchanged; §4.12 carries the full amendment and change-log row `repo-teq` the
+reasoning.
+
+- **`drainQueue(issues, taskFn, concurrency)` is exported from `runner/run.js`**, and
+  `main()` is now behind `require.main === module`. That guard is the whole reason any of
+  this is testable: `main()` sits behind a token load and a Docker preflight that always fail
+  in a task container, so before it, five of this task's six criteria could only have become
+  greps of `run.js`'s own source — which is what every previous task touching that file
+  conceded in writing (`repo-4l8` F6, `repo-iok` A3-weak). The rejected alternative was a
+  `PIPELINE_SKIP_PREFLIGHT` seam, i.e. a production flag that skips the egress gate.
+- **Results come back in ready-queue order, not completion order.** N fixed workers pull from
+  one shared cursor and write into their own index. The frozen suite drives it with inverted
+  durations so the last-queued task finishes first — the naive append-on-completion, which is
+  what anyone would write, fails that and nothing else would have caught it.
+- **The execution seam had to stop blocking the event loop.** `executeTask`'s
+  `PIPELINE_EXEC_STUB` path was `spawnSync`, which serialises every stubbed task and makes
+  concurrency **unobservable to exactly the Docker-free suites that must prove it**. It is
+  `spawn` now, with the `bash <stub>` invocation, the four environment variables and the
+  `124 -> killed` mapping all unchanged, because three Docker suites depend on them and none
+  of them can run in a container.
+- **Concurrency is asserted by rendezvous, never by wall clock.** The fixture cannot complete
+  unless N task bodies are genuinely in flight, and the same fixture at concurrency 1 must
+  record the give-up marker — which is what makes the check discriminating rather than
+  something an unbounded pool also passes. A timing margin would flake on a loaded machine.
+- **What it deliberately did not do:** the rate-limit park stays per task (`repo-i9y`), so at
+  depth > 1 N parked tasks each run their own pause loop against one shared subscription
+  window — wasteful, not corrupting, and unreachable at the default, which is what made
+  shipping the pool first safe. `prepare()` and `publish()` stay synchronous and serialise
+  the workers for their few seconds; the accepted consequence is a wall-clock kill timer
+  firing a few seconds late while a peer is cloning.
+
+**The blast radius held.** `fileMemoryNotes`, `queueSummary`, `shouldFileMemory` and the
+literal `exitCode !== 20` all survived a restructure that moved the entire task body into a
+new function — four frozen acceptance suites and one Docker suite assert them against
+`run.js` source, and nothing re-runs a frozen directory, so a guard criterion that was green
+*before* the change is what carried them.
+
+**Host obligation, unchanged from what the planning session named:** the three runner Docker
+suites make 50 literal `grep -q` assertions against log strings `run.js` and `pause.js` emit,
+and no Docker-free suite can see them. Run the sweep on the reference host after this merges.
+A real run at concurrency > 1 is also still unproven — that needs a daemon, an image and a
+Beads database, and it is the first thing to try on a daytime batch of small tasks.
+
 ## What's next
 
 **The queue drained again on 2026-07-26**, after `repo-4l8` (the epic filter, planned and
@@ -863,10 +911,11 @@ design's central bet, and it is the first day it paid out repeatedly.
 
 ## Test suites
 
-All but seven drive real Docker and share one network, so they must never run concurrently
+All but eight drive real Docker and share one network, so they must never run concurrently
 (`test-runner-memory.sh`, `test-changelog.sh`, `test-sanitize.sh`,
-`test-agent-hooks.sh`, `test-network-names.sh`, `test-lock.sh` and
-`test-sweep-hygiene.sh` are the exceptions — see below; they need neither).
+`test-agent-hooks.sh`, `test-network-names.sh`, `test-lock.sh`,
+`test-sweep-hygiene.sh` and `test-concurrency.sh` are the exceptions — see below; they need
+neither).
 **`scripts/test-all.sh` is the sweep** — it holds a lock, runs every suite sequentially,
 kills one that hangs (`--timeout`, default 900s), **reclaims what each suite leaked after
 every suite** (change-log row `repo-zje`), and writes per-suite logs plus a summary table
@@ -896,6 +945,7 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-network-names.sh` | per-project network and proxy names — derivation, and that they reach the scripts |
 | `scripts/test-lock.sh` | the per-project run lock — refusal, path identity, takeover, release |
 | `scripts/test-sweep-hygiene.sh` | sweep hygiene — what the sweep reclaims after a suite, what it must never touch, and that reclaiming changes no verdict |
+| `scripts/test-concurrency.sh` | the §7 `concurrency` knob — the bound, the worker pool, ready-queue result ordering, and the asynchronous execution seam |
 
 **`scripts/test-runner-memory.sh` is one of the seven suites that need no Docker**
 (repo-dhp): it
@@ -1062,6 +1112,23 @@ case 3 in the wrapper plants a term in a file containing a NUL and fails the sui
 checker does not find it, so that specific blindness cannot come back. This is the
 "assert the artifact is *right*, not merely present" rule (§3.6) applied to an audit: a
 scanner reporting zero findings and a scanner that cannot see the file look identical.
+
+**`scripts/test-concurrency.sh` is the eighth** (`repo-teq`): it requires `runner/run.js` as
+a module and drives the exported `drainQueue` directly, plus the `PIPELINE_EXEC_STUB` branch
+of `executeTask` with shell stubs of its own — no Docker, no daemon, no target repo. Its
+first check is that requiring `run.js` runs *nothing*, in a child process before this suite
+requires it in-process: an unguarded `main()` would `process.exit` on the missing config and
+the suite would report nothing at all rather than a failure.
+
+Three things live here that the frozen directory cannot cover going forward. **The seam is
+asynchronous**, proved by rendezvous between two real child processes — under the old
+`spawnSync` the first stub gives up waiting for a peer that cannot start until it returns, so
+the check is discriminating and not decorative. **The stub's environment contract**
+(`ISSUE_ID`, `TASK_DIR`, `WORKSPACE`, `RUN_DIR`) and its `124 -> killed` mapping are pinned,
+because three Docker suites depend on both and none can run in a container. And **the
+scheduler's edges**: an empty queue, a bound wider than the queue, a bad bound, and a task
+body that throws. Like every suite extracted this way, the frozen `tests/acceptance/repo-teq/`
+stayed exactly where it is — extract, never move.
 
 **Full re-run 2026-07-26**, after the five dogfood/queue PRs merged to `main`: all 18
 suites green, including `e2e.sh` (32 assertions, real PR opened and cleaned up). Two were
