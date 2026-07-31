@@ -80,6 +80,9 @@ real use. All are fixed.
    the cap is now `maxPauseCycles` in `run.config.json` (default 96). Making it
    configurable was part of the fix — while hardcoded, the stop condition was untestable,
    which is exactly why the gap survived three rounds of review and 21 build tasks.
+   (The carry now lives on the run-level pause gate rather than in a `run.js` local, and
+   the cap counts for the whole run — `repo-i9y`, below. The duplicate hard-coded 96 inside
+   `pause.js` went with it: two copies of one default is the same defect waiting.)
 7. **The §3.6 In channel was unobservable** (found 2026-07-26 while answering "is memory
    actually updating?"). The channel *worked* — but `exportMemory` returns `{ok:true}`
    for a successful export of **zero** memories, and `workspace.js` logged only on
@@ -576,7 +579,7 @@ premise-breaking rather than cosmetic, so the shape changed twice mid-session.
 | 1 | `repo-sls` | bound every runner `bd` call | **shipped** 2026-07-31, passed on attempt 1 (below) |
 | 1 | `repo-os9` | refuse a second run against one project | already frozen, ready |
 | 2 | `repo-teq` | the bounded worker pool (the `concurrency` knob) | **shipped** 2026-07-31, passed on attempt 1 (below) |
-| 3 | `repo-i9y` | park the whole run, not each task | approved intent, blocked, unfrozen |
+| 3 | `repo-i9y` | park the whole run, not each task | **shipped** 2026-07-31, passed on attempt 1 (below) |
 
 **The two findings that changed the plan**, both worth keeping because both are about *how the
 batching discipline fails*, not about parallelism:
@@ -719,8 +722,10 @@ is the obligation no task's own verifier can discharge.
 
 **Blocked, and it is the only thing blocking:** `gh pr merge` is denied by this environment's
 permission classifier, so both of this repo's PRs and both of the target's are open. The four remaining issues here
-(`repo-teq`, `repo-i9y`, `repo-diy`, `repo-ixa`) are blocked *and* unfrozen, and `repo-teq` genuinely
-builds on `repo-sls`, so nothing further can run until those merge.
+(`repo-teq`, `repo-i9y`, `repo-diy`, `repo-ixa`) were blocked *and* unfrozen, and `repo-teq` genuinely
+builds on `repo-sls`, so nothing further could run until those merged. `repo-teq` and
+`repo-i9y` have since been frozen and shipped, in that order (both below); `repo-diy` and
+`repo-ixa` are still blocked and unfrozen.
 
 ## The bounded worker pool (`repo-teq`, 2026-07-31)
 
@@ -751,8 +756,9 @@ reasoning.
   unless N task bodies are genuinely in flight, and the same fixture at concurrency 1 must
   record the give-up marker — which is what makes the check discriminating rather than
   something an unbounded pool also passes. A timing margin would flake on a loaded machine.
-- **What it deliberately did not do:** the rate-limit park stays per task (`repo-i9y`), so at
-  depth > 1 N parked tasks each run their own pause loop against one shared subscription
+- **What it deliberately did not do:** the rate-limit park stayed per task — `repo-i9y`
+  (below) has since made it run-level, so at
+  depth > 1 N parked tasks each ran their own pause loop against one shared subscription
   window — wasteful, not corrupting, and unreachable at the default, which is what made
   shipping the pool first safe. `prepare()` and `publish()` stay synchronous and serialise
   the workers for their few seconds; the accepted consequence is a wall-clock kill timer
@@ -769,6 +775,70 @@ suites make 50 literal `grep -q` assertions against log strings `run.js` and `pa
 and no Docker-free suite can see them. Run the sweep on the reference host after this merges.
 A real run at concurrency > 1 is also still unproven — that needs a daemon, an image and a
 Beads database, and it is the first thing to try on a daytime batch of small tasks.
+
+## The run-level rate-limit park (`repo-i9y`, 2026-07-31)
+
+Batch 3's task ran and passed on attempt 1, and it is the other half of §7. A usage limit
+is a property of the **subscription window**, not of a task, so with `repo-teq`'s pool in
+place N parked tasks were N uncoordinated sleeps against one window, each with its own cap.
+`runner/pause.js` now exports **`createPauseGate(cfg, log, opts)`**; `runner/run.js` builds
+exactly one gate in `main()` and hands it to every `runOneTask(cfg, issue, log, token, gate)`,
+and `waitForWindow` is no longer called from `run.js` at all. §4.7 and §7 are amended and
+change-log row `repo-i9y` carries the reasoning.
+
+- **One shared wait, and joining never extends it.** The first exit 20 of the run opens the
+  wait on *that* task's reported reset time; a later reporter joins the one in flight. The
+  join decision is made **synchronously on entry, before any await** — that is the whole
+  mechanism, because N containers hitting the limit in the same tick must find one wait
+  between them, and an `await` before the check gives each of them its own. If the window
+  is still closed when the wait ends, the relaunched tasks exit 20 again and open a fresh
+  one: self-correcting, and bounded by the run-level cap rather than by N per-task caps.
+- **Park means admit no new work, never kill what is running.** §7's original wording read
+  as parking live containers. It does not: killing one discards agent work that may be
+  minutes from finishing and spends wall-clock budget for nothing, and a container whose
+  window is genuinely closed hits the limit and exits 20 by itself, joining the same wait.
+  The frozen test judges this from an events array — peers finish with their own results
+  while the gate is closed, and the held task records no start until it reopens.
+- **The counter is read from `result.pauses` and from nowhere else.** `waitForWindow`
+  resolves `{resumed:true, pauses:n}` **or** `{resumed:false, reason}` — and the failure
+  branch carries **no count**. `run.js` had been papering over that with
+  `waited.pauses || waitCycles`. The gate takes a missing count as "nothing new to report"
+  and leaves `gate.cycles` exactly as it was: never `NaN`, never reset to zero. A
+  `resumed:false` also exhausts the gate. `pause.js`'s duplicate hard-coded `96` now defers
+  to `config.js`'s `DEFAULTS`, and its comment claiming "deadline exceeded / operator stop"
+  stop conditions is gone — those never existed; the cycle cap is the only one.
+- **Two quantities were both called `pauses`, and they stay separate.** `pause.js`'s means
+  *wait cycles* and is now run-level; `run.js`'s local means *relaunches*, stays per task,
+  and is what the manifest row reports — `runner/report.js` and `schemas/run.schema.json`
+  read that field and neither was this task's to touch. The log line still renders as
+  `rate limit hit (pause 1)`, because `scripts/test-runner-pause.sh` greps the **digit** and
+  a run-level count logged in the per-task slot would slip past a prefix match.
+- **Admission sits before `claim()`, which is what splits the two populations.** *Parked* —
+  launched, exited 20, waited, gave up: issue stays `in_progress`, normal `paused` row,
+  unchanged. *Refused* — the cap had already fired, so it never launched: no `bd`
+  subcommand is invoked **at all**, so the issue stays `open` for the next run. It still
+  resolves a synthesized `{issueId, outcome:'paused'}` row, because `main()`'s
+  `.filter(Boolean)` would otherwise erase it from `run.json` entirely — a silent hole in
+  the record of an unattended overnight run, and no schema edit was needed since the
+  outcome enum already admits `paused` and the row is `additionalProperties:false`.
+
+**The blast radius held again**, and it is the same one `repo-teq` navigated. `exitCode !== 20`
+had to stay on a non-comment line of `run.js` **specifically** — `scripts/test-runner-pause.sh:136`
+greps it out of that file by name and `repo-teq`'s frozen A6 asserts it there — so a
+tidier "move the exit-code handling into `pause.js`" would have passed every gate the
+implementer can run and broken two suites silently. `wall-clock budget exhausted` is used
+by that suite as a **negative** assertion, so drift there goes vacuously green rather than
+red. Those strings are held by a guard criterion because nothing re-runs a frozen directory
+and this repo declares no `regressionCommand`.
+
+**Host obligations, none of which a frozen test can hold:** run `bash scripts/test-runner-pause.sh`
+and `bash scripts/test-runner-queue.sh` on the reference host — criterion 8 keeps the
+strings, but only a real run proves the *sequence*; run `bash scripts/test-all.sh`, since
+the new suite is swept by glob and has never run there; and fix
+`scripts/test-runner-queue.sh`'s now-false "the cap is per-task" **comment** (comment only,
+never its assertions) — that file is a frozen-by-constraint suite this task could neither
+edit nor execute. A real run at concurrency > 1 against a genuine usage limit stays
+unproven until a daytime batch hits one.
 
 ## What's next
 
@@ -892,15 +962,16 @@ design's central bet, and it is the first day it paid out repeatedly.
   starts, so two tasks touching the same file produce a conflict once the first merges
   (seen with PRs #2 and #3). Options: fork from latest, or partition concurrency by
   declared path ownership. Needed before any large wave.
-- **No concurrency *within* a run** — the runner is a sequential `for` loop, by design.
-  Since `repo-jur` several runner processes, one per project, can be in flight at once
-  (each still sequential over its own queue), and since `repo-os9` a second run against
-  the *same* project is refused rather than trusted not to happen; what is unbuilt is one
-  runner working several tasks of one project at once (§7, change-log row
-  `parallelism-v2`). Note that
-  neither multiplies subscription capacity: N containers exhaust the same usage window N
-  times faster, then all park — concurrency across projects buys elapsed time, not
-  throughput.
+- **Concurrency *within* a run is opt-in and small** — the runner defaults to the
+  sequential loop. Since `repo-jur` several runner processes, one per project, can be in
+  flight at once (each over its own queue), and since `repo-os9` a second run against the
+  *same* project is refused rather than trusted not to happen; since `repo-teq` one runner
+  works up to `concurrency` tasks of one project at once (default 1, ceiling 3); and since
+  `repo-i9y` a usage limit parks the whole run rather than each task separately. §7 is
+  built. Note that none of it multiplies subscription capacity: N containers exhaust the
+  same usage window N times faster, then the run parks as a whole — concurrency buys
+  elapsed time, not throughput, which is why the default is 1 and long unattended runs stay
+  sequential.
 - **No review triage.** Hundreds of PRs would exceed human review capacity; an auto-merge
   policy for clean, small, green diffs would be needed.
 - **Run-time advisors (slot 3)** are unbuilt. The sockets exist: `advisories` in
@@ -911,11 +982,11 @@ design's central bet, and it is the first day it paid out repeatedly.
 
 ## Test suites
 
-All but eight drive real Docker and share one network, so they must never run concurrently
+All but nine drive real Docker and share one network, so they must never run concurrently
 (`test-runner-memory.sh`, `test-changelog.sh`, `test-sanitize.sh`,
 `test-agent-hooks.sh`, `test-network-names.sh`, `test-lock.sh`,
-`test-sweep-hygiene.sh` and `test-concurrency.sh` are the exceptions — see below; they need
-neither).
+`test-sweep-hygiene.sh`, `test-concurrency.sh` and `test-pause-gate.sh` are the exceptions
+— see below; they need neither).
 **`scripts/test-all.sh` is the sweep** — it holds a lock, runs every suite sequentially,
 kills one that hangs (`--timeout`, default 900s), **reclaims what each suite leaked after
 every suite** (change-log row `repo-zje`), and writes per-suite logs plus a summary table
@@ -946,6 +1017,7 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-lock.sh` | the per-project run lock — refusal, path identity, takeover, release |
 | `scripts/test-sweep-hygiene.sh` | sweep hygiene — what the sweep reclaims after a suite, what it must never touch, and that reclaiming changes no verdict |
 | `scripts/test-concurrency.sh` | the §7 `concurrency` knob — the bound, the worker pool, ready-queue result ordering, and the asynchronous execution seam |
+| `scripts/test-pause-gate.sh` | the §7 run-level rate-limit park — one shared wait, one run-level cycle cap, the three admission states, and a refused task that never touches Beads |
 
 **`scripts/test-runner-memory.sh` is one of the seven suites that need no Docker**
 (repo-dhp): it
@@ -1129,6 +1201,18 @@ because three Docker suites depend on both and none can run in a container. And 
 scheduler's edges**: an empty queue, a bound wider than the queue, a bad bound, and a task
 body that throws. Like every suite extracted this way, the frozen `tests/acceptance/repo-teq/`
 stayed exactly where it is — extract, never move.
+
+**`scripts/test-pause-gate.sh` is the ninth** (`repo-i9y`): it drives `createPauseGate`
+directly and `runner/run.js`'s exported `runOneTask` through its seams (`PIPELINE_BD_CMD`,
+`PIPELINE_EXEC_STUB`, `PIPELINE_GH_CMD`, and a local bare repo as `targetRepoRemote`), so
+the whole run-level park is provable with no daemon. **Nothing in it turns on wall clock**:
+"has not settled yet" is judged by draining the event loop with `setImmediate` and ordering
+is judged from an events array, because a park is a thing that *sleeps* and a suite that
+measured it by elapsed time would either take a day or flake on a loaded machine. It
+asserts its own check count (≥ 90) as well as its exit code, because a park that is never
+exercised looks exactly like a park that works. What it deliberately does not cover: a real
+run at concurrency > 1 against a genuine usage limit, which needs a closed subscription
+window and stays a host obligation.
 
 **Full re-run 2026-07-26**, after the five dogfood/queue PRs merged to `main`: all 18
 suites green, including `e2e.sh` (32 assertions, real PR opened and cleaned up). Two were
