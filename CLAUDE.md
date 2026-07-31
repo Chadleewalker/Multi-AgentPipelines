@@ -131,7 +131,13 @@ note keys are cited so the trail back to the run survives.
 - **All runner Beads access goes through `runner/bd.js`** (`bd()` / `bdJson()`). That is
   the seam `PIPELINE_BD_CMD` stubs, and it is the only reason the Docker-free acceptance
   tests can exercise runner code at all. New runner code that shells `bd` directly is
-  untestable by construction. (`repo-4gp-note-2`.)
+  untestable by construction — and, since change-log row `repo-sls`, unbounded: every
+  `spawnSync` in `bd.js` is built from the exported `spawnOptions(cfg)`, whose `timeout` is
+  `bdTimeoutMs` (default 60000), so a `bd` that never returns fails loudly instead of parking
+  the run. Keep that true in both directions: a new spawn inside `bd.js` uses the builder, and
+  `bd()` stays **synchronous** — `spawnSync` blocking the event loop is what stops two Beads
+  calls interleaving over one embedded Dolt database, which is what hard rule 1 will rest on
+  once tasks run concurrently. (`repo-4gp-note-2`.)
 - **Guard line endings at the point of parsing — and nowhere else.** The working copy on
   this machine is CRLF while every container sees LF, so anything that splits lines,
   anchors a regex at `$`, or compares file content has to say so explicitly. The existing

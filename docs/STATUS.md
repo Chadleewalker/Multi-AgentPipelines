@@ -177,6 +177,13 @@ real use. All are fixed.
   probe, no Docker fallback — which is how the Docker-free acceptance tests exercise
   `runner/memory.js`. It takes absolute precedence over every other path in `bd()`, so
   **production must never set it**; it is the sibling of `PIPELINE_AGENT_CMD` (§4.3).
+  Bounded like every other path since `repo-sls` — a stub that hangs fails the test loudly
+  at `bdTimeoutMs` instead of hanging the suite.
+- **`bd` can print its whole answer and then never exit**, and two `bd` calls over one
+  embedded Dolt database can block on each other forever. Both were seen on 2026-07-28 and
+  are why every runner Beads call is now bounded (`repo-sls`, above). If you write a new
+  host-side `bd` invocation, put it through `runner/bd.js` — a bare `spawnSync('bd', …)`
+  elsewhere is unbounded again, and the failure it produces is a run that parks silently.
 - **The Claude CLI writes chatter around its output**, and a warning line on stdout is
   enough to break a whole-file `JSON.parse`. Never parse an agent log as one document:
   `pipeline/envelope.js` scans lines bottom-up for the first that parses to an object with
@@ -503,7 +510,7 @@ premise-breaking rather than cosmetic, so the shape changed twice mid-session.
 
 | Batch | Issue | Task | State |
 |---|---|---|---|
-| 1 | `repo-sls` | bound every runner `bd` call | **frozen**, ready |
+| 1 | `repo-sls` | bound every runner `bd` call | **shipped** 2026-07-31, passed on attempt 1 (below) |
 | 1 | `repo-os9` | refuse a second run against one project | already frozen, ready |
 | 2 | `repo-teq` | the bounded worker pool (the `concurrency` knob) | approved intent, blocked, unfrozen |
 | 3 | `repo-i9y` | park the whole run, not each task | approved intent, blocked, unfrozen |
@@ -569,6 +576,39 @@ that executes them is how suites go stale (the T12 failure — three staleness b
 nobody re-ran). Their acceptance tests get written in the planning session immediately before
 their own run, which is PLANNING.md's rule and the same posture `repo-iok` and `repo-sls` itself
 have held since 2026-07-28.
+
+## Every runner `bd` call is bounded (`repo-sls`, 2026-07-31)
+
+Batch 1's first task ran and passed on attempt 1. `runner/bd.js` had called `spawnSync` with
+no `timeout`, so a `bd` that never returned parked the run forever — observed twice on
+2026-07-28 (complete JSON output printed, process never exited; and two calls over one
+embedded Dolt database blocking on each other). The sweep harness killed four suites at 900s;
+a real run has no such backstop, and the worst window is *after* the container exits, where
+the `bd remember` / finish pair runs — a hang there strands finished work with the issue still
+`in_progress` and the outcome unwritten.
+
+- **One builder, every spawn.** `spawnOptions(cfg)` is exported from `runner/bd.js` and every
+  `spawnSync` in the module is constructed from it — including both host-`bd` probes in
+  `hostBdSpec`, because a probe that hangs parks a run exactly as a call that hangs does, and
+  because a Docker-free test can only execute the `PIPELINE_BD_CMD` branch. `killSignal` is
+  `SIGKILL`: a bound a wedged process can decline to honour is not a bound.
+- **`bdTimeoutMs` in `run.config.json`**, default 60000, validated by `loadConfig` as a
+  positive whole number in the same error shape as `maxAttempts` and `maxPauseCycles`, and
+  present in `run.config.example.json`. A config field, not a `PIPELINE_*` variable — that
+  namespace is test seams only, and the planning session's first draft demoted it to an
+  environment variable purely to keep two tasks in one batch (above).
+- **Loud, never silent.** A timeout returns status 124 with stderr naming the bound and the
+  field that set it, so `bdJson` yields `ok:false` with that text and cannot be mistaken for a
+  successful empty query — the distinction this whole change exists to preserve. No caller
+  changed: every one of them already handles a non-zero status the way §4.11 requires.
+- **`bd()` stays synchronous, and that is now written down** (§4.10, change-log row
+  `repo-sls`). `spawnSync` blocking the event loop is what stops two `bd` calls interleaving
+  over one embedded database; an async rewrite would delete the sole-writer guarantee silently,
+  at exactly the moment `repo-teq`'s worker pool starts running tasks concurrently.
+
+`repo-teq` is what this unblocks — it is also why the bound shipped first: under `spawnSync`
+one hung call stalls *every* concurrent task, not one, and concurrent access to a single
+embedded Dolt database is precisely the load that produced the original hang.
 
 ## What's next
 
