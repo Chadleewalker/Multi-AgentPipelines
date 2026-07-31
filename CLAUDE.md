@@ -68,6 +68,8 @@ code actually encodes, so a port should read them as the list of things to re-ch
 
 ```bash
 # a real run against a target project (run.config.*.json is git-ignored — copy the example)
+# One run per project: a second one against the same target repo is refused by name before
+# anything starts, and a lock left by a killed run is taken over automatically (§4.12).
 node runner/run.js --config run.config.<project>.json
 
 # the full sweep — every suite, one at a time, with a summary table
@@ -80,12 +82,13 @@ bash scripts/e2e.sh            # add --keep to leave branches and PRs up for ins
 bash scripts/test-verifier.sh
 bash scripts/test-runner-container.sh
 
-# the five suites that need no Docker — seconds, safe to run anywhere, even in a container
+# the six suites that need no Docker — seconds, safe to run anywhere, even in a container
 bash scripts/test-runner-memory.sh
 bash scripts/test-changelog.sh     # DESIGN.md §12 row identity (CHANGELOG_FILE re-aims it)
 bash scripts/test-sanitize.sh      # publication hygiene (SANITIZE_FIXTURE_DIR re-aims it)
 bash scripts/test-agent-hooks.sh   # no tracked agent hooks (AGENT_HOOKS_FIXTURE_DIR re-aims it)
 bash scripts/test-network-names.sh # per-project network + proxy names (§4.8) reach the scripts
+bash scripts/test-lock.sh          # the per-project run lock (§4.12) — refuse, take over, release
 ```
 
 Suites are slow (real containers) and **share one Docker network** — run them one at a
@@ -217,7 +220,12 @@ the pipeline working on the pipeline's own code. The rules:
   `sh scripts/test-network-names.sh` (`tests/unit/network-names.test.js`), which computes
   names and runs a recording stand-in for `scripts/pipeline-net.sh`: run it if you touch
   `runner/config.js`, `runner/preflight.js` or either network script, because a run that
-  falls back to the shared network destroys a concurrent run's route out. Any new Docker-free
+  falls back to the shared network destroys a concurrent run's route out — and
+  `sh scripts/test-lock.sh` (`tests/unit/lock.test.js`), which locks temp directories under
+  a temp pipeline root: run it if you touch `runner/lock.js`, `runner/preflight.js`'s gate
+  order or `runner/run.js`'s exit path, because a lock that stops being the *first* gate,
+  or stops being released, either lets two runners drain one queue or blocks the project
+  until someone deletes a file. Any new Docker-free
   suite belongs beside them in
   `tests/unit/`, and its seam stub must be a `.js` file invoked through
   `process.execPath`, never a `#!/bin/sh` script: `spawnSync` without a shell fails such a
