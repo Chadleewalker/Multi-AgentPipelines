@@ -199,8 +199,18 @@ function d3() {
     { name: 'a failing suite still fails when the listing itself errors', suiteExit: 1, listFails: true, expect: 1 },
     { name: 'a passing suite still passes with debris present', suiteExit: 0, rmFails: false, expect: 0 },
   ]) {
-    const { root } = makeRoot(Object.assign({ networkSurvives: true }, kase));
+    const { root, rec } = makeRoot(Object.assign({ networkSurvives: true }, kase));
     const r = runSweep(root);
+    // HARNESS FIRST, and this one is load-bearing. `test-all.sh` aborts with
+    // "FATAL Docker is not running" when `docker info` fails, and the verifier runs this suite
+    // inside a container with NO Docker — so an exit code read without proving the stand-in was
+    // reached says nothing about reclamation, and the "a passing suite still passes" case would
+    // fail on the machine that judges it while passing on the machine that wrote it. Every docker
+    // call in the sweep path, INCLUDING the `docker info` and `docker image inspect` prechecks,
+    // must go through $SWEEP_DOCKER, or this suite can never pass where it is actually run.
+    ok(readRecord(rec).length > 0,
+      `D3 harness: the stand-in was reached for "${kase.name}" — if this fails the sweep never got `
+      + 'past its own Docker precheck, and nothing below it is meaningful');
     ok(r.status === kase.expect,
       `D3 [guard] ${kase.name} (sweep exit ${r.status}, expected ${kase.expect})`);
     const summary = latestSummary(root);
@@ -254,6 +264,15 @@ function d5() {
     'D5 test-all.sh does not tear the network down itself');
   ok(/sweep-reclaim/.test(src),
     'D5 …because it delegates to the reclaimer instead');
+
+  // And every docker call in the sweep path is routed, prechecks included. Without this the
+  // suite cannot pass in the container the verifier runs it in: `docker info` would abort the
+  // sweep before the stand-in was ever consulted.
+  const bare = src.split('\n').filter((l) => /(^|[^_])\bdocker\s/.test(l) && !/SWEEP_DOCKER/.test(l));
+  ok(bare.length === 0,
+    'D5 every docker call in test-all.sh goes through $SWEEP_DOCKER, including the `docker info` '
+    + 'and `docker image inspect` prechecks — a bare call aborts the sweep in a container that has '
+    + `no Docker (offending: ${bare.map((l) => l.trim().slice(0, 44)).join(' | ') || 'none'})`);
 }
 
 // ---------------------------------------------------------------------------------------------
