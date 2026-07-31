@@ -157,7 +157,17 @@ function verdictFor(real, control, controlKind = 'conventional') {
         + 'behaviour X still holds") and must be labelled [guard] in the spec.',
     };
   }
-  // Real is non-zero. Only the control can say whether that means anything.
+  // Real is non-zero — but WHICH non-zero. By near-universal convention a test runner exits 1
+  // when tests fail and 2 or more when it could not run them: a parse error, a missing import,
+  // no tests collected. The control cannot separate those, because it only proves the harness
+  // works on OTHER tests — a suite whose own script fails to load leaves the control perfectly
+  // green. Caught by exactly that: a frozen suite with a GDScript parse error exited 2 against a
+  // green control, and this gate called it RED. It was never discriminating; it never ran.
+  //
+  // So anything above 1 is indeterminate unless a project says otherwise. Costs a false
+  // indeterminate on a runner that uses 2 for ordinary failure; that direction is the safe one,
+  // because it refuses to bless rather than refusing to notice.
+  // Exit 1: a genuine test failure. Only the control can say whether the harness was working.
   if (control.error || control.signal || control.status === null || control.status !== 0) {
     return {
       verdict: 'indeterminate',
@@ -175,6 +185,19 @@ function verdictFor(real, control, controlKind = 'conventional') {
           + 'So its non-zero exit carries no information about these tests specifically — the '
           + 'harness is broken independently of the spec. Fix it before reading anything into '
           + 'the red.',
+    };
+  }
+  if (real.status > 1) {
+    return {
+      verdict: 'indeterminate',
+      exit: 2,
+      headline: `the tests exited ${real.status}, which is "could not run", not "failed"`,
+      detail:
+        'A runner exits 1 when tests fail and 2 or more when it could not run them — a parse '
+        + 'error, a missing import, no tests collected. The control is green, so the harness '
+        + 'itself is fine: it is THIS suite that did not execute. Red proves nothing until the '
+        + 'suite runs, so fix the suite and re-run. (If this project genuinely uses this code for '
+        + 'ordinary test failure, the gate needs to be told so.)',
     };
   }
   return {

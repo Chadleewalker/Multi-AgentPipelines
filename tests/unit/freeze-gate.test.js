@@ -75,6 +75,17 @@ check('a null exit status is never treated as 0',
 check('a control that could not run is indeterminate',
   verdictFor(ok(1), { ...ok(null), error: 'ENOENT' }).verdict === 'indeterminate');
 
+// A suite that could not RUN is not a suite that failed. Conventionally a runner exits 1 for
+// failing tests and 2+ for could-not-run: a parse error, a missing import, nothing collected.
+// The control cannot catch this -- it proves the harness works on OTHER tests, so a suite whose
+// own script fails to load leaves the control perfectly green. Found in anger: a frozen GDScript
+// suite with a parse error exited 2 against a green control and this gate called it RED.
+v = verdictFor(ok(2), ok(0));
+check('exit 2 with a green control is indeterminate, not red', v.verdict === 'indeterminate' && v.exit === 2);
+check('the message says could-not-run rather than failed', /could not run|did not execute/i.test(v.headline + v.detail));
+check('exit 5 is indeterminate too', verdictFor(ok(5), ok(0)).verdict === 'indeterminate');
+check('exit 1 with a green control is still red', verdictFor(ok(1), ok(0)).verdict === 'red');
+
 // --- guards ---------------------------------------------------------------------------------
 
 const SPEC = [
