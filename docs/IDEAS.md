@@ -94,8 +94,45 @@ Two hard boundaries, both inherited:
   what had to happen instead. Note the honest difficulty: deciding a box is tickable means judging
   whether a claim is *gated*, not merely true, and an agent that ticks boxes optimistically is worse
   than one that never ticks any. Possibly the right shape is narrower — have the docs phase report
-  *candidate* ticks as evidence, the way  and  already report, and leave the edit to
+  *candidate* ticks as evidence, the way `note` and `concern` already report, and leave the edit to
   the host. 2026-07-31
+- **Tell the docs phase which files it owns, and stop giving living documents dated names** — the
+  docs phase's entire file-set instruction is one line in `pipeline/entrypoint.sh` ("Update any
+  in-repo documentation affected by the change (README, docs/)"), naming no manifest. It works
+  anyway, because the workspace is a full clone and the target's `CLAUDE.md` auto-loads into every
+  invocation — so the reading table *is* the manifest, by accident rather than by design. Making
+  that explicit is a prompt change plus an assertion against the *generated* prompt file, the way
+  change-log row `repo-1cy` established.
+  The second half is a convention nobody had written down: **a date in a filename reads as
+  immutable.** An agent will not rewrite a document named for a date, and should not — that is a
+  record of that date, not a living file. A repo that wants a maintained status document must not
+  name it after the day it was started, and the failure looks like forgetfulness rather than like
+  the missing mechanism it is. 2026-07-31
+  *Found by checking which documents task docs phases have actually touched: nine
+  container-authored commits have amended this repo's `docs/STATUS.md`, one adding 41 lines.*
+
+- **Give every onboarded target a living status document, not just this repo** — `docs/STATUS.md`
+  here is maintained by the docs phase and cited from `CLAUDE.md`'s reading table; a target project
+  gets neither by default, so whatever stands in for one is hand-written and goes stale the next
+  time a task lands. Onboarding already creates an issue template, an idea inbox and a control
+  fixture; a status file and its reading-table row are the same kind of cheap one-time wiring, and
+  they are what make the docs phase maintain it afterwards.
+  The pay-off is per-target and repeats: every future adoption inherits a status document a machine
+  keeps current, instead of one more file that decays and is caught only when a review happens to
+  look. 2026-07-31
+
+- **Reconcile a target's spec against the merged tree at planning step 0** — the entry *Have the
+  docs phase tick the box* records the drift; this is the other end of the same failure. A
+  planning session reads the spec
+  as the statement of what is unbuilt, so a stale box means the session is cut against a false
+  picture, and the alternative that actually happened was auditing the checklist by hand before
+  every planning session.
+  Worth parking separately because the fix sits in a different place and survives the other one
+  failing or being judged too risky. Step 0 already reads this inbox, so it is the natural place to
+  also diff open spec items against what is merged — and *detecting* that a box's claim is already
+  true is mechanical in a way that ticking is not, because it needs no judgment about whether the
+  claim is gated. Reporting a candidate list to a human is strictly safer than editing the spec.
+  `Related:` *Have the docs phase tick the box* — either alone leaves the other half. 2026-07-31
 
 - **Let a task report progress while it is still running, roughly every 10 minutes** — right now
   a container is opaque from the outside: nothing is visible until it exits and the run report is
@@ -180,4 +217,4 @@ list: it is what stops the same idea being re-raised every few months.
 
 | Date | Idea | Why not |
 |---|---|---|
-| — | — | — |
+| 2026-07-31 | A documentation-updater agent owning "all relevant documentation", maintaining its own list of the documents that need writing to | The mechanism was under-used, not missing. The docs phase already maintains every file named in `CLAUDE.md`'s reading table — nine container-authored commits have amended `docs/STATUS.md` — so the fix is to *name the files*, not to add an agent. A second agent would duplicate a phase that exists and put an LLM where hard rule 5 wants evidence only. The half worth keeping became the inbox entry on telling the docs phase which files it owns |

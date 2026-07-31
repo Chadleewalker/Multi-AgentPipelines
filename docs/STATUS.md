@@ -731,6 +731,13 @@ design's central bet, and it is the first day it paid out repeatedly.
   being a liability, the cheap fix is a suite asserting the handful of claims in it that
   are mechanically checkable (the agent-call count, the advisor names, the status-file
   field list), so stale means a red sweep rather than a lucky catch.
+  **Sharpened 2026-07-31: the docs phase is not neglecting this file, it is obeying.** The reading
+  table's own row says the HTML map is "not updated by task docs phases", and that table reaches
+  every docs-phase invocation — the workspace is a full clone, so the target's `CLAUDE.md`
+  auto-loads, and the prompt in `pipeline/entrypoint.sh` names no manifest of its own. The
+  exclusion is doing exactly what it says. So this is a choice between two fixes rather than one:
+  flip the label and let the docs phase own the file, or keep the exclusion and add the mechanical
+  claim-check above. Doing both would be redundant.
 - **Batched tasks collide.** Every task forks from the integration branch as the run
   starts, so two tasks touching the same file produce a conflict once the first merges
   (seen with PRs #2 and #3). Options: fork from latest, or partition concurrency by
