@@ -81,6 +81,28 @@ Two hard boundaries, both inherited:
 
 <!-- Newest at the top. Nothing here is committed to. -->
 
+- **Verify a stated mechanic exists in the code before speccing against it** — a planning session
+  on 2026-07-31 spent a full exchange designing around "the ship can pull a tethered astronaut",
+  which the owner believed was how the game worked. It is not implemented at all: the suit is
+  integrated on gravity and the jetpack, the tether is added mass that only ever slows it, and
+  there is no ship-to-astronaut coupling anywhere. Nobody was wrong to believe it — it is in the
+  design's spirit and half the supporting parts exist — but the spec would have been written
+  against a mechanic with no code behind it. Worth having because the check is thirty seconds of
+  grep and the failure mode is a frozen task that cannot pass. Note this is the same disease as the
+  four checklist items found already-done the same day: **the map and the territory drift in both
+  directions**, and only reading the territory settles it. Candidate PLANNING.md step-1a addition.
+  2026-07-31
+
+- **Ask what else reads the number a new mechanic changes** — the same session found that adding a
+  line-gun would silently redefine a shipped, already-ticked spec item. `Astronaut.can_reach()`
+  credits the *magnet's* range against the gap home; if a line becomes the thing that saves you,
+  the RETURN lamp must credit the *line's* range instead — so the lamp's meaning changes without a
+  word of its specification changing, and its box stays ticked either way. Worth having because a
+  redefinition is invisible to every gate this project owns: the frozen tests still pass, the
+  regression net still passes, and the checklist still reads done. The scope critic asks "is this
+  several tasks"; nothing yet asks "what did this quietly re-mean". Cheap version: a spec
+  constraint naming every existing caller of any function the task touches. 2026-07-31
+
 - **Have the docs phase tick the box, not just write the note** — four times in one day the
   documentation phase updated a checklist item's prose and left its checkbox unticked, including
   once where the task itself had just built the gate the box was waiting for. The failure is
