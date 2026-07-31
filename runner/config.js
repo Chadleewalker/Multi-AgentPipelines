@@ -15,6 +15,7 @@ const DEFAULTS = {
   probeIntervalMinutes: 15,     // §4.7 rate-limit probe cadence
   maxPauseCycles: 96,           // §4.7 stop condition: total wait cycles per task (~24h at 15m)
   agentCommand: null,           // optional override -> PIPELINE_AGENT_CMD (§4.3 seam)
+  bdTimeoutMs: 60000,           // §4.1 bound on every runner `bd` call (runner/bd.js)
   // "opus" is an alias the CLI resolves to the CURRENT latest Opus, so the pipeline
   // follows model releases without edits here. The entrypoint records the RESOLVED
   // id (e.g. claude-opus-5) in the status file, so provenance stays exact even
@@ -99,6 +100,12 @@ function loadConfig(file) {
   // cap would either park forever or never pause at all.
   if (raw.maxPauseCycles !== undefined && !(Number.isInteger(raw.maxPauseCycles) && raw.maxPauseCycles > 0)) {
     throw new Error(`run.config.json: 'maxPauseCycles' must be a positive whole number`);
+  }
+  // The bound on every runner Beads call (§4.1). Milliseconds straight into spawnSync's
+  // `timeout`, which rejects a fractional or non-positive value late and obscurely — so
+  // reject it here, by name, before a run starts.
+  if (raw.bdTimeoutMs !== undefined && !(Number.isInteger(raw.bdTimeoutMs) && raw.bdTimeoutMs > 0)) {
+    throw new Error(`run.config.json: 'bdTimeoutMs' must be a positive whole number`);
   }
   for (const k of ['network', 'proxyName']) {
     if (raw[k] !== undefined && (typeof raw[k] !== 'string' || !raw[k].trim())) {
