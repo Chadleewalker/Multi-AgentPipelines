@@ -11,6 +11,11 @@
     "startedAt": { "type": "string", "format": "date-time" },
     "finishedAt": { "type": "string", "format": "date-time" },
     "targetRepo": { "type": "string" },
+    "concurrency": {
+      "description": "How many task containers this runner was configured to work at once (DESIGN.md 7). The configured or defaulted setting, not the observed peak in flight. Optional: manifests written before the knob existed carry no such field.",
+      "type": "integer",
+      "minimum": 1
+    },
     "abortedReason": {
       "description": "Present when the run ended before draining the queue (preflight failure, operator stop).",
       "type": "string"

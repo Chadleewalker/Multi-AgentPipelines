@@ -57,13 +57,24 @@ function parseArgs(argv) {
 async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClockMinutes) {
   const stub = process.env.PIPELINE_EXEC_STUB;
   if (stub) {
-    const r = require('child_process').spawnSync('bash', [stub], {
-      encoding: 'utf8',
-      cwd: ws.dir,
-      env: { ...process.env, ISSUE_ID: issue.id, TASK_DIR: taskDir, WORKSPACE: ws.dir, RUN_DIR: path.join(ws.dir, '.run') },
+    // Asynchronous on purpose (§7): spawnSync here would serialise every stubbed task and
+    // make the worker pool unobservable to exactly the Docker-free suites that prove it.
+    // The invocation stays `bash <stub>` — an explicit interpreter, so a stub script never
+    // fails with EFTYPE on the Windows host — and the environment contract is unchanged,
+    // because the existing Docker suites depend on both. Output is discarded rather than
+    // piped: spawnSync's pipes were never read either, and an unread pipe would now block
+    // a chatty stub instead of quietly filling a buffer nobody looks at.
+    const status = await new Promise((resolve) => {
+      const child = require('child_process').spawn('bash', [stub], {
+        cwd: ws.dir,
+        stdio: ['ignore', 'ignore', 'ignore'],
+        env: { ...process.env, ISSUE_ID: issue.id, TASK_DIR: taskDir, WORKSPACE: ws.dir, RUN_DIR: path.join(ws.dir, '.run') },
+      });
+      child.on('error', () => resolve(null));      // same shape spawnSync reported: no status
+      child.on('close', (code) => resolve(code));  // null when a signal killed it
     });
-    log.info(traceId, `exec stub exited ${r.status}`);
-    return { exitCode: r.status === 124 ? 'killed' : r.status };
+    log.info(traceId, `exec stub exited ${status}`);
+    return { exitCode: status === 124 ? 'killed' : status };
   }
   // Container names must be unique across relaunches (§4.7 resume).
   const attempt = (executeTask.counter = (executeTask.counter || 0) + 1);
@@ -76,6 +87,184 @@ async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClo
     token,
     wallClockMinutes: wallClockMinutes || cfg.wallClockMinutes,
   }, log, traceId);
+}
+
+// ---- the bounded worker pool (§7, §4.12) ------------------------------------------
+// ONE runner process working N tasks of one project at once, never N runner processes:
+// the sole-Beads-writer rule (§4.10) and claim-based double-pick prevention survive only
+// inside a single process. Several runners, one per project, are a different thing and
+// already shipped (change-log row `repo-jur`).
+//
+// `issues` is the ready queue in ready-queue order; `taskFn(issue)` is the runner's own
+// per-task body; at most `concurrency` of those calls are in flight at once. The resolved
+// array is INDEX-ALIGNED WITH `issues` — ready-queue order, never completion order — so a
+// task that finishes first does not overtake its neighbours in the manifest.
+//
+// N fixed workers pulling from a shared cursor, rather than a promise-set watched with
+// Promise.race: nothing here needs to know which task finished, only that a slot opened,
+// and the cursor is what keeps starts in ready-queue order at any depth.
+async function drainQueue(issues, taskFn, concurrency) {
+  const queue = Array.from(issues || []);
+  const n = Number.isInteger(concurrency) && concurrency > 0 ? concurrency : 1;
+  const results = new Array(queue.length);
+  let cursor = 0;
+  const worker = async () => {
+    for (;;) {
+      const i = cursor++;
+      if (i >= queue.length) return;
+      results[i] = await taskFn(queue[i], i);
+    }
+  };
+  const workers = [];
+  for (let i = 0; i < Math.min(n, queue.length); i++) workers.push(worker());
+  await Promise.all(workers);
+  return results;
+}
+
+// One task, start to finish: claim, export, workspace, container (with pause/resume),
+// memory, publish, Beads finish. Resolves to the task's manifest row, or null when the
+// issue could not be claimed and nothing ran. Everything it touches is per task, so N of
+// these can be in flight at once; the shared pieces it calls into — Beads through
+// runner/bd.js, the clone and the push — are synchronous and serialise themselves.
+async function runOneTask(cfg, issue, log, token) {
+  const tr = log.trace(issue.id);
+  const taskDir = log.taskDir(issue.id);
+  log.info(tr, `starting task (priority ${issue.priority ?? 2}): ${issue.title || ''}`);
+
+  if (!claim(cfg, issue.id)) {
+    log.error(tr, 'could not mark the issue in_progress; skipping');
+    return null;
+  }
+  const exported = exportIssue(cfg, issue.id);
+  if (!exported.ok) {
+    log.error(tr, `could not export the issue: ${exported.error}`);
+    finish(cfg, issue.id, { status: 'failed', beads: 'blocked' },
+      [`run ${log.runId}: could not export issue spec — ${exported.error}`]);
+    return { issueId: issue.id, outcome: 'failed' };
+  }
+  fs.writeFileSync(path.join(taskDir, 'issue.md'), exported.markdown);
+
+  // ---- per-task workspace: fresh clone, task branch, issue mounted (§4.2, T13) ----
+  // Synchronous (spawnSync: git clone), so it blocks the other workers for its few
+  // seconds. Deliberate (§7): against container times measured in tens of minutes it is a
+  // rounding error, and making it async would widen this into four more runner files. The
+  // visible consequence is that a wall-clock kill timer can fire a few seconds late while
+  // another worker is cloning. Same for publish() below (git push, gh pr create).
+  const ws = prepare(cfg, issue.id, exported.markdown, log, tr);
+  if (!ws.ok) {
+    log.error(tr, `workspace preparation failed: ${ws.reason}`);
+    finish(cfg, issue.id, { status: 'failed', beads: 'blocked' },
+      [`run ${log.runId}: workspace preparation failed — ${ws.reason}`]);
+    return { issueId: issue.id, outcome: 'failed' };
+  }
+
+  // ---- run the task, pausing and resuming across usage windows (§4.7) ----
+  // Active time accumulates across relaunches; paused time never counts (§4.6).
+  let exec;
+  let artifacts;
+  let activeMs = 0;
+  let pauses = 0;
+  // Wait cycles accumulate across relaunches, separately from `pauses` (which counts
+  // relaunches and is what the manifest reports). waitForWindow's stop condition is a
+  // cycle cap, so it has to be told what has already been spent — re-entering it fresh
+  // on every pause would reset the count and the cap could never fire (§4.7).
+  let waitCycles = 0;
+  for (;;) {
+    const remainingMinutes = cfg.wallClockMinutes - activeMs / 60000;
+    if (remainingMinutes <= 0) {
+      log.error(tr, 'active wall-clock budget exhausted across relaunches');
+      exec = { exitCode: 'killed', killed: true, durationMs: 0 };
+      artifacts = collectArtifacts(ws.dir, taskDir);
+      break;
+    }
+    exec = await executeTask(cfg, issue, taskDir, log, tr, ws, token, remainingMinutes);
+    activeMs += exec.durationMs || 0;
+    if (exec.durationMs !== undefined) {
+      log.info(tr, `container ran ${Math.round(exec.durationMs / 1000)}s` +
+        `${exec.killed ? ' (killed at budget)' : ''}; active total ${Math.round(activeMs / 1000)}s`);
+    }
+    artifacts = collectArtifacts(ws.dir, taskDir);
+
+    if (exec.exitCode !== 20) break;                       // not a rate limit — done
+
+    pauses += 1;
+    log.info(tr, `rate limit hit (pause ${pauses}) — parking the task; issue stays in_progress`);
+    // The park is still PER TASK (§7): at concurrency > 1, N parked tasks each run their
+    // own pause loop against one shared subscription window. Wasteful, not corrupting,
+    // and unreachable at the default of 1 — repo-i9y makes it run-level.
+    const waited = await waitForWindow(cfg, artifacts.status, log, tr, {
+      token, spentCycles: waitCycles, maxPauses: cfg.maxPauseCycles,
+    });
+    waitCycles = waited.pauses || waitCycles;
+    if (!waited.resumed) {
+      log.error(tr, `giving up on the pause: ${waited.reason}`);
+      break;                                               // stays exit 20 -> paused
+    }
+    log.info(tr, 'relaunching in a fresh container against the same workspace (attempt counter carries over)');
+  }
+  if (pauses) log.info(tr, `task resumed across ${pauses} usage-window pause(s)`);
+  const outcome = outcomeFor(exec.exitCode, artifacts.verify);
+  const commits = hasCommits(ws.dir, ws.forkPoint);
+  log.info(tr, `branch ${ws.branch}: ${commits ? 'has commits (push candidate)' : 'no commits (nothing to push)'}`);
+
+  // ---- memory out-channel (§3.6): file the agent's proposed notes, host as sole
+  // Beads writer. Which outcomes qualify is memory.js's rule, not the runner's —
+  // shouldFileMemory() states it once, where a Docker-free test can reach it.
+  // Non-fatal by construction: it never throws and never touches the outcome.
+  if (shouldFileMemory(outcome.status)) {
+    const mem = fileMemoryNotes(cfg, issue.id, artifacts.status);
+    if (mem.filed) log.info(tr, `memory: filed ${mem.filed} note(s) via bd remember`);
+    for (const err of mem.errors) log.error(tr, `memory: could not file a note — ${err}`);
+  }
+
+  // ---- publish: push what exists, PR what passed (§4.5, T16) ----
+  const published = publish(cfg, {
+    ws,
+    outcome,
+    hasCommits: commits,
+    issueMarkdown: exported.markdown,
+    status: artifacts.status,
+    verify: artifacts.verify,
+    issue,
+    runId: log.runId,
+  }, log, tr);
+
+  const notes = attemptNotes(log.runId, outcome, artifacts.status, ws.memoryCount);
+  if (published.prUrl) notes.push(`PR: ${published.prUrl}`);
+  else if (published.pushed) notes.push(`branch pushed for review: ${ws.branch} (no PR — ${outcome.status})`);
+  finish(cfg, issue.id, outcome, notes);
+
+  log.info(tr, `task finished: exit ${exec.exitCode} -> ${outcome.status}` +
+    (outcome.beads ? ` (issue ${outcome.beads})` : ' (issue stays in_progress)'));
+  const v = artifacts.verify;
+  const row = {
+    issueId: issue.id,
+    title: issue.title || '',
+    outcome: outcome.status,
+    exitCode: exec.exitCode,
+    branch: ws.branch,
+    pushed: published.pushed,
+    prUrl: published.prUrl || null,
+    attempts: ((artifacts.status && artifacts.status.attempts) || []).length,
+    pauses,
+    activeSeconds: Math.round(activeMs / 1000),
+    diffLines: diffLines(ws.dir, ws.forkPoint),
+    ...(artifacts.status && artifacts.status.changeSummary ? { changeSummary: artifacts.status.changeSummary } : {}),
+    ...(artifacts.status && artifacts.status.model ? { model: artifacts.status.model } : {}),
+    ...(v ? {
+      verification: {
+        acceptance: v.acceptance,
+        regressions: v.regressions,
+        ...(v.acceptanceOutput ? { evidence: String(v.acceptanceOutput).slice(-1500) } : {}),
+      },
+    } : {}),
+    ...(artifacts.status && artifacts.status.stuckState ? { stuckState: artifacts.status.stuckState } : {}),
+    attemptNotes: notes,
+  };
+
+  if (process.env.PIPELINE_KEEP_WORKSPACE) log.info(tr, `workspace kept at ${ws.dir}`);
+  else discard(ws.dir);
+  return row;
 }
 
 async function main() {
@@ -138,140 +327,12 @@ async function main() {
   }
   log.info(t, queueSummary(q.issues, q.skipped));
 
-  const results = [];
-  for (const issue of q.issues) {
-    const tr = log.trace(issue.id);
-    const taskDir = log.taskDir(issue.id);
-    log.info(tr, `starting task (priority ${issue.priority ?? 2}): ${issue.title || ''}`);
-
-    if (!claim(cfg, issue.id)) {
-      log.error(tr, 'could not mark the issue in_progress; skipping');
-      continue;
-    }
-    const exported = exportIssue(cfg, issue.id);
-    if (!exported.ok) {
-      log.error(tr, `could not export the issue: ${exported.error}`);
-      finish(cfg, issue.id, { status: 'failed', beads: 'blocked' },
-        [`run ${log.runId}: could not export issue spec — ${exported.error}`]);
-      results.push({ issueId: issue.id, outcome: 'failed' });
-      continue;
-    }
-    fs.writeFileSync(path.join(taskDir, 'issue.md'), exported.markdown);
-
-    // ---- per-task workspace: fresh clone, task branch, issue mounted (§4.2, T13) ----
-    const ws = prepare(cfg, issue.id, exported.markdown, log, tr);
-    if (!ws.ok) {
-      log.error(tr, `workspace preparation failed: ${ws.reason}`);
-      finish(cfg, issue.id, { status: 'failed', beads: 'blocked' },
-        [`run ${log.runId}: workspace preparation failed — ${ws.reason}`]);
-      results.push({ issueId: issue.id, outcome: 'failed' });
-      continue;
-    }
-
-    // ---- run the task, pausing and resuming across usage windows (§4.7) ----
-    // Active time accumulates across relaunches; paused time never counts (§4.6).
-    let exec;
-    let artifacts;
-    let activeMs = 0;
-    let pauses = 0;
-    // Wait cycles accumulate across relaunches, separately from `pauses` (which counts
-    // relaunches and is what the manifest reports). waitForWindow's stop condition is a
-    // cycle cap, so it has to be told what has already been spent — re-entering it fresh
-    // on every pause would reset the count and the cap could never fire (§4.7).
-    let waitCycles = 0;
-    for (;;) {
-      const remainingMinutes = cfg.wallClockMinutes - activeMs / 60000;
-      if (remainingMinutes <= 0) {
-        log.error(tr, 'active wall-clock budget exhausted across relaunches');
-        exec = { exitCode: 'killed', killed: true, durationMs: 0 };
-        artifacts = collectArtifacts(ws.dir, taskDir);
-        break;
-      }
-      exec = await executeTask(cfg, issue, taskDir, log, tr, ws, token, remainingMinutes);
-      activeMs += exec.durationMs || 0;
-      if (exec.durationMs !== undefined) {
-        log.info(tr, `container ran ${Math.round(exec.durationMs / 1000)}s` +
-          `${exec.killed ? ' (killed at budget)' : ''}; active total ${Math.round(activeMs / 1000)}s`);
-      }
-      artifacts = collectArtifacts(ws.dir, taskDir);
-
-      if (exec.exitCode !== 20) break;                       // not a rate limit — done
-
-      pauses += 1;
-      log.info(tr, `rate limit hit (pause ${pauses}) — parking the task; issue stays in_progress`);
-      const waited = await waitForWindow(cfg, artifacts.status, log, tr, {
-        token, spentCycles: waitCycles, maxPauses: cfg.maxPauseCycles,
-      });
-      waitCycles = waited.pauses || waitCycles;
-      if (!waited.resumed) {
-        log.error(tr, `giving up on the pause: ${waited.reason}`);
-        break;                                               // stays exit 20 -> paused
-      }
-      log.info(tr, 'relaunching in a fresh container against the same workspace (attempt counter carries over)');
-    }
-    if (pauses) log.info(tr, `task resumed across ${pauses} usage-window pause(s)`);
-    const outcome = outcomeFor(exec.exitCode, artifacts.verify);
-    const commits = hasCommits(ws.dir, ws.forkPoint);
-    log.info(tr, `branch ${ws.branch}: ${commits ? 'has commits (push candidate)' : 'no commits (nothing to push)'}`);
-
-    // ---- memory out-channel (§3.6): file the agent's proposed notes, host as sole
-    // Beads writer. Which outcomes qualify is memory.js's rule, not the runner's —
-    // shouldFileMemory() states it once, where a Docker-free test can reach it.
-    // Non-fatal by construction: it never throws and never touches the outcome.
-    if (shouldFileMemory(outcome.status)) {
-      const mem = fileMemoryNotes(cfg, issue.id, artifacts.status);
-      if (mem.filed) log.info(tr, `memory: filed ${mem.filed} note(s) via bd remember`);
-      for (const err of mem.errors) log.error(tr, `memory: could not file a note — ${err}`);
-    }
-
-    // ---- publish: push what exists, PR what passed (§4.5, T16) ----
-    const published = publish(cfg, {
-      ws,
-      outcome,
-      hasCommits: commits,
-      issueMarkdown: exported.markdown,
-      status: artifacts.status,
-      verify: artifacts.verify,
-      issue,
-      runId: log.runId,
-    }, log, tr);
-
-    const notes = attemptNotes(log.runId, outcome, artifacts.status, ws.memoryCount);
-    if (published.prUrl) notes.push(`PR: ${published.prUrl}`);
-    else if (published.pushed) notes.push(`branch pushed for review: ${ws.branch} (no PR — ${outcome.status})`);
-    finish(cfg, issue.id, outcome, notes);
-
-    log.info(tr, `task finished: exit ${exec.exitCode} -> ${outcome.status}` +
-      (outcome.beads ? ` (issue ${outcome.beads})` : ' (issue stays in_progress)'));
-    const v = artifacts.verify;
-    results.push({
-      issueId: issue.id,
-      title: issue.title || '',
-      outcome: outcome.status,
-      exitCode: exec.exitCode,
-      branch: ws.branch,
-      pushed: published.pushed,
-      prUrl: published.prUrl || null,
-      attempts: ((artifacts.status && artifacts.status.attempts) || []).length,
-      pauses,
-      activeSeconds: Math.round(activeMs / 1000),
-      diffLines: diffLines(ws.dir, ws.forkPoint),
-      ...(artifacts.status && artifacts.status.changeSummary ? { changeSummary: artifacts.status.changeSummary } : {}),
-      ...(artifacts.status && artifacts.status.model ? { model: artifacts.status.model } : {}),
-      ...(v ? {
-        verification: {
-          acceptance: v.acceptance,
-          regressions: v.regressions,
-          ...(v.acceptanceOutput ? { evidence: String(v.acceptanceOutput).slice(-1500) } : {}),
-        },
-      } : {}),
-      ...(artifacts.status && artifacts.status.stuckState ? { stuckState: artifacts.status.stuckState } : {}),
-      attemptNotes: notes,
-    });
-
-    if (process.env.PIPELINE_KEEP_WORKSPACE) log.info(tr, `workspace kept at ${ws.dir}`);
-    else discard(ws.dir);
-  }
+  // Every task is the same body; `concurrency` (default 1) decides how many of them are
+  // in flight at once, and the drain hands back one row per queued issue in READY-QUEUE
+  // ORDER — so the manifest reads the same at any depth. A row is null only where the
+  // issue could not be claimed and nothing ran.
+  const drained = await drainQueue(q.issues, (issue) => runOneTask(cfg, issue, log, token), cfg.concurrency);
+  const results = drained.filter(Boolean);
 
   log.info(t, `queue drained: ${results.map((r) => `${r.issueId}=${r.outcome}`).join(', ') || '(nothing ran)'}`);
 
@@ -281,6 +342,9 @@ async function main() {
     startedAt,
     finishedAt: new Date().toISOString(),
     targetRepo: cfg.targetRepoRemote,
+    // The CONFIGURED (or defaulted) setting, not the observed peak in flight: what the run
+    // was allowed to do is the thing a later reader needs to interpret its wall clock.
+    concurrency: cfg.concurrency,
     tasks: results,
   });
   const reportFile = writeReport(log.dir, manifest);
@@ -290,7 +354,18 @@ async function main() {
   log.info(t, `run finished; artifacts in ${log.dir}`);
 }
 
-main().catch((e) => {
-  console.error(`runner: unexpected failure — ${e && e.stack ? e.stack : e}`);
-  process.exit(3);
-});
+// Guarded, so `require('runner/run.js')` runs NOTHING and the scheduler above is reachable
+// to a Docker-free test (§7). main() cannot run in a task container anyway — it sits behind
+// loadToken and a Docker preflight that always fails there — and every caller in this repo
+// invokes this file as `node runner/run.js`, so the guard costs nothing.
+if (require.main === module) {
+  main().catch((e) => {
+    console.error(`runner: unexpected failure — ${e && e.stack ? e.stack : e}`);
+    process.exit(3);
+  });
+}
+
+// `executeTask` is exported for the same reason: its PIPELINE_EXEC_STUB branch is the one
+// path a Docker-free suite can execute, and "the stub path does not block the event loop"
+// is exactly the kind of thing that regresses silently back to spawnSync.
+module.exports = { drainQueue, executeTask };

@@ -16,6 +16,7 @@ const DEFAULTS = {
   maxPauseCycles: 96,           // §4.7 stop condition: total wait cycles per task (~24h at 15m)
   agentCommand: null,           // optional override -> PIPELINE_AGENT_CMD (§4.3 seam)
   bdTimeoutMs: 60000,           // §4.1 bound on every runner `bd` call (runner/bd.js)
+  concurrency: 1,               // §7 how many task containers ONE runner works at once
   // "opus" is an alias the CLI resolves to the CURRENT latest Opus, so the pipeline
   // follows model releases without edits here. The entrypoint records the RESOLVED
   // id (e.g. claude-opus-5) in the status file, so provenance stays exact even
@@ -24,6 +25,8 @@ const DEFAULTS = {
   model: 'opus',
 };
 const REQUIRED = ['targetRepoPath', 'targetRepoRemote', 'image'];
+// The ceiling on §7's concurrency knob. See loadConfig for why it is a literal.
+const MAX_CONCURRENCY = 3;
 
 // ---- per-project network + proxy names (§4.8, §4.12) -------------------------------
 // The task network and the proxy sidecar are per project, not per pipeline: two runner
@@ -107,6 +110,15 @@ function loadConfig(file) {
   if (raw.bdTimeoutMs !== undefined && !(Number.isInteger(raw.bdTimeoutMs) && raw.bdTimeoutMs > 0)) {
     throw new Error(`run.config.json: 'bdTimeoutMs' must be a positive whole number`);
   }
+  // §7's concurrency knob: how many task containers ONE runner process holds at once.
+  // Default 1 — strictly sequential, exactly as before the knob existed. The ceiling is a
+  // literal here because §7 states only a hedged range; a run is bounded by the slowest
+  // task in the batch, not by how many it holds, so more depth buys progressively less
+  // while multiplying the load on one subscription window.
+  if (raw.concurrency !== undefined
+      && !(Number.isInteger(raw.concurrency) && raw.concurrency >= 1 && raw.concurrency <= MAX_CONCURRENCY)) {
+    throw new Error(`run.config.json: 'concurrency' must be a whole number from 1 to ${MAX_CONCURRENCY}`);
+  }
   for (const k of ['network', 'proxyName']) {
     if (raw[k] !== undefined && (typeof raw[k] !== 'string' || !raw[k].trim())) {
       throw new Error(`run.config.json: '${k}' must be a non-empty string when present`);
@@ -133,4 +145,4 @@ function loadToken(repoRoot) {
   return process.env.CLAUDE_CODE_OAUTH_TOKEN || '';
 }
 
-module.exports = { loadConfig, loadToken, deriveNames, DEFAULTS };
+module.exports = { loadConfig, loadToken, deriveNames, DEFAULTS, MAX_CONCURRENCY };
