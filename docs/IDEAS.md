@@ -81,6 +81,85 @@ Two hard boundaries, both inherited:
 
 <!-- Newest at the top. Nothing here is committed to. -->
 
+- **Verify a stated mechanic exists in the code before speccing against it** — a planning session
+  on 2026-07-31 spent a full exchange designing around "the ship can pull a tethered astronaut",
+  which the owner believed was how the game worked. It is not implemented at all: the suit is
+  integrated on gravity and the jetpack, the tether is added mass that only ever slows it, and
+  there is no ship-to-astronaut coupling anywhere. Nobody was wrong to believe it — it is in the
+  design's spirit and half the supporting parts exist — but the spec would have been written
+  against a mechanic with no code behind it. Worth having because the check is thirty seconds of
+  grep and the failure mode is a frozen task that cannot pass. Note this is the same disease as the
+  four checklist items found already-done the same day: **the map and the territory drift in both
+  directions**, and only reading the territory settles it. Candidate PLANNING.md step-1a addition.
+  Related: *Reconcile a target's spec against the merged tree at planning step 0*, below, covers
+  the **written** half of the same drift — a spec that has fallen behind merged code. This entry is
+  the **unwritten** half: a mechanic someone believes in that was never built. Both were found on
+  the same day from opposite ends, which is the argument for reading the code at step 0 rather than
+  trusting either document. 2026-07-31
+
+- **Ask what else reads the number a new mechanic changes** — the same session found that adding a
+  line-gun would silently redefine a shipped, already-ticked spec item. `Astronaut.can_reach()`
+  credits the *magnet's* range against the gap home; if a line becomes the thing that saves you,
+  the RETURN lamp must credit the *line's* range instead — so the lamp's meaning changes without a
+  word of its specification changing, and its box stays ticked either way. Worth having because a
+  redefinition is invisible to every gate this project owns: the frozen tests still pass, the
+  regression net still passes, and the checklist still reads done. The scope critic asks "is this
+  several tasks"; nothing yet asks "what did this quietly re-mean". Cheap version: a spec
+  constraint naming every existing caller of any function the task touches. 2026-07-31
+
+- **Have the docs phase tick the box, not just write the note** — four times in one day the
+  documentation phase updated a checklist item's prose and left its checkbox unticked, including
+  once where the task itself had just built the gate the box was waiting for. The failure is
+  consistent and one-directional: notes get updated, the state marker does not. It matters because
+  the checklist is what a planning session reads to choose the next task, so a stale box is not a
+  cosmetic lag — it is a spec cut against a false picture. It cost a full planning cycle on
+  2026-07-31: a task was drafted, criteria written in fresh context, and a critic panel run, before
+  anyone noticed both deliverables had shipped days earlier and were already guarded.
+  Worth having because it is cheap to attempt — the docs prompt already asks for the notes — and
+  because the alternative is auditing the checklist by hand before every planning session, which is
+  what had to happen instead. Note the honest difficulty: deciding a box is tickable means judging
+  whether a claim is *gated*, not merely true, and an agent that ticks boxes optimistically is worse
+  than one that never ticks any. Possibly the right shape is narrower — have the docs phase report
+  *candidate* ticks as evidence, the way `note` and `concern` already report, and leave the edit to
+  the host. 2026-07-31
+- **Tell the docs phase which files it owns, and stop giving living documents dated names** — the
+  docs phase's entire file-set instruction is one line in `pipeline/entrypoint.sh` ("Update any
+  in-repo documentation affected by the change (README, docs/)"), naming no manifest. It works
+  anyway, because the workspace is a full clone and the target's `CLAUDE.md` auto-loads into every
+  invocation — so the reading table *is* the manifest, by accident rather than by design. Making
+  that explicit is a prompt change plus an assertion against the *generated* prompt file, the way
+  change-log row `repo-1cy` established.
+  The second half is a convention nobody had written down: **a date in a filename reads as
+  immutable.** An agent will not rewrite a document named for a date, and should not — that is a
+  record of that date, not a living file. A repo that wants a maintained status document must not
+  name it after the day it was started, and the failure looks like forgetfulness rather than like
+  the missing mechanism it is. 2026-07-31
+  *Found by checking which documents task docs phases have actually touched: nine
+  container-authored commits have amended this repo's `docs/STATUS.md`, one adding 41 lines.*
+
+- **Give every onboarded target a living status document, not just this repo** — `docs/STATUS.md`
+  here is maintained by the docs phase and cited from `CLAUDE.md`'s reading table; a target project
+  gets neither by default, so whatever stands in for one is hand-written and goes stale the next
+  time a task lands. Onboarding already creates an issue template, an idea inbox and a control
+  fixture; a status file and its reading-table row are the same kind of cheap one-time wiring, and
+  they are what make the docs phase maintain it afterwards.
+  The pay-off is per-target and repeats: every future adoption inherits a status document a machine
+  keeps current, instead of one more file that decays and is caught only when a review happens to
+  look. 2026-07-31
+
+- **Reconcile a target's spec against the merged tree at planning step 0** — the entry *Have the
+  docs phase tick the box* records the drift; this is the other end of the same failure. A
+  planning session reads the spec
+  as the statement of what is unbuilt, so a stale box means the session is cut against a false
+  picture, and the alternative that actually happened was auditing the checklist by hand before
+  every planning session.
+  Worth parking separately because the fix sits in a different place and survives the other one
+  failing or being judged too risky. Step 0 already reads this inbox, so it is the natural place to
+  also diff open spec items against what is merged — and *detecting* that a box's claim is already
+  true is mechanical in a way that ticking is not, because it needs no judgment about whether the
+  claim is gated. Reporting a candidate list to a human is strictly safer than editing the spec.
+  `Related:` *Have the docs phase tick the box* — either alone leaves the other half. 2026-07-31
+
 - **Let a task report progress while it is still running, roughly every 10 minutes** — right now
   a container is opaque from the outside: nothing is visible until it exits and the run report is
   written. A task that has been going for an hour is indistinguishable from a task that is wedged,
@@ -164,4 +243,4 @@ list: it is what stops the same idea being re-raised every few months.
 
 | Date | Idea | Why not |
 |---|---|---|
-| — | — | — |
+| 2026-07-31 | A documentation-updater agent owning "all relevant documentation", maintaining its own list of the documents that need writing to | The mechanism was under-used, not missing. The docs phase already maintains every file named in `CLAUDE.md`'s reading table — nine container-authored commits have amended `docs/STATUS.md` — so the fix is to *name the files*, not to add an agent. A second agent would duplicate a phase that exists and put an LLM where hard rule 5 wants evidence only. The half worth keeping became the inbox entry on telling the docs phase which files it owns |

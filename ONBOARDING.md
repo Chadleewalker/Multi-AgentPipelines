@@ -8,6 +8,13 @@ or a script, this file stays the source of truth and the wrapper follows it.
 Everything here happens interactively on the host, with the user. Run it once per
 project; PLANNING.md's per-session prerequisites then just verify it was done.
 
+The wrapper that exists today is the harness plugin's `pipeline-onboard` command, run from
+inside the target project: it locates this repo, reads this file, and follows it. That is
+the whole contract — everything a wrapper needs to know lives here, which is why the
+command has stayed correct through pipeline changes that would have invalidated a copy.
+Following this file by hand is equally valid. Keep new material **in this file** rather
+than in a wrapper, so every entry point inherits it (change-log row `adoption-assessment`).
+
 ## Starting from nothing — the whole path for a brand-new project
 
 Four stages, in order. Each is interactive, each happens once except the last:
@@ -36,6 +43,57 @@ Four stages, in order. Each is interactive, each happens once except the last:
 
 Stages 1–2 can also run in the other order (design first, scaffold after) — what
 matters is that both exist before planning tries to decompose anything.
+
+## Stage 0 — read the ground (existing codebases only)
+
+Skip this for a repo scaffolded into shape minutes ago; the answers are all trivially yes.
+Do it for anything written before this way of working, because the checklist below assumes
+a project someone just created, and on an old codebase the interesting question is not
+whether the repo can be *configured* as a target — it always can — but whether it can be
+**verified**. The pipeline's only judgment mechanism is a frozen test run in a sealed
+container (§4.4), so a repo that cannot produce such a test does not fail loudly. It
+produces runs nobody can interpret, which is worse than no runs at all.
+
+Assess read-only, changing nothing, across five dimensions. `docs/readiness-probes.md`
+holds the concrete commands; report **evidence, not adjectives** — "the suite takes 6m40s
+and 23 of 88 tests open a socket", never "test coverage is weak".
+
+1. **Verifiability — the go/no-go.** For a typical task, can a new test be written that is
+   fast, deterministic, and runs with no network, no live database and no shared state?
+   Nothing else on this list compensates for a bad answer here.
+2. **Coupling versus one-issue-one-PR.** Every task clones fresh from the canonical remote
+   (§4.2), so tasks in a batch never see each other's work. A repo whose commits routinely
+   touch dozens of files yields a morning of merge conflicts instead of a morning of review.
+3. **Closed-network fitness.** Everything the build and tests need must be declarable in
+   `dependencies` and baked into the image (§4.8). Install-time network access is the thing
+   to hunt for.
+4. **Knowledge legibility.** The container agent cannot look anything up. Undocumented
+   invariants are what an agent "cleans up"; stale documentation is worse than none, because
+   a sealed agent will follow it.
+5. **Git and host readiness.** Remote, real integration branch, `.gitattributes`, clean tree.
+
+Write the verdict where it belongs to — a page in the **target** repo, never in this one,
+which is public and used on private work. Land on one of three, and say which plainly:
+
+- **Ready** — go to the checklist.
+- **Ready for a narrow beachhead** — the usual answer for old code. Still go to the
+  checklist. Onboarding is repo-wide and has no partial form; what gets staged is the
+  **task queue**, not the onboarding. Name the module with existing seams and the first
+  few tasks, and prefer additive work over refactors, because a clean new surface is what
+  a clean new test needs.
+- **Needs seams first** — onboarding will succeed and the runs will be uninterpretable.
+  Characterization tests ("pin the current behavior of X") are legitimate pipeline work
+  once onboarded, so this is rarely a reason to stop — but say what would move it.
+
+**The assessment is advice and cannot refuse a repo.** The user reads it and decides. A
+judgment that blocks work is the failure mode hard rule 5 exists to prevent, and this one
+stays advisory in the same spirit.
+
+If the verdict calls for a design doc the project never had, do **not** reverse-engineer
+the architecture — the code describes itself and the container agent can read all of it.
+Capture only what code cannot say: invariants and why they exist, decisions and rejected
+alternatives, hazards, and intent. Then let it grow one planning session at a time; the
+coverage that matters is of the area about to be tasked out, not of the whole system.
 
 ## Before starting
 
@@ -103,6 +161,11 @@ matters is that both exist before planning tries to decompose anything.
 - [ ] `bd init` in the host working copy (no host `bd`? use the base-image fallback,
       as `runner/bd.js` does). The host runner is the sole Beads writer during runs
       (§4.10); interactive sessions use `bd remember` / `bd prime` for memory (§3.6).
+- [ ] **Run this after step 1, never before it.** Beads takes its sync remote from the git
+      remote *at init time*: with no `origin` present it initializes without one — silently,
+      and permanently as far as any later command will tell you — leaving a task queue that
+      cannot sync between machines. The order in this checklist is the fix; the risk is
+      running `bd init` early to get it out of the way. Don't.
 
 ### 6. The project's `CLAUDE.md` — rewrite for the pipeline
 The project's instructions ride into every container (fresh clone), so they must tell
