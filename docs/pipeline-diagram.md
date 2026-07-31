@@ -106,6 +106,13 @@ lock on the target repo: a second run against the same project is refused by nam
 it can read the queue, and a lock whose owning process is gone is taken over (change-log
 row `repo-os9`).
 
+Every arrow into the task list is a bounded, synchronous `bd` call — `bdTimeoutMs` in the
+run config, default 60s, applied by `runner/bd.js` to every spawn it makes (change-log row
+`repo-sls`). Step 3 is the reason: it runs *after* the container exits, so a `bd` that hangs
+there would leave finished work claimed and its outcome unwritten, with no timer anywhere to
+end the wait. A call that exceeds the bound is killed and reported as an ordinary failure,
+which the steps above already know how to handle.
+
 ```mermaid
 stateDiagram-v2
   [*] --> open: planning creates the task

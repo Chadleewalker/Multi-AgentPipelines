@@ -177,6 +177,13 @@ real use. All are fixed.
   probe, no Docker fallback — which is how the Docker-free acceptance tests exercise
   `runner/memory.js`. It takes absolute precedence over every other path in `bd()`, so
   **production must never set it**; it is the sibling of `PIPELINE_AGENT_CMD` (§4.3).
+  Bounded like every other path since `repo-sls` — a stub that hangs fails the test loudly
+  at `bdTimeoutMs` instead of hanging the suite.
+- **`bd` can print its whole answer and then never exit**, and two `bd` calls over one
+  embedded Dolt database can block on each other forever. Both were seen on 2026-07-28 and
+  are why every runner Beads call is now bounded (`repo-sls`, above). If you write a new
+  host-side `bd` invocation, put it through `runner/bd.js` — a bare `spawnSync('bd', …)`
+  elsewhere is unbounded again, and the failure it produces is a run that parks silently.
 - **The Claude CLI writes chatter around its output**, and a warning line on stdout is
   enough to break a whole-file `JSON.parse`. Never parse an agent log as one document:
   `pipeline/envelope.js` scans lines bottom-up for the first that parses to an object with
@@ -566,6 +573,8 @@ premise-breaking rather than cosmetic, so the shape changed twice mid-session.
 |---|---|---|---|
 | 1 | `repo-sls` | bound every runner `bd` call | **frozen**, ready |
 | 1 | `repo-os9` | refuse a second run against one project | **built** (above), pending the host sweep |
+| 1 | `repo-sls` | bound every runner `bd` call | **shipped** 2026-07-31, passed on attempt 1 (below) |
+| 1 | `repo-os9` | refuse a second run against one project | already frozen, ready |
 | 2 | `repo-teq` | the bounded worker pool (the `concurrency` knob) | approved intent, blocked, unfrozen |
 | 3 | `repo-i9y` | park the whole run, not each task | approved intent, blocked, unfrozen |
 
@@ -630,6 +639,88 @@ that executes them is how suites go stale (the T12 failure — three staleness b
 nobody re-ran). Their acceptance tests get written in the planning session immediately before
 their own run, which is PLANNING.md's rule and the same posture `repo-iok` and `repo-sls` itself
 have held since 2026-07-28.
+
+## Every runner `bd` call is bounded (`repo-sls`, 2026-07-31)
+
+Batch 1's first task ran and passed on attempt 1. `runner/bd.js` had called `spawnSync` with
+no `timeout`, so a `bd` that never returned parked the run forever — observed twice on
+2026-07-28 (complete JSON output printed, process never exited; and two calls over one
+embedded Dolt database blocking on each other). The sweep harness killed four suites at 900s;
+a real run has no such backstop, and the worst window is *after* the container exits, where
+the `bd remember` / finish pair runs — a hang there strands finished work with the issue still
+`in_progress` and the outcome unwritten.
+
+- **One builder, every spawn.** `spawnOptions(cfg)` is exported from `runner/bd.js` and every
+  `spawnSync` in the module is constructed from it — including both host-`bd` probes in
+  `hostBdSpec`, because a probe that hangs parks a run exactly as a call that hangs does, and
+  because a Docker-free test can only execute the `PIPELINE_BD_CMD` branch. `killSignal` is
+  `SIGKILL`: a bound a wedged process can decline to honour is not a bound.
+- **`bdTimeoutMs` in `run.config.json`**, default 60000, validated by `loadConfig` as a
+  positive whole number in the same error shape as `maxAttempts` and `maxPauseCycles`, and
+  present in `run.config.example.json`. A config field, not a `PIPELINE_*` variable — that
+  namespace is test seams only, and the planning session's first draft demoted it to an
+  environment variable purely to keep two tasks in one batch (above).
+- **Loud, never silent.** A timeout returns status 124 with stderr naming the bound and the
+  field that set it, so `bdJson` yields `ok:false` with that text and cannot be mistaken for a
+  successful empty query — the distinction this whole change exists to preserve. No caller
+  changed: every one of them already handles a non-zero status the way §4.11 requires.
+- **`bd()` stays synchronous, and that is now written down** (§4.10, change-log row
+  `repo-sls`). `spawnSync` blocking the event loop is what stops two `bd` calls interleaving
+  over one embedded database; an async rewrite would delete the sole-writer guarantee silently,
+  at exactly the moment `repo-teq`'s worker pool starts running tasks concurrently.
+
+`repo-teq` is what this unblocks — it is also why the bound shipped first: under `spawnSync`
+one hung call stalls *every* concurrent task, not one, and concurrent access to a single
+embedded Dolt database is precisely the load that produced the original hang.
+## Four more tasks, and the first task the panel sent *out* of the pipeline (2026-07-31)
+
+**Four tasks, four `done`, all on attempt 1** — `repo-sls` and `repo-os9` here (PRs #19, #20),
+two tasks on the target project (two more PRs). Active times 7, 17, 25 and 26 minutes. No
+`tampered`, no `stuck`, no second attempts, and no spec concerns raised.
+
+**The panel is now 12 for 12.** Four critics ran over three draft specs and returned 54 findings,
+every one `concerns`. Two were the "gate that cannot fail" family this repo keeps meeting:
+
+- The glint spec's determinism criterion compared **two instances of the same build**, so it could
+  only ever catch a perturbation that *depended on being polled*. An unconditional change to the
+  flight moves both instances identically and leaves the criterion green. Fixed by capturing golden
+  values from the fork point during the planning session and asserting against those — the only
+  expected value in the file that does not come from the implementation under test.
+- The literal audit's headline criterion was "the checker reports nothing against the tree". The
+  same task writes both the checker **and** the allowlist it is measured against, so whatever the
+  checker cannot see is not in the allowlist and is therefore not a violation: a `violations()`
+  returning `[]` unconditionally passed it in full. Fixed by running the checker with the allowlist
+  **taken away** and requiring findings the frozen test names independently.
+
+**A task whose output is data rather than code does not belong in the pipeline.** The pacing-grid
+task was withdrawn mid-session and done interactively instead. Both critics reached it
+independently: after its scope was cut it wrote no code at all, and its acceptance floors ("at
+least 6 rows landed") were *predictions about a grid nobody had flown* — so had reality returned
+five, no honest implementation could pass and the cheapest route to green was fabrication in the 52
+rows nothing re-checked. Flying it took 8.5 minutes and produced three findings nobody had. The
+general rule: **if a spec's criteria can only be checked by re-running the tool that produced the
+artifact, the planning session should run the tool.** That is what an earlier measurement task already did, and this
+is the second instance.
+
+**A new gotcha, and it can make a suite permanently unfreezable.** A frozen test necessarily names
+files the task has not written yet. Calling `load()` on one makes the engine print a resource-load
+error, and the target's `run-acceptance.sh` reads that output as **BROKEN HARNESS (exit 2)** rather
+than as a failing test — so the suite reports "could not run" forever and the freeze gate refuses
+it, with a symptom that looks like a parse error that is not there. Probe with
+`FileAccess.file_exists` first. This is the same family as STATUS defect 9: a harness that cannot
+run reporting something other than "I could not run". Recorded in that project's
+`tests/acceptance/README.md`, where the next test author will look.
+
+**The batch collision was predicted, priced, and happened exactly as written.** The planning draft
+said the audit could go red on a correct merge if a sibling introduced a new literal, and named the
+fix as three allowlist rows rather than a config change. It did, and it was. Verified by merging
+both branches locally and running the **full** tree — 372/372 acceptance, 120/120 regression — which
+is the obligation no task's own verifier can discharge.
+
+**Blocked, and it is the only thing blocking:** `gh pr merge` is denied by this environment's
+permission classifier, so both of this repo's PRs and both of the target's are open. The four remaining issues here
+(`repo-teq`, `repo-i9y`, `repo-diy`, `repo-ixa`) are blocked *and* unfrozen, and `repo-teq` genuinely
+builds on `repo-sls`, so nothing further can run until those merge.
 
 ## What's next
 
@@ -742,6 +833,13 @@ design's central bet, and it is the first day it paid out repeatedly.
   being a liability, the cheap fix is a suite asserting the handful of claims in it that
   are mechanically checkable (the agent-call count, the advisor names, the status-file
   field list), so stale means a red sweep rather than a lucky catch.
+  **Sharpened 2026-07-31: the docs phase is not neglecting this file, it is obeying.** The reading
+  table's own row says the HTML map is "not updated by task docs phases", and that table reaches
+  every docs-phase invocation — the workspace is a full clone, so the target's `CLAUDE.md`
+  auto-loads, and the prompt in `pipeline/entrypoint.sh` names no manifest of its own. The
+  exclusion is doing exactly what it says. So this is a choice between two fixes rather than one:
+  flip the label and let the docs phase own the file, or keep the exclusion and add the mechanical
+  claim-check above. Doing both would be redundant.
 - **Batched tasks collide.** Every task forks from the integration branch as the run
   starts, so two tasks touching the same file produce a conflict once the first merges
   (seen with PRs #2 and #3). Options: fork from latest, or partition concurrency by

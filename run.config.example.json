@@ -5,6 +5,7 @@
   "proxyPort": 3128,
   "wallClockMinutes": 240,
   "probeIntervalMinutes": 15,
+  "bdTimeoutMs": 60000,
   "agentCommand": null,
   "model": "opus"
 }
