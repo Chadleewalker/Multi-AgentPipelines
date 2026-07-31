@@ -235,6 +235,12 @@ Copy this section in (adjust nothing but the project name):
       projects whose configs are both called `run.config.json` share one network and one
       sidecar, so starting the second run destroys the first run's route to Anthropic.
       Set `network` / `proxyName` explicitly only if you want particular names.
+      **One config per target repo.** A run locks its target repo before any other gate,
+      so a second config aimed at the same repo is refused by name rather than draining
+      the same queue twice (change-log row `repo-os9`). The lock keys on the canonical
+      path, so a trailing separator or forward-vs-back slashes do not buy you a second
+      identity — and a lock left behind by a killed run is taken over by the next one,
+      never cleared by hand.
 - [ ] If this pipeline repo is public, add `.sanitize-denylist` (copy
       `.sanitize-denylist.example`): the private project names, hosts and clients that must
       never appear in the tracked tree. Also **git-ignored**, because committing the list of

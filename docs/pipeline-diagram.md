@@ -101,7 +101,10 @@ flowchart LR
 
 The claim in step 1 is what stops a task being picked twice, and it is why a crashed run
 leaves issues stranded `in progress` — the next run's preflight sweeps those back to
-`open`.
+`open`. The claim only holds while there is one writer, so preflight's **first** gate is a
+lock on the target repo: a second run against the same project is refused by name before
+it can read the queue, and a lock whose owning process is gone is taken over (change-log
+row `repo-os9`).
 
 Every arrow into the task list is a bounded, synchronous `bd` call — `bdTimeoutMs` in the
 run config, default 60s, applied by `runner/bd.js` to every spawn it makes (change-log row

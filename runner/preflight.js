@@ -10,6 +10,7 @@ const { spawnSync } = require('child_process');
 const path = require('path');
 const { bd, bdJson } = require('./bd');
 const { deriveNames } = require('./config');
+const { acquire, release } = require('./lock');
 
 // The historical shared pair, which is what a config with no project segment gets.
 // Asked for by name rather than spelled out again, so the two files cannot drift.
@@ -88,22 +89,49 @@ function recoverStaleIssues(cfg, log, traceId) {
 }
 
 // Full pre-run sequence. Returns {ok, reason} — ok:false means ABORT THE RUN.
+// Every gate after the lock can leave something behind, so each of them releases it on
+// the way out: an abort at preflight must leave the project free (§4.12).
 function preflight(cfg, repoRoot, log) {
   const t = `${log.runId}/preflight`;
-  if (!dockerAvailable()) return { ok: false, reason: 'Docker daemon not reachable (is Docker Desktop running?)' };
+  const abort = (reason) => { release(repoRoot, cfg.targetRepoPath); return { ok: false, reason }; };
+
+  // ---- the project lock: FIRST, ahead of every other gate (§4.12) ----
+  // First and not merely early. It is the only purely local check — everything after it
+  // probes Docker or writes to Beads, and a refusal that arrives after `bd update` has
+  // reset another live run's in_progress issues has not refused anything useful. Being
+  // first is also what lets a second run be refused with nothing created to clean up:
+  // no network, no sidecar, no container, no Beads write.
+  const held = acquire(repoRoot, cfg.targetRepoPath, log.runId);
+  if (!held.ok) {
+    const h = held.holder;
+    return {
+      ok: false,
+      locked: true,                  // nothing was started — run.js skips teardown
+      reason: `${cfg.targetRepoPath} is already being run by run ${h.runId}`
+        + ` (pid ${h.pid}${h.since ? `, since ${h.since}` : ''}) — two runners on one Beads queue`
+        + ` would claim the same issue twice (§4.10). Wait for that run, or run a different project.`,
+    };
+  }
+  if (held.tookOver) {
+    log.info(t, `project lock: took over the lock on ${cfg.targetRepoPath} left by run ${held.previous.runId}`
+      + ` (pid ${held.previous.pid}) — that process is gone`);
+  }
+  log.info(t, `project lock held for ${cfg.targetRepoPath}`);
+
+  if (!dockerAvailable()) return abort('Docker daemon not reachable (is Docker Desktop running?)');
   log.info(t, 'docker daemon reachable');
 
   if (!imageExists(cfg.image)) {
-    return { ok: false, reason: `image '${cfg.image}' not found — build it during planning (§3.4); the runner never builds` };
+    return abort(`image '${cfg.image}' not found — build it during planning (§3.4); the runner never builds`);
   }
   log.info(t, `image ${cfg.image} present`);
 
   const net = networkUp(repoRoot, cfg, log, t);
-  if (!net.ok) return { ok: false, reason: `network/sidecar failed to start: ${net.output.trim()}` };
+  if (!net.ok) return abort(`network/sidecar failed to start: ${net.output.trim()}`);
   log.info(t, 'network + proxy sidecar up');
 
   const eg = egressCheck(repoRoot, cfg);
-  if (!eg.ok) return { ok: false, reason: `egress check failed — allowlist not in force: ${eg.output.trim()}` };
+  if (!eg.ok) return abort(`egress check failed — allowlist not in force: ${eg.output.trim()}`);
   log.info(t, 'egress check passed (allowlist in force)');
 
   const stale = recoverStaleIssues(cfg, log, t);

@@ -46,7 +46,9 @@ bash scripts/e2e.sh
 # 3. point a config at a project of your own, then run its queue
 #    (run.config.*.json is git-ignored — it names a local path and your remote;
 #     the <project> segment also names that run's own network and proxy, so two
-#     projects can be in flight at once without disturbing each other)
+#     projects can be in flight at once without disturbing each other. Two runs
+#     against the *same* project cannot: the second is refused by name before
+#     anything starts, and a lock left by a killed run is taken over.)
 cp run.config.example.json run.config.myproject.json
 node runner/run.js --config run.config.myproject.json
 ```

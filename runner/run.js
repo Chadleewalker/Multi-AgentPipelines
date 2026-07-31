@@ -17,6 +17,7 @@ const path = require('path');
 const { loadConfig, loadToken } = require('./config');
 const { startRun } = require('./log');
 const { preflight, networkDown } = require('./preflight');
+const { release: releaseLock } = require('./lock');
 const {
   readyQueue, queueSummary, claim, exportIssue, finish, outcomeFor, attemptNotes,
 } = require('./queue');
@@ -104,9 +105,21 @@ async function main() {
   const pre = preflight(cfg, REPO_ROOT, log);
   if (!pre.ok) {
     log.error(t, `PREFLIGHT FAILED — no tasks launched: ${pre.reason}`);
-    networkDown(REPO_ROOT, cfg);
+    // A run refused by the project lock started nothing (§4.12): the lock is the first
+    // gate, so there is no network of ours to tear down — and tearing one down here would
+    // be acting on plumbing that belongs to the run that holds the lock. Every other
+    // preflight failure has already released the lock itself.
+    if (!pre.locked) networkDown(REPO_ROOT, cfg);
     process.exit(1);
   }
+  // The lock is ours from here to process exit. Registered once, at the point it becomes
+  // true, so every later way out — the queue-read abort below, an unexpected throw, the
+  // normal end — leaves the project free for the next run rather than a stale lock for it
+  // to take over (§4.12). Best effort by construction: a process killed outright runs no
+  // handler, which is exactly the case takeover exists for.
+  process.on('exit', () => {
+    try { releaseLock(REPO_ROOT, cfg.targetRepoPath); } catch { /* never mask the real exit */ }
+  });
   log.info(t, `preflight passed${pre.recovered.length ? ` (recovered: ${pre.recovered.join(', ')})` : ''}`);
 
   if (args.dryRun) {

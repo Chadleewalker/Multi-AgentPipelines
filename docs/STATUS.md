@@ -4,7 +4,7 @@ Where the build actually is. Update this when something changes — it is the fi
 session reads to pick up the thread, and unlike a machine-local memory folder it travels
 with the repo.
 
-_Last updated: 2026-07-30_
+_Last updated: 2026-07-31_
 
 ## Where things stand
 
@@ -454,6 +454,67 @@ the Docker suites that run them for real. **The host sweep is the obligation thi
 cannot discharge from inside a container**: `bash scripts/test-all.sh` is what proves the
 dozen suites that hard-code `pipeline-net` in a cleanup trap are still green.
 
+## One run per project, enforced (`repo-os9`, 2026-07-31)
+
+`repo-jur` above made two *different* projects independent. It did nothing about starting
+the *same* project twice, which is then the remaining way to corrupt a run — and it is the
+easy mistake to make, because **the second run looks like it starts normally**. There is no
+clash to notice: both runners read Beads' ready list, both can claim the same issue, both
+push a branch for it. The sole-writer rule (DESIGN.md §4.10) assumes one writer, and two
+runners on one queue quietly break it.
+
+So a run now takes a lock on its target repo. `runner/lock.js` is `acquire(repoRoot,
+targetRepoPath, runId)` and `release(repoRoot, targetRepoPath)`, the file lives under the
+git-ignored `runs/` directory beside the sweep lock `scripts/test-all.sh` already takes,
+and a second run is refused by name — naming the project and the run holding it, exit
+non-zero, nothing created.
+
+**"First gate" is the load-bearing part, not "early gate."** `preflight` takes the lock
+ahead of the Docker probe. Every other gate either shells `docker` or writes to Beads, and
+the Beads one is the reason: a refusal arriving after the stale-issue sweep has already
+reset another *live* run's `in_progress` issues back to `open` has not refused anything
+useful — it has corrupted the run it was trying to protect. Being first is also what makes
+the refusal free of cleanup (no network, no sidecar, no container, no Beads write) and what
+makes the whole thing testable with no Docker at all, which is why the frozen suite can
+drive the real `runner/run.js` end to end from inside a task container.
+
+Two details are where the design actually is:
+
+- **Identity is the repo, not the string it was spelled with.** The path is canonicalised —
+  trailing separator folded, the Windows separator flip and case folded, symlinks resolved
+  where they resolve. Configs write `targetRepoPath` with forward slashes while `path.join`
+  produces backslashes, so on the reference host a drive-letter path spelled each way is
+  one repo. A lock keyed on the raw string passes every other check and fails the one case
+  it exists for: a second config, written by hand, naming the same repo differently.
+- **A dead holder is taken over, and the takeover says whose lock it seized.** A lock left
+  by a killed run must never block the machine forever. Deciding "dead" takes more than a
+  pid: `process.kill(pid, 0)` reports a recycled or foreign pid as **alive** (EPERM counts
+  as alive), so a pid-only record refuses to take over after a reboot — which is exactly
+  the block-forever it was supposed to prevent. The record carries the process start time
+  where the OS exposes one (Linux `/proc/<pid>/stat` field 22 — exact, so a recycled pid is
+  decidable rather than merely improbable) plus the host's uptime counter, which only
+  resets at boot. Where a platform proves neither, a pid recycled *within* one boot reads
+  as still held, deliberately: a spurious refusal is visible and recoverable, a spurious
+  takeover puts two runners on one queue. And the log line names the displaced run id,
+  because a bare "took over" cannot be told apart from an implementation that reports one
+  every time.
+
+Release is **not** registered inside `acquire`, which looks like an omission and is not: a
+crashed run has to leave its lock behind for the next run to seize, and that takeover is
+the only protection when a process dies without running handlers. `run.js` registers the
+release against process exit at the moment the lock becomes ours, so the queue-read abort,
+an unexpected throw and the normal end all free the project; `preflight` releases on each
+of its own later failures. Operator stop is out of scope by the same reasoning the frozen
+suite states: Node on Windows cannot catch a signal delivered to a spawned child, so a
+release-on-signal test could never pass in the host sweep — takeover covers that case
+instead. `release` removes only a record that says it is ours, so a refused run cannot free
+the lock it was just refused by and hand the project to the third run to ask.
+
+**The host obligation this task cannot discharge from a container:** `bash
+scripts/test-all.sh`. Every Docker suite that runs `node runner/run.js` now passes through
+a new first gate, several of them several times against one target repo, and only the sweep
+proves that release-then-reacquire holds for all of them on the reference host.
+
 ## The pipeline built real features unattended (2026-07-30/31)
 
 **The first sustained production use, and the thing the whole design was for.** Eight tasks
@@ -510,6 +571,8 @@ premise-breaking rather than cosmetic, so the shape changed twice mid-session.
 
 | Batch | Issue | Task | State |
 |---|---|---|---|
+| 1 | `repo-sls` | bound every runner `bd` call | **frozen**, ready |
+| 1 | `repo-os9` | refuse a second run against one project | **built** (above), pending the host sweep |
 | 1 | `repo-sls` | bound every runner `bd` call | **shipped** 2026-07-31, passed on attempt 1 (below) |
 | 1 | `repo-os9` | refuse a second run against one project | already frozen, ready |
 | 2 | `repo-teq` | the bounded worker pool (the `concurrency` knob) | approved intent, blocked, unfrozen |
@@ -674,7 +737,7 @@ before that run.
 `repo-jur` (per-project network and proxy, above) and `repo-os9` (refuse a second run
 against the *same* project, which is the remaining way to corrupt a run once different
 projects stop colliding). `repo-jur` ran on 2026-07-30 and passed on attempt 1;
-`repo-os9` depends on it and is next. Two things a task cannot do for itself follow the
+`repo-os9` ran after it on 2026-07-31 and is built (the project lock, above). Two things a task cannot do for itself follow the
 merge: run `bash scripts/test-all.sh` (criterion 6 is a promise about the dozen suites
 that hard-code `pipeline-net`, and no frozen test can keep it), and **strip the
 `"network"` and `"proxyName"` lines from every existing `run.config.*.json`** — they are
@@ -783,8 +846,10 @@ design's central bet, and it is the first day it paid out repeatedly.
   declared path ownership. Needed before any large wave.
 - **No concurrency *within* a run** — the runner is a sequential `for` loop, by design.
   Since `repo-jur` several runner processes, one per project, can be in flight at once
-  (each still sequential over its own queue); what is unbuilt is one runner working
-  several tasks of one project at once (§7, change-log row `parallelism-v2`). Note that
+  (each still sequential over its own queue), and since `repo-os9` a second run against
+  the *same* project is refused rather than trusted not to happen; what is unbuilt is one
+  runner working several tasks of one project at once (§7, change-log row
+  `parallelism-v2`). Note that
   neither multiplies subscription capacity: N containers exhaust the same usage window N
   times faster, then all park — concurrency across projects buys elapsed time, not
   throughput.
@@ -798,10 +863,10 @@ design's central bet, and it is the first day it paid out repeatedly.
 
 ## Test suites
 
-All but five drive real Docker and share one network, so they must never run concurrently
+All but six drive real Docker and share one network, so they must never run concurrently
 (`test-runner-memory.sh`, `test-changelog.sh`, `test-sanitize.sh`,
-`test-agent-hooks.sh` and `test-network-names.sh` are the exceptions — see below; they need
-neither).
+`test-agent-hooks.sh`, `test-network-names.sh` and `test-lock.sh` are the exceptions — see
+below; they need neither).
 **`scripts/test-all.sh` is the sweep** — it holds a lock, runs every suite sequentially,
 kills one that hangs (`--timeout`, default 900s), tears `pipeline-net` down if a suite
 leaks it, and writes per-suite logs plus a summary table to `runs/sweeps/<timestamp>/`.
@@ -828,8 +893,9 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-sanitize.sh` | publication hygiene — no machine paths, emails, credentials or denylisted names in the tracked tree |
 | `scripts/test-agent-hooks.sh` | container hygiene — no tracked file configures an agent hook |
 | `scripts/test-network-names.sh` | per-project network and proxy names — derivation, and that they reach the scripts |
+| `scripts/test-lock.sh` | the per-project run lock — refusal, path identity, takeover, release |
 
-**`scripts/test-runner-memory.sh` is one of the five suites that need no Docker**
+**`scripts/test-runner-memory.sh` is one of the six suites that need no Docker**
 (repo-dhp): it
 drives both §3.6 memory channels plus the `shouldFileMemory` outcome gate through the
 `PIPELINE_BD_CMD` seam, so it runs anywhere — including inside a task container, where
@@ -900,6 +966,21 @@ fake `docker` earlier on PATH than the real one, and a PATH stub that failed to 
 would either drive the live daemon or report every check as a genuine failure — so the
 scripts stay covered by the suites that run them for real. Its coverage was extracted from
 `tests/acceptance/repo-jur/`, which like every frozen acceptance directory is never re-run.
+
+**`scripts/test-lock.sh` is the sixth** (`repo-os9`): it locks temp directories under a
+temp pipeline root, so it needs no Docker, no daemon and no target repo — which is itself
+the design under test, since the lock being preflight's *first* gate is what leaves
+anything about a refused run reachable from a task container. Beyond the frozen suite it
+covers the case that can only be reached by **planting** a record: a holder whose pid reads
+as alive but that cannot be the process that took the lock. Every one of those fixtures is
+planted against a genuinely live pid, so an implementation trusting `process.kill(pid, 0)`
+alone blocks the machine forever and the suite says which check noticed — a lock from
+before a reboot (the uptime counter only resets at boot), a lock older than the host's
+uptime, and on Linux a pid whose `/proc` start time no longer matches. It also pins the
+two rules that are easy to lose in a refactor: `release` removes only a record that says it
+is ours, and an abort at a *later* preflight gate still frees the project. Its coverage was
+extracted from `tests/acceptance/repo-os9/`, which like every frozen acceptance directory
+is never re-run.
 
 **Why it reads bytes and never skips a "binary" file.** This suite exists because
 `publish-sanitize` missed a private project name in `tests/acceptance/repo-006/test.js`,
