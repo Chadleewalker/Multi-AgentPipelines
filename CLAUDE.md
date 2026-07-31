@@ -82,7 +82,7 @@ bash scripts/e2e.sh            # add --keep to leave branches and PRs up for ins
 bash scripts/test-verifier.sh
 bash scripts/test-runner-container.sh
 
-# the seven suites that need no Docker — seconds, safe to run anywhere, even in a container
+# the eight suites that need no Docker — seconds, safe to run anywhere, even in a container
 bash scripts/test-runner-memory.sh
 bash scripts/test-changelog.sh     # DESIGN.md §12 row identity (CHANGELOG_FILE re-aims it)
 bash scripts/test-sanitize.sh      # publication hygiene (SANITIZE_FIXTURE_DIR re-aims it)
@@ -90,6 +90,7 @@ bash scripts/test-agent-hooks.sh   # no tracked agent hooks (AGENT_HOOKS_FIXTURE
 bash scripts/test-network-names.sh # per-project network + proxy names (§4.8) reach the scripts
 bash scripts/test-lock.sh          # the per-project run lock (§4.12) — refuse, take over, release
 bash scripts/test-sweep-hygiene.sh # what the sweep reclaims after a suite, and what it must not touch
+bash scripts/test-concurrency.sh   # the §7 concurrency knob — the bound, the worker pool, result order
 ```
 
 Suites are slow (real containers) and **share one Docker network** — run them one at a
@@ -256,7 +257,14 @@ the pipeline working on the pipeline's own code. The rules:
   copy of the real `scripts/test-all.sh` against a recording stand-in for `docker`: run it
   if you touch `scripts/test-all.sh`, `scripts/sweep-reclaim.js` or any suite's cleanup,
   because a sweep that removes what it did not create takes an unrelated container on the
-  developer's machine with it and says nothing. Any new Docker-free
+  developer's machine with it and says nothing — and
+  `sh scripts/test-concurrency.sh` (`tests/unit/concurrency.test.js`), which requires
+  `runner/run.js` as a module and drives its exported `drainQueue` plus the
+  `PIPELINE_EXEC_STUB` seam: run it if you touch `runner/run.js` or `runner/config.js`,
+  because `main()` must stay behind `require.main === module` (without it nothing in that
+  file is reachable from in here at all) and the stub path must stay asynchronous — a
+  `spawnSync` there serialises every stubbed task and makes concurrency unobservable to the
+  only suites that can prove it. Any new Docker-free
   suite belongs beside them in
   `tests/unit/`, and its seam stub must be a `.js` file invoked through
   `process.execPath`, never a `#!/bin/sh` script: `spawnSync` without a shell fails such a

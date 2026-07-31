@@ -6,6 +6,7 @@
   "wallClockMinutes": 240,
   "probeIntervalMinutes": 15,
   "bdTimeoutMs": 60000,
+  "concurrency": 1,
   "agentCommand": null,
   "model": "opus"
 }

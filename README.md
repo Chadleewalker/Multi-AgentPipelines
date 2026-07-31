@@ -48,7 +48,9 @@ bash scripts/e2e.sh
 #     the <project> segment also names that run's own network and proxy, so two
 #     projects can be in flight at once without disturbing each other. Two runs
 #     against the *same* project cannot: the second is refused by name before
-#     anything starts, and a lock left by a killed run is taken over.)
+#     anything starts, and a lock left by a killed run is taken over. Within one
+#     project the runner works one task at a time; set `concurrency` (up to 3) to
+#     put that many containers in flight at once for a daytime batch.)
 cp run.config.example.json run.config.myproject.json
 node runner/run.js --config run.config.myproject.json
 ```

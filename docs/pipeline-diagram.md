@@ -24,7 +24,7 @@ flowchart TB
   F -->|"approved"| G["Freeze — tests committed<br/>to the integration branch"]
   G --> H[("Beads issue = the task spec")]
   H --> I["Runner drains the ready queue<br/>epics skipped · priority, then FIFO"]
-  I --> J["One fresh container per task"]
+  I --> J["One fresh container per task<br/>1 at a time by default · up to 3 with the knob"]
   J --> K["Run report + pull requests<br/>ordered by scrutiny needed"]
   K --> L{"Merge, or send back"}
   L -->|"send back as a new task"| B
@@ -105,6 +105,13 @@ leaves issues stranded `in progress` — the next run's preflight sweeps those b
 lock on the target repo: a second run against the same project is refused by name before
 it can read the queue, and a lock whose owning process is gone is taken over (change-log
 row `repo-os9`).
+
+The same drawing holds at `concurrency` > 1: **one** runner process holds up to N task
+containers of its project at once (default 1, ceiling 3 — change-log row `repo-teq`), and the
+host box is still the single writer. Never N runner processes against one queue — the claim
+in step 1 and the lock above it both assume one. Tasks in flight together share this diagram;
+the runner hands their results back in ready-queue order, so the manifest reads the same at
+any depth.
 
 Every arrow into the task list is a bounded, synchronous `bd` call — `bdTimeoutMs` in the
 run config, default 60s, applied by `runner/bd.js` to every spawn it makes (change-log row
