@@ -346,7 +346,8 @@ today's `run.js` would be describing a file that no longer exists.
 |---|---|
 | `node scripts/spec-lint.js --repo . docs/planning-draft-2026-07-31.md` | **clean** — no criterion names any of the 1 frozen path |
 | `node scripts/freeze-gate.js --repo . --tests tests/acceptance/repo-sls/ --spec …` | **RED** (exit 0) — real run exit 1 against a green control, so the tests discriminate. **2 guards declared** (A5's synchrony pair and A6's seam contract), both verified green today |
-| `node scripts/freeze-gate.js` (`repo-teq`, `repo-i9y`) | not applicable — not frozen this session |
+| `node scripts/freeze-gate.js` (`repo-teq`) | **RED** (exit 0) — see the batch-2 freeze section at the foot of this file |
+| `node scripts/freeze-gate.js` (`repo-i9y`) | not applicable — not frozen this session |
 
 `tests/acceptance/repo-sls/test.js` is 28 checks. Two results were fixed rather than accepted
 while writing it, both instances of the panel's own lesson: an A6 guard failed because Node
@@ -421,3 +422,81 @@ while accepting the finding itself.
   that owns the kill timer, so that check is a proxy at best inside a container.
 - **Strip any `"network"` / `"proxyName"` lines still in local `run.config.*.json` files.**
   Carried over from `repo-jur`; they are git-ignored, so no task can edit them.
+
+---
+
+# Batch 2 freeze — `repo-teq`'s acceptance tests (same day, after batch 1 merged)
+
+Batch 1 merged (`repo-sls` PR #19, `repo-os9` PR #20), so `repo-teq` is next and its tests are
+written now — PLANNING.md step 3, deliberately deferred until the run that executes them is
+the next one. **The intent above is unchanged**; nothing in the description, constraints or
+the six criteria moved. What follows is the test file, the coverage pairing, and two
+refinements that writing the tests forced into the open.
+
+Full sweep before this session: **28 of 28 suites green** (`runs/sweeps/20260731-153345/`),
+including `e2e`. That is the "before" half of the sweep obligation below.
+
+## The contract the frozen test pins
+
+The criteria say "the exported scheduler" without naming it. A frozen test cannot leave that
+open — it has to call something — so `tests/acceptance/repo-teq/test.js` fixes the shape, and
+the Beads issue's constraints are amended to state it so the implementing agent is told rather
+than left to guess:
+
+```js
+runner/run.js exports  drainQueue(issues, taskFn, concurrency) -> Promise<results[]>
+```
+
+- `issues` is the ready queue, in ready-queue order; `taskFn(issue)` returns a Promise and is
+  where the runner's own per-task body is passed in; `concurrency` bounds how many `taskFn`
+  calls are in flight at once.
+- The resolved array is **index-aligned with `issues`** — ready-queue order, not completion
+  order — carrying whatever each `taskFn` resolved to.
+- `main()` is guarded behind `require.main === module`. That guard is what makes any of this
+  reachable without Docker, and it is already a constraint above.
+
+## Coverage — every criterion to its checks, every check to its criterion
+
+44 checks. `tests/acceptance/repo-teq/test.js`.
+
+| Criterion | Checks that prove it |
+|---|---|
+| **1** the knob exists and is validated | default is 1; 1/2/3 load and win; zero, negative, above-max, fractional, string and null each a `loadConfig` error naming `concurrency`; the example config documents it |
+| **2** the value reaches `run.json`, which still validates | schema root declares `concurrency` as an integer, still `additionalProperties:false`, still **absent from `required`**; a manifest carrying it is admitted by a root-level admitter that is itself proven discriminating twice; `writeManifest` carries it through to `run.json` on disk; `run.js` supplies it, from `cfg.concurrency` |
+| **3** sequential and in order at 1 | all three ran; no task starts while another is in flight; starts in ready-queue order |
+| **4** three genuinely in flight, and bounded | drain completes at 3; no give-up marker; max-in-flight `=== 3`; max-in-flight `<= 3`; the fourth start follows some end; **the same fixture at 1 records the marker**; at 1 max-in-flight is 1 |
+| **5** results keep queue order | the fixture really did complete out of order; results in ready-queue order; each entry carries its own issue's result |
+| **6 [guard]** fragile identifiers survive | `fileMemoryNotes`, `queueSummary`, `shouldFileMemory`, `exitCode !== 20` each on a non-comment line |
+
+Six further checks are **preconditions of 3–5, not orphans**: `config.js` / `report.js` /
+`run.schema.json` load, `run.js` is requirable without running, it exports `drainQueue`, and
+`drainQueue` is a function. The requirability pair enforces a constraint already stated above.
+
+## Mechanical results
+
+| Check | Result |
+|---|---|
+| `node scripts/spec-lint.js --repo . docs/planning-draft-2026-07-31.md` | **clean** — no criterion names the 1 frozen path |
+| `node scripts/freeze-gate.js --repo . --tests tests/acceptance/repo-teq/ --spec …` | **RED** (exit 0) — real run exit 1, control run exit 0. 2 guards declared |
+| Red against today's tree | 18 of 44 fail; the four A6 guards are green, as a guard must be |
+| Green against a reference implementation | **44 of 44** — the tests are satisfiable, not merely red |
+| Mutant: an **unbounded** pool | caught — 6 checks fail, five of them A4's bounded half |
+| Mutant: **append-on-completion** results | caught — 2 checks fail, both A5 |
+
+The last three rows are the half a freeze gate cannot give you. RED alone is also what a
+syntactically broken suite scores, and "the tests pass once it's built" is an assumption
+nobody checks until the run fails — so the tests were driven against a throwaway reference
+implementation in a scratch copy of the tree, then against two mutants each embodying exactly
+the failure its criterion was written to catch. This is CLAUDE.md's "assert the artifact is
+*right*, not merely present", applied to the frozen tests themselves.
+
+## Two refinements, both needing approval before the freeze
+
+1. **Criterion 1 gains a clause: the knob is documented in `run.config.example.json` at its
+   default.** `repo-sls`'s equivalent criterion said so explicitly and `repo-teq`'s did not,
+   which reads as an oversight rather than a decision — `run.config.example.json` is already in
+   this task's may-edit list, and every other production tunable is there. Without the clause
+   the check would be an orphan, which PLANNING.md step 4 calls a spec bug.
+2. **The scheduler's name and signature move into the issue's constraints** — the block above.
+   Not a change of intent; it is intent that was under-specified, and the frozen test has to
+   commit to it either way.
