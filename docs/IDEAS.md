@@ -81,6 +81,24 @@ Two hard boundaries, both inherited:
 
 <!-- Newest at the top. Nothing here is committed to. -->
 
+- **Let a task report progress while it is still running, roughly every 10 minutes** — right now
+  a container is opaque from the outside: nothing is visible until it exits and the run report is
+  written. A task that has been going for an hour is indistinguishable from a task that is wedged,
+  and the only lever is to kill it and lose the work. A periodic line — what it is doing, what it
+  has finished, which attempt it is on — would make an overnight run watchable and make the
+  kill-or-wait call an informed one.
+  The out-channel already exists and is the natural place: `pipeline/status.js` is the sole writer
+  of `/workspace/.run/status.json`, the workspace is a host mount, so anything appended there is
+  readable live without giving the container a new route out. It would be evidence only, like
+  `note` and `concern` — self-reported progress can never touch an outcome (hard rule 5).
+  The honest catch is that an LLM cannot keep wall-clock time, so "every 10 minutes" from the
+  agent's side is a hope, not an interval; a run that goes quiet would be exactly the run you most
+  want a line from. Worth weighing against the deterministic alternative — the host already has the
+  agent's log stream and could emit its own heartbeat on a real timer, with no LLM involved
+  (hard rule 7), possibly with the agent's self-reported lines folded in when they happen to
+  arrive. Which of those is right depends on whether the value is "is it alive" or "what is it
+  actually doing". 2026-07-30
+
 - **Give the docs phase a merge strategy, or batched runs will always conflict** — file-ownership
   constraints in a spec keep *code* disjoint across a batch, and on 2026-07-30 three chained tasks
   touched three different code areas with no collision at all. Every one of them also edited the
