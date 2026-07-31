@@ -43,7 +43,7 @@ function hostBdSpec() {
   if (hostBd !== undefined) return hostBd;
   hostBd = null;
   // A real executable on PATH (every POSIX host, and a native bd.exe on Windows).
-  if (spawnSync('bd', ['version'], { encoding: 'utf8' }).status === 0) {
+  if (spawnSync('bd', ['version'], spawnOptions()).status === 0) {
     hostBd = { cmd: 'bd', pre: [] };
     return hostBd;
   }
@@ -54,7 +54,7 @@ function hostBdSpec() {
       const js = shimTarget(text, dir);
       // Verify by running it: a shim that names a target which was uninstalled, or a
       // parse that produced a plausible-but-wrong path, must not be trusted on shape.
-      if (js && spawnSync(process.execPath, [js, 'version'], { encoding: 'utf8' }).status === 0) {
+      if (js && spawnSync(process.execPath, [js, 'version'], spawnOptions()).status === 0) {
         hostBd = { cmd: process.execPath, pre: [js] };
         return hostBd;
       }
@@ -65,6 +65,51 @@ function hostBdSpec() {
 
 function haveHostBd() {
   return hostBdSpec() !== null;
+}
+
+// ---- the bound (§4.1: the runner enforces timeouts) ---------------------------------
+// Every runner Beads call is bounded, because an unbounded one parks the whole run: `bd`
+// has been seen printing its complete JSON output and then never exiting, and two calls
+// against one embedded Dolt database have been seen blocking on each other indefinitely.
+// The sweep harness kills a stuck suite at 900s; a real run has no such backstop, and the
+// remember/finish pair runs AFTER the container exits — a hang there strands finished work
+// with the issue still in_progress and the outcome unwritten.
+//
+// The bound is spawnSync's own `timeout`, never an asynchronous spawn. In a single-threaded
+// runner spawnSync is what makes two bd calls unable to interleave over one embedded
+// database, which is what the sole-writer rule (§4.10) rests on once tasks run concurrently.
+const DEFAULT_BD_TIMEOUT_MS = 60000;
+// `timeout(1)`'s exit code, so a timed-out call is a non-zero status like any other
+// failure — every caller already handles that path, and none of them change behaviour.
+const TIMEOUT_STATUS = 124;
+
+// The single source of spawn options for this module. Every spawnSync below is built from
+// it, INCLUDING the two host-bd probes: a probe that hangs parks the run exactly as a call
+// that hangs does. `extra` wins, so a call site can still add env or override the bound.
+function spawnOptions(cfg, extra = {}) {
+  const want = cfg && cfg.bdTimeoutMs;
+  const timeout = Number.isInteger(want) && want > 0 ? want : DEFAULT_BD_TIMEOUT_MS;
+  // SIGKILL, not the default SIGTERM: a bound a wedged process can decline to honour is
+  // not a bound, and by the time it fires the call is already pathological. Note this
+  // reaches the `docker run` client on the fallback path, not the container it started.
+  return { encoding: 'utf8', timeout, killSignal: 'SIGKILL', ...extra };
+}
+
+// Turn the kernel's version of a timeout into the loud, self-describing failure the
+// callers already understand. A silent empty result here would be the same quiet
+// degradation this bound exists to prevent, so the message names the bound that fired.
+function bounded(r, cfg, opts) {
+  const { timeout, killSignal } = spawnOptions(cfg, opts);
+  const hitBound = (r.error && (r.error.code === 'ETIMEDOUT' || /ETIMEDOUT/.test(r.error.message || '')))
+    || (r.status === null && r.signal === killSignal);
+  if (!hitBound) return r;
+  const note = `bd timed out after ${timeout}ms (run.config.json bdTimeoutMs) and was killed`;
+  return {
+    ...r,
+    status: TIMEOUT_STATUS,
+    timedOut: true,
+    stderr: `${(r.stderr || '').trim() ? `${r.stderr}\n` : ''}${note}`,
+  };
 }
 
 // Docker Desktop on Windows needs a Windows-style mount source; Git Bash's MSYS
@@ -80,22 +125,26 @@ function bd(cfg, args, opts = {}) {
   // bare bd argument vector — no `-C` prefix, no host probe, no Docker fallback — so
   // Docker-free suites can stub the whole bd layer. Takes absolute precedence.
   if (process.env.PIPELINE_BD_CMD) {
-    return spawnSync(process.env.PIPELINE_BD_CMD, args, {
-      encoding: 'utf8',
-      env: process.env,
-      ...opts,
-    });
+    return bounded(
+      spawnSync(process.env.PIPELINE_BD_CMD, args, spawnOptions(cfg, { env: process.env, ...opts })),
+      cfg, opts
+    );
   }
   const host = hostBdSpec();
   if (host) {
-    return spawnSync(host.cmd, [...host.pre, '-C', cfg.targetRepoPath, ...args],
-      { encoding: 'utf8', ...opts });
+    return bounded(
+      spawnSync(host.cmd, [...host.pre, '-C', cfg.targetRepoPath, ...args], spawnOptions(cfg, opts)),
+      cfg, opts
+    );
   }
   const mount = `${toMountPath(cfg.targetRepoPath)}:/repo`;
-  return spawnSync(
-    'docker',
-    ['run', '--rm', '-v', mount, '-w', '/repo', cfg.image, 'bd', ...args],
-    { encoding: 'utf8', env: { ...process.env, MSYS_NO_PATHCONV: '1' }, ...opts }
+  return bounded(
+    spawnSync(
+      'docker',
+      ['run', '--rm', '-v', mount, '-w', '/repo', cfg.image, 'bd', ...args],
+      spawnOptions(cfg, { env: { ...process.env, MSYS_NO_PATHCONV: '1' }, ...opts })
+    ),
+    cfg, opts
   );
 }
 
@@ -109,4 +158,6 @@ function bdJson(cfg, args) {
   }
 }
 
-module.exports = { bd, bdJson, haveHostBd, toMountPath, shimTarget };
+module.exports = {
+  bd, bdJson, haveHostBd, toMountPath, shimTarget, spawnOptions, DEFAULT_BD_TIMEOUT_MS,
+};

@@ -103,6 +103,13 @@ The claim in step 1 is what stops a task being picked twice, and it is why a cra
 leaves issues stranded `in progress` — the next run's preflight sweeps those back to
 `open`.
 
+Every arrow into the task list is a bounded, synchronous `bd` call — `bdTimeoutMs` in the
+run config, default 60s, applied by `runner/bd.js` to every spawn it makes (change-log row
+`repo-sls`). Step 3 is the reason: it runs *after* the container exits, so a `bd` that hangs
+there would leave finished work claimed and its outcome unwritten, with no timer anywhere to
+end the wait. A call that exceeds the bound is killed and reported as an ordinary failure,
+which the steps above already know how to handle.
+
 ```mermaid
 stateDiagram-v2
   [*] --> open: planning creates the task
