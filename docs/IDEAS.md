@@ -91,7 +91,11 @@ Two hard boundaries, both inherited:
   grep and the failure mode is a frozen task that cannot pass. Note this is the same disease as the
   four checklist items found already-done the same day: **the map and the territory drift in both
   directions**, and only reading the territory settles it. Candidate PLANNING.md step-1a addition.
-  2026-07-31
+  Related: *Reconcile a target's spec against the merged tree at planning step 0*, below, covers
+  the **written** half of the same drift — a spec that has fallen behind merged code. This entry is
+  the **unwritten** half: a mechanic someone believes in that was never built. Both were found on
+  the same day from opposite ends, which is the argument for reading the code at step 0 rather than
+  trusting either document. 2026-07-31
 
 - **Ask what else reads the number a new mechanic changes** — the same session found that adding a
   line-gun would silently redefine a shipped, already-ticked spec item. `Astronaut.can_reach()`
