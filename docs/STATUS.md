@@ -447,6 +447,53 @@ the Docker suites that run them for real. **The host sweep is the obligation thi
 cannot discharge from inside a container**: `bash scripts/test-all.sh` is what proves the
 dozen suites that hard-code `pipeline-net` in a cleanup trap are still green.
 
+## The pipeline built real features unattended (2026-07-30/31)
+
+**The first sustained production use, and the thing the whole design was for.** Eight tasks
+were specced, frozen and run against one target project across four batches. **Every one
+returned `done` on the first attempt** — no `tampered`, no `stuck`, no second attempts. The
+target's acceptance suite went from 262 tests to 317, and its own checklist from 12 ticked
+items to 20, with every line of implementation written by a container agent against tests it
+could not edit.
+
+What that exercised, all of it built the same day: the frozen-path lint before any critic, the
+freeze gate proving each suite red before it could judge anything, the mandatory testability
+pass, per-project networks, and the memory round trip (104 notes exported into the first run,
+146 by the fifth).
+
+**Three defects were found by scaffolding rather than by anyone noticing** — the design's
+central bet, paying out again:
+
+1. **The freeze gate blessed a suite that never ran.** A frozen suite carried a parse error; the
+   target's runner exited 2, which its own header documents as *broken harness* rather than
+   *failed test*. The gate compared only "real non-zero" against "control green" and called it
+   RED. **The control cannot catch this by construction** — it proves the harness works on
+   *other* tests, so a suite whose own script fails to load leaves the control perfectly green.
+   Fixed: a real exit above 1 with a green control is now `indeterminate`. The first fix put the
+   check before the control check and preempted the empty-probe guidance; the suite caught that
+   too. See the change log.
+2. **The empty-directory control was wrong in the worst direction.** It survived every stubbed
+   test and died on the first real `verifyCommand`, because a good runner *should* fail on "no
+   test files found". The better the target's runner, the more surely the probe fails — so the
+   gate would have answered `indeterminate` for every well-built project. The control is now a
+   trivially-passing test committed per project.
+3. **The frozen-path lint fired on a real spec**, matching a frozen path inside a test comment.
+   True positive by the rule, false positive by intent. Dispositioned *rejected, with reason* —
+   which is exactly why that check reports rather than gates.
+
+**Batching works, with one caveat that is now measured.** File ownership stated in each spec's
+constraints prevented every code collision across four batches. The documentation phase collided
+every single time, because every task edits the target's design doc, README and spec file — and
+that is the finding parallelism has to answer. `docs/parallelism-findings-2026-07-31.md` records
+the measurements, including that the speedup is bounded by the slowest task and the variance
+across comparable tasks is 3.6×.
+
+**What this does not prove.** Every task here was drafted by one context that also wrote its own
+criteria and reviewed them against the testability charter itself, because no independent
+context was available. That is weaker than §3.2 asks for, and the panel's value came precisely
+from being unprimed. Eight-for-eight on specs reviewed by their author is a claim about the
+execution half of the pipeline, not about the planning half.
+
 ## What's next
 
 **The queue drained again on 2026-07-26**, after `repo-4l8` (the epic filter, planned and
