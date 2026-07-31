@@ -11,6 +11,11 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FAIL=0
 pass() { echo "PASS  $1"; }
 fail() { echo "FAIL  $1"; FAIL=1; }
+# Teardown belongs in an EXIT trap, not at the bottom of the script: the `pipeline-net up`
+# guard below exits 1 on its own, and the permissive-allowlist case leaves a deliberately
+# broken sidecar behind if anything after it aborts (change-log row `repo-zje`).
+cleanup() { bash "$ROOT/scripts/pipeline-net.sh" down >/dev/null 2>&1; }
+trap cleanup EXIT
 
 echo "== T6 checks =="
 bash "$ROOT/scripts/pipeline-net.sh" up >/dev/null || { fail "pipeline-net up"; exit 1; }
@@ -44,7 +49,7 @@ else
   pass "gate fails when the sidecar is down"
 fi
 
-bash "$ROOT/scripts/pipeline-net.sh" down >/dev/null 2>&1
+cleanup
 pass "teardown clean"
 
 if [[ $FAIL -eq 0 ]]; then echo "== ALL T6 CHECKS PASSED =="; else echo "== T6 CHECKS FAILED =="; fi

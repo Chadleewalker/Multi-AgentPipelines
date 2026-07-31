@@ -17,6 +17,12 @@ PROXY_ENV=(-e HTTPS_PROXY=http://pipeline-proxy:3128 -e HTTP_PROXY=http://pipeli
 FAIL=0
 pass() { echo "PASS  $1"; }
 fail() { echo "FAIL  $1"; FAIL=1; }
+# Teardown belongs in an EXIT trap, not at the bottom of the script: the `pipeline-net up`
+# guard below exits 1 on its own, and anything that aborts between it and the last line
+# used to leave the network and the proxy up for the next suite to trip over
+# (change-log row `repo-zje`).
+cleanup() { bash "$ROOT/scripts/pipeline-net.sh" down >/dev/null 2>&1; }
+trap cleanup EXIT
 
 probe() { # probe <extra docker args...> -- <url> ; prints curl http_code, 000 on failure
   local args=() u out
@@ -78,7 +84,7 @@ else
   echo "SKIP  live claude -p check (set CLAUDE_CODE_OAUTH_TOKEN to run it)"
 fi
 
-bash "$ROOT/scripts/pipeline-net.sh" down >/dev/null
+cleanup
 pass "teardown clean"
 
 if [[ $FAIL -eq 0 ]]; then echo "== ALL T5 CHECKS PASSED =="; else echo "== T5 CHECKS FAILED =="; fi

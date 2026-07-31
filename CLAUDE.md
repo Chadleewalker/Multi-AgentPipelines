@@ -82,13 +82,14 @@ bash scripts/e2e.sh            # add --keep to leave branches and PRs up for ins
 bash scripts/test-verifier.sh
 bash scripts/test-runner-container.sh
 
-# the six suites that need no Docker — seconds, safe to run anywhere, even in a container
+# the seven suites that need no Docker — seconds, safe to run anywhere, even in a container
 bash scripts/test-runner-memory.sh
 bash scripts/test-changelog.sh     # DESIGN.md §12 row identity (CHANGELOG_FILE re-aims it)
 bash scripts/test-sanitize.sh      # publication hygiene (SANITIZE_FIXTURE_DIR re-aims it)
 bash scripts/test-agent-hooks.sh   # no tracked agent hooks (AGENT_HOOKS_FIXTURE_DIR re-aims it)
 bash scripts/test-network-names.sh # per-project network + proxy names (§4.8) reach the scripts
 bash scripts/test-lock.sh          # the per-project run lock (§4.12) — refuse, take over, release
+bash scripts/test-sweep-hygiene.sh # what the sweep reclaims after a suite, and what it must not touch
 ```
 
 Suites are slow (real containers) and **share one Docker network** — run them one at a
@@ -97,6 +98,12 @@ time, never concurrently, or they tear the network down under each other.
 sequentially, kills any suite that hangs (default 900s), and writes per-suite logs plus a
 summary to `runs/sweeps/<timestamp>/`. It discovers suites by glob, so a new
 `scripts/test-*.sh` is swept without anyone editing anything.
+
+After every suite the sweep reclaims what that suite leaked — and only what it leaked:
+`scripts/sweep-reclaim.js` diffs a listing taken before the suite against one taken after
+and removes what appeared *and* matches the pipeline allowlist, naming it in the summary
+table. Every docker call in `scripts/test-all.sh` goes through `${SWEEP_DOCKER:-docker}`,
+which is what lets `test-sweep-hygiene.sh` drive the real sweep with no daemon.
 
 **Run the sweep after merging a batch of PRs, before a shadow run, and when picking up a
 cold branch.** Suites go stale silently: T12 was never re-run after T15 and T17 changed
@@ -161,6 +168,19 @@ note keys are cited so the trail back to the run survives.
   all of this — workspaces clone with `core.autocrlf=false` and `core.eol=lf`, so the
   container never sees CRLF at all.
 
+- **Never remove a Docker resource you cannot prove you created.** The reference host runs
+  unrelated long-lived containers, and `docker`'s `--filter name=` is a **substring** match,
+  not a prefix one: `--filter name=task-` force-removed `my-task-runner` and anything else
+  whose name merely contains `task-`. Ownership in the harness is a **before/after snapshot
+  diff intersected with an allowlist** — absent from the listing taken before the suite AND
+  matching a pipeline image, the exact name `pipeline-proxy`, a `task-` prefix anchored at
+  position 0, or the `pipeline-net` network. The decision lives in `scripts/sweep-reclaim.js`
+  and nothing else in `scripts/` keeps a removal path of its own; a suite that creates
+  containers takes a snapshot at its top and reclaims against it in its `EXIT` trap. Two
+  rules travel with it: **no baseline, no removal** (a listing that failed is not "nothing
+  was here", or the first failed call removes every pipeline container on the machine), and
+  **cleanup is never a verdict** — the suite's exit code is captured before any of this runs
+  and the reclaimer always exits 0. (change-log row `repo-zje`.)
 - **This repo documents the machinery, never the work done with it.** It is public and it
   is used on private work; that one boundary is what lets both stay true. Worked examples,
   findings and fixtures are either generic or name something you are happy to publish —
@@ -231,7 +251,12 @@ the pipeline working on the pipeline's own code. The rules:
   a temp pipeline root: run it if you touch `runner/lock.js`, `runner/preflight.js`'s gate
   order or `runner/run.js`'s exit path, because a lock that stops being the *first* gate,
   or stops being released, either lets two runners drain one queue or blocks the project
-  until someone deletes a file. Any new Docker-free
+  until someone deletes a file — and
+  `sh scripts/test-sweep-hygiene.sh` (`tests/unit/sweep-hygiene.test.js`), which drives a
+  copy of the real `scripts/test-all.sh` against a recording stand-in for `docker`: run it
+  if you touch `scripts/test-all.sh`, `scripts/sweep-reclaim.js` or any suite's cleanup,
+  because a sweep that removes what it did not create takes an unrelated container on the
+  developer's machine with it and says nothing. Any new Docker-free
   suite belongs beside them in
   `tests/unit/`, and its seam stub must be a `.js` file invoked through
   `process.execPath`, never a `#!/bin/sh` script: `spawnSync` without a shell fails such a

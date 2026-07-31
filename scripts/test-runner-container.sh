@@ -13,8 +13,16 @@ TMP="$(mktemp -d)"
 FAIL=0
 pass() { echo "PASS  $1"; }
 fail() { echo "FAIL  $1"; FAIL=1; }
+# Ownership is a snapshot diff, never a name match. This used to be
+# `docker ps -aq --filter name=task- | xargs -r docker rm -f`, and docker's name filter is a
+# SUBSTRING match: it force-removed any container on the host whose name merely contained
+# "task-" — `my-task-runner` included, on a host that runs unrelated long-lived containers.
+# The reclaimer removes only what appeared after this snapshot AND matches the pipeline
+# allowlist (scripts/sweep-reclaim.js; change-log row `repo-zje`).
+DOCKER_BEFORE="$TMP/docker-before.json"
+node "$ROOT/scripts/sweep-reclaim.js" snapshot > "$DOCKER_BEFORE" || true
 cleanup() {
-  docker ps -aq --filter "name=task-" | xargs -r docker rm -f >/dev/null 2>&1
+  node "$ROOT/scripts/sweep-reclaim.js" reclaim --before "$DOCKER_BEFORE"
   bash "$ROOT/scripts/pipeline-net.sh" down >/dev/null 2>&1
   rm -rf "$TMP" "$ROOT/runs/t14-"*
 }
@@ -113,7 +121,7 @@ echo "$OUT" | grep -q "wall-clock budget exhausted" && pass "host wall-clock tim
 echo "$OUT" | grep -q "exit killed -> failed" && pass "killed container -> failed outcome" \
   || fail "kill outcome wrong: $(echo "$OUT" | grep -E 'exit' | tail -2)"
 bdq show "$HANG_ID" --json | grep -q '"blocked"' && pass "killed task blocked in Beads" || fail "kill transition wrong"
-docker ps -q --filter "name=task-$HANG_ID" | grep -q . && fail "container still running after kill" || pass "container actually stopped"
+docker ps -q --filter "name=^task-$HANG_ID" | grep -q . && fail "container still running after kill" || pass "container actually stopped"
 
 # 5. Credentials and isolation.
 grep -rqE 'CLAUDE_CODE_OAUTH_TOKEN=[A-Za-z0-9]' "$ROOT/runs/t14-success/" 2>/dev/null \

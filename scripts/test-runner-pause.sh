@@ -13,8 +13,16 @@ TMP="$(mktemp -d)"
 FAIL=0
 pass() { echo "PASS  $1"; }
 fail() { echo "FAIL  $1"; FAIL=1; }
+# Ownership is a snapshot diff, never a name match. This used to be
+# `docker ps -aq --filter name=task- | xargs -r docker rm -f`, and docker's name filter is a
+# SUBSTRING match: it force-removed any container on the host whose name merely contained
+# "task-" — `my-task-runner` included, on a host that runs unrelated long-lived containers.
+# The reclaimer removes only what appeared after this snapshot AND matches the pipeline
+# allowlist (scripts/sweep-reclaim.js; change-log row `repo-zje`).
+DOCKER_BEFORE="$TMP/docker-before.json"
+node "$ROOT/scripts/sweep-reclaim.js" snapshot > "$DOCKER_BEFORE" || true
 cleanup() {
-  docker ps -aq --filter "name=task-" | xargs -r docker rm -f >/dev/null 2>&1
+  node "$ROOT/scripts/sweep-reclaim.js" reclaim --before "$DOCKER_BEFORE"
   bash "$ROOT/scripts/pipeline-net.sh" down >/dev/null 2>&1
   rm -rf "$TMP" "$ROOT/runs/t15-"*
 }
