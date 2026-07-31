@@ -897,7 +897,7 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-lock.sh` | the per-project run lock — refusal, path identity, takeover, release |
 | `scripts/test-sweep-hygiene.sh` | sweep hygiene — what the sweep reclaims after a suite, what it must never touch, and that reclaiming changes no verdict |
 
-**`scripts/test-runner-memory.sh` is one of the six suites that need no Docker**
+**`scripts/test-runner-memory.sh` is one of the seven suites that need no Docker**
 (repo-dhp): it
 drives both §3.6 memory channels plus the `shouldFileMemory` outcome gate through the
 `PIPELINE_BD_CMD` seam, so it runs anywhere — including inside a task container, where
@@ -1033,6 +1033,24 @@ by an unanchored `--filter name=`. A third checks over the discovered set that e
 bringing `pipeline-net` up tears it down from an `EXIT` trap — `test-egress.sh` and
 `test-egress-check.sh` tore down at the bottom of the script instead, which their own early
 `exit 1` paths skipped.
+
+**The host obligation, and it is the whole point of the change:** `bash
+scripts/test-all.sh` on the reference host, once, against the real daemon. Everything above
+is proven against a recording stand-in, which by construction cannot show that the real
+`docker ps` / `network ls` output parses the way the reclaimer expects, nor that a suite's
+own `EXIT` trap and the sweep's per-suite reclaim agree about what is already gone. Two
+things to read in the summary table: the `NOTES` column should name identities rather than
+a fixed phrase, and it should be **empty** for a suite that cleaned up after itself — a note
+on every row means the reclaimer is claiming resources the suites already released. Also
+expect the trap criterion to go red for a moment when a branch adding a new
+`scripts/test-*.sh` merges: the criterion is checked over the *discovered* set, so a new
+suite is covered the day it lands, which is correct behaviour and not a regression.
+
+Left alone deliberately, and it is filed rather than fixed: the `ASSERTS` column still
+counts only `PASS ` lines and not `ok - ` lines, so three suites under-report their check
+counts (`docs/IDEAS.md`, 2026-07-30). Same script, different decision — which of the repo's
+two pass vocabularies should win is a choice, not a patch, and bundling it here would have
+put a coverage-reporting change inside a hygiene task.
 
 **Why it reads bytes and never skips a "binary" file.** This suite exists because
 `publish-sanitize` missed a private project name in `tests/acceptance/repo-006/test.js`,
