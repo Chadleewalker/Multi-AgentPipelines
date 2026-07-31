@@ -500,3 +500,249 @@ the failure its criterion was written to catch. This is CLAUDE.md's "assert the 
 2. **The scheduler's name and signature move into the issue's constraints** — the block above.
    Not a change of intent; it is intent that was under-specified, and the frozen test has to
    commit to it either way.
+
+---
+
+# Batch 3 — `repo-i9y`: park the whole run, not each task (post-panel revision)
+
+`repo-teq` merged (PR #22), so this is next and its criteria are written now, against the code
+as it exists **after** that merge — which is the whole reason they were deferred. Difficulty
+**hard**; full three-charter panel run against the first draft. **All three returned
+`concerns` — 30 findings**, dispositioned at the foot of this section. Two were found
+independently by two charters each, which is what earned them the rewrites below.
+
+Approved intent is unchanged except for **one correction that needs sign-off** (Decision 1).
+
+## What the panel changed, in one paragraph
+
+The first draft would have frozen a **green test over a dead feature**. Its contract said the
+injected wait function resolves `{cycles}`; the real `waitForWindow` resolves `{pauses}`
+(`runner/pause.js:75,80`). An implementer reading `result.cycles` gets `undefined` in
+production, feeds `spentCycles: undefined` back, `waitForWindow`'s `opts.spentCycles || 0`
+resets it to 0 — and **the run-level cap can never fire**, while every criterion stays green
+because the *test* supplies the stub's return value. Worse, nothing pinned that `waitFn`
+*defaults* to `waitForWindow` at all, so a gate whose default was a no-op would also pass
+everything. That is CLAUDE.md's "plausible and wrong" family at the level of the whole task.
+
+## The revised contract
+
+```js
+// runner/pause.js — new export, alongside waitForWindow / waitPlan / probeHost
+createPauseGate(cfg, log, opts = {}) -> gate
+
+//   opts.waitFn   DEFAULTS TO THIS MODULE'S OWN waitForWindow, and is called as
+//                   waitFn(cfg, status, log, traceId,
+//                          { token, spentCycles, maxPauses, sleepFn, probeFn })
+//                 It MUST be assumed to resolve waitForWindow's REAL shapes:
+//                   { resumed: true,  pauses: <number> }   // cumulative cycle index
+//                   { resumed: false, reason: <string> }   // NO count field at all
+//   opts.token    forwarded unchanged
+//   opts.sleepFn  forwarded unchanged  ) so the default waitFn can be driven
+//   opts.probeFn  forwarded unchanged  ) end-to-end with no real sleeping
+//   (opts.now is NOT in the contract — the first draft required it and no
+//    criterion used it. Dead weight in a frozen contract; dropped.)
+
+// gate.reportLimit(status, traceId) -> Promise<{ resumed, cycles, joined,
+//                                                exhausted?, reason? }>
+// gate.admit(traceId)               -> Promise<boolean>
+// gate.cycles      number    run-level wait cycles spent
+// gate.exhausted   boolean   the run-level cap has fired
+// gate.waits       number    shared waits opened this run
+
+// PINNED SEMANTICS the criteria encode:
+//  * The gate reads its cycle count from result.pauses. When a result carries no
+//    count (every resumed:false), gate.cycles is left UNCHANGED — never NaN, never 0.
+//  * A resumed:false from waitFn EXHAUSTS the gate.
+//  * reportLimit's join decision is made SYNCHRONOUSLY on entry, before any await.
+//  * admit() is consulted inside runOneTask, BEFORE claim().
+```
+
+Also changed: `runner/run.js` **exports `runOneTask`**, taking the gate as its last parameter —
+`runOneTask(cfg, issue, log, token, gate)`. The first draft asserted this was impossible to
+drive Docker-free and used that to justify a source-grep criterion. The panel disproved it:
+`claim`/`finish` go through `PIPELINE_BD_CMD`, `prepare()` clones from `cfg.targetRepoRemote`
+which `scripts/test-runner-queue.sh:21` already points at a local bare repo, `publish()` has
+`PIPELINE_GH_CMD`, and `PIPELINE_EXEC_STUB` stands in for the container. Wide, not impossible —
+so criterion 7 is **behavioural** instead of structural.
+
+New Docker-free suite: `tests/unit/pause-gate.test.js` via `scripts/test-pause-gate.sh`.
+
+## Acceptance criteria — "Done means"
+
+Eight rather than PLANNING.md's usual 3–6. Deliberate: the scope critic checked for a split and
+returned *"no split — keep it whole"*, and two of the eight are obligations the panel added that
+no earlier criterion covered.
+
+1. **The gate exists, and its default wait really is `waitForWindow`.** `runner/pause.js`
+   exports `createPauseGate`. Built with **no `waitFn`** and given `sleepFn` (resolves
+   immediately) plus a status whose `rateLimitResetAt` is in the past, `reportLimit` resolves
+   `{resumed:true, cycles:1}` — driving the **real** `waitForWindow` reset-time path end to end
+   and proving the gate reads `pauses`, not a name only a stub would answer to. A second
+   `reportLimit` after it settles receives `spentCycles === 1`. *(Kills TE2 and AM1 together:
+   no stub can satisfy this.)*
+
+2. **One shared wait — opened by the first exit 20, joined by later ones, never extended.**
+   With a recording `waitFn` whose promise the test controls: three `reportLimit` calls **issued
+   in one synchronous tick** produce **exactly one** `waitFn` invocation and `gate.waits === 1`;
+   that invocation's `status` is **`statusA` by object identity**; resolving it once settles all
+   three, the later two with `joined === true` and the first `false`. A fourth `reportLimit`
+   **after** it settled opens a second wait (`gate.waits === 2`) carrying `statusD` by identity.
+
+3. **One run-level cycle counter, carried across tasks — and a failed wait exhausts the gate
+   without losing the count.** At `maxPauseCycles: 2`, with a `waitFn` resolving
+   `{resumed:true, pauses: spentCycles + 1}`, three sequential `reportLimit`s from **three
+   different trace ids** (each awaited before the next): call 1 receives `spentCycles === 0` and
+   `maxPauses === 2` (**not** `pause.js`'s hard-coded 96); call 2 receives `spentCycles === 1` —
+   carried across tasks, not reset; the third resolves `{resumed:false, exhausted:true}` with a
+   non-empty string `reason` and **`waitFn` is never called a third time**. Separately, a
+   `waitFn` resolving `{resumed:false, reason:'x'}` — which carries **no count** — sets
+   `gate.exhausted === true` and leaves `gate.cycles` **unchanged** (not `NaN`, not `0`).
+   `reason` is asserted structurally, never by phrase.
+
+4. **Admission has exactly three states.** Fresh gate: `admit()` resolves `true` immediately,
+   no `waitFn` call, `gate.waits === 0`. Wait in flight: `admit()` has **not settled** after two
+   `setImmediate` drains and settles `true` only when the test resolves that wait, with
+   `waitFn` call count still 1 — an `admit` joins a wait, never opens one; two concurrent
+   `admit`s both settle from that one wait. Exhausted: `admit()` resolves **`false`** within one
+   drain, for every subsequent call, forever, opening no wait.
+
+5. **Park admits no new work; it never kills what is running.** Through the real scheduler,
+   `drainQueue(issuesOf('p1'..'p4'), taskFn, 3)` where `taskFn` records its start event **after**
+   `await gate.admit()` returns: `p1` reports a limit while `p2`/`p3` are mid-body; **`p2` and
+   `p3` each resolve with their own value** while the gate is closed, and **`p4` records no start
+   event** until the test resolves the shared wait. Judged from an events array, never elapsed
+   time. *(The first draft's "the gate exposes no member named kill/cancel/abort…" check is
+   **dropped** — absence-of-a-name standing in for absence-of-a-behaviour, trivially true and
+   able to fail a correct implementation that names something `stop`.)*
+
+6. **A task refused admission leaves Beads untouched and still appears in the run report.**
+   Driving the exported `runOneTask` with an exhausted gate and `PIPELINE_BD_CMD` recording:
+   **no `bd` subcommand is invoked at all** for that issue — no `claim`, no `finish`, so the
+   issue stays **`open`** and the next run picks it up — and `runOneTask` resolves a manifest row
+   `{issueId, outcome:'paused'}` rather than `null`, so `main()`'s `.filter(Boolean)` cannot
+   erase it from `run.json`. Needs no schema edit: the row's `outcome` enum already admits
+   `paused` and the row is `additionalProperties:false`. *(See Decision 1 — this corrects the
+   approved intent.)*
+
+7. **`runner/run.js` builds exactly one gate per run and routes every park through it
+   (behavioural).** `runner/run.js` exports `runOneTask(cfg, issue, log, token, gate)`. Driven
+   Docker-free — `PIPELINE_BD_CMD` stub, `PIPELINE_EXEC_STUB` exiting **20** and writing a
+   `status.json` carrying `rateLimitResetAt`, `targetRepoRemote` a temp local bare repo,
+   `PIPELINE_GH_CMD` a recorder — with an **injected gate**: that gate's `reportLimit` is called
+   **exactly once**, and the `status` it receives is the one the stub wrote. Plus two structural
+   checks on comment-stripped source: `waitForWindow` appears on **no** non-comment line of
+   `runner/run.js` (today: two), and `createPauseGate(` appears **exactly once**, at an offset
+   after `async function main(`. *(The first draft's `const gate = createPauseGate(` literal is
+   **dropped** — it fails a correct implementation that names the variable `pauseGate`. The
+   "single `drainQueue(` call" check is **dropped**: `drainQueue(` occurs twice, the declaration
+   at :106 and the call at :334, so as written it fails against correct code.)*
+
+8. **[guard] The log strings and identifiers the unrepairable Docker suites assert survive.**
+   `scripts/test-runner-pause.sh` has **18 lines / 20 occurrences** of `grep -q`, of which
+   **12** test runner stdout — the first draft said "18 literal `grep -q` on log strings", wrong
+   on both the number and the category, and that miscount is what made the union rule below look
+   safe. So:
+   - **`exitCode !== 20` must remain on a non-comment line of `runner/run.js` specifically** —
+     not the union. That suite greps it out of the **file by name** (`:136`), and `repo-teq`'s
+     already-frozen A6 asserts it in `run.js`. This repo declares no `regressionCommand`, so an
+     implementer who moved it into `pause.js` would pass every gate available to them and break
+     both silently.
+   - **`rate limit hit (pause 1)` — with the digit** (`:85` greps the literal `1`). The first
+     draft pinned only `rate limit hit (pause `, so a run-level counter logging the *shared cycle
+     number* where the *per-task relaunch* number belongs would pass and break the suite.
+   - **`wall-clock budget exhausted`** (`run.js:175`, inside the loop being rewritten). Used as a
+     **negative** assertion, so losing the string turns that check permanently *green* — the
+     "non-empty, well-formed and false" failure mode by name.
+   - Also `exit 0 -> done` and `starting task`, and the union list from the first draft:
+     `issue stays in_progress`, `relaunching in a fresh container against the same workspace`,
+     `active total`, `giving up on the pause`, `paused: waiting until reported reset`,
+     `reset time reached — resuming`, `no reset time reported; probing every`,
+     `probe still rate-limited`, `probe succeeded`.
+   - `pauses` remains a manifest row field (relaunch count, per task — `report.js:77` and
+     `run.schema.json:44` read it and neither is this task's to edit). `fileMemoryNotes`,
+     `queueSummary` and `shouldFileMemory` are **deliberately not repeated here**: `repo-teq`'s
+     A6 guards them and that directory is never re-run, so naming the reliance is the honest move.
+
+## Decision 1 — needs your sign-off, because it corrects approved intent
+
+Resolution 2 says a parked task *"ends `paused`, issue left `in_progress`"*. Two charters
+independently found that **cannot describe a task refused admission**: `claim()` sets
+`in_progress` at the top of `runOneTask`, so a task refused *before* claiming was never claimed
+at all — and §4.11's table has no row for "never started".
+
+There are two populations, and the intent conflated them:
+
+| | Beads state | Manifest row |
+|---|---|---|
+| **Parked** — launched, exited 20, waited, gave up | `in_progress` (unchanged, as approved) | its normal `paused` row |
+| **Refused** — the cap had already fired; never launched | **`open`** (proposed) | synthesized `{issueId, outcome:'paused'}` |
+
+**Proposed:** refused tasks stay `open` so the next run picks them up with no stale-issue
+recovery needed, and still get a row so they are visible in the run report. The alternative —
+returning `null` — makes them vanish from `run.json` entirely via `main()`'s `.filter(Boolean)`,
+which after an unattended overnight run is a silent hole. Criterion 6 encodes the proposal.
+
+## Critic panel — 30 findings, all dispositioned
+
+Three charters, three fresh contexts, **all three `concerns`**. Counts: ambiguity 12,
+scope 9, testability 9.
+
+**Found independently by two charters each — which is why they drove rewrites:**
+
+| Finding | Charters | Disposition |
+|---|---|---|
+| `pauses` vs `cycles`: the frozen test would go green over a counter that never advances | ambiguity + scope | **Accepted** — contract now pins `waitForWindow`'s real shapes and criterion 1 drives the real function so no stub can satisfy it |
+| The fate of a task refused admission is pinned nowhere; `.filter(Boolean)` erases it | ambiguity + scope + testability | **Accepted** — new criterion 6 and **Decision 1** |
+
+**Accepted, changing a criterion:**
+
+| # | Finding | Disposition |
+|---|---|---|
+| TE2 | Nothing pins that `waitFn` *defaults* to `waitForWindow` — a no-op default passes everything | **Accepted**, and it is the single best finding of the panel. Criterion 1 rebuilt around driving the real function with `sleepFn`/`probeFn` forwarded |
+| TE1/AM5 | No criterion exercises a `waitFn` resolving `resumed:false`, which carries no count | **Accepted** — folded into criterion 3, including what `gate.cycles` does with an absent count |
+| AM2/SC3/TE5 | D6's "run.js **or** pause.js" union is unsound: `exitCode !== 20` is greped from the file by name and guarded by `repo-teq`'s frozen A6 | **Accepted** — pinned to `run.js` specifically |
+| TE5 | `rate limit hit (pause 1)` is greped **with the digit** | **Accepted** — added; this one could not have been found without reading the suite |
+| SC3 | `wall-clock budget exhausted` is a **negative** assertion, so drift goes vacuously green | **Accepted** — added, with the reason recorded |
+| SC3 | `exit 0 -> done` and `starting task` omitted | **Accepted** — added |
+| TE4/AM3 | D5's checks never require `admit`/`reportLimit` to be called at all | **Accepted** — criterion 7 is now behavioural via exported `runOneTask` |
+| TE4 | "`runOneTask` is not Docker-free drivable" is **false**; all three blockers have seams | **Accepted** — verified (`PIPELINE_GH_CMD`, the local bare remote at `test-runner-queue.sh:21`, `PIPELINE_BD_CMD`, `PIPELINE_EXEC_STUB`). My draft's justification was overstated |
+| AM8 | "the single `drainQueue(` call" matches **two** occurrences (declaration + call) | **Accepted** — verified; check dropped |
+| TE4 | `const gate = createPauseGate(` as a literal fails a correct `pauseGate` rename | **Accepted** — dropped |
+| AM10/TE6 | "no `AbortController` reachable" is mechanically undefined and trivially true | **Accepted** — dropped; criterion 5's behavioural half carries Resolution 1 alone |
+| AM9/TE(recon) | `opts.now` is required of the implementer and used by nothing | **Accepted** — dropped from the contract |
+| TE7 | D1's rendezvous is ambiguous between "same tick" and "separated by drains" | **Accepted** — criterion 2 says one synchronous tick, and the contract pins the join decision as synchronous on entry |
+| AM6 | "`p4` had not started" is undefined until you say where the start event is recorded | **Accepted** — criterion 5 records it **after** `admit()` returns |
+| AM12 | D2's proxy bullet omits sequencing and compares a boolean to an object | **Accepted** — criterion 3 states each call is awaited before the next |
+| AM11/SC2 | The `grep -q` count and category are both wrong | **Accepted** — settled by counting: 18 lines / 20 occurrences, 12 against stdout. Restated in criterion 8 |
+
+**Accepted, changing an obligation rather than a criterion:**
+
+| # | Finding | Disposition |
+|---|---|---|
+| AM7 | `runner/config.js` is excluded by the constraints but obligation 4 tells the docs phase to edit its comment | **Accepted** — `config.js` is **comment-only editable in the docs phase**; stated in the constraints |
+| SC6 | `scripts/test-runner-queue.sh`'s "the cap is per-task" comment becomes false and has no owner | **Accepted** — named in the obligations. Editing a comment in a Docker suite is safe; changing an assertion is not |
+| SC7 | `CLAUDE.md:85` says "the **eight** suites that need no Docker" and a ninth is being added | **Accepted** — named explicitly. `repo-zje` needed a follow-up commit for exactly this miss |
+
+**No action:**
+
+| # | Finding | Disposition |
+|---|---|---|
+| SC1 | No split; the three deliverables are not independently shippable | **Confirmation, not a finding** — keeps its shape |
+| SC8 | `hard` is correct and should not be softened | **Confirmation** |
+| SC9 / TE8 / TE9 | Long lists of reconnaissance claims verified accurate, and positives worth keeping (all criteria genuinely red; `reason` structural not phrase-matched; nothing depends on wall-clock; the `setImmediate` drain is sound because one macrotask turn flushes the whole microtask queue) | **Recorded** so a redraft does not lose them |
+
+## Named host obligations (no frozen test can hold these)
+
+1. `bash scripts/test-runner-pause.sh` and `bash scripts/test-runner-queue.sh` on the reference
+   host. Criterion 8 keeps the *strings*; only a real run proves the *sequence*.
+2. `bash scripts/test-all.sh` — the new suite is swept by glob and has never run there.
+3. **`CLAUDE.md:85`'s "the eight suites that need no Docker" becomes nine**, and the new suite
+   joins both Docker-free lists.
+4. Fix `scripts/test-runner-queue.sh:39-41`'s now-false "the cap is per-task" **comment**
+   (comment only — never its assertions).
+5. Docs phase: amend `DESIGN.md` §4.7 (the bound becomes run-level) and §7 (park means admit no
+   new work, never kill), add the §12 change-log row, fix `runner/config.js:16`'s "per task"
+   comment, delete `runner/run.js:194`'s stale "`repo-i9y` makes it run-level" note, and fix
+   `pause.js:47`'s comment claiming stop conditions that do not exist.
+6. A real run at `concurrency > 1` against a genuine usage limit stays unproven until a daytime
+   batch hits one.
