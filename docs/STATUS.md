@@ -570,6 +570,56 @@ nobody re-ran). Their acceptance tests get written in the planning session immed
 their own run, which is PLANNING.md's rule and the same posture `repo-iok` and `repo-sls` itself
 have held since 2026-07-28.
 
+## Four more tasks, and the first task the panel sent *out* of the pipeline (2026-07-31)
+
+**Four tasks, four `done`, all on attempt 1** — `repo-sls` and `repo-os9` here (PRs #19, #20),
+two tasks on the target project (two more PRs). Active times 7, 17, 25 and 26 minutes. No
+`tampered`, no `stuck`, no second attempts, and no spec concerns raised.
+
+**The panel is now 12 for 12.** Four critics ran over three draft specs and returned 54 findings,
+every one `concerns`. Two were the "gate that cannot fail" family this repo keeps meeting:
+
+- The glint spec's determinism criterion compared **two instances of the same build**, so it could
+  only ever catch a perturbation that *depended on being polled*. An unconditional change to the
+  flight moves both instances identically and leaves the criterion green. Fixed by capturing golden
+  values from the fork point during the planning session and asserting against those — the only
+  expected value in the file that does not come from the implementation under test.
+- The literal audit's headline criterion was "the checker reports nothing against the tree". The
+  same task writes both the checker **and** the allowlist it is measured against, so whatever the
+  checker cannot see is not in the allowlist and is therefore not a violation: a `violations()`
+  returning `[]` unconditionally passed it in full. Fixed by running the checker with the allowlist
+  **taken away** and requiring findings the frozen test names independently.
+
+**A task whose output is data rather than code does not belong in the pipeline.** The pacing-grid
+task was withdrawn mid-session and done interactively instead. Both critics reached it
+independently: after its scope was cut it wrote no code at all, and its acceptance floors ("at
+least 6 rows landed") were *predictions about a grid nobody had flown* — so had reality returned
+five, no honest implementation could pass and the cheapest route to green was fabrication in the 52
+rows nothing re-checked. Flying it took 8.5 minutes and produced three findings nobody had. The
+general rule: **if a spec's criteria can only be checked by re-running the tool that produced the
+artifact, the planning session should run the tool.** That is what an earlier measurement task already did, and this
+is the second instance.
+
+**A new gotcha, and it can make a suite permanently unfreezable.** A frozen test necessarily names
+files the task has not written yet. Calling `load()` on one makes the engine print a resource-load
+error, and the target's `run-acceptance.sh` reads that output as **BROKEN HARNESS (exit 2)** rather
+than as a failing test — so the suite reports "could not run" forever and the freeze gate refuses
+it, with a symptom that looks like a parse error that is not there. Probe with
+`FileAccess.file_exists` first. This is the same family as STATUS defect 9: a harness that cannot
+run reporting something other than "I could not run". Recorded in that project's
+`tests/acceptance/README.md`, where the next test author will look.
+
+**The batch collision was predicted, priced, and happened exactly as written.** The planning draft
+said the audit could go red on a correct merge if a sibling introduced a new literal, and named the
+fix as three allowlist rows rather than a config change. It did, and it was. Verified by merging
+both branches locally and running the **full** tree — 372/372 acceptance, 120/120 regression — which
+is the obligation no task's own verifier can discharge.
+
+**Blocked, and it is the only thing blocking:** `gh pr merge` is denied by this environment's
+permission classifier, so both of this repo's PRs and both of the target's are open. The four remaining issues here
+(`repo-teq`, `repo-i9y`, `repo-diy`, `repo-ixa`) are blocked *and* unfrozen, and `repo-teq` genuinely
+builds on `repo-sls`, so nothing further can run until those merge.
+
 ## What's next
 
 **The queue drained again on 2026-07-26**, after `repo-4l8` (the epic filter, planned and
