@@ -82,7 +82,7 @@ bash scripts/e2e.sh            # add --keep to leave branches and PRs up for ins
 bash scripts/test-verifier.sh
 bash scripts/test-runner-container.sh
 
-# the eight suites that need no Docker — seconds, safe to run anywhere, even in a container
+# the nine suites that need no Docker — seconds, safe to run anywhere, even in a container
 bash scripts/test-runner-memory.sh
 bash scripts/test-changelog.sh     # DESIGN.md §12 row identity (CHANGELOG_FILE re-aims it)
 bash scripts/test-sanitize.sh      # publication hygiene (SANITIZE_FIXTURE_DIR re-aims it)
@@ -91,6 +91,7 @@ bash scripts/test-network-names.sh # per-project network + proxy names (§4.8) r
 bash scripts/test-lock.sh          # the per-project run lock (§4.12) — refuse, take over, release
 bash scripts/test-sweep-hygiene.sh # what the sweep reclaims after a suite, and what it must not touch
 bash scripts/test-concurrency.sh   # the §7 concurrency knob — the bound, the worker pool, result order
+bash scripts/test-pause-gate.sh    # the §7 run-level rate-limit park — one shared wait, one cap, admission
 ```
 
 Suites are slow (real containers) and **share one Docker network** — run them one at a
@@ -264,7 +265,16 @@ the pipeline working on the pipeline's own code. The rules:
   because `main()` must stay behind `require.main === module` (without it nothing in that
   file is reachable from in here at all) and the stub path must stay asynchronous — a
   `spawnSync` there serialises every stubbed task and makes concurrency unobservable to the
-  only suites that can prove it. Any new Docker-free
+  only suites that can prove it — and
+  `sh scripts/test-pause-gate.sh` (`tests/unit/pause-gate.test.js`), which drives
+  `runner/pause.js`'s `createPauseGate` directly and `runner/run.js`'s exported `runOneTask`
+  through its seams: run it if you touch `runner/pause.js` or `runner/run.js`, because the
+  rate-limit park is RUN-level (§7) and every way of getting it wrong is invisible at
+  concurrency 1 — a second wait opened per task, a cycle counter that resets or goes `NaN`
+  on the failure branch that carries no count, or an `admit()` consulted after `claim()`,
+  which would claim an issue the fired cap refuses to launch and strand it `in_progress`.
+  Nothing in it turns on wall clock: it drains the event loop with `setImmediate` and judges
+  ordering from an events array, because a park is a thing that SLEEPS. Any new Docker-free
   suite belongs beside them in
   `tests/unit/`, and its seam stub must be a `.js` file invoked through
   `process.execPath`, never a `#!/bin/sh` script: `spawnSync` without a shell fails such a

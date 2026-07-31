@@ -84,20 +84,36 @@ queue would fork along with the code.
 ```mermaid
 flowchart LR
   subgraph HOST["Host — the only writer"]
+    G{"0 · Admit<br/>run-level pause gate"}
     A["1 · Claim<br/>status → in progress"]
     C["2 · Collect<br/>exit code + status.json"]
     D["3 · Finish<br/>append notes,<br/>then close or block"]
+    R["Refused — never launched<br/>paused row, issue untouched"]
     Q[("Task list")]
   end
   subgraph CONT["Container — no queue access"]
     B["code · verify · docs"]
   end
+  G -->|"window open"| A
+  G -->|"run-level cap fired"| R
   A --> B
   B --> C
+  C -->|"exit 20 — park the run"| G
+  G -->|"window reopened — relaunch"| B
   C --> D
   A -.->|"write"| Q
   D -.->|"write"| Q
 ```
+
+Step 0 is the **run-level rate-limit park** (§4.7, §7 — change-log row `repo-i9y`): one
+gate for the whole run, built once and shared by every task in flight. The first exit 20
+opens one shared wait on that task's reported reset time; later reporters join it and never
+extend it. Park means **admit no new work**, never kill what is running — a live container
+whose window is genuinely closed exits 20 by itself and joins the same wait. It sits
+*before* the claim on purpose: when the run-level cycle cap has fired, the task never
+launches and the queue is never touched, so its issue stays `open` for the next run rather
+than stranded `in_progress`. It still gets a `paused` row in the manifest, because a task
+missing from `run.json` after an unattended overnight run is a hole in the record.
 
 The claim in step 1 is what stops a task being picked twice, and it is why a crashed run
 leaves issues stranded `in progress` — the next run's preflight sweeps those back to
@@ -127,12 +143,17 @@ stateDiagram-v2
   in_progress --> closed: done or partial
   in_progress --> blocked: stuck · tampered · failed
   in_progress --> in_progress: rate limit — parked, then resumed
+  open --> open: refused — the run-level pause cap had already fired
   blocked --> open: you fix the spec and unblock it
   closed --> [*]
 ```
 
 `blocked` is doing quiet but critical work: it removes failed work from the ready queue.
 Without it a task that cannot pass would be picked up again on every run, forever.
+
+The `open → open` self-loop is the run-level park's refused population: the gate is
+consulted before the claim, so a task the fired cap turns away never enters the diagram's
+`in_progress` half at all and the next run picks it up untouched.
 
 An **epic** never enters this diagram at all. `bd ready` returns it alongside its children
 and never closes it when they close, so the runner filters ready entries typed `epic` out
@@ -201,6 +222,11 @@ place the closed-network policy would have to be revisited deliberately.
 | Usage limit hit | 20 | paused | stays in progress | not yet | not yet |
 | Internal error | 30 | failed | blocked | if commits exist | no |
 | Wall-clock kill | — | failed | blocked | if commits exist | no |
+
+The table is unchanged by the run-level park, deliberately — parking is *scheduling*, never
+*judgment*. A task the fired pause cap refused adds no outcome: it reports the existing
+`paused` status, and the only difference from the row above is that it never launched, so
+Beads is untouched and its issue stays `open` rather than in progress (§4.7).
 
 `blocked` is what takes failed work out of the ready queue: it needs a human decision
 in review, so the loop can never re-pick it. **No advisor verdict appears in this table** —

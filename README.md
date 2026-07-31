@@ -50,7 +50,9 @@ bash scripts/e2e.sh
 #     against the *same* project cannot: the second is refused by name before
 #     anything starts, and a lock left by a killed run is taken over. Within one
 #     project the runner works one task at a time; set `concurrency` (up to 3) to
-#     put that many containers in flight at once for a daytime batch.)
+#     put that many containers in flight at once for a daytime batch. A usage
+#     limit parks the whole run, not each task: one shared wait, and no new task
+#     launches while the window is closed.)
 cp run.config.example.json run.config.myproject.json
 node runner/run.js --config run.config.myproject.json
 ```

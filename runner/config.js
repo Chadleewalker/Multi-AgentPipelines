@@ -13,7 +13,7 @@ const DEFAULTS = {
   wallClockMinutes: 240,        // §4.6 default 4 hours of ACTIVE time
   maxAttempts: 3,               // §4.6 verify-attempt cap -> PIPELINE_MAX_ATTEMPTS
   probeIntervalMinutes: 15,     // §4.7 rate-limit probe cadence
-  maxPauseCycles: 96,           // §4.7 stop condition: total wait cycles per task (~24h at 15m)
+  maxPauseCycles: 96,           // §4.7/§7 stop condition: total wait cycles per RUN (~24h at 15m)
   agentCommand: null,           // optional override -> PIPELINE_AGENT_CMD (§4.3 seam)
   bdTimeoutMs: 60000,           // §4.1 bound on every runner `bd` call (runner/bd.js)
   concurrency: 1,               // §7 how many task containers ONE runner works at once
