@@ -23,7 +23,7 @@ const {
 } = require('./queue');
 const { prepare, hasCommits, collectArtifacts, discard } = require('./workspace');
 const { runTask } = require('./container');
-const { waitForWindow } = require('./pause');
+const { createPauseGate } = require('./pause');
 const { fileMemoryNotes, shouldFileMemory } = require('./memory');
 const { publish } = require('./publish');
 const { writeManifest, writeReport } = require('./report');
@@ -126,9 +126,32 @@ async function drainQueue(issues, taskFn, concurrency) {
 // issue could not be claimed and nothing ran. Everything it touches is per task, so N of
 // these can be in flight at once; the shared pieces it calls into — Beads through
 // runner/bd.js, the clone and the push — are synchronous and serialise themselves.
-async function runOneTask(cfg, issue, log, token) {
+//
+// `gate` is the RUN-level rate-limit park (§7), built once in main() and shared by every
+// task: this function asks it for admission before it starts and reports its own limits
+// into it, but never owns one.
+async function runOneTask(cfg, issue, log, token, gate) {
   const tr = log.trace(issue.id);
   const taskDir = log.taskDir(issue.id);
+
+  // Admission is checked BEFORE claim() (§7). Two populations come out of a run-level park
+  // and only one of them touches Beads:
+  //   PARKED  — launched, exited 20, waited, gave up: the issue stays in_progress, and the
+  //             normal paused row below reports it.
+  //   REFUSED — the run-level cap had already fired, so this task never launched. Beads is
+  //             never touched, so the issue stays `open` for the next run to pick up.
+  // A refused task still resolves a row rather than null: main()'s .filter(Boolean) would
+  // otherwise erase it from run.json entirely — a silent hole after an unattended run.
+  if (!(await gate.admit(issue.id))) {
+    log.error(tr, 'refused: the run-level rate-limit pause cap has fired; nothing launched, issue stays open');
+    return {
+      issueId: issue.id,
+      title: issue.title || '',
+      outcome: 'paused',
+      attemptNotes: [`run ${log.runId}: not launched — the run-level rate-limit pause cap had already fired; the issue stays open for the next run`],
+    };
+  }
+
   log.info(tr, `starting task (priority ${issue.priority ?? 2}): ${issue.title || ''}`);
 
   if (!claim(cfg, issue.id)) {
@@ -163,12 +186,10 @@ async function runOneTask(cfg, issue, log, token) {
   let exec;
   let artifacts;
   let activeMs = 0;
+  // PER TASK, and it stays per task: `pauses` counts this task's RELAUNCHES and is what
+  // the manifest row reports. The wait-cycle count it used to carry alongside is a
+  // different quantity and now lives on the run-level gate, once for the whole run (§7).
   let pauses = 0;
-  // Wait cycles accumulate across relaunches, separately from `pauses` (which counts
-  // relaunches and is what the manifest reports). waitForWindow's stop condition is a
-  // cycle cap, so it has to be told what has already been spent — re-entering it fresh
-  // on every pause would reset the count and the cap could never fire (§4.7).
-  let waitCycles = 0;
   for (;;) {
     const remainingMinutes = cfg.wallClockMinutes - activeMs / 60000;
     if (remainingMinutes <= 0) {
@@ -189,13 +210,13 @@ async function runOneTask(cfg, issue, log, token) {
 
     pauses += 1;
     log.info(tr, `rate limit hit (pause ${pauses}) — parking the task; issue stays in_progress`);
-    // The park is still PER TASK (§7): at concurrency > 1, N parked tasks each run their
-    // own pause loop against one shared subscription window. Wasteful, not corrupting,
-    // and unreachable at the default of 1 — repo-i9y makes it run-level.
-    const waited = await waitForWindow(cfg, artifacts.status, log, tr, {
-      token, spentCycles: waitCycles, maxPauses: cfg.maxPauseCycles,
-    });
-    waitCycles = waited.pauses || waitCycles;
+    // The park is RUN-LEVEL (§7): the FIRST exit 20 of the run opens one shared wait, on
+    // that task's reported reset time, and every later reporter — this one included —
+    // joins it rather than sleeping against the same window on its own. Joining never
+    // extends it: if the window is still closed when it ends, the relaunched tasks exit 20
+    // again and open a fresh one. Nothing already running is killed; a container whose
+    // window is genuinely closed exits 20 by itself.
+    const waited = await gate.reportLimit(artifacts.status, tr);
     if (!waited.resumed) {
       log.error(tr, `giving up on the pause: ${waited.reason}`);
       break;                                               // stays exit 20 -> paused
@@ -331,9 +352,18 @@ async function main() {
   // in flight at once, and the drain hands back one row per queued issue in READY-QUEUE
   // ORDER — so the manifest reads the same at any depth. A row is null only where the
   // issue could not be claimed and nothing ran.
-  const drained = await drainQueue(q.issues, (issue) => runOneTask(cfg, issue, log, token), cfg.concurrency);
+  //
+  // ONE park for the whole run (§7). A usage limit belongs to the subscription window, not
+  // to a task, so the gate holds the single shared wait and the single run-level cycle cap
+  // that every task in this drain reports into and waits behind.
+  const gate = createPauseGate(cfg, log, { token });
+  const drained = await drainQueue(q.issues, (issue) => runOneTask(cfg, issue, log, token, gate), cfg.concurrency);
   const results = drained.filter(Boolean);
 
+  if (gate.waits) {
+    log.info(t, `run-level rate-limit park: ${gate.waits} shared wait(s), ${gate.cycles} cycle(s) spent` +
+      `${gate.exhausted ? ' — the run-level pause cap fired; refused tasks stay open for the next run' : ''}`);
+  }
   log.info(t, `queue drained: ${results.map((r) => `${r.issueId}=${r.outcome}`).join(', ') || '(nothing ran)'}`);
 
   // ---- manifest + report (§4.9, §4.12) ----
@@ -368,4 +398,8 @@ if (require.main === module) {
 // `executeTask` is exported for the same reason: its PIPELINE_EXEC_STUB branch is the one
 // path a Docker-free suite can execute, and "the stub path does not block the event loop"
 // is exactly the kind of thing that regresses silently back to spawnSync.
-module.exports = { drainQueue, executeTask };
+// `runOneTask` is exported for the same reason again: everything it reaches — Beads, git,
+// gh, the container — is behind a seam (PIPELINE_BD_CMD, targetRepoRemote, PIPELINE_GH_CMD,
+// PIPELINE_EXEC_STUB), so "a refused task never touches Beads" and "an exit-20 task reports
+// to the gate exactly once" are both provable without Docker.
+module.exports = { drainQueue, executeTask, runOneTask };
