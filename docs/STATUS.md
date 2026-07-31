@@ -863,13 +863,14 @@ design's central bet, and it is the first day it paid out repeatedly.
 
 ## Test suites
 
-All but six drive real Docker and share one network, so they must never run concurrently
+All but seven drive real Docker and share one network, so they must never run concurrently
 (`test-runner-memory.sh`, `test-changelog.sh`, `test-sanitize.sh`,
-`test-agent-hooks.sh`, `test-network-names.sh` and `test-lock.sh` are the exceptions — see
-below; they need neither).
+`test-agent-hooks.sh`, `test-network-names.sh`, `test-lock.sh` and
+`test-sweep-hygiene.sh` are the exceptions — see below; they need neither).
 **`scripts/test-all.sh` is the sweep** — it holds a lock, runs every suite sequentially,
-kills one that hangs (`--timeout`, default 900s), tears `pipeline-net` down if a suite
-leaks it, and writes per-suite logs plus a summary table to `runs/sweeps/<timestamp>/`.
+kills one that hangs (`--timeout`, default 900s), **reclaims what each suite leaked after
+every suite** (change-log row `repo-zje`), and writes per-suite logs plus a summary table
+to `runs/sweeps/<timestamp>/`.
 It exits non-zero if any suite exits non-zero *or* prints a `FAIL` line while exiting 0
 (a suite that lies about its own result is itself a defect). Discovery is a glob over
 `scripts/test-*.sh` plus `e2e.sh` last, so a suite added later is swept without anyone
@@ -894,8 +895,9 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-agent-hooks.sh` | container hygiene — no tracked file configures an agent hook |
 | `scripts/test-network-names.sh` | per-project network and proxy names — derivation, and that they reach the scripts |
 | `scripts/test-lock.sh` | the per-project run lock — refusal, path identity, takeover, release |
+| `scripts/test-sweep-hygiene.sh` | sweep hygiene — what the sweep reclaims after a suite, what it must never touch, and that reclaiming changes no verdict |
 
-**`scripts/test-runner-memory.sh` is one of the six suites that need no Docker**
+**`scripts/test-runner-memory.sh` is one of the seven suites that need no Docker**
 (repo-dhp): it
 drives both §3.6 memory channels plus the `shouldFileMemory` outcome gate through the
 `PIPELINE_BD_CMD` seam, so it runs anywhere — including inside a task container, where
@@ -981,6 +983,74 @@ two rules that are easy to lose in a refactor: `release` removes only a record t
 is ours, and an abort at a *later* preflight gate still frees the project. Its coverage was
 extracted from `tests/acceptance/repo-os9/`, which like every frozen acceptance directory
 is never re-run.
+
+**`scripts/test-sweep-hygiene.sh` is the seventh** (`repo-zje`): it copies the *real*
+`scripts/test-all.sh` into a temp fake root and drives it with a recording stand-in for
+`docker`, reached through the `${SWEEP_DOCKER:-docker}` seam every docker call in the sweep
+now goes through — the `docker info` and `docker image inspect` prechecks included, since a
+bare call there aborts the sweep before a stand-in is ever consulted. Copied, never invoked
+in place: `test-all.sh` takes a lock, and a suite running inside the sweep would deadlock
+against the sweep that launched it.
+
+What it covers is the cleanup block that used to sit at the bottom of each suite's turn,
+which was wrong in four compounding ways: it was gated on `pipeline-net` still existing (a
+suite that leaked containers but no network got none of it), the stray-container sweep was
+gated *again* on the suite having timed out (a suite that exited 1 having orphaned
+containers was not cleaned at all), the filter was `ancestor=pipeline-base:local`, which
+cannot match `pipeline-proxy:local` — the one container the sweep itself indirectly creates
+— and the summary note was a fixed string, so anything removed was echoed to the console
+and never reached the table a human reads. Removal now lives in `scripts/sweep-reclaim.js`
+and runs after *every* suite; the note names what went, by identity.
+
+**Ownership is a before/after snapshot diff intersected with an allowlist, never a name
+match.** That is the half worth defending. Three suites were force-removing containers they
+did not create: `docker ps -aq --filter name=task- | xargs -r docker rm -f` looks like a
+prefix match and is a substring one, so it took `my-task-runner` — or anything else on the
+host whose name merely contains `task-` — with it. The reclaimer removes a resource only if
+it was absent from the listing taken before the suite ran *and* matches the pipeline
+allowlist (`pipeline-base:local` / `pipeline-proxy:local` ancestry, the exact name
+`pipeline-proxy`, a `task-` prefix anchored at position 0, the `pipeline-net` network), and
+the three suites take a snapshot at their top and reclaim against it in their trap. A
+baseline that could not be taken is *not* treated as "nothing was here": no baseline, no
+removal, or the first failed listing would remove every pipeline container on the machine.
+
+That ownership rule is also why a stand-in is safe here when a PATH stub for
+`pipeline-net.sh` was rejected as unsafe (see the network-names suite above): `down` removes
+the network and the proxy by name and unconditionally, so a stub that failed to intercept
+would delete the real ones, whereas a missed seam here yields an empty diff and removes
+nothing. The stand-in is stateful on purpose — the stub suite drops a marker and the
+recorder reports the leftover only once it exists — because a recorder that answered every
+listing identically would put the leftover in the *before* listing too, where a correct
+reclaimer rightly ignores it, and the fixture could not then tell a working reclaimer from a
+broken one. It is `process.execPath` with the recorder preloaded through
+`NODE_OPTIONS=--require "<stub>"` (forward slashes, quoted — defect 9), never a `#!/bin/sh`
+file, because `sweep-reclaim.js` reaches the seam with `spawnSync` and no shell.
+
+Two guards in it are negative on purpose, so they cannot be satisfied by code that never
+runs: `test-all.sh` must contain no `docker rm`, no `docker network rm` and no
+`pipeline-net.sh down` of its own, and no suite in the discovered set may select containers
+by an unanchored `--filter name=`. A third checks over the discovered set that every suite
+bringing `pipeline-net` up tears it down from an `EXIT` trap — `test-egress.sh` and
+`test-egress-check.sh` tore down at the bottom of the script instead, which their own early
+`exit 1` paths skipped.
+
+**The host obligation, and it is the whole point of the change:** `bash
+scripts/test-all.sh` on the reference host, once, against the real daemon. Everything above
+is proven against a recording stand-in, which by construction cannot show that the real
+`docker ps` / `network ls` output parses the way the reclaimer expects, nor that a suite's
+own `EXIT` trap and the sweep's per-suite reclaim agree about what is already gone. Two
+things to read in the summary table: the `NOTES` column should name identities rather than
+a fixed phrase, and it should be **empty** for a suite that cleaned up after itself — a note
+on every row means the reclaimer is claiming resources the suites already released. Also
+expect the trap criterion to go red for a moment when a branch adding a new
+`scripts/test-*.sh` merges: the criterion is checked over the *discovered* set, so a new
+suite is covered the day it lands, which is correct behaviour and not a regression.
+
+Left alone deliberately, and it is filed rather than fixed: the `ASSERTS` column still
+counts only `PASS ` lines and not `ok - ` lines, so three suites under-report their check
+counts (`docs/IDEAS.md`, 2026-07-30). Same script, different decision — which of the repo's
+two pass vocabularies should win is a choice, not a patch, and bundling it here would have
+put a coverage-reporting change inside a hygiene task.
 
 **Why it reads bytes and never skips a "binary" file.** This suite exists because
 `publish-sanitize` missed a private project name in `tests/acceptance/repo-006/test.js`,

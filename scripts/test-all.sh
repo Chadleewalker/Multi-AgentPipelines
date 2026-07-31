@@ -22,14 +22,28 @@
 # anyone remembering to edit this file, which is the entire point.
 #
 # Suites share one Docker network (§4.8) and must never run concurrently: a lock
-# directory enforces that, and the network is torn down between suites if one leaks it.
+# directory enforces that. After EVERY suite — not only a timed-out one, and whether or
+# not the network survived — the sweep reclaims what that suite leaked, and only what it
+# leaked: scripts/sweep-reclaim.js diffs a before-listing against an after-listing and
+# removes what BOTH appeared during the suite and matches the pipeline allowlist. It never
+# matches a bare name substring, because the host runs unrelated containers.
 #
-# Exits 0 only if every suite exited 0 AND printed no `FAIL` line. This is deterministic
-# scaffolding — no LLM, consistent with the hard rules in CLAUDE.md.
+# Every docker call below goes through ${SWEEP_DOCKER:-docker} — the prechecks included.
+# That one seam is what lets scripts/test-sweep-hygiene.sh drive this file with no daemon
+# at all, and it is safe because a missed seam yields an empty diff and removes nothing.
+#
+# Exits 0 only if every suite exited 0 AND printed no `FAIL` line. Reclamation can never
+# change that: each suite's exit code is captured before any cleanup runs, and the
+# reclaimer always exits 0. This is deterministic scaffolding — no LLM, consistent with
+# the hard rules in CLAUDE.md.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BASE_IMG="${BASE_IMG:-pipeline-base:local}"
+# The single docker seam (see the header). Exported so the reclaimer, which is the only
+# thing here that removes anything, acts through the same stand-in the sweep was given.
+SWEEP_DOCKER="${SWEEP_DOCKER:-docker}"; export SWEEP_DOCKER
+RECLAIM="$ROOT/scripts/sweep-reclaim.js"
 TIMEOUT=900
 FAIL_FAST=0
 ONLY=""
@@ -43,7 +57,7 @@ while [ $# -gt 0 ]; do
     --skip)      SKIP="${2:-}"; shift 2 ;;
     --timeout)   TIMEOUT="${2:-}"; shift 2 ;;
     --list)      LIST_ONLY=1; shift ;;
-    -h|--help)   sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)   sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)           echo "unknown argument: $1 (try --help)"; exit 2 ;;
   esac
 done
@@ -105,11 +119,11 @@ mkdir -p "$LOGDIR"
 
 # --- Preflight: fail in seconds, not after forty minutes of guaranteed red ----------
 echo "== preflight =="
-docker info >/dev/null 2>&1 \
+"$SWEEP_DOCKER" info >/dev/null 2>&1 \
   || { echo "FATAL  Docker is not running — start Docker Desktop and retry."; exit 1; }
-echo "ok     docker is running"
+echo "ok     Docker is running"
 
-docker image inspect "$BASE_IMG" >/dev/null 2>&1 \
+"$SWEEP_DOCKER" image inspect "$BASE_IMG" >/dev/null 2>&1 \
   || { echo "FATAL  image $BASE_IMG not found — build it first (docker/base)."; exit 1; }
 echo "ok     image $BASE_IMG present"
 
@@ -156,6 +170,12 @@ for f in "${SELECTED[@]}"; do
   echo "############################################################"
   echo "# $name"
   echo "############################################################"
+  # The before-listing, taken per suite: whatever is here now, this suite cannot have
+  # created. Kept in the sweep directory as evidence. If it fails the reclaimer refuses to
+  # remove anything at all — the sweep never removes what it cannot prove it created.
+  before="$LOGDIR/$name.before.json"
+  node "$RECLAIM" snapshot > "$before" || true
+
   start=$(date +%s)
   # pipefail is load-bearing: without it the pipeline reports tee's status, not the
   # suite's, and every suite would read as green (same reason as the tee'd call sites
@@ -179,17 +199,19 @@ for f in "${SELECTED[@]}"; do
     result="PASS"
   fi
 
-  # Network hygiene: every suite tears pipeline-net down in its own trap. If one didn't,
-  # the next suite inherits a half-configured network and fails for the wrong reason.
-  if docker network inspect pipeline-net >/dev/null 2>&1; then
-    if [ "$result" = "TIMEOUT" ]; then
-      for c in $(docker ps -q --filter "ancestor=$BASE_IMG" 2>/dev/null); do
-        docker rm -f "$c" >/dev/null 2>&1 && echo "  swept stray container $c"
-      done
-    fi
-    bash "$ROOT/scripts/pipeline-net.sh" down >/dev/null 2>&1
-    note="${note:+$note; }left pipeline-net up"
-    echo "  note: $name left pipeline-net up — torn down before the next suite"
+  # Hygiene: every suite tears its own containers and network down in an EXIT trap. When
+  # one didn't, the next suite inherits a half-configured network or a stray container and
+  # fails for the wrong reason. This runs after EVERY suite — a suite that exits 1 orphans
+  # containers just as readily as one that times out, and a leak is no less real for
+  # having taken the network down on the way out.
+  #
+  # `rc` is already captured and `result` already decided, which is what keeps cleanup out
+  # of the verdict — reclaiming must never mask a real failure, nor invent one. Keep that
+  # ordering: this block must never move above the one that sets `result`.
+  reclaimed="$(node "$RECLAIM" reclaim --before "$before")" || reclaimed=""
+  if [ -n "$reclaimed" ]; then
+    note="${note:+$note; }$reclaimed"
+    echo "  $name: $reclaimed"
   fi
 
   NAMES+=("$name"); RESULTS+=("$result"); ASSERTS+=("$npass"); TIMES+=("$dur"); NOTES+=("$note")
