@@ -225,6 +225,27 @@ Two hard boundaries, both inherited:
   and a panel pass rejecting it. §3.1 or §3.2 is the natural home. 2026-07-30
   *Found by the critic panel on the first real project, 2026-07-30.*
 
+- **Re-read the ready queue when a worker goes idle, so finishing a task can unblock the
+  next one** — `bd ready` is already blocker-aware, but `runner/run.js` reads it **once**,
+  before the pool starts, and drains that snapshot. So a dependency chain cannot run in one
+  batch: if B is blocked on A and A closes ten minutes in, B waits for a whole second run
+  even though the host knows it is ready and a worker is sitting idle. Worth having because
+  the queue this project actually accumulates is chain-shaped — `repo-sls` → `repo-teq` →
+  `repo-i9y` was three batches on three separate runs, and each handoff cost a human
+  starting the next one. It also compounds with the concurrency knob rather than duplicating
+  it: the measured 1.28× on a two-task batch was one worker idle for 1464s with nothing to
+  pick up, which is precisely the hole an unblocked task would have filled.
+  Care lives in the details, not the idea: never re-claim what is already in flight, do not
+  spin when the queue is genuinely dry, and bound the re-read so an unblock cascade cannot
+  loop forever. Legal under hard rule 1 as-is — the host is the only thing reading Beads,
+  and it already reads it exactly this way, just once.
+  **Not** the same as the two forms of cross-task waiting that already exist and are fine:
+  the pool has no barrier (a free worker takes the next queued item immediately), and the
+  seconds that `prepare()` / `publish()` / every `bd` call spend blocking the event loop are
+  a priced-in trade, load-bearing in the `bd` case — `spawnSync` is what stops two Beads
+  calls interleaving over one embedded Dolt database. Blocked on: nothing; `repo-teq` has
+  merged. Related: §4.12 (the runner drains the ready queue), §7. 2026-07-31
+
 ---
 
 ## Promoted
