@@ -982,11 +982,11 @@ design's central bet, and it is the first day it paid out repeatedly.
 
 ## Test suites
 
-All but nine drive real Docker and share one network, so they must never run concurrently
+All but ten drive real Docker and share one network, so they must never run concurrently
 (`test-runner-memory.sh`, `test-changelog.sh`, `test-sanitize.sh`,
 `test-agent-hooks.sh`, `test-network-names.sh`, `test-lock.sh`,
-`test-sweep-hygiene.sh`, `test-concurrency.sh` and `test-pause-gate.sh` are the exceptions
-— see below; they need neither).
+`test-sweep-hygiene.sh`, `test-concurrency.sh`, `test-pause-gate.sh` and
+`test-sweep-assertions.sh` are the exceptions — see below; they need neither).
 **`scripts/test-all.sh` is the sweep** — it holds a lock, runs every suite sequentially,
 kills one that hangs (`--timeout`, default 900s), **reclaims what each suite leaked after
 every suite** (change-log row `repo-zje`), and writes per-suite logs plus a summary table
@@ -1018,6 +1018,7 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-sweep-hygiene.sh` | sweep hygiene — what the sweep reclaims after a suite, what it must never touch, and that reclaiming changes no verdict |
 | `scripts/test-concurrency.sh` | the §7 `concurrency` knob — the bound, the worker pool, ready-queue result ordering, and the asynchronous execution seam |
 | `scripts/test-pause-gate.sh` | the §7 run-level rate-limit park — one shared wait, one run-level cycle cap, the three admission states, and a refused task that never touches Beads |
+| `scripts/test-sweep-assertions.sh` | the sweep's `PASSED` column — both assertion vocabularies, one honest total from a log carrying both, and "could not tell" rendered apart from a zero |
 
 **`scripts/test-runner-memory.sh` is one of the seven suites that need no Docker**
 (repo-dhp): it
@@ -1168,11 +1169,13 @@ expect the trap criterion to go red for a moment when a branch adding a new
 `scripts/test-*.sh` merges: the criterion is checked over the *discovered* set, so a new
 suite is covered the day it lands, which is correct behaviour and not a regression.
 
-Left alone deliberately, and it is filed rather than fixed: the `ASSERTS` column still
-counts only `PASS ` lines and not `ok - ` lines, so three suites under-report their check
-counts (`docs/IDEAS.md`, 2026-07-30). Same script, different decision — which of the repo's
-two pass vocabularies should win is a choice, not a patch, and bundling it here would have
-put a coverage-reporting change inside a hygiene task.
+Left alone deliberately, and filed rather than fixed at the time: the `ASSERTS` column
+counted only `PASS ` lines and not `ok - ` lines, so several suites under-reported their
+check counts (`docs/IDEAS.md`, 2026-07-30). Same script, different decision — which of the
+repo's two pass vocabularies should win is a choice, not a patch, and bundling it there
+would have put a coverage-reporting change inside a hygiene task. **Fixed since, as its own
+task** (change-log row `repo-0ay`): the column is now headed `PASSED`, counts both
+vocabularies, and is decided by `scripts/sweep-assertions.js` — see below.
 
 **Why it reads bytes and never skips a "binary" file.** This suite exists because
 `publish-sanitize` missed a private project name in `tests/acceptance/repo-006/test.js`,
@@ -1213,6 +1216,24 @@ asserts its own check count (≥ 90) as well as its exit code, because a park th
 exercised looks exactly like a park that works. What it deliberately does not cover: a real
 run at concurrency > 1 against a genuine usage limit, which needs a closed subscription
 window and stays a host obligation.
+
+**`scripts/test-sweep-assertions.sh` is the tenth** (`repo-0ay`): it covers the sweep's own
+reporting. `scripts/sweep-assertions.js` decides the summary's per-suite count as a pure
+function over a log body — the `sweep-reclaim.js` precedent — and the suite plants logs at it
+and then drives a *copy* of the real `scripts/test-all.sh` over stub suites to check that the
+decision reaches the rendered table. Three fixtures are built to be discriminating rather
+than plausible. **The mixed log** makes the shell count, the node count and their sum three
+different numbers (2, 4, never 6), because a counter that adds them is otherwise
+indistinguishable from one that does not. **The genuine zero** is planted beside a log with
+no assertion lines at all, since `found:false` and `count:0` are only separable if both
+exist — the column renders the first `?` and the second `0`. And **the shell-heavy log** (40
+`PASS ` lines beside one `ok - `) pins the direction that matters for the guard: this change
+may never make a suite's number *drop*, so where the shell count is larger it wins outright.
+The suite also runs the sweep with the helper deleted, because
+`tests/unit/sweep-hygiene.test.js`'s temp root does not copy it and a missing counter must
+degrade to the old grep rather than to an empty column. What it does not cover: the reference host's own vocabularies, if a future
+suite invents a third — the counter reports the vocabulary it counted precisely so that
+shows up as a number that stops moving, but nothing asserts on the real sweep's output.
 
 **Full re-run 2026-07-26**, after the five dogfood/queue PRs merged to `main`: all 18
 suites green, including `e2e.sh` (32 assertions, real PR opened and cleaned up). Two were

@@ -32,6 +32,14 @@
 # That one seam is what lets scripts/test-sweep-hygiene.sh drive this file with no daemon
 # at all, and it is safe because a missed seam yields an empty diff and removes nothing.
 #
+# The PASSED column counts assertions that PASSED, in both of this repo's vocabularies: the
+# shell wrappers print `PASS `, the Node checkers under tests/ print `ok - `. A log carrying
+# both reports one honest total rather than their sum, and a log carrying neither prints `?`
+# rather than 0 — "could not tell" and "everything failed" are different facts. The decision
+# is scripts/sweep-assertions.js, a pure function tested over planted logs; this file only
+# renders it. The FAIL grep below is untouched: both vocabularies start a failure line with
+# `FAIL` and whitespace, so it already saw both.
+#
 # Exits 0 only if every suite exited 0 AND printed no `FAIL` line. Reclamation can never
 # change that: each suite's exit code is captured before any cleanup runs, and the
 # reclaimer always exits 0. This is deterministic scaffolding — no LLM, consistent with
@@ -44,6 +52,9 @@ BASE_IMG="${BASE_IMG:-pipeline-base:local}"
 # thing here that removes anything, acts through the same stand-in the sweep was given.
 SWEEP_DOCKER="${SWEEP_DOCKER:-docker}"; export SWEEP_DOCKER
 RECLAIM="$ROOT/scripts/sweep-reclaim.js"
+# The assertion counter (see the header). Consulted per suite log; absent only in a stripped
+# down harness root, where the pre-repo-0ay grep below still answers.
+ASSERTS_JS="$ROOT/scripts/sweep-assertions.js"
 TIMEOUT=900
 FAIL_FAST=0
 ONLY=""
@@ -57,7 +68,7 @@ while [ $# -gt 0 ]; do
     --skip)      SKIP="${2:-}"; shift 2 ;;
     --timeout)   TIMEOUT="${2:-}"; shift 2 ;;
     --list)      LIST_ONLY=1; shift ;;
-    -h|--help)   sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)   sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)           echo "unknown argument: $1 (try --help)"; exit 2 ;;
   esac
 done
@@ -157,7 +168,7 @@ echo
 echo "sweeping ${#SELECTED[@]} suites; logs in runs/sweeps/$STAMP/"
 
 # --- The sweep ----------------------------------------------------------------------
-NAMES=(); RESULTS=(); ASSERTS=(); TIMES=(); NOTES=()
+NAMES=(); RESULTS=(); PASSED=(); TIMES=(); NOTES=()
 RED=0
 SWEEP_START=$(date +%s)
 
@@ -184,7 +195,20 @@ for f in "${SELECTED[@]}"; do
   rc=$?
   dur=$(( $(date +%s) - start ))
 
-  npass=$(grep -c '^PASS[[:space:]]' "$log" 2>/dev/null || true); npass=${npass:-0}
+  # The count, in whichever of the two vocabularies this suite speaks. It is a COUNT and
+  # never a verdict — `result` below is decided by `rc` and `nfail` alone, as it always was.
+  npass=""
+  if [ -f "$ASSERTS_JS" ]; then
+    npass="$(node "$ASSERTS_JS" count "$log" 2>/dev/null)" || npass=""
+  fi
+  if [ -z "$npass" ]; then
+    # The pre-repo-0ay counter: one vocabulary, and blind to `ok - `. Reached only when the
+    # helper is missing or could not read the log — a number from the wrong vocabulary still
+    # beats an empty column, and it can never change the verdict.
+    npass=$(grep -c '^PASS[[:space:]]' "$log" 2>/dev/null || true); npass=${npass:-0}
+  fi
+  # Untouched, and load-bearing: this feeds the verdict, and BOTH vocabularies begin a failure
+  # line with `FAIL` plus whitespace, so it already sees `FAIL - ` as well as `FAIL  `.
   nfail=$(grep -c '^FAIL[[:space:]]' "$log" 2>/dev/null || true); nfail=${nfail:-0}
   note=""
 
@@ -214,7 +238,7 @@ for f in "${SELECTED[@]}"; do
     echo "  $name: $reclaimed"
   fi
 
-  NAMES+=("$name"); RESULTS+=("$result"); ASSERTS+=("$npass"); TIMES+=("$dur"); NOTES+=("$note")
+  NAMES+=("$name"); RESULTS+=("$result"); PASSED+=("$npass"); TIMES+=("$dur"); NOTES+=("$note")
   echo "-- $result  $name  ($npass passed, $nfail failed, $(hhmmss "$dur"))"
 
   if [ "$result" != "PASS" ]; then
@@ -233,11 +257,18 @@ TOTAL=$(( $(date +%s) - SWEEP_START ))
   echo "############################################################"
   echo "# SWEEP SUMMARY   $STAMP"
   echo "############################################################"
-  printf '%-8s %-28s %8s %7s  %s\n' RESULT SUITE ASSERTS TIME NOTE
+  printf '%-8s %-28s %8s %7s  %s\n' RESULT SUITE PASSED TIME NOTE
   for i in "${!NAMES[@]}"; do
     printf '%-8s %-28s %8s %7s  %s\n' \
-      "${RESULTS[$i]}" "${NAMES[$i]}" "${ASSERTS[$i]}" "$(hhmmss "${TIMES[$i]}")" "${NOTES[$i]}"
+      "${RESULTS[$i]}" "${NAMES[$i]}" "${PASSED[$i]}" "$(hhmmss "${TIMES[$i]}")" "${NOTES[$i]}"
   done
+  echo
+  # The header says PASSED rather than ASSERTS because the semantics are a choice, and an
+  # unlabelled number is how a column ends up measuring something nobody meant.
+  echo 'PASSED = assertions that passed, counted in whichever of the two vocabularies the log'
+  echo '  speaks: PASS lines (the shell wrappers) or "ok - " lines (the Node checkers). A log'
+  echo '  carrying both reports one honest total, never their sum. A cell reading ? means the'
+  echo '  log carried no countable assertion line at all — unknown, which is not zero.'
   echo
   ran=${#NAMES[@]}
   skipped=$(( ${#SELECTED[@]} - ran ))
