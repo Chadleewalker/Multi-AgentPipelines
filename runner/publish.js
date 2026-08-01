@@ -31,6 +31,22 @@ function buildPrBody({ issueMarkdown, status, verify, outcome, branch, runId }) 
   lines.push('');
   lines.push((issueMarkdown || '(issue spec unavailable)').trim());
   lines.push('');
+  // §3.7, above the change summary for the same reason the report puts it there: a concern
+  // rides on a task that otherwise looks clean, and the reviewer of THIS PR is the person
+  // who can act on it. Structured artifact, not agent prose parsed out of a log (§4.5).
+  const concerns = (status && Array.isArray(status.specConcerns)) ? status.specConcerns : [];
+  if (concerns.length) {
+    lines.push(`## ⚠ Spec concern${concerns.length === 1 ? '' : 's'} (${concerns.length})`);
+    lines.push('');
+    lines.push('The agent believes the frozen spec or its tests are wrong. This did **not** ' +
+      'affect the outcome — a concern is evidence and never a gate (DESIGN.md §3.7). ' +
+      'Changing a spec is legal in a planning session and nowhere else.');
+    lines.push('');
+    for (const c of concerns) {
+      lines.push('> ' + String(c).trim().split('\n').join('\n> '));
+      lines.push('');
+    }
+  }
   lines.push('## Change summary');
   lines.push('');
   lines.push(((status && status.changeSummary) || '(no change summary produced)').trim());

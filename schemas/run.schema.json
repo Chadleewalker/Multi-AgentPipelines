@@ -64,6 +64,12 @@
             "items": { "type": "string" }
           },
           "stuckState": { "type": "string" },
+          "specConcerns": {
+            "description": "Verbatim copy of the container's status-file specConcerns (DESIGN.md 3.7), carried so the report and PR body can surface them. Same bounds as status.schema.json. Evidence only (3.5): present or absent, it never affects outcome or scrutiny order.",
+            "type": "array",
+            "maxItems": 5,
+            "items": { "type": "string", "maxLength": 1000 }
+          },
           "error": { "type": "string" }
         }
       }

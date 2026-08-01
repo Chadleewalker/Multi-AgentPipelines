@@ -280,6 +280,12 @@ async function runOneTask(cfg, issue, log, token, gate) {
       },
     } : {}),
     ...(artifacts.status && artifacts.status.stuckState ? { stuckState: artifacts.status.stuckState } : {}),
+    // §3.7: the agent's "this spec is wrong" channel. Carried onto the manifest so the
+    // report and the PR body can surface it — evidence only, and deliberately NOT part of
+    // `scrutinyKey`, because a concern that could reorder the report would be a gate (§3.5).
+    ...(artifacts.status && Array.isArray(artifacts.status.specConcerns)
+      && artifacts.status.specConcerns.length
+      ? { specConcerns: artifacts.status.specConcerns } : {}),
     attemptNotes: notes,
   };
 

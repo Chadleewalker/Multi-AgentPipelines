@@ -331,10 +331,23 @@ invariant is enforced by an acceptance check that drives a failing run to exit 1
 concern recorded, and that diffs `pipeline/verify.js` and all of `runner/` against the
 fork point.
 
-**Still open: the host side.** Nothing yet reads `specConcerns` after the container exits,
-so a concern raised today reaches only the status file — not the attempt log, the run
-manifest, the run report, or the PR body. Until that ships, an agent can say the spec is
-wrong and no human sees it where they already look. That is the separate task §3.7 names.
+**The host side shipped** (change-log row `spec-concern-surfacing`, 2026-08-01). A concern
+now reaches all four surfaces §3.7 names: a count on the attempt log, the array on the
+manifest, and a `⚠ Spec concern(s) raised (n)` block quoting every entry verbatim in both
+the run report and the PR body — **above the change summary in each**, because a concern
+cannot change an outcome and therefore rides on whatever the task scored, and `done` sorts
+last. `scripts/test-report.sh` covers both renderers and pins the invariant that matters:
+a first-try `done` carrying two concerns still sorts dead last, so the channel stayed
+evidence and did not become a soft gate.
+
+What it cost to find out: the channel was declared 2026-07-26 and half-built, and the
+first real concern any run has raised — 2026-08-01, on a private target — landed in the
+status file and stopped there. Nothing a reviewer opens carried it. It surfaced only
+because someone read `status.json` by hand, and its content was a freeze-gate hazard worth
+having: the frozen test required one member name to be answerable as a method *and* as a
+property, which the target language cannot do from one class, and the agent measured that
+the method-only reading hung the engine when the value was iterated rather than erroring.
+That spec would have timed the runner out instead of reporting red.
 
 ## Change-log rows are identified by a slug (`repo-006`, 2026-07-26)
 

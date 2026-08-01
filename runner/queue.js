@@ -137,6 +137,12 @@ function attemptNotes(runId, outcome, status, memoryIn) {
   if (status && Array.isArray(status.memoryNotes) && status.memoryNotes.length) {
     lines.push(`  memory notes: ${status.memoryNotes.length}`);
   }
+  // §3.7. A count here and the full text in the report and PR body: this line lands on the
+  // Beads issue, which is where someone asking "what happened to that task" looks, and a
+  // concern that reached only the status file reached nobody at all.
+  if (status && Array.isArray(status.specConcerns) && status.specConcerns.length) {
+    lines.push(`  SPEC CONCERNS RAISED: ${status.specConcerns.length} — see the run report`);
+  }
   if (memoryIn === null) lines.push('  memory in: export failed');
   else if (typeof memoryIn === 'number') lines.push(`  memory in: ${memoryIn}`);
   return [lines.join('\n')];

@@ -25,6 +25,9 @@ const tasks = [
   { issueId: "i-done1", title: "clean pass", outcome: "done", exitCode: 0, branch: "task/i-done1",
     pushed: true, prUrl: "https://example.test/pr/1", attempts: 1, pauses: 0, activeSeconds: 12,
     diffLines: 4, changeSummary: "Added the widget.",
+    // §3.7 on a FIRST-TRY DONE on purpose: that outcome sorts last, so this is the place a
+    // concern is most likely to go unread. The first one ever raised in a real run was here.
+    specConcerns: ["the frozen test asks for two contradictory things", "the fixture path is wrong"],
     verification: { acceptance: "pass", regressions: "pass" }, attemptNotes: ["run x: outcome done"] },
   { issueId: "i-retry", title: "passed on retry", outcome: "done", exitCode: 0, branch: "task/i-retry",
     pushed: true, prUrl: "https://example.test/pr/2", attempts: 3, pauses: 1, activeSeconds: 90,
@@ -97,6 +100,49 @@ grep -q "not pushed — no commits" "$REP" && pass "empty branch marked not push
 grep -q "bailed after 3 failed verification attempts" "$REP" && pass "stuck state surfaced" || fail "stuck state missing"
 grep -q "Rate-limit pauses: 1" "$REP" && pass "rate-limit pauses reported" || fail "pause count missing"
 grep -q "6 task(s)" "$REP" && pass "summary counts tasks" || fail "summary missing"
+
+# 5b. Spec concerns reach the report (§3.7). Until this existed the host-side half of the
+# channel was unbuilt and a concern reached only the status file — the agent could say "this
+# spec is wrong" and no artifact a reviewer opens would carry it.
+grep -q "Spec concerns raised (2)" "$REP" \
+  && pass "spec concerns surfaced with their count" || fail "spec concerns missing from report"
+grep -q "the frozen test asks for two contradictory things" "$REP" \
+  && grep -q "the fixture path is wrong" "$REP" \
+  && pass "every concern's full text is in the report" || fail "concern text truncated or dropped"
+# Above the change summary, not below it: the reason for the section is that it is READ.
+awk '/^## i-done1/{s=1} s&&/Spec concerns raised/{c=NR} s&&/^\*\*What changed/{w=NR; exit} END{exit !(c&&w&&c<w)}' "$REP" \
+  && pass "concerns render above the change summary" || fail "concerns buried below the summary"
+# EVIDENCE, NEVER A GATE (§3.5). The task carrying two concerns is a first-try `done`, and it
+# must still sort dead last — a concern that could reorder the report would be a soft gate.
+[ "$(grep -o '^## [a-z0-9-]*' "$REP" | tail -1)" = "## i-done1" ] \
+  && pass "a concern does not change scrutiny order" || fail "concerns leaked into ordering"
+grep -q "did not affect the outcome above" "$REP" \
+  && pass "report states a concern changed nothing" || fail "concern disclaimer missing"
+
+# 5c. And the PR body (§3.7), the artifact the person merging actually opens.
+node -e '
+const { buildPrBody } = require(process.argv[1] + "/runner/publish");
+const body = buildPrBody({ issueMarkdown: "# spec", branch: "task/i-done1", runId: "t17-synth",
+  outcome: { status: "done" }, verify: { acceptance: "pass", regressions: "pass" },
+  status: { changeSummary: "Added the widget.", specConcerns: ["the frozen test is self-contradictory"] } });
+const clean = buildPrBody({ issueMarkdown: "# spec", branch: "task/i-two", runId: "t17-synth",
+  outcome: { status: "done" }, verify: { acceptance: "pass", regressions: "pass" },
+  status: { changeSummary: "Added the widget." } });
+const fail = (m) => { console.log("FAIL  " + m); process.exitCode = 1; };
+if (!/Spec concern \(1\)/.test(body)) fail("PR body omits the concern heading");
+else console.log("PASS  PR body carries the concern heading and count");
+if (!body.includes("the frozen test is self-contradictory")) fail("PR body omits the concern text");
+else console.log("PASS  PR body carries the concern text verbatim");
+if (body.indexOf("Spec concern") > body.indexOf("## Change summary")) fail("PR body buries the concern below the summary");
+else console.log("PASS  PR body puts the concern above the change summary");
+if (/Spec concern/.test(clean)) fail("PR body invents a concern section when there are none");
+else console.log("PASS  no concern section when none were raised");
+' "$ROOT" || FAIL=1
+
+# 5d. A task with no concerns gains no section at all (the common case stays unchanged).
+awk '/^## i-part/,/^## i-fail/' "$REP" | grep -q "Spec concern" \
+  && fail "concern section rendered for a task that raised none" \
+  || pass "tasks without concerns are untouched"
 
 # 6. Regeneration is byte-identical (4.9: generated, never hand-edited).
 cp "$REP" "$TMP/first.md"; cp "$MAN" "$TMP/first.json"

@@ -19,22 +19,23 @@ whose *write sets* are disjoint.
 
 ```mermaid
 graph TD
-    subgraph "scenes/prototype.gd — one owner per batch"
-        T1["T1 run-end + partition<br/>DONE junk-aj1"] --> T4["T4 barks"]
-        T4 --> T3["T3 warp + commit-floor readout"]
-        T3 --> T2["T2 plate + ablation cascade"]
-        T2 --> LG["line gun<br/>adds a force to the sim"]
+    subgraph "the one hot file — one owner per batch"
+        T1["T1 — DONE"] --> T4["T4"]
+        T4 --> T3["T3"]
+        T3 --> T2["T2"]
+        T2 --> T5["T5 — also perturbs the shared model"]
     end
-    HM["hold-mass zones"] -.->|blocked on a decision<br/>not a file| X1[" "]
-    TOW["scripted tow"] -.->|measured false 9.7x<br/>needs a spec rewrite| X2[" "]
-    EXP["itch.io export"] -.->|Godot templates absent<br/>host + image| X3[" "]
+    B1["blocked item A"] -.->|blocked on a decision<br/>not a file| X1[" "]
+    B2["blocked item B"] -.->|a measurement falsified the spec<br/>needs a rewrite| X2[" "]
+    B3["blocked item C"] -.->|toolchain absent<br/>host + image| X3[" "]
     style X1 fill:none,stroke:none
     style X2 fill:none,stroke:none
     style X3 fill:none,stroke:none
 ```
 
-**Five sequential tasks, one lane.** T2, T3, T4 and the line gun all write `scenes/prototype.gd`,
-so `concurrency: 2` on that project would start two workers, have them both fork the same commit,
+**Five sequential tasks, one lane.** T2, T3, T4 and T5 all write the same single file — the one
+the whole feature surface funnels through — so `concurrency: 2` on that project would start two
+workers, have them both fork the same commit,
 and produce two pull requests that cannot both merge. **Turning the knob up there is worse than
 useless** — it converts a queue into a merge conflict.
 

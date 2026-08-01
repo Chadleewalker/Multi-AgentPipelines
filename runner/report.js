@@ -81,6 +81,23 @@ function renderReport(manifest) {
     for (const f of facts) L.push(`- ${f}`);
     L.push('');
 
+    // §3.7, ABOVE "what changed" AND ON PURPOSE. A concern cannot change an outcome, so a
+    // task that raises one still sorts by its outcome — and `done` sorts LAST. The first
+    // concern ever raised in a real run came from a first-try `done` at the bottom of a
+    // one-task report, which is the easiest place in this file for a reader to stop before.
+    // Putting it above the summary is the whole reason the channel exists (§3.3).
+    if (t.specConcerns && t.specConcerns.length) {
+      const n = t.specConcerns.length;
+      L.push(`**⚠ Spec concern${n === 1 ? '' : 's'} raised (${n})** — the agent believes the ` +
+        'frozen spec or its tests are wrong. This did not affect the outcome above ' +
+        '(DESIGN.md §3.7); changing a spec is legal in a planning session and nowhere else.');
+      L.push('');
+      for (const c of t.specConcerns) {
+        L.push('> ' + String(c).trim().split('\n').join('\n> '));
+        L.push('');
+      }
+    }
+
     L.push('**What changed**');
     L.push('');
     L.push(t.changeSummary ? t.changeSummary.trim() : '_(no change summary produced)_');
