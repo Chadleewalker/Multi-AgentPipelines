@@ -75,6 +75,28 @@ user can review in a few minutes (§3.2). Note dependencies between tasks. The l
 a proposal — it appears in the approval pass (step 5) and the user may change it, since
 it decides how much critique the spec receives.
 
+#### A pure refactor cannot be frozen
+
+Ask this while you are still sizing the candidate, **before writing a single criterion**:
+*name one input whose observable answer differs before and after.* If you cannot — if every
+caller, every file on disk and every exit code is unchanged by construction — the task has
+no **behavioural signature**, and nothing later in this playbook gives it one.
+
+A pure refactor is the standard case. Two implementations that agree, and one that delegates
+to the other, are indistinguishable from outside, so the only criterion available is an
+assertion about the source text — which goes red on the next legitimate refactor and is
+therefore gating the wrong thing. Such a task cannot be frozen: its criteria are all guards,
+they are all green at the fork point, and the freeze gate in step 4 will refuse it at exit 1
+— but only after the criteria have been drafted in fresh context and a critic panel has read
+them. Asking the question here costs one sentence instead of a planning cycle.
+
+**The answer is not to abandon the work.** Fold the refactor into a later task that has a
+behavioural reason to touch the same code: that task carries a criterion that can genuinely
+fail, the refactor rides inside its diff, and the frozen tests judge the behaviour both of
+them share. Until such a task exists, park it in `docs/IDEAS.md` (step 0) with what it would
+improve and which code it touches — an inbox note commits to nothing, and it is where the
+next session sizing that area will look.
+
 ### 2. Run the mechanical checks, then the critics
 
 **First, the lint — it costs nothing and needs no judgment (§3.2, move 3):**
@@ -176,7 +198,10 @@ would pass a correct submission, a broken one, and no submission at all.
 
 A pure refactor's only honest criteria are guards, which is why they are labelled rather
 than forbidden — and a spec that is *nothing but* guards is the sign that the task has no
-behavioural signature at all (see `docs/IDEAS.md`).
+behavioural signature at all (see `docs/IDEAS.md`). That is a spec bug of a different kind:
+rewriting the criteria does not help, because there is nothing discriminating left to write.
+See [**A pure refactor cannot be frozen**](#a-pure-refactor-cannot-be-frozen) in step 1 for
+the question that catches it before drafting, and for what to do with the work instead.
 
 ### 5. The user approves intent
 Write the drafted specs to **one reviewable file in the repo** —
