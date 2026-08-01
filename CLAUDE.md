@@ -82,7 +82,7 @@ bash scripts/e2e.sh            # add --keep to leave branches and PRs up for ins
 bash scripts/test-verifier.sh
 bash scripts/test-runner-container.sh
 
-# the nine suites that need no Docker — seconds, safe to run anywhere, even in a container
+# the ten suites that need no Docker — seconds, safe to run anywhere, even in a container
 bash scripts/test-runner-memory.sh
 bash scripts/test-changelog.sh     # DESIGN.md §12 row identity (CHANGELOG_FILE re-aims it)
 bash scripts/test-sanitize.sh      # publication hygiene (SANITIZE_FIXTURE_DIR re-aims it)
@@ -92,6 +92,7 @@ bash scripts/test-lock.sh          # the per-project run lock (§4.12) — refus
 bash scripts/test-sweep-hygiene.sh # what the sweep reclaims after a suite, and what it must not touch
 bash scripts/test-concurrency.sh   # the §7 concurrency knob — the bound, the worker pool, result order
 bash scripts/test-pause-gate.sh    # the §7 run-level rate-limit park — one shared wait, one cap, admission
+bash scripts/test-sweep-assertions.sh # the sweep's PASSED column — both vocabularies, one honest total
 ```
 
 Suites are slow (real containers) and **share one Docker network** — run them one at a
@@ -106,6 +107,13 @@ After every suite the sweep reclaims what that suite leaked — and only what it
 and removes what appeared *and* matches the pipeline allowlist, naming it in the summary
 table. Every docker call in `scripts/test-all.sh` goes through `${SWEEP_DOCKER:-docker}`,
 which is what lets `test-sweep-hygiene.sh` drive the real sweep with no daemon.
+
+The summary's `PASSED` column counts assertions that *passed*, in both of this repo's
+vocabularies — the shell wrappers print `PASS `, the Node checkers under `tests/` print
+`ok - `. A log carrying both reports one honest total and never their sum, and a cell
+reading `?` means the log carried no countable assertion line at all, which is not a zero.
+The decision is `scripts/sweep-assertions.js`; the sweep renders it and nothing more, so no
+part of it can reach a verdict (change-log row `repo-0ay`).
 
 **Run the sweep after merging a batch of PRs, before a shadow run, and when picking up a
 cold branch.** Suites go stale silently: T12 was never re-run after T15 and T17 changed
@@ -274,8 +282,12 @@ the pipeline working on the pipeline's own code. The rules:
   on the failure branch that carries no count, or an `admit()` consulted after `claim()`,
   which would claim an issue the fired cap refuses to launch and strand it `in_progress`.
   Nothing in it turns on wall clock: it drains the event loop with `setImmediate` and judges
-  ordering from an events array, because a park is a thing that SLEEPS. Any new Docker-free
-  suite belongs beside them in
+  ordering from an events array, because a park is a thing that SLEEPS — and
+  `sh scripts/test-sweep-assertions.sh` (`tests/unit/sweep-assertions.test.js`), which counts
+  lines in planted logs and drives a copy of `scripts/test-all.sh` over stub suites: run it if
+  you touch `scripts/test-all.sh` or `scripts/sweep-assertions.js`, because the sweep's
+  `PASSED` column is a number, and a number that stops meaning anything goes on being printed.
+  Any new Docker-free suite belongs beside them in
   `tests/unit/`, and its seam stub must be a `.js` file invoked through
   `process.execPath`, never a `#!/bin/sh` script: `spawnSync` without a shell fails such a
   script with EFTYPE on the Windows host, so the suite would pass in here and fail in the
