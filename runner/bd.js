@@ -137,6 +137,31 @@ function bd(cfg, args, opts = {}) {
       cfg, opts
     );
   }
+  return bdInImage(cfg, args, opts);
+}
+
+// bd INSIDE THE PER-PROJECT IMAGE, reachable on its own rather than only as `bd()`'s last
+// resort. Same invocation `bd()` has always fallen back to; naming it changes no behaviour.
+//
+// WHY IT NEEDS ITS OWN SEAM. `PIPELINE_BD_CMD` takes absolute precedence over every path in
+// `bd()` — that is what lets a Docker-free suite stub the whole layer, and it is deliberate.
+// But it means host bd and image bd collapse into one stub, so a check that COMPARES the two
+// cannot be driven Docker-free at all: both sides answer identically by construction. That is
+// not a hypothetical — it is why `repo-ixa` (abort when the host and image bd versions
+// disagree) could not be frozen. A second seam is what makes the two sides distinguishable.
+//
+// `PIPELINE_IMAGE_BD_CMD` is a TEST SEAM and production must never set it, exactly as with
+// `PIPELINE_BD_CMD` (§4.3). Note the asymmetry is real and intended: `bd()` still prefers
+// `PIPELINE_BD_CMD` over everything, so a suite that stubs only the general seam keeps its
+// existing behaviour untouched.
+function bdInImage(cfg, args, opts = {}) {
+  if (process.env.PIPELINE_IMAGE_BD_CMD) {
+    return bounded(
+      spawnSync(process.env.PIPELINE_IMAGE_BD_CMD, args,
+        spawnOptions(cfg, { env: process.env, ...opts })),
+      cfg, opts
+    );
+  }
   const mount = `${toMountPath(cfg.targetRepoPath)}:/repo`;
   return bounded(
     spawnSync(
@@ -144,6 +169,26 @@ function bd(cfg, args, opts = {}) {
       ['run', '--rm', '-v', mount, '-w', '/repo', cfg.image, 'bd', ...args],
       spawnOptions(cfg, { env: { ...process.env, MSYS_NO_PATHCONV: '1' }, ...opts })
     ),
+    cfg, opts
+  );
+}
+
+// bd ON THE HOST, reachable on its own — the other half of the pair `bdInImage` exists for.
+// Returns null when there is no host bd at all, which is a different answer from "ran and
+// failed" and the caller must not conflate them: with no host bd there is nothing to compare
+// an image version against, and a version gate has no skew to report rather than a skew of
+// unknown size.
+function bdOnHost(cfg, args, opts = {}) {
+  if (process.env.PIPELINE_BD_CMD) {
+    return bounded(
+      spawnSync(process.env.PIPELINE_BD_CMD, args, spawnOptions(cfg, { env: process.env, ...opts })),
+      cfg, opts
+    );
+  }
+  const host = hostBdSpec();
+  if (!host) return null;
+  return bounded(
+    spawnSync(host.cmd, [...host.pre, '-C', cfg.targetRepoPath, ...args], spawnOptions(cfg, opts)),
     cfg, opts
   );
 }
@@ -159,5 +204,6 @@ function bdJson(cfg, args) {
 }
 
 module.exports = {
-  bd, bdJson, haveHostBd, toMountPath, shimTarget, spawnOptions, DEFAULT_BD_TIMEOUT_MS,
+  bd, bdJson, bdOnHost, bdInImage, haveHostBd, toMountPath, shimTarget, spawnOptions,
+  DEFAULT_BD_TIMEOUT_MS,
 };
