@@ -56,7 +56,42 @@ graph LR
 them is genuinely disjoint. **A and B are the honest first test of the pool**: two tasks, two
 components, no shared write outside documentation.
 
-## The collision that survives every partition
+## MEASURED: the first two-wide run, and the prediction it falsified
+
+Run `2026-07-31T23-55-24-233Z`, `concurrency: 2`, `repo-0ay` (owns `scripts/test-all.sh`) and
+`repo-n3d` (owns `PLANNING.md`). **Both done on attempt 1.** Two task containers were alive
+simultaneously, launched 1.8 s apart.
+
+| | Active | Diff |
+|---|---|---|
+| `repo-0ay` | 833 s | 631 lines |
+| `repo-n3d` | 162 s | 27 lines |
+| **Elapsed** | **847 s** | against ~995 s sequential |
+
+**About 15% saved, and that is the honest shape of it.** Two tasks of very different length is
+close to the worst case for a pool: elapsed is bounded by the slowest, so the short task bought
+nothing but an idle worker. The knob pays on batches of similar-length tasks. One data point.
+
+**The prediction below was WRONG for this repo, and the reason is worth more than the prediction.**
+The two pull requests merged with **no conflict at all** — their write sets were disjoint including
+in documentation: `repo-n3d` touched only `PLANNING.md`, `repo-0ay` only `scripts/` and
+`docs/STATUS.md`. Two reasons.
+
+1. **The guard written to DETECT a collision PREVENTED one.** `repo-n3d`'s P5 criterion asserted
+   that nothing outside `PLANNING.md` moved, and the agent honoured it *including in its
+   documentation phase*. File ownership stated as a frozen criterion binds the docs phase too —
+   which nobody had tried, because ownership had only ever been stated in prose constraints.
+2. **The finding was imported from the wrong project.** "Every docs phase writes DESIGN.md,
+   STATUS.md and CLAUDE.md" was measured on the target project, where convention has every task
+   edit `SPEC.md`, `DESIGN.md` and `README.md`. This repo's tasks touch a narrower set.
+
+**So the docs collision is not a law of batching — it is a consequence of unstated docs ownership,
+and a criterion fixes it.** That is a cheaper answer than the merge strategy parked in
+`docs/IDEAS.md`, and it should be tried before anything is built.
+
+---
+
+## The collision that was thought to survive every partition
 
 **Every task's documentation phase writes `DESIGN.md`, `docs/STATUS.md` and `CLAUDE.md`.** That was
 measured across four batches before the knob existed and it held every time. Concurrency does not
