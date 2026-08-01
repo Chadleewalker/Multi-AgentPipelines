@@ -81,6 +81,20 @@ Two hard boundaries, both inherited:
 
 <!-- Newest at the top. Nothing here is committed to. -->
 
+- **Make the sweep and a live run mutually exclusive** — on 2026-08-01 a sweep running in
+  another terminal `docker rm -f`'d a real run's task container twice, and the run reported it
+  as exit 137 with an empty log, which reads exactly like an OOM kill. A session was spent on
+  Docker Desktop and the WSL2 VM before anyone opened the sweep summary, where it was written
+  down plainly. Worth having because the exclusion is cheap and already half-built: §4.12's
+  per-project lock lives in `runs/locks/`, and the sweep could take one of its own and refuse to
+  start while any is held, with the runner refusing symmetrically. The reason it isn't just a
+  bug fix in `sweep-reclaim.js` is that the reclaimer is *correct* — a before/after snapshot diff
+  genuinely cannot tell "appeared because my suite made it" from "appeared because something
+  else did", so the guarantee has to come from exclusivity rather than from better
+  classification. Second-order: a reclamation of anything matching `task-` deserves to be loud
+  (stderr, non-quiet), since by construction it is either a real leak or someone's live work.
+  Related: `DESIGN.md` §4.12; `docs/STATUS.md` defect 11. 2026-08-01
+
 - **Verify a stated mechanic exists in the code before speccing against it** — a planning session
   on 2026-07-31 spent a full exchange designing around "the ship can pull a tethered astronaut",
   which the owner believed was how the game worked. It is not implemented at all: the suit is

@@ -159,6 +159,50 @@ real use. All are fixed.
     should measure the thing its label claims and, when it fails, report the values it
     compared rather than a guess at why.
 
+11. **The sweep reclaimed a live task container out from under a concurrent run** (found
+    2026-08-01, in the second real project, after a session had spent its remaining time
+    blaming Docker Desktop). A task container died with **exit 137 and zero bytes of log**
+    after 6–18 seconds, reproducibly, across four attempts. Preflight passed every time and
+    the image ran fine standalone. The diagnosis on the table was the WSL2 VM's memory.
+
+    It was `scripts/test-all.sh`, running at the same time in another terminal. The sweep
+    said so itself, in its own summary table, in the column built for exactly this:
+
+    ```
+    PASS  test-runner-workspace  20  0:41  reclaimed container 832261f6d5f3 (task-<id>-…-1)
+    PASS  test-pause-gate       101  0:01  reclaimed container b15837732930 (<project>-proxy)
+    ```
+
+    Nobody read it, because nobody had a reason to open a green sweep's summary while
+    debugging something else. The same collision also produced the sweep's one red suite
+    (`test-lock`: "1 lock file(s) left in `runs/locks`" — the concurrent run's own lock), so
+    the failure was already being reported twice under two unrelated names.
+
+    **`sweep-reclaim.js` is working as designed, and the design is not sufficient.** Its
+    header names this case outright — "or a container from a concurrent run" — and claims
+    the before/after snapshot diff prevents it. It cannot. The diff proves *absent before my
+    suite started*, which a legitimately concurrent run's container also satisfies; combined
+    with the `task-` prefix allowlist, that is a `docker rm -f` on live work. Ownership by
+    diff answers "did this appear while I was running", not "did I create it", and those are
+    the same question only when nothing else is running.
+
+    Three things generalise. **A snapshot diff is not a proof of authorship** — it is one
+    only under an exclusivity assumption that nothing enforces. `CLAUDE.md` tells you to run
+    suites one at a time and §4.12's lock stops two runs of one project, but nothing stops a
+    sweep and a run, which is the pairing that actually happened. **The evidence was
+    published and still cost a session**, so "make it visible where a human already looks"
+    has a limit: the sweep summary is where a human looks *at the sweep*, and the person
+    debugging was looking at a run. A reclamation of something matching `task-` is not
+    housekeeping and should be loud on both sides of the collision. And **the symptom named
+    no cause at all** — SIGKILL from outside with no log is indistinguishable from an OOM
+    kill, which is why the investigation went to the VM and stayed there.
+
+    The durable fix is mutual exclusion between the sweep and any live run, in the same
+    place §4.12's lock already lives: the sweep takes a lock the runner respects and refuses
+    to start while any `runs/locks/*.lock` is held, and vice versa. Not yet built — see
+    `docs/IDEAS.md`. Until it is, **check `docker ps` and `runs/locks/` before blaming
+    Docker for a 137.**
+
 ## Gotchas that cost real time
 
 - **MSYS path conversion.** Git Bash rewrites container-side paths in `docker` arguments
