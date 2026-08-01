@@ -1020,7 +1020,7 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-pause-gate.sh` | the §7 run-level rate-limit park — one shared wait, one run-level cycle cap, the three admission states, and a refused task that never touches Beads |
 | `scripts/test-sweep-assertions.sh` | the sweep's `PASSED` column — both assertion vocabularies, one honest total from a log carrying both, and "could not tell" rendered apart from a zero |
 
-**`scripts/test-runner-memory.sh` is one of the seven suites that need no Docker**
+**`scripts/test-runner-memory.sh` is one of the ten suites that need no Docker**
 (repo-dhp): it
 drives both §3.6 memory channels plus the `shouldFileMemory` outcome gate through the
 `PIPELINE_BD_CMD` seam, so it runs anywhere — including inside a task container, where
