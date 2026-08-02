@@ -285,7 +285,15 @@ touchpoint is the run report (§5).
 ## Spec Changes After Freeze
 
 A spec change **reopens the approval gate** (§3.3): re-run the relevant steps above,
-get fresh user approval, re-freeze the tests on the integration branch. An agent reporting "the spec is
+get fresh user approval, re-freeze the tests on the integration branch.
+
+**Re-freeze the ISSUE too, not just the test file.** Step 5 says the draft is superseded by
+the Beads issue at freeze — so the issue is the canonical spec, and a re-freeze that amends
+the test and leaves the issue prose alone makes the canonical spec disagree with the thing
+that actually gates the run. Two tasks in one batch reported it: their criteria still said
+"eight ladders" and "34 live cards" after the tests had been re-frozen at nine and 33. Both
+agents inferred that the test was authoritative and were right, but they were guessing
+against the playbook rather than following it, and the next one may guess the other way. An agent reporting "the spec is
 wrong" during a run is a first-class result that lands in review — never a reason for
 anything to edit specs or tests mid-run. If the cause is architectural, amend the design
 doc (change-log row) so the doc never silently drifts from reality.
