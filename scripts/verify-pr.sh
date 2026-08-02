@@ -86,6 +86,28 @@ fi
 #         invisible to it — which is exactly what happened: hal-1wz reordered an options
 #         array, moved the playthrough hal-cow's guard pins, and landed on master green.
 #         Three gates missed it because all three were scoped to the task.
+#
+#         A FAILING SIBLING IS NOT AUTOMATICALLY A REGRESSION. Acceptance tests are frozen
+#         BEFORE their implementation exists, so a directory can be red at the fork point
+#         and stay red through no fault of this branch — which is the normal state whenever
+#         more than one task's tests are frozen ahead of a batch. The first version of this
+#         check assumed every sibling was green and reported "BROKEN by this branch" for all
+#         of them, which is a check failing while naming a cause it never established (the
+#         `docs/STATUS.md` defect-10 family). So when a sibling fails, we re-run it at the
+#         FORK POINT and only call it a regression if it passed there.
+BASE="$(git merge-base "origin/$DEFAULT_BRANCH" "origin/$BRANCH" 2>/dev/null)"
+BASE_WT=""
+base_worktree() {
+  [ -n "$BASE_WT" ] && { echo "$BASE_WT"; return 0; }
+  [ -n "$BASE" ] || return 1
+  BASE_WT="$(mktemp -d 2>/dev/null || echo "${TMPDIR:-/tmp}/verify-pr-base-$$")"
+  rm -rf "$BASE_WT"
+  git -C "$REPO" worktree add -q --detach "$BASE_WT" "$BASE" 2>/dev/null || { BASE_WT=""; return 1; }
+  [ -d "$BASE_WT/node_modules" ] || [ ! -d "$REPO/node_modules" ] \
+    || ln -sfn "$REPO/node_modules" "$BASE_WT/node_modules"
+  echo "$BASE_WT"
+}
+
 for d in tests/acceptance/*/; do
   case "$d" in
     "$ACCEPT"|"${ACCEPT%/}/") continue ;;   # already run above
@@ -95,22 +117,48 @@ for d in tests/acceptance/*/; do
   if sh tools/run-acceptance.sh "$d" >/tmp/vp-sib.$$ 2>&1; then
     pass "sibling acceptance $d still passes"
   else
-    fail "sibling acceptance $d BROKEN by this branch — a previously-frozen test regressed"
-    tail -15 /tmp/vp-sib.$$ | sed 's/^/        /'
+    BW="$(base_worktree)" || BW=""
+    if [ -z "$BW" ]; then
+      # No baseline means we cannot tell a regression from a pre-existing failure. Say so,
+      # and fail — an unknown is never a pass.
+      fail "sibling acceptance $d fails, and the fork point could not be checked out to compare"
+      tail -15 /tmp/vp-sib.$$ | sed 's/^/        /'
+    elif ( cd "$BW" && sh tools/run-acceptance.sh "$d" >/dev/null 2>&1 ); then
+      fail "sibling acceptance $d BROKEN by this branch — it passed at the fork point ($BASE)"
+      tail -15 /tmp/vp-sib.$$ | sed 's/^/        /'
+    else
+      pass "sibling acceptance $d was ALREADY red at the fork point — not this branch's doing"
+    fi
   fi
   rm -f /tmp/vp-sib.$$
 done
 
 # --- 4. Regressions: the standing suite plus whatever hygiene checks it carries.
+#        Same rule as the sibling loop: the standing suite typically runs every acceptance
+#        directory, so it is red at the fork point whenever any task's tests are frozen
+#        ahead of their implementation. Compare before blaming the branch.
 if [ -f tools/run-regressions.sh ]; then
   if sh tools/run-regressions.sh >/tmp/vp-reg.$$ 2>&1; then
     pass "regressions pass"
   else
-    fail "regressions FAIL"
-    tail -20 /tmp/vp-reg.$$ | sed 's/^/        /'
+    BW="$(base_worktree)" || BW=""
+    if [ -z "$BW" ]; then
+      fail "regressions FAIL, and the fork point could not be checked out to compare"
+      tail -20 /tmp/vp-reg.$$ | sed 's/^/        /'
+    elif ( cd "$BW" && sh tools/run-regressions.sh >/dev/null 2>&1 ); then
+      fail "regressions FAIL — they passed at the fork point ($BASE)"
+      tail -20 /tmp/vp-reg.$$ | sed 's/^/        /'
+    else
+      pass "regressions were ALREADY failing at the fork point — not this branch's doing"
+      echo "        (still worth reading; shown so it is not silently swallowed)"
+      tail -6 /tmp/vp-reg.$$ | sed 's/^/        /'
+    fi
   fi
   rm -f /tmp/vp-reg.$$
 fi
+
+# The fork-point worktree, if one was created for the comparisons above.
+[ -n "$BASE_WT" ] && { git -C "$REPO" worktree remove --force "$BASE_WT" >/dev/null 2>&1; git -C "$REPO" worktree prune >/dev/null 2>&1; }
 
 # --- 5. Diff shape, reported not judged. A human should look at anything surprising.
 cd "$REPO" || true
