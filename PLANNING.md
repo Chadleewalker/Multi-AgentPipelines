@@ -160,6 +160,16 @@ Claude writes the tests **now, before any code exists**, from the spec alone (§
 - They live at `tests/acceptance/<issue-id>/` in the target repo (§3.1) — create the
   issue id first if needed by doing step 6 early, or use a placeholder directory and
   rename after step 6.
+
+  **If you use a placeholder, the directory is not the only place it leaks.** The
+  acceptance criteria you draft alongside the tests will cite the placeholder path too, and
+  renaming the directory does not rename the citation — so the issue tells the agent to look
+  somewhere that does not exist. Caught by a task agent that read its own criteria, noticed
+  the directory they named was absent, and filed a spec concern *specifically so the same
+  copy-paste would not reach the next four tasks* — where an agent trusting the criteria line
+  could reasonably conclude its tests were missing. Creating the issue first (step 6 early)
+  avoids the class entirely; if you do use a placeholder, grep the criteria for it before
+  freezing.
 - They must run via the project's `verifyCommand`, which the verifier invokes as
   `<verifyCommand> tests/acceptance/<issue-id>/` (§3.4).
 - "Tests" means machine-checkable evidence broadly: unit tests, build-succeeds, a command
