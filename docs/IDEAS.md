@@ -81,6 +81,90 @@ Two hard boundaries, both inherited:
 
 <!-- Newest at the top. Nothing here is committed to. -->
 
+- **A live dashboard that lights up the pipeline diagrams as tasks move through them** — an
+  unattended run is currently watched by tailing `run.log` in a terminal, and a batch at
+  `concurrency` 3 interleaves three tasks' lines into one stream with only the trace id to tell
+  them apart. `docs/pipeline-diagram.md` already draws the exact state a reader wants to know,
+  and `docs/pipeline-map.html` already proves the delivery shape works here — one
+  self-contained page, no external fetches, pan/zoom. The idea is its live sibling: the same
+  mermaid, re-rendered with the node each task currently occupies highlighted, and the
+  diagrams already carry `classDef` styling to hang that on.
+  **How detailed it can be, honestly, split three ways** — this is the part worth writing down,
+  because two thirds of it needs no new plumbing:
+  *Free today.* Which projects are running at all, from the `runs/locks/*.lock` registry keyed
+  by canonical target repo (change-log row `repo-os9`). The whole host-side queue diagram —
+  admit, claim, collect, finish — from `run.log`, which `runner/log.js` appends live as
+  `<ISO> LEVEL [runId/issueId] msg`, so it is already a timestamped per-task event stream on
+  disk. Attempt number and each attempt's verdict, pauses and the reported reset time, branch
+  and commit status, final outcome — all of it from the workspace's `.run/status.json`, which
+  the entrypoint updates at every boundary (`init`, `append pass|fail|tampered|error`,
+  `set rateLimitResetAt`, `summary`) and which lives on a host bind mount, so it can be read
+  live without giving the container a route out. The `open → in_progress → closed|blocked`
+  state diagram falls straight out of that.
+  *One small deterministic change.* Where *inside* the container a task is right now — code
+  phase, verifier, docs phase — is the one thing the inner diagram needs and the one thing
+  nothing records, because `status.json` is written *after* each phase rather than on entry to
+  it. A `phase` field set by `pipeline/entrypoint.sh` at each boundary would light that diagram
+  up; it is a scaffolding write with no LLM anywhere near it (hard rule 7). The alternative —
+  grepping `container.log`, which *is* streamed to the host live — is the log-scraping this
+  repo has already banned once for good reasons (§3.6).
+  *Not available at any sane price.* Progress *within* the code phase. That is the existing
+  entry below on periodic self-reported progress, and its catch stands: an LLM cannot keep
+  wall-clock time. A dashboard makes the deterministic half of that entry more attractive than
+  the agent-reported half — "alive, 14 minutes in, log still growing" is a host-side timer, and
+  it answers the question a watcher actually has.
+  **Two of the five diagrams animate; the rest are context.** *Inside one task container* and
+  *how a task moves through the queue* carry live per-task state, and the state diagram does
+  too. *End to end* and *where the walls are* have no runtime state — the planning half is
+  interactive and long finished by the time a run starts. Worth deciding that up front rather
+  than discovering it after building a renderer for all five.
+  **Constraints, all inherited.** Read-only and host-side: a dashboard that can write is a
+  route around hard rule 1. And the page would name target repos, PR URLs and issue titles, so
+  it is git-ignored output like everything else under `runs/` — the same boundary the audit
+  idea above runs into, and for the same reason. Related: the audit-corpus entry above is the
+  same data on the other time axis (that one reads finished runs, this one reads the live one),
+  which is an argument for whatever shape gets built first defining the read model once.
+  Related: `docs/pipeline-diagram.md`, `docs/pipeline-map.html`, `DESIGN.md` §4.7, §4.12, §7.
+  2026-08-02
+
+- **Audit the pipeline's own history across runs, not one run at a time** — every run already
+  writes a rich, schema'd record (`runs/<run-id>/run.json` plus per-task `status.json`,
+  `verify.json`, `issue.md`, the agent logs and the docs output), and there are 194 of them on
+  this host. **Nothing has ever read them as a corpus.** Every finding this project has about
+  its own weaknesses — "problems trace to spec quality, never to the executor", the freeze gate
+  blessing a suite that never ran, the criteria that cannot fail, the docs phase colliding on
+  every batch — came from a human reading one or two runs closely and generalising. That is
+  expensive and it only finds what someone happened to look at. Worth having because the data to
+  answer "what does this pipeline get wrong, and how often" is already on disk, already
+  structured, and already carries the quantitative fields (`attempts`, `pauses`,
+  `activeSeconds`, `diffLines`, `outcome`, `model`, the verification evidence) that would make a
+  claim like the 3.6× variance across comparable tasks a measurement instead of an anecdote.
+  Three things it has to get right, all of them constraints this repo already pays for:
+  **Where it may sit.** Hard rules 5 and 7 put it entirely outside a run — post-hoc, offline,
+  over finished runs, never in the control path, never able to change an outcome. That is a
+  weaker position than it sounds: it is also what lets it be an LLM at all.
+  **The corpus is host-only and stays that way.** `runs/` is git-ignored precisely because a
+  manifest names the target repo, its PR URLs and its issue text; the two leaks this repo has
+  had both came in as *evidence* rather than as code. So an audit artifact that gets committed
+  is a new leak surface with a new shape, and only generic findings can be promoted out of it —
+  "the docs phase collides on every batch", never which project it collided on.
+  **The most valuable field is the one the pipeline does not own.** Its own signals said `done`,
+  green, one attempt for shadow-01, and the human rejected it. Nothing records that verdict, so
+  a corpus built only from what the runner writes would be non-empty, well-formed, and blind to
+  the failure class that has mattered most — the artifact rule (§3.6) applied to the audit
+  itself. Whatever this becomes probably needs a cheap way to attach "merged / sent back, and
+  why" to a run after review.
+  **The honest counter-argument**, and the reason this is parked rather than specced: the
+  documentation-updater agent below was dropped because *the mechanism was under-used, not
+  missing*, and the same charge fits here — memory notes, spec concerns, `docs/STATUS.md`'s
+  defect list and the sweep summaries are already five channels for "something went wrong", and
+  defect 11 is the case where the evidence was published, correct, and still cost a session
+  because nobody read it. If the gap is reading rather than collecting, the answer is aggregation
+  and not an agent. Deciding which it is means looking at the 194 runs once by hand first — which
+  is itself the cheapest possible version of this idea.
+  Related: `DESIGN.md` §4.11 (the outcome table), §5 (the review phase), §3.6, §3.7;
+  `docs/STATUS.md` defects 8 and 11. 2026-08-02
+
 - **Make the sweep and a live run mutually exclusive** — on 2026-08-01 a sweep running in
   another terminal `docker rm -f`'d a real run's task container twice, and the run reported it
   as exit 137 with an empty log, which reads exactly like an OOM kill. A session was spent on
