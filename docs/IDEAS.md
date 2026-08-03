@@ -81,6 +81,131 @@ Two hard boundaries, both inherited:
 
 <!-- Newest at the top. Nothing here is committed to. -->
 
+### Agent ideas
+
+The one heading this file allows itself, and here is the justification the grouping rule
+above asks for: *"what agents should this thing have"* is a question that gets asked as a
+question, and its answers were scattered across the flat list, the Dropped table and
+`DESIGN.md` §3.5 — so answering it meant reading all three. Everything else stays flat.
+
+**The constraint all three inherit, stated once so no entry restates it.** §3.5 already
+decided *how* a specialist plugs in: three slots in descending leverage (planning critic →
+test author → run-time advisor), a charter in `advisors/`, selection from a project's
+`pipeline.config.json`, and hard rule 5 — **never a gate**. So none of these is a proposal
+for a new mechanism. Each is a proposal to *staff an existing slot*, and the open question
+for each is which slot, not whether the pipeline can hold it. Two of them are close enough
+to already-decided that they may be small work items rather than ideas; they are parked here
+anyway because *which lens is worth staffing first* is genuinely undecided.
+
+**Why this matters if checker and implementor agents arrive.** No such split exists today —
+the phase sequence is fixed scaffolding (code → verify → docs, §4.3) and the only checker is
+the deterministic verifier. If one is built, the instinct will be to make security and
+accessibility into checkers that can fail a task. That is precisely what hard rules 5 and 7
+forbid: an LLM that can fail a task voids the three-attempt cap, destroys the retry loop's
+steering signal, and produces unactionable overnight failures. **A checker agent is legal
+only if it emits evidence and never an exit code.** Deciding that before anything is built is
+free; discovering it afterwards means unpicking a gate someone reasonably added.
+
+- **Staff an accessibility lens — and expect it to end up as frozen tests, not an agent** —
+  a target with a user interface can pass every gate this pipeline owns and still be unusable
+  with a keyboard or a screen reader: the acceptance tests are green, the feature works, and
+  nothing anywhere asks whether it works for everyone. Worth having because accessibility is
+  the most deterministic-friendly of any domain yet considered here — contrast ratios, focus
+  order, tab order, alt-text presence, ARIA roles and names, semantic heading structure,
+  keyboard traps, reduced-motion preferences, hit-target sizes are all machine-checkable
+  against published rule sets. §3.5 already names contrast ratios as *its own example* of
+  domain judgment reducing to a deterministic check, so slot 2 (test author) is the honest
+  home and the charter is cheap: one file in `advisors/`, no new phase, no runner change.
+  The honest catch, and the reason this is not simply "write the charter": the deterministic
+  subset is real but partial. Automated rule sets catch the mechanical half; whether alt text
+  is *meaningful*, whether focus order matches reading order, whether an error is announced —
+  is judgment, and lands in slot 1 or slot 3. So this lens will split across slots rather than
+  living in one, which is a thing to design for rather than discover.
+  Scope note: it only pays for targets that have an interface, and per-task opt-in is already
+  how selection works — no blanket application. Related: `DESIGN.md` §3.5,
+  `advisors/README.md`. 2026-08-03
+  *Surveyed 2026-08-03, and the result argues against staffing this lens **here**: the entire
+  accessibility surface of this repo is one file, `docs/pipeline-map.html`. Everything else is
+  Node, shell and markdown, where the lens is genuinely N/A. So this repo is close to the worst
+  place to prove the charter, and a target project with a real interface is where it would earn
+  its keep — write the charter, but do not staff it against this tree.*
+  *What that file already has, hand-written and unenforced: **all 112 hex values live inside
+  `:root` blocks, none outside** — the exact "no hardcoded colors outside the token file"
+  condition §3.5 names, currently holding by discipline rather than by a check; two palettes
+  (there is a `prefers-color-scheme: dark` block, so the contrast surface is doubled);
+  `role="group"` + `tabindex="0"` + a descriptive `aria-label` on the pan/zoom canvas;
+  `aria-label` on the three icon-only zoom buttons, correctly absent on the three text buttons
+  whose visible text is already their accessible name; a real `keydown` handler and focus
+  styling. **Nothing checks any of it** — no `.sh`, `.js` or `.json` in the tree references the
+  file at all, which is the same unguardedness `CLAUDE.md` already warns about for its content,
+  showing up on a second axis.*
+  *Gaps found, all small and all real: no `<html lang>` (the file opens at `<title>` with no
+  doctype or head, so a screen reader guesses pronunciation language); no
+  `<meta name="viewport">` despite responsive media queries that mobile browsers will largely
+  ignore without it — the responsive work is half-wired; no `prefers-reduced-motion` on a page
+  whose whole interaction is pan and zoom. Structure only: **no contrast ratio was computed**,
+  so whether either palette passes AA is still unknown.*
+  *The one piece worth building here regardless, and the cheapest possible start: a Tier-1
+  contrast check over the `:root` pairs in both palettes. Pure arithmetic on the WCAG formula —
+  no DOM, no browser, no dependency, no Docker — so it fits `tests/unit/` beside the other
+  Docker-free suites and `test-all.sh` discovers it by glob. It would answer the open question
+  above and convert the token discipline from luck into a gate.*
+
+- **Staff a security lens — the design named the domain and nothing staffs it** — §3.5's
+  title names security among its example domains and "does this touch an auth path" is its
+  worked example, but there is no `advisors/security.md`, so a domain the design explicitly
+  called out has no charter behind it. Worth having because security is where "never a gate"
+  is most uncomfortable and therefore most likely to be quietly violated by a well-meaning
+  later change — nobody argues with a physics advisor that cannot block, and everybody wants
+  a security one that can.
+  The design's answer is the escalation ladder, and this repo already contains one working
+  instance of it: `scripts/test-sanitize.sh` is a security-adjacent concern — credentials,
+  addresses, private names — that was made a **hard** gate precisely *because* it is
+  deterministic and reads bytes, with no LLM anywhere near it. That is the template for what
+  a security lens should become, not an exception to it.
+  The honest catch: most of what an agent would find in a task-sized diff is either already
+  deterministic (secret scanning, dependency audit, obvious injection sinks) or needs
+  whole-system context a single diff does not carry, because the interesting vulnerabilities
+  are compositional — two individually safe changes that combine badly. That argues the lens
+  is worth more at planning time ("this task touches an auth path and the spec says nothing
+  about it") than after the code exists. Related: `DESIGN.md` §3.5; hard rule 5. 2026-08-03
+
+- **Have something review a finished session and propose pipeline improvements — filed with
+  its own counter-argument attached** — the idea is a reviewer that reads a completed session
+  and asks what the *pipeline* should learn from it, as opposed to what the task produced.
+  Parked with the case against it in the same entry, because the case against it is strong and
+  a future reader deserves both.
+  **The precedent is against it.** The documentation-updater agent in the Dropped table below
+  was declined for exactly this shape — *the mechanism was under-used, not missing.* There are
+  already five channels for "something went wrong": `bd remember`, `status.js note`,
+  `status.js concern`, `docs/STATUS.md`'s defect list, and the sweep summaries. Defect 11 is
+  the case where the evidence was published, correct, and still cost a session because nobody
+  read it. A sixth channel producing more unread prose is the predictable outcome, and the
+  fix for an unread channel is aggregation, not another author.
+  **It also overlaps the audit-corpus entry below, on the weaker axis.** That one reads every
+  finished run as a corpus; this one reads a single session. n=1 generalises badly — which is
+  precisely the complaint that entry makes about a human reading one or two runs closely and
+  generalising from them.
+  **What would make it worth having anyway**, and the reason it is not simply dropped: the
+  session is the one artifact the corpus *cannot* see. `runs/` records what the runner wrote —
+  it does not record the interactive planning session, the critic rounds, or the human's
+  "merged / sent back, and why", which the audit entry itself names as the most valuable field
+  the pipeline does not own. A session reviewer is one way to capture that verdict at the only
+  moment it exists. If that is the real value, the shape is a cheap capture step, not a
+  reviewing agent.
+  **Placement is forced, not chosen.** Hard rules 5 and 7 put it entirely outside a run:
+  post-hoc, never in the control path, never able to change an outcome. As with the audit
+  entry, that weaker position is also what permits it to be an LLM at all.
+  Related: *Audit the pipeline's own history across runs* below (same data, different time
+  axis); the documentation-updater row in Dropped; `DESIGN.md` §3.6, §3.7. 2026-08-03
+
+*Also agent-shaped, left in the flat list rather than moved: **Audit the pipeline's own
+history across runs** (below) is the strongest agent idea currently parked, and the
+**documentation-updater** row in Dropped is the one already declined — read both before
+proposing a new agent.*
+
+---
+
 - **A live dashboard that lights up the pipeline diagrams as tasks move through them** — an
   unattended run is currently watched by tailing `run.log` in a terminal, and a batch at
   `concurrency` 3 interleaves three tasks' lines into one stream with only the trace id to tell
