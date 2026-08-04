@@ -345,6 +345,11 @@ proposing a new agent.*
   than one that never ticks any. Possibly the right shape is narrower — have the docs phase report
   *candidate* ticks as evidence, the way `note` and `concern` already report, and leave the edit to
   the host. 2026-07-31
+  *Sharpened by change-log row `trace-ledger` (2026-08-04): a tick now has a convention to
+  follow — the ref of the ticking issue rides on the line — but nothing tells the docs
+  phase's prompt about it yet, so a docs-phase tick would land unrefed and surface in the
+  step-0 report as a claim with no witness. If this entry is ever built, the ref is part of
+  the tick.*
 - **Tell the docs phase which files it owns, and stop giving living documents dated names** — the
   docs phase's entire file-set instruction is one line in `pipeline/entrypoint.sh` ("Update any
   in-repo documentation affected by the change (README, docs/)"), naming no manifest. It works
@@ -382,6 +387,11 @@ proposing a new agent.*
   true is mechanical in a way that ticking is not, because it needs no judgment about whether the
   claim is gated. Reporting a candidate list to a human is strictly safer than editing the spec.
   `Related:` *Have the docs phase tick the box* — either alone leaves the other half. 2026-07-31
+  *The id-shaped half shipped as change-log row `trace-ledger` (2026-08-04): planning step 0
+  now runs `node scripts/trace.js report`, whose "work no ref points at" list is exactly the
+  candidate list this entry asked for — mechanical, report-only, no spec edit. What remains
+  parked is the half no ref can see: a claim satisfied by merged work that never carried an
+  issue id, which only reading the code detects.*
 
 - **Let a task report progress while it is still running, roughly every 10 minutes** — right now
   a container is opaque from the outside: nothing is visible until it exits and the run report is

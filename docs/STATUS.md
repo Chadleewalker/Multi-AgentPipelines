@@ -1039,11 +1039,12 @@ design's central bet, and it is the first day it paid out repeatedly.
 
 ## Test suites
 
-All but ten drive real Docker and share one network, so they must never run concurrently
+All but eleven drive real Docker and share one network, so they must never run concurrently
 (`test-runner-memory.sh`, `test-changelog.sh`, `test-sanitize.sh`,
 `test-agent-hooks.sh`, `test-network-names.sh`, `test-lock.sh`,
-`test-sweep-hygiene.sh`, `test-concurrency.sh`, `test-pause-gate.sh` and
-`test-sweep-assertions.sh` are the exceptions — see below; they need neither).
+`test-sweep-hygiene.sh`, `test-concurrency.sh`, `test-pause-gate.sh`,
+`test-sweep-assertions.sh` and `test-trace.sh` are the exceptions — see below; they need
+neither).
 **`scripts/test-all.sh` is the sweep** — it holds a lock, runs every suite sequentially,
 kills one that hangs (`--timeout`, default 900s), **reclaims what each suite leaked after
 every suite** (change-log row `repo-zje`), and writes per-suite logs plus a summary table
@@ -1076,8 +1077,9 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-concurrency.sh` | the §7 `concurrency` knob — the bound, the worker pool, ready-queue result ordering, and the asynchronous execution seam |
 | `scripts/test-pause-gate.sh` | the §7 run-level rate-limit park — one shared wait, one run-level cycle cap, the three admission states, and a refused task that never touches Beads |
 | `scripts/test-sweep-assertions.sh` | the sweep's `PASSED` column — both assertion vocabularies, one honest total from a log carrying both, and "could not tell" rendered apart from a zero |
+| `scripts/test-trace.sh` | the traceability ledger (change-log row `trace-ledger`) — checkbox/ref parsing on both line endings, the three report lists, and backfill that recovers the ticking commit through later prose edits and refuses to guess |
 
-**`scripts/test-runner-memory.sh` is one of the ten suites that need no Docker**
+**`scripts/test-runner-memory.sh` is one of the eleven suites that need no Docker**
 (repo-dhp): it
 drives both §3.6 memory channels plus the `shouldFileMemory` outcome gate through the
 `PIPELINE_BD_CMD` seam, so it runs anywhere — including inside a task container, where
@@ -1292,7 +1294,15 @@ degrade to the old grep rather than to an empty column. What it does not cover: 
 suite invents a third — the counter reports the vocabulary it counted precisely so that
 shows up as a number that stops moving, but nothing asserts on the real sweep's output.
 
-**Full re-run 2026-07-26**, after the five dogfood/queue PRs merged to `main`: all 18
+**`scripts/test-trace.sh` is the eleventh** (change-log row `trace-ledger`): it covers
+`scripts/trace.js`, the spec-to-code traceability report and its deterministic backfill.
+It needs git and node only — the end-to-end cases build throwaway git repositories under
+the OS temp directory and drive the real CLI against them, so it touches neither this
+repo's history nor its tree. The fixture history carries the discriminating trap: a box
+ticked by one issue's commit and reworded by a later id-less commit, so a naive-blame
+backfill returns "unrecoverable" where the expected answer is the issue id, and the two
+implementations cannot both pass. Fixtures are CRLF because the reference host is CRLF and
+containers see LF; the write path must preserve what it found, and an assertion pins that. after the five dogfood/queue PRs merged to `main`: all 18
 suites green, including `e2e.sh` (32 assertions, real PR opened and cleaned up). Two were
 red before the fixes above — `test-runner-queue.sh` (hung; defect 6 plus two stale
 fixtures: the pinned reset timestamp, and an assertion on `results.json`, which T17 had
