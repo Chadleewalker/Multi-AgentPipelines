@@ -462,7 +462,7 @@ shipped thing survives — the same reason the `DESIGN.md` change log keeps its 
 
 | Date | Idea | Became |
 |---|---|---|
-| — | — | — |
+| 2026-08-04 | Record spec-to-code traceability at the moment it is created, instead of inferring it later — a ticked box carries the id of the issue that ticked it, so reconciliation is mechanical and nothing ever guesses an edge. The cheapest honest version of a knowledge graph; parked and promoted the same day because it collapses six drift entries into one convention | change-log row `trace-ledger`: the convention, `scripts/trace.js` (report + deterministic backfill via `git log -L`), the Docker-free suite `scripts/test-trace.sh` / `tests/unit/trace.test.js`, and the PLANNING.md step-0 drift read |
 
 ## Dropped
 
