@@ -213,7 +213,7 @@ proposing a new agent.*
   a restructure can invalidate 50+ assertions silently, and the defence each time was a
   hand-written guard criterion pinning strings to non-comment lines. That is discipline
   standing where scaffolding was designed to stand: the verifier already runs a target's
-  `regressionCommand` from the fork point, and the eleven Docker-free suites — which hold
+  `regressionCommand` from the fork point, and the twelve Docker-free suites — which hold
   exactly the coverage extracted from those frozen directories — run inside a task container
   by design. Declaring them as this repo's regression command makes drift red automatically.
   The honest catch: it lengthens every attempt's verify step, and a suite that goes stale
