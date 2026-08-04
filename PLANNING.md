@@ -43,6 +43,18 @@ design section, which is the definition of scope creep (§3.1). When one graduat
 to the file's **Promoted** table; when the session concludes one is not wanted, move it to
 **Dropped** with the reason, so it doesn't come back every few months.
 
+Then run the drift report against the target (change-log row `trace-ledger`):
+
+```bash
+node scripts/trace.js report        # run from the target repo's root
+```
+
+It lists ticked spec boxes no issue witnesses, refs to issues git has never seen, and
+merged work no box records — the checklist audit this step otherwise does by hand, and the
+mechanism that catches a session about to be cut against a false picture. A finding is a
+candidate for this session, never a verdict; `backfill` (same script) recovers missing
+refs from history when the convention was skipped.
+
 ### 1. Draft the spec — in two halves, in different contexts
 The five spec fields (§3.1, mapping in `beads/issue-template.md`) are **not all drafted the
 same way**. Intent needs the session's history; criteria need the code.
