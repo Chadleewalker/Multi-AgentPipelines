@@ -15,6 +15,11 @@ run.config.*.json
 # .sanitize-denylist.example to make your own (scripts/test-sanitize.sh).
 .sanitize-denylist
 
+# A filled-in user profile describes a person, not the machinery — the same boundary that
+# keeps runs/ out. Host-only; copy docs/user-profile.example.md to make your own, and put
+# the live copy at ~/.claude/CLAUDE.md (the template says why).
+docs/user-profile.md
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db
