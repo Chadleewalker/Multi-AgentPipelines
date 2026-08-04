@@ -292,3 +292,15 @@ step 7. Minutes of work, and only when the ingredient list actually changes.
 
 The steady rhythm is: **plan → run → review PRs in the morning → merge or send back** —
 and "send back" is itself just the next planning session.
+
+One line ends each review, per PR (DESIGN.md §5, change-log row `repo-1ie`):
+
+```bash
+node scripts/verdict.js record <issue-id> <merged|rejected> "<why>"
+node scripts/verdict.js pending    # anything still unjudged, newest run first
+```
+
+Merge-or-send-back is the one signal the pipeline cannot generate about itself, and it
+exists for exactly as long as you are looking at the PR. The record lands beside that
+task's other artifacts under the git-ignored `runs/` tree — host-only, like everything
+else that names the work — and changes nothing: it is evidence, never a gate.

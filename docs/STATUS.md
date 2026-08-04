@@ -4,7 +4,7 @@ Where the build actually is. Update this when something changes — it is the fi
 session reads to pick up the thread, and unlike a machine-local memory folder it travels
 with the repo.
 
-_Last updated: 2026-07-31_
+_Last updated: 2026-08-04_
 
 ## Where things stand
 
@@ -897,6 +897,51 @@ never its assertions) — that file is a frozen-by-constraint suite this task co
 edit nor execute. A real run at concurrency > 1 against a genuine usage limit stays
 unproven until a daytime batch hits one.
 
+## The review verdict is written down (`repo-1ie`, 2026-08-04)
+
+`scripts/verdict.js` ships — the host-side capture step DESIGN.md §5 declared in
+change-log row `review-verdict`, and now change-log row `repo-1ie`. Two commands:
+`record <issue-id> <merged|rejected> "<why>" [--run <runId>]` writes
+`runs/<runId>/tasks/<issue-id>/verdict.json`, and `pending` lists every PR-bearing task
+that still lacks one, newest run first. **Run `pending` at the end of a review session** —
+it is the difference between an unfinished review being visible and being remembered.
+
+**Why it exists** is the trial line at the top of this file: two merged PRs, one rejected,
+and nothing
+anywhere recorded which was which. The run record said `done`, green, one attempt for the
+rejected one. Merge-or-send-back is the only signal the pipeline cannot generate about
+itself, it exists for one moment at review time, and anything that tries to recover it
+later is inferring what could simply have been written down.
+
+**What it deliberately is not:** a gate, or anything with an opinion. It creates or
+overwrites exactly one file per call and edits no existing artifact — not `run.json`, not
+`status.json` — and `pending` exits 0 whatever it finds. Refusals are validated before the
+runs tree is even read, so a rejected command leaves it byte-identical. No LLM (hard rule
+7), no Beads and in fact no child process at all (it must work where `bd` was never
+installed), and node built-ins only — the file is self-contained so a copy of it works from
+any repo-shaped root, which is also what makes the default-root behaviour provable.
+
+**The decision worth knowing about is which run a verdict lands in**, because every cheap
+answer is wrong on the real tree: the run is chosen by `run.json`'s `startedAt`, never by
+runId (three naming shapes exist here and sort wrong against each other) and never by
+directory mtime (a copy or a backup rewrites it). A manifest with no parseable `startedAt`
+sorts oldest and is never chosen over a dated one; `--run` overrides recency outright.
+`prUrl: null` is a real value in real manifests, so only a truthy non-empty string counts
+as PR-bearing and the written verdict has *no* `prUrl` key rather than a null one. With
+`VERDICT_RUNS_DIR` unset the runs root comes from the script's own location, never the cwd
+— a reviewer runs this from wherever they happen to be. Everything malformed under the
+runs root is skipped silently, because a report that crashes on `sweeps/` or a half-written
+`run.json` is useless exactly when it is most needed.
+
+**Host obligations, two:** run `bash scripts/test-all.sh` on the reference host — the new
+suite is swept by glob and has never run there — and hand-update
+`docs/pipeline-map.html`, which CLAUDE.md exempts from task docs phases and which nothing
+else updates. Three of its panels draw the review decision (the end-to-end flow, the
+"Merge, or send back" row of the who-does-what table, and the second end-to-end chart) and
+none of them yet shows the verdict being written down; `docs/pipeline-diagram.md`, which
+task docs phases *do* keep current, has the node. Nothing else is outstanding: the recorder
+needs no Docker, no network and no target repo.
+
 ## What's next
 
 **The queue drained again on 2026-07-26**, after `repo-4l8` (the epic filter, planned and
@@ -1039,12 +1084,12 @@ design's central bet, and it is the first day it paid out repeatedly.
 
 ## Test suites
 
-All but eleven drive real Docker and share one network, so they must never run concurrently
+All but twelve drive real Docker and share one network, so they must never run concurrently
 (`test-runner-memory.sh`, `test-changelog.sh`, `test-sanitize.sh`,
 `test-agent-hooks.sh`, `test-network-names.sh`, `test-lock.sh`,
 `test-sweep-hygiene.sh`, `test-concurrency.sh`, `test-pause-gate.sh`,
-`test-sweep-assertions.sh` and `test-trace.sh` are the exceptions — see below; they need
-neither).
+`test-sweep-assertions.sh`, `test-trace.sh` and `test-verdict.sh` are the exceptions —
+see below; they need neither).
 **`scripts/test-all.sh` is the sweep** — it holds a lock, runs every suite sequentially,
 kills one that hangs (`--timeout`, default 900s), **reclaims what each suite leaked after
 every suite** (change-log row `repo-zje`), and writes per-suite logs plus a summary table
@@ -1078,8 +1123,9 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-pause-gate.sh` | the §7 run-level rate-limit park — one shared wait, one run-level cycle cap, the three admission states, and a refused task that never touches Beads |
 | `scripts/test-sweep-assertions.sh` | the sweep's `PASSED` column — both assertion vocabularies, one honest total from a log carrying both, and "could not tell" rendered apart from a zero |
 | `scripts/test-trace.sh` | the traceability ledger (change-log row `trace-ledger`) — checkbox/ref parsing on both line endings, the three report lists, and backfill that recovers the ticking commit through later prose edits and refuses to guess |
+| `scripts/test-verdict.sh` | the review verdict recorder (change-log row `repo-1ie`) — which run a verdict lands in, what counts as PR-bearing, every refusal writing nothing, and the recorder staying self-contained |
 
-**`scripts/test-runner-memory.sh` is one of the eleven suites that need no Docker**
+**`scripts/test-runner-memory.sh` is one of the twelve suites that need no Docker**
 (repo-dhp): it
 drives both §3.6 memory channels plus the `shouldFileMemory` outcome gate through the
 `PIPELINE_BD_CMD` seam, so it runs anywhere — including inside a task container, where
@@ -1302,7 +1348,27 @@ repo's history nor its tree. The fixture history carries the discriminating trap
 ticked by one issue's commit and reworded by a later id-less commit, so a naive-blame
 backfill returns "unrecoverable" where the expected answer is the issue id, and the two
 implementations cannot both pass. Fixtures are CRLF because the reference host is CRLF and
-containers see LF; the write path must preserve what it found, and an assertion pins that. after the five dogfood/queue PRs merged to `main`: all 18
+containers see LF; the write path must preserve what it found, and an assertion pins that.
+
+**`scripts/test-verdict.sh` is the twelfth** (change-log row `repo-1ie`): it covers
+`scripts/verdict.js`, the review verdict recorder. It needs node only — every case builds a
+throwaway runs root under the OS temp directory and drives the real CLI against it, so it
+never reads or writes this machine's own `runs/` tree (the wrapper unsets `VERDICT_RUNS_DIR`
+for exactly that reason). The fixtures are shaped against the plausible wrong answers rather
+than the happy path: the `startedAt`-newest run is chosen while its runId sorts older and its
+mtime is fresher, so runId-sort and mtime-sort each pick a different run; runs whose
+`startedAt` is absent, unparseable or a number all have to sort oldest; and the runs root
+carries the noise a real one does — a plain file, `sweeps/`, an empty directory, a `run.json`
+that does not parse, and two that parse to a JSON array and a JSON string. Sixteen refusals
+are asserted twice over — non-zero exit, *and* a recursive content-hash snapshot of the tree
+unchanged — because validate-after-write leaves a stub behind that a path listing cannot see.
+Two checks are structural rather than behavioural: the source requires node built-ins only
+and never `child_process`. Self-containment is what lets a copy of that one file work from
+any repo-shaped root, and spawning nothing is what lets it run where `bd` was never
+installed; both decay silently the first time someone reaches for a shared helper, and
+neither is visible in any behavioural test.
+
+**The sweep's first full run** was after the five dogfood/queue PRs merged to `main`: all 18
 suites green, including `e2e.sh` (32 assertions, real PR opened and cleaned up). Two were
 red before the fixes above — `test-runner-queue.sh` (hung; defect 6 plus two stale
 fixtures: the pinned reset timestamp, and an assertion on `results.json`, which T17 had
