@@ -206,6 +206,54 @@ proposing a new agent.*
 
 ---
 
+- **Declare a `regressionCommand` for this repo, so frozen-suite blast radius stops being
+  held by grep** — three tasks running (`repo-teq`, `repo-i9y`) have now navigated the same
+  hazard: frozen acceptance directories assert literal strings against `run.js` source,
+  nothing ever re-runs a frozen directory, and this repo declares no `regressionCommand` — so
+  a restructure can invalidate 50+ assertions silently, and the defence each time was a
+  hand-written guard criterion pinning strings to non-comment lines. That is discipline
+  standing where scaffolding was designed to stand: the verifier already runs a target's
+  `regressionCommand` from the fork point, and the eleven Docker-free suites — which hold
+  exactly the coverage extracted from those frozen directories — run inside a task container
+  by design. Declaring them as this repo's regression command makes drift red automatically.
+  The honest catch: it lengthens every attempt's verify step, and a suite that goes stale
+  then blocks unrelated tasks — which is an argument for starting with the fast, pure ones.
+  Related: `DESIGN.md` §4.4. 2026-08-04
+
+- **Retire and bound the memory channel before it grows without limit** — the note store only
+  ever grows (104 notes exported into the first production run, 146 by the fifth, 66 keys in
+  this repo's own store today), and every task prompt carries all of it. Nothing expires a
+  note: `docs/STATUS.md` already found one that was stale within a day (`52m-note-2`, its
+  content absorbed by defect 7's fix) and named the gap — "the promotion rule covers
+  graduation, not expiry." Left alone this is a prompt tax that rises every run while
+  relevance-per-note falls, and a stale note is worse than none: it steers every future agent
+  toward code that no longer exists. Cheap versions, not exclusive: retire a note when its
+  content is promoted to `CLAUDE.md`; a periodic host-side pass that flags notes whose cited
+  files or functions no longer exist; or cap the export and say so in the file. Related:
+  `DESIGN.md` §3.6. 2026-08-04
+
+- **Record what each task cost — per-model tokens, from the envelope already being parsed** —
+  `modelUsage` in the CLI envelope carries per-model output tokens (defect 8's fix reads that
+  table already; it is how 7897-of-7912 was even knowable), and nothing records it. Every
+  scaling statement is currently priced in wall-clock only: "concurrency buys elapsed time,
+  not throughput", "N containers exhaust the window N times faster" — true, and numberless. A
+  per-task usage field in the status file and manifest would make batch sizing, overnight
+  capacity and park prediction measurements instead of folklore, and it is one deterministic
+  field added to a record that already exists (hard rule 7 untouched). Related: `DESIGN.md`
+  §4.3, §7; the audit-corpus entry above, which would want this column to exist. 2026-08-04
+
+- **Track host obligations to discharge, not just name them** — nearly every merged task
+  names things no frozen test can hold ("run the sweep on the reference host", "strip the
+  network lines from the git-ignored configs", "fix the stale comment in the queue suite"),
+  and nothing records whether they happened. The pattern of defect 11 and the T12 staleness
+  is the same one: the obligation was published, correct, and undischarged, because
+  discharge depends on a human remembering. Cheap shape: a short ledger the run report
+  appends to and the sweep stamps its own row into, so "obligations outstanding" is readable
+  in one place instead of scattered across PR bodies. The honest catch: this is itself a
+  sixth channel that can go unread — the fix may be surfacing outstanding obligations inside
+  a ritual that already happens, such as the sweep summary or planning step 0, rather than a
+  new file. 2026-08-04
+
 - **A live dashboard that lights up the pipeline diagrams as tasks move through them** — an
   unattended run is currently watched by tailing `run.log` in a terminal, and a batch at
   `concurrency` 3 interleaves three tasks' lines into one stream with only the trace id to tell
@@ -472,6 +520,7 @@ shipped thing survives — the same reason the `DESIGN.md` change log keeps its 
 
 | Date | Idea | Became |
 |---|---|---|
+| 2026-08-04 | Capture the reviewer's verdict on every run — merged / sent back, and why — at the only moment it exists. Extracted from the two agent-shaped entries that both named it the most valuable field the pipeline does not own, and both concluded the shape is a cheap capture step, not a reviewing agent. Parked and promoted the same day | `DESIGN.md` §5 + change-log row `review-verdict`; frozen as issue `repo-1ie` with tests at `tests/acceptance/repo-1ie/` (freeze gate RED against a green control, 2026-08-04) |
 | 2026-08-04 | Record spec-to-code traceability at the moment it is created, instead of inferring it later — a ticked box carries the id of the issue that ticked it, so reconciliation is mechanical and nothing ever guesses an edge. The cheapest honest version of a knowledge graph; parked and promoted the same day because it collapses six drift entries into one convention | change-log row `trace-ledger`: the convention, `scripts/trace.js` (report + deterministic backfill via `git log -L`), the Docker-free suite `scripts/test-trace.sh` / `tests/unit/trace.test.js`, and the PLANNING.md step-0 drift read |
 
 ## Dropped
