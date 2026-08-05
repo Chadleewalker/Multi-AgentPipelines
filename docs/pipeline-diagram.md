@@ -28,10 +28,17 @@ flowchart TB
   J --> K["Run report + pull requests<br/>ordered by scrutiny needed"]
   K --> L{"Merge, or send back"}
   L -->|"send back as a new task"| B
+  K -.-> AUD["Across ALL past runs — node scripts/audit-runs.js<br/>joins the corpus, prints one report, changes nothing"]
+  AUD -.-> B
 
   classDef specialist fill:#fdf4e3,stroke:#a86c17,stroke-width:1.5px,stroke-dasharray:5 3,color:#14181d
   class SP1,SP2 specialist
 ```
+
+The dotted branch off the run report is the only reader that spans runs (§5, change-log
+row `repo-73k`). It is post-hoc and host-only: nothing in a run waits on it, it gates
+nothing, and what it finds reaches the pipeline the same way any other observation does —
+through a human, into a planning session.
 
 Slots 1 and 2 need **no pipeline code**: they are prompts you run during a planning
 session, before anything is frozen. Slot 2 is the higher-leverage of the two — a domain

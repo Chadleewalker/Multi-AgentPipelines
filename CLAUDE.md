@@ -82,7 +82,7 @@ bash scripts/e2e.sh            # add --keep to leave branches and PRs up for ins
 bash scripts/test-verifier.sh
 bash scripts/test-runner-container.sh
 
-# the eleven suites that need no Docker — seconds, safe to run anywhere, even in a container
+# the twelve suites that need no Docker — seconds, safe to run anywhere, even in a container
 bash scripts/test-runner-memory.sh
 bash scripts/test-changelog.sh     # DESIGN.md §12 row identity (CHANGELOG_FILE re-aims it)
 bash scripts/test-sanitize.sh      # publication hygiene (SANITIZE_FIXTURE_DIR re-aims it)
@@ -94,7 +94,13 @@ bash scripts/test-concurrency.sh   # the §7 concurrency knob — the bound, the
 bash scripts/test-pause-gate.sh    # the §7 run-level rate-limit park — one shared wait, one cap, admission
 bash scripts/test-sweep-assertions.sh # the sweep's PASSED column — both vocabularies, one honest total
 bash scripts/test-trace.sh         # the traceability ledger — spec-to-code refs, report and backfill (change-log row `trace-ledger`)
+bash scripts/test-audit-runs.sh    # the run-history audit — buckets, joins, channels, quantiles, and that it writes nothing (change-log row `repo-73k`)
 ```
+
+Reading the corpus itself is `node scripts/audit-runs.js` — a pure reader that prints one
+markdown report to stdout and changes nothing (DESIGN.md §5). Redirect it if you want a
+copy; the report names targets, PR URLs and issue ids, so the copy belongs under the
+git-ignored `runs/`, never in the tracked tree.
 
 Suites are slow (real containers) and **share one Docker network** — run them one at a
 time, never concurrently, or they tear the network down under each other.
@@ -291,7 +297,13 @@ the pipeline working on the pipeline's own code. The rules:
   and `sh scripts/test-trace.sh` (`tests/unit/trace.test.js`), which needs git and node
   only and builds its own throwaway repositories under the OS temp dir: run it if you touch
   `scripts/trace.js`, because backfill's whole warrant is that it recovers the *ticking*
-  commit rather than blaming the last edit, and only the suite's reword trap proves that.
+  commit rather than blaming the last edit, and only the suite's reword trap proves that —
+  and `sh scripts/test-audit-runs.sh` (`tests/unit/audit-runs.test.js`), which builds
+  throwaway runs roots under the OS temp dir and drives the real CLI through the
+  `AUDIT_RUNS_DIR` seam: run it if you touch `scripts/audit-runs.js`, because what that
+  tool prints is a set of NUMBERS about the corpus, and the way it fails is the way its
+  hand-written ancestor failed — reading a `concerns` key that is really `specConcerns` and
+  calling a 43-use channel unused, which is non-empty, well-formed and false.
   Any new Docker-free suite belongs beside them in
   `tests/unit/`, and its seam stub must be a `.js` file invoked through
   `process.execPath`, never a `#!/bin/sh` script: `spawnSync` without a shell fails such a
