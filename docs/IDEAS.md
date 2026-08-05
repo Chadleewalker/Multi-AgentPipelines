@@ -207,6 +207,55 @@ deterministic aggregation, not an agent. Read both before proposing a new agent.
 
 ---
 
+- **Find out why the container path degrades over a long sweep, before the sweep stops
+  being believed** — two full sweeps on 2026-08-05 went red six times each, and every one
+  was environmental: five of the six re-ran green in 12–101s on an idle Docker minutes
+  later. The measurement is stark — `scripts/egress-check.sh` end-to-end takes **0.65s** on
+  an idle daemon and took **73s** during the sweep, against its own 60s bound, having
+  produced the correct answers (`allowed=404 blocked1=000 blocked2=000 direct=000`) before
+  being killed. Ruled out: the code (nothing under `runner/`, `pipeline/` or `scripts/`
+  touching Docker changed since the last green sweep), the host network (0.16s to
+  api.anthropic.com from inside a container, DNS in 26ms), resources (24 CPUs, 15.35GiB, the
+  reference host's unrelated long-lived containers idle at 47MiB each), and the gate's
+  margin — the blocked probes are refused in **1ms**, not after their 10s timeout, so the
+  60s bound is generous rather than thin. What is left is something that accumulates as 35
+  suites churn containers and build and tear down the same network over and over; the
+  mechanism is **unproven** and naming a cause here would be a guess.
+  Worth having because the sweep's entire job is telling you the suites that merely *touch*
+  a changed component are still green, and a sweep that goes red for reasons unrelated to
+  the code trains you to discount it — which is worse than not running it, since the day it
+  is right it will read like the days it was wrong. The two sweeps cost about 2.5 hours to
+  produce six reds of which exactly one was real.
+  Cheap half worth doing regardless of the root cause: **the 900s per-suite cap is far too
+  generous for a degraded run.** Re-running the six reds with a 300s cap surfaced the same
+  information in four minutes; the sweep spent 94 and 52 minutes mostly waiting for suites
+  that were never going to finish. A shorter cap loses nothing when suites are healthy —
+  the slowest green suite in the corpus is 1:30. Related: `DESIGN.md` §4.8; the *Make the
+  sweep and a live run mutually exclusive* entry below, which is the other way the sweep
+  produces a red that is not about the code. 2026-08-05
+
+- **Have the sweep reclaim stale run locks, not just containers and networks** — when the
+  sweep kills a suite at its timeout, `runs/locks/*.lock` survives it, and the next sweep's
+  `test-lock` fails on the leftover. That happened on 2026-08-05: a suite killed at 09:14
+  left `t14-success`'s lock behind, naming a temp target directory that no longer existed,
+  and the afternoon sweep three hours later reported `test-lock` red — a suite with no
+  relationship whatever to the one that was killed. Deleting the file turned it green with
+  no other change.
+  Worth having because it is the most misleading class of red there is: it points at the
+  wrong component, it is deterministic so it looks like a real defect rather than flake, and
+  it survives across sweeps and across days, so whoever hits it is usually not the person
+  who caused it. The fix is small — `scripts/sweep-reclaim.js` already owns the
+  before/after snapshot diff and the ownership question is easier here than for containers,
+  since a lock records its own `runId`, `pid` and `startedAt` and §4.12 already knows how to
+  decide a holder is gone. The two rules that travel with the Docker reclaimer travel with
+  this one unchanged: no baseline, no removal; and cleanup is never a verdict.
+  The honest catch: a lock left by a *killed* suite and a lock held by a **live run in
+  another terminal** look similar from the outside, which is the same hazard change-log row
+  `repo-zje` exists for — so this wants the liveness check §4.12 already implements
+  (`isHolderLive`), not a name match. Related: `DESIGN.md` §4.12; change-log row `repo-os9`;
+  the *Make the sweep and a live run mutually exclusive* entry below, which would remove the
+  ambiguity outright. 2026-08-05
+
 - **Stop batch siblings failing each other's frozen suites — a `partial` that means
   "planned together", not "regressed"** — when a batch of tasks is frozen in one planning
   session, every task branch forks from an integration branch that already carries all the
