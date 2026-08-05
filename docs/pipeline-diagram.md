@@ -28,6 +28,7 @@ flowchart TB
   J --> K["Run report + pull requests<br/>ordered by scrutiny needed"]
   K --> L{"Merge, or send back"}
   L -->|"send back as a new task"| B
+  L -->|"either way, one line per PR"| VD["Record the verdict — merged or rejected, and why<br/>runs/&lt;runId&gt;/tasks/&lt;id&gt;/verdict.json · evidence, never a gate"]
   K -.-> AUD["Across ALL past runs — node scripts/audit-runs.js<br/>joins the corpus, prints one report, changes nothing"]
   AUD -.-> B
 
@@ -44,6 +45,12 @@ Slots 1 and 2 need **no pipeline code**: they are prompts you run during a plann
 session, before anything is frozen. Slot 2 is the higher-leverage of the two — a domain
 check that becomes a frozen test steers the retry loop on every attempt, whereas a
 review only complains once.
+
+The verdict node is `node scripts/verdict.js record <issue-id> <merged|rejected> "<why>"`
+(§5, change-log row `repo-1ie`) — deterministic scaffolding that writes down the one
+signal the pipeline cannot generate about itself. It hangs off the decision rather than
+sitting in the path back to planning, because it records *either* outcome and gates
+neither: no arrow leaves it.
 
 ## Inside one task container
 

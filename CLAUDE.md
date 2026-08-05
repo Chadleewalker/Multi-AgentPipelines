@@ -72,6 +72,11 @@ code actually encodes, so a port should read them as the list of things to re-ch
 # anything starts, and a lock left by a killed run is taken over automatically (§4.12).
 node runner/run.js --config run.config.<project>.json
 
+# reviewing what a run produced: one line per PR, at the moment the call is made (§5).
+# Evidence, never a gate — it edits no existing artifact and exits 0 on findings.
+node scripts/verdict.js record <issue-id> <merged|rejected> "<why>"  # [--run <runId>] to override recency
+node scripts/verdict.js pending    # PR-bearing tasks with no verdict yet, newest run first
+
 # the full sweep — every suite, one at a time, with a summary table
 bash scripts/test-all.sh
 
@@ -82,7 +87,7 @@ bash scripts/e2e.sh            # add --keep to leave branches and PRs up for ins
 bash scripts/test-verifier.sh
 bash scripts/test-runner-container.sh
 
-# the twelve suites that need no Docker — seconds, safe to run anywhere, even in a container
+# the thirteen suites that need no Docker — seconds, safe to run anywhere, even in a container
 bash scripts/test-runner-memory.sh
 bash scripts/test-changelog.sh     # DESIGN.md §12 row identity (CHANGELOG_FILE re-aims it)
 bash scripts/test-sanitize.sh      # publication hygiene (SANITIZE_FIXTURE_DIR re-aims it)
@@ -94,6 +99,7 @@ bash scripts/test-concurrency.sh   # the §7 concurrency knob — the bound, the
 bash scripts/test-pause-gate.sh    # the §7 run-level rate-limit park — one shared wait, one cap, admission
 bash scripts/test-sweep-assertions.sh # the sweep's PASSED column — both vocabularies, one honest total
 bash scripts/test-trace.sh         # the traceability ledger — spec-to-code refs, report and backfill (change-log row `trace-ledger`)
+bash scripts/test-verdict.sh       # the review verdict recorder — which run a verdict lands in, and what refuses (change-log row `repo-1ie`)
 bash scripts/test-audit-runs.sh    # the run-history audit — buckets, joins, channels, quantiles, and that it writes nothing (change-log row `repo-73k`)
 ```
 
@@ -297,6 +303,12 @@ the pipeline working on the pipeline's own code. The rules:
   and `sh scripts/test-trace.sh` (`tests/unit/trace.test.js`), which needs git and node
   only and builds its own throwaway repositories under the OS temp dir: run it if you touch
   `scripts/trace.js`, because backfill's whole warrant is that it recovers the *ticking*
+  commit rather than blaming the last edit, and only the suite's reword trap proves that —
+  and `sh scripts/test-verdict.sh` (`tests/unit/verdict.test.js`), which needs node only and
+  builds throwaway runs roots under the OS temp dir: run it if you touch `scripts/verdict.js`,
+  because the recorder must keep spawning nothing and requiring nothing outside node's
+  built-ins — a copy of that one file has to work from any repo-shaped root, and on a host
+  where `bd` was never installed —
   commit rather than blaming the last edit, and only the suite's reword trap proves that —
   and `sh scripts/test-audit-runs.sh` (`tests/unit/audit-runs.test.js`), which builds
   throwaway runs roots under the OS temp dir and drives the real CLI through the

@@ -23,7 +23,10 @@ Three phases joined by a task queue:
    the verifier runs the frozen tests, and it retries at most three times.
 3. **Review** (with you) — verified work arrives as a pull request carrying the spec, a
    change summary, and the verification evidence. Failed work arrives as a pushed branch
-   with its full attempt history.
+   with its full attempt history. Each PR ends with one line —
+   `node scripts/verdict.js record <issue-id> <merged|rejected> "<why>"` — because
+   merge-or-send-back is the one signal the pipeline cannot generate about itself, and it
+   exists only while you are looking at the PR.
 
 The design's central bet: **an agent never judges its own work.** Verification is a
 deterministic script running tests that were frozen before the code was written.
