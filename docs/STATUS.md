@@ -1039,12 +1039,12 @@ design's central bet, and it is the first day it paid out repeatedly.
 
 ## Test suites
 
-All but eleven drive real Docker and share one network, so they must never run concurrently
+All but twelve drive real Docker and share one network, so they must never run concurrently
 (`test-runner-memory.sh`, `test-changelog.sh`, `test-sanitize.sh`,
 `test-agent-hooks.sh`, `test-network-names.sh`, `test-lock.sh`,
 `test-sweep-hygiene.sh`, `test-concurrency.sh`, `test-pause-gate.sh`,
-`test-sweep-assertions.sh` and `test-trace.sh` are the exceptions — see below; they need
-neither).
+`test-sweep-assertions.sh`, `test-trace.sh` and `test-audit-runs.sh` are the exceptions —
+see below; they need neither).
 **`scripts/test-all.sh` is the sweep** — it holds a lock, runs every suite sequentially,
 kills one that hangs (`--timeout`, default 900s), **reclaims what each suite leaked after
 every suite** (change-log row `repo-zje`), and writes per-suite logs plus a summary table
@@ -1078,8 +1078,9 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-pause-gate.sh` | the §7 run-level rate-limit park — one shared wait, one run-level cycle cap, the three admission states, and a refused task that never touches Beads |
 | `scripts/test-sweep-assertions.sh` | the sweep's `PASSED` column — both assertion vocabularies, one honest total from a log carrying both, and "could not tell" rendered apart from a zero |
 | `scripts/test-trace.sh` | the traceability ledger (change-log row `trace-ledger`) — checkbox/ref parsing on both line endings, the three report lists, and backfill that recovers the ticking commit through later prose edits and refuses to guess |
+| `scripts/test-audit-runs.sh` | the run-history audit (change-log row `repo-73k`) — the three-bucket corpus taxonomy, `startedAt` joins, the `specConcerns` channel keys, nearest-rank quantiles, and the pure-reader contract checked by content hash |
 
-**`scripts/test-runner-memory.sh` is one of the eleven suites that need no Docker**
+**`scripts/test-runner-memory.sh` is one of the twelve suites that need no Docker**
 (repo-dhp): it
 drives both §3.6 memory channels plus the `shouldFileMemory` outcome gate through the
 `PIPELINE_BD_CMD` seam, so it runs anywhere — including inside a task container, where
@@ -1302,7 +1303,26 @@ repo's history nor its tree. The fixture history carries the discriminating trap
 ticked by one issue's commit and reworded by a later id-less commit, so a naive-blame
 backfill returns "unrecoverable" where the expected answer is the issue id, and the two
 implementations cannot both pass. Fixtures are CRLF because the reference host is CRLF and
-containers see LF; the write path must preserve what it found, and an assertion pins that. after the five dogfood/queue PRs merged to `main`: all 18
+containers see LF; the write path must preserve what it found, and an assertion pins that.
+
+**`scripts/test-audit-runs.sh` is the twelfth** (change-log row `repo-73k`): it covers
+`scripts/audit-runs.js`, the run-history audit of §5. It needs node only — every case
+builds a throwaway runs root under the OS temp directory and drives the real CLI against
+it through the `AUDIT_RUNS_DIR` seam, so it reads neither this repo's tree nor the real
+corpus. Three things it holds that nothing else can. The **pure-reader contract**, checked
+by a recursive path-plus-content-hash snapshot of the runs root, the script's own directory
+*and* a dedicated empty working directory — a "helpful" cache most plausibly lands in the
+cwd, which a narrower snapshot would not see. The **channel keys**: one fixture status file
+carries `specConcerns` *and* a decoy `concerns` array of a different length, so the misread
+that made the hand pass report a 43-use channel as never used produces a different number
+and cannot pass. And the **quantile method**: the sample set `[10, 20, 40, 80, 1000]` is
+chosen so p95 is the sole discriminator between nearest-rank (1000, an observed sample) and
+type-7 interpolation (816, a number no run ever produced) — interpolation is what would
+quietly break byte-determinism. It also pins the structural constraints no behaviour can
+see: every `require` target a node built-in, no `child_process`, no `fs` write API, because
+the script is meant to be copied and that property decays silently.
+
+**A full sweep ran** after the five dogfood/queue PRs merged to `main`: all 18
 suites green, including `e2e.sh` (32 assertions, real PR opened and cleaned up). Two were
 red before the fixes above — `test-runner-queue.sh` (hung; defect 6 plus two stale
 fixtures: the pinned reset timestamp, and an assertion on `results.json`, which T17 had

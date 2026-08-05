@@ -214,7 +214,7 @@ deterministic aggregation, not an agent. Read both before proposing a new agent.
   a restructure can invalidate 50+ assertions silently, and the defence each time was a
   hand-written guard criterion pinning strings to non-comment lines. That is discipline
   standing where scaffolding was designed to stand: the verifier already runs a target's
-  `regressionCommand` from the fork point, and the eleven Docker-free suites — which hold
+  `regressionCommand` from the fork point, and the twelve Docker-free suites — which hold
   exactly the coverage extracted from those frozen directories — run inside a task container
   by design. Declaring them as this repo's regression command makes drift red automatically.
   The honest catch: it lengthens every attempt's verify step, and a suite that goes stale
@@ -483,7 +483,7 @@ shipped thing survives — the same reason the `DESIGN.md` change log keeps its 
 
 | Date | Idea | Became |
 |---|---|---|
-| 2026-08-04 | Audit the pipeline's own history across runs, not one run at a time — the corpus was on disk, structured, and had never been read as one. Parked 2026-08-02 with its own experiment attached: read the runs by hand once, and let that decide aggregation-versus-agent. The hand pass ran 2026-08-04 and aggregation won — every repeated pattern fell out of joining structured fields, none needed judgment | `DESIGN.md` §5 + change-log row `run-audit`: `scripts/audit-runs.js`, deterministic and host-only, joining `run.json`/`status.json`/`verify.json`/`verdict.json`; the LLM reader stays unbuilt, with the reason recorded in §5 |
+| 2026-08-04 | Audit the pipeline's own history across runs, not one run at a time — the corpus was on disk, structured, and had never been read as one. Parked 2026-08-02 with its own experiment attached: read the runs by hand once, and let that decide aggregation-versus-agent. The hand pass ran 2026-08-04 and aggregation won — every repeated pattern fell out of joining structured fields, none needed judgment | `DESIGN.md` §5 + change-log row `run-audit`: `scripts/audit-runs.js`, deterministic and host-only, joining `run.json`/`status.json`/`verify.json`/`verdict.json`; the LLM reader stays unbuilt, with the reason recorded in §5. Frozen as issue `repo-73k` with tests at `tests/acceptance/repo-73k/`; shipped with `scripts/test-audit-runs.sh` (change-log row `repo-73k`) |
 | 2026-08-04 | Capture the reviewer's verdict on every run — merged / sent back, and why — at the only moment it exists. Extracted from the two agent-shaped entries that both named it the most valuable field the pipeline does not own, and both concluded the shape is a cheap capture step, not a reviewing agent. Parked and promoted the same day | `DESIGN.md` §5 + change-log row `review-verdict`; frozen as issue `repo-1ie` with tests at `tests/acceptance/repo-1ie/` (freeze gate RED against a green control, 2026-08-04) |
 | 2026-08-04 | Record spec-to-code traceability at the moment it is created, instead of inferring it later — a ticked box carries the id of the issue that ticked it, so reconciliation is mechanical and nothing ever guesses an edge. The cheapest honest version of a knowledge graph; parked and promoted the same day because it collapses six drift entries into one convention | change-log row `trace-ledger`: the convention, `scripts/trace.js` (report + deterministic backfill via `git log -L`), the Docker-free suite `scripts/test-trace.sh` / `tests/unit/trace.test.js`, and the PLANNING.md step-0 drift read |
 
