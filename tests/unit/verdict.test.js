@@ -146,7 +146,7 @@ const hasPair = (out, runId, issueId) =>
   writeRun(root, 'a-middle', { runId: 'a-middle', startedAt: iso(60 * 60 * 1000), tasks: [] });
   writeRun(root, 'm-oldest', { runId: 'm-oldest', startedAt: iso(48 * 60 * 60 * 1000), tasks: [] });
   writeRun(root, 'no-date', { runId: 'no-date', tasks: [] });
-  writeRun(root, 'junk-date', { runId: 'junk-date', startedAt: 'the other day', tasks: [] });
+  writeRun(root, 'garbled-date', { runId: 'garbled-date', startedAt: 'the other day', tasks: [] });
   writeRun(root, 'epoch-date', { runId: 'epoch-date', startedAt: NOW, tasks: [] });
   // Same instant, two runs: the tie-break decides, and must decide identically forever.
   const tieAt = iso(30 * 60 * 1000);
@@ -157,7 +157,7 @@ const hasPair = (out, runId, issueId) =>
   check('B1 dated runs come newest-first',
     order.indexOf('z-newest') < order.indexOf('a-middle')
     && order.indexOf('a-middle') < order.indexOf('m-oldest'));
-  const undated = ['no-date', 'junk-date', 'epoch-date'];
+  const undated = ['no-date', 'garbled-date', 'epoch-date'];
   check('B2 absent, unparseable and non-string startedAt all sort after every dated run',
     undated.every((u) => order.indexOf(u) > order.indexOf('m-oldest')));
   check('B3 a tie on startedAt breaks by runId ascending',
