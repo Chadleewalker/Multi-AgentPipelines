@@ -1088,7 +1088,7 @@ All but twelve drive real Docker and share one network, so they must never run c
 (`test-runner-memory.sh`, `test-changelog.sh`, `test-sanitize.sh`,
 `test-agent-hooks.sh`, `test-network-names.sh`, `test-lock.sh`,
 `test-sweep-hygiene.sh`, `test-concurrency.sh`, `test-pause-gate.sh`,
-`test-sweep-assertions.sh`, `test-trace.sh` and `test-verdict.sh` are the exceptions —
+`test-sweep-assertions.sh`, `test-trace.sh`, `test-verdict.sh` and `test-audit-runs.sh` are the exceptions —
 see below; they need neither).
 **`scripts/test-all.sh` is the sweep** — it holds a lock, runs every suite sequentially,
 kills one that hangs (`--timeout`, default 900s), **reclaims what each suite leaked after
@@ -1124,6 +1124,7 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-sweep-assertions.sh` | the sweep's `PASSED` column — both assertion vocabularies, one honest total from a log carrying both, and "could not tell" rendered apart from a zero |
 | `scripts/test-trace.sh` | the traceability ledger (change-log row `trace-ledger`) — checkbox/ref parsing on both line endings, the three report lists, and backfill that recovers the ticking commit through later prose edits and refuses to guess |
 | `scripts/test-verdict.sh` | the review verdict recorder (change-log row `repo-1ie`) — which run a verdict lands in, what counts as PR-bearing, every refusal writing nothing, and the recorder staying self-contained |
+| `scripts/test-audit-runs.sh` | the run-history audit (change-log row `repo-73k`) — the three-bucket corpus taxonomy, `startedAt` joins, the `specConcerns` channel keys, nearest-rank quantiles, and the pure-reader contract checked by content hash |
 
 **`scripts/test-runner-memory.sh` is one of the twelve suites that need no Docker**
 (repo-dhp): it
@@ -1368,7 +1369,24 @@ any repo-shaped root, and spawning nothing is what lets it run where `bd` was ne
 installed; both decay silently the first time someone reaches for a shared helper, and
 neither is visible in any behavioural test.
 
-**The sweep's first full run** was after the five dogfood/queue PRs merged to `main`: all 18
+**`scripts/test-audit-runs.sh` is the thirteenth** (change-log row `repo-73k`): it covers
+`scripts/audit-runs.js`, the run-history audit of §5. It needs node only — every case
+builds a throwaway runs root under the OS temp directory and drives the real CLI against
+it through the `AUDIT_RUNS_DIR` seam, so it reads neither this repo's tree nor the real
+corpus. Three things it holds that nothing else can. The **pure-reader contract**, checked
+by a recursive path-plus-content-hash snapshot of the runs root, the script's own directory
+*and* a dedicated empty working directory — a "helpful" cache most plausibly lands in the
+cwd, which a narrower snapshot would not see. The **channel keys**: one fixture status file
+carries `specConcerns` *and* a decoy `concerns` array of a different length, so the misread
+that made the hand pass report a 43-use channel as never used produces a different number
+and cannot pass. And the **quantile method**: the sample set `[10, 20, 40, 80, 1000]` is
+chosen so p95 is the sole discriminator between nearest-rank (1000, an observed sample) and
+type-7 interpolation (816, a number no run ever produced) — interpolation is what would
+quietly break byte-determinism. It also pins the structural constraints no behaviour can
+see: every `require` target a node built-in, no `child_process`, no `fs` write API, because
+the script is meant to be copied and that property decays silently.
+
+**A full sweep ran** after the five dogfood/queue PRs merged to `main`: all 18
 suites green, including `e2e.sh` (32 assertions, real PR opened and cleaned up). Two were
 red before the fixes above — `test-runner-queue.sh` (hung; defect 6 plus two stale
 fixtures: the pinned reset timestamp, and an assertion on `results.json`, which T17 had

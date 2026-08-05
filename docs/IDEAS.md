@@ -196,13 +196,14 @@ free; discovering it afterwards means unpicking a gate someone reasonably added.
   **Placement is forced, not chosen.** Hard rules 5 and 7 put it entirely outside a run:
   post-hoc, never in the control path, never able to change an outcome. As with the audit
   entry, that weaker position is also what permits it to be an LLM at all.
-  Related: *Audit the pipeline's own history across runs* below (same data, different time
-  axis); the documentation-updater row in Dropped; `DESIGN.md` §3.6, §3.7. 2026-08-03
+  Related: the *Audit the pipeline's own history across runs* row in Promoted (same data,
+  different time axis — promoted 2026-08-04 as change-log row `run-audit`, and its
+  aggregation-not-agent verdict bears on this entry too); the documentation-updater row in
+  Dropped; `DESIGN.md` §3.6, §3.7. 2026-08-03
 
-*Also agent-shaped, left in the flat list rather than moved: **Audit the pipeline's own
-history across runs** (below) is the strongest agent idea currently parked, and the
-**documentation-updater** row in Dropped is the one already declined — read both before
-proposing a new agent.*
+*Also agent-shaped: the **documentation-updater** row in Dropped is the agent idea already
+declined, and the **run-corpus audit** row in Promoted is the one that graduated — as
+deterministic aggregation, not an agent. Read both before proposing a new agent.*
 
 ---
 
@@ -299,44 +300,6 @@ proposing a new agent.*
   which is an argument for whatever shape gets built first defining the read model once.
   Related: `docs/pipeline-diagram.md`, `docs/pipeline-map.html`, `DESIGN.md` §4.7, §4.12, §7.
   2026-08-02
-
-- **Audit the pipeline's own history across runs, not one run at a time** — every run already
-  writes a rich, schema'd record (`runs/<run-id>/run.json` plus per-task `status.json`,
-  `verify.json`, `issue.md`, the agent logs and the docs output), and there are 194 of them on
-  this host. **Nothing has ever read them as a corpus.** Every finding this project has about
-  its own weaknesses — "problems trace to spec quality, never to the executor", the freeze gate
-  blessing a suite that never ran, the criteria that cannot fail, the docs phase colliding on
-  every batch — came from a human reading one or two runs closely and generalising. That is
-  expensive and it only finds what someone happened to look at. Worth having because the data to
-  answer "what does this pipeline get wrong, and how often" is already on disk, already
-  structured, and already carries the quantitative fields (`attempts`, `pauses`,
-  `activeSeconds`, `diffLines`, `outcome`, `model`, the verification evidence) that would make a
-  claim like the 3.6× variance across comparable tasks a measurement instead of an anecdote.
-  Three things it has to get right, all of them constraints this repo already pays for:
-  **Where it may sit.** Hard rules 5 and 7 put it entirely outside a run — post-hoc, offline,
-  over finished runs, never in the control path, never able to change an outcome. That is a
-  weaker position than it sounds: it is also what lets it be an LLM at all.
-  **The corpus is host-only and stays that way.** `runs/` is git-ignored precisely because a
-  manifest names the target repo, its PR URLs and its issue text; the two leaks this repo has
-  had both came in as *evidence* rather than as code. So an audit artifact that gets committed
-  is a new leak surface with a new shape, and only generic findings can be promoted out of it —
-  "the docs phase collides on every batch", never which project it collided on.
-  **The most valuable field is the one the pipeline does not own.** Its own signals said `done`,
-  green, one attempt for shadow-01, and the human rejected it. Nothing records that verdict, so
-  a corpus built only from what the runner writes would be non-empty, well-formed, and blind to
-  the failure class that has mattered most — the artifact rule (§3.6) applied to the audit
-  itself. Whatever this becomes probably needs a cheap way to attach "merged / sent back, and
-  why" to a run after review.
-  **The honest counter-argument**, and the reason this is parked rather than specced: the
-  documentation-updater agent below was dropped because *the mechanism was under-used, not
-  missing*, and the same charge fits here — memory notes, spec concerns, `docs/STATUS.md`'s
-  defect list and the sweep summaries are already five channels for "something went wrong", and
-  defect 11 is the case where the evidence was published, correct, and still cost a session
-  because nobody read it. If the gap is reading rather than collecting, the answer is aggregation
-  and not an agent. Deciding which it is means looking at the 194 runs once by hand first — which
-  is itself the cheapest possible version of this idea.
-  Related: `DESIGN.md` §4.11 (the outcome table), §5 (the review phase), §3.6, §3.7;
-  `docs/STATUS.md` defects 8 and 11. 2026-08-02
 
 - **Make the sweep and a live run mutually exclusive** — on 2026-08-01 a sweep running in
   another terminal `docker rm -f`'d a real run's task container twice, and the run reported it
@@ -520,6 +483,7 @@ shipped thing survives — the same reason the `DESIGN.md` change log keeps its 
 
 | Date | Idea | Became |
 |---|---|---|
+| 2026-08-04 | Audit the pipeline's own history across runs, not one run at a time — the corpus was on disk, structured, and had never been read as one. Parked 2026-08-02 with its own experiment attached: read the runs by hand once, and let that decide aggregation-versus-agent. The hand pass ran 2026-08-04 and aggregation won — every repeated pattern fell out of joining structured fields, none needed judgment | `DESIGN.md` §5 + change-log row `run-audit`: `scripts/audit-runs.js`, deterministic and host-only, joining `run.json`/`status.json`/`verify.json`/`verdict.json`; the LLM reader stays unbuilt, with the reason recorded in §5. Frozen as issue `repo-73k` with tests at `tests/acceptance/repo-73k/`; shipped with `scripts/test-audit-runs.sh` (change-log row `repo-73k`) |
 | 2026-08-04 | Capture the reviewer's verdict on every run — merged / sent back, and why — at the only moment it exists. Extracted from the two agent-shaped entries that both named it the most valuable field the pipeline does not own, and both concluded the shape is a cheap capture step, not a reviewing agent. Parked and promoted the same day | `DESIGN.md` §5 + change-log row `review-verdict`; frozen as issue `repo-1ie` with tests at `tests/acceptance/repo-1ie/` (freeze gate RED against a green control, 2026-08-04), then **shipped** as change-log row `repo-1ie`: `scripts/verdict.js` (`record` + `pending`, self-contained, chooses the run by `startedAt`) and the Docker-free suite `scripts/test-verdict.sh` / `tests/unit/verdict.test.js` |
 | 2026-08-04 | Record spec-to-code traceability at the moment it is created, instead of inferring it later — a ticked box carries the id of the issue that ticked it, so reconciliation is mechanical and nothing ever guesses an edge. The cheapest honest version of a knowledge graph; parked and promoted the same day because it collapses six drift entries into one convention | change-log row `trace-ledger`: the convention, `scripts/trace.js` (report + deterministic backfill via `git log -L`), the Docker-free suite `scripts/test-trace.sh` / `tests/unit/trace.test.js`, and the PLANNING.md step-0 drift read |
 
