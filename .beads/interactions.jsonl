@@ -45,3 +45,5 @@
 {"id":"int-23fd156cc7c0bd879af161466142edc0","kind":"field_change","created_at":"2026-08-04T20:52:21.5351108Z","actor":"Chad Walker","issue_id":"repo-1ie","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
 {"id":"int-bdc6dc7e22eb36d3e3f84d0055b39ac5","kind":"field_change","created_at":"2026-08-05T01:35:53.903503Z","actor":"Chad Walker","issue_id":"repo-73k","extra":{"field":"status","new_value":"blocked","old_value":"open"}}
 {"id":"int-75063a3ed147a8b5d2970870b9cdb447","kind":"field_change","created_at":"2026-08-05T01:42:40.03008Z","actor":"Chad Walker","issue_id":"repo-73k","extra":{"field":"status","new_value":"open","old_value":"blocked"}}
+{"id":"int-0cbf7b927658a28109fc9f2a61965f81","kind":"field_change","created_at":"2026-08-05T01:46:49.7938363Z","actor":"Chad Walker","issue_id":"repo-73k","extra":{"field":"status","new_value":"in_progress","old_value":"open"}}
+{"id":"int-7dd66644c19b1d3fe90be92344f15b9b","kind":"field_change","created_at":"2026-08-05T02:04:41.6716375Z","actor":"Chad Walker","issue_id":"repo-73k","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}

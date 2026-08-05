@@ -207,6 +207,21 @@ deterministic aggregation, not an agent. Read both before proposing a new agent.
 
 ---
 
+- **Stop batch siblings failing each other's frozen suites — a `partial` that means
+  "planned together", not "regressed"** — when a batch of tasks is frozen in one planning
+  session, every task branch forks from an integration branch that already carries all the
+  siblings' frozen acceptance tests but none of their implementations, so each task's
+  regression pass fails on `tests/acceptance/<sibling>/` and the task lands `partial` with
+  a flagged PR. The audit's first corpus read (change-log row `run-audit`) showed this is
+  not an edge case: nine of the corpus's eleven partials are this shape, including one
+  batch of three tasks all blaming each other, tagged same-run by the partial forensics
+  section. Worth having because a structural partial buries the genuine ones — a reviewer
+  who learns "partial usually means batch noise" stops reading the one flag that exists to
+  say a real regression slipped through, and §4.11's scrutiny ordering puts these above
+  every clean done. The design question to answer (not here): whether the regression pass
+  may treat a sibling suite whose issue is open in the same run as expected-red, and how
+  to say that without weakening hard rule 2. 2026-08-05
+
 - **Declare a `regressionCommand` for this repo, so frozen-suite blast radius stops being
   held by grep** — three tasks running (`repo-teq`, `repo-i9y`) have now navigated the same
   hazard: frozen acceptance directories assert literal strings against `run.js` source,
