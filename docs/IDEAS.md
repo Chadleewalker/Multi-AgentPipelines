@@ -207,6 +207,18 @@ deterministic aggregation, not an agent. Read both before proposing a new agent.
 
 ---
 
+- **Have `verdict.js pending` skip e2e-fixture runs, so the list can actually reach
+  zero** — the first full read of the pending list (2026-08-06) found 112 rows, of which
+  20 were PRs the e2e suite opens against its own fixture repo: test artifacts nobody
+  reviews, so no verdict is ever an honest answer for them. Recording one anyway is fake
+  data; leaving them means the list never empties, and a list that cannot reach zero
+  trains the reader to skim past it — the same discount-the-signal disease as a sweep
+  that goes red for environmental reasons. The runs are already distinguishable
+  mechanically (their run ids carry the `e2e-` prefix the harness assigns), so the shape
+  is a filter in `pending`, not a schema change — though the honest question to settle is
+  whether the exclusion belongs in the recorder or upstream, in whether e2e runs should
+  land in the corpus at all. Related: `DESIGN.md` §5; change-log row `repo-1ie`. 2026-08-06
+
 - **Find out why the container path degrades over a long sweep, before the sweep stops
   being believed** — two full sweeps on 2026-08-05 went red six times each, and every one
   was environmental: five of the six re-ran green in 12–101s on an idle Docker minutes
