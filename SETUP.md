@@ -19,41 +19,84 @@ Budget half a day for the first pass, most of it waiting on downloads and test s
 
 ---
 
-## Part A — Install the tools (once per machine)
+## What you're signing up for
+
+The pipeline works through a queue of development tasks unattended — each task inside a
+locked-down container — and hands back pull requests for you to review. Your involvement
+is exactly two moments:
+
+- **Before a run** — a planning session with Claude Code (an AI assistant that runs in your
+  terminal) where you and it agree what "done" means for each task. That definition is
+  frozen before anything runs.
+- **After a run** — reviewing the pull requests it produced, like any other code review.
+
+Nothing in between is interactive, and nothing that runs unattended can change what "done"
+means. **You approve the *what*; the machinery owns the *how*.**
+
+Setting a project up in the first place (Part D) is interactive too — a few one-time
+sessions where Claude Code drives and you decide. After that, every feature is just the two
+moments above.
+
+---
+
+## Part A — Accounts and tools (once per machine)
 
 Everything below was built and proven on **Windows 11 with Docker Desktop**. Nothing in
 the design requires Windows, but nothing else has been tried — if you are on a Mac or
 Linux, expect to be the first, and say so before you start so someone can watch.
 
-### A1. Docker Desktop
+### A1. Accounts — sort these before touching the PC
 
-Install it and **leave it running**. This is what actually isolates each task: every task
+- **A Claude account with a Pro or Max subscription** ([claude.ai](https://claude.ai)). The
+  pipeline authenticates with a personal subscription token. See A7 for why it is one per
+  person and never shared.
+- **A GitHub account with write access to the repositories you'll point it at.** Results
+  come back as pull requests; no repo access means no way to receive work.
+
+### A2. Docker Desktop
+
+[docker.com](https://www.docker.com/products/docker-desktop) — install it and **leave it
+running**. This is what actually isolates each task: every task
 gets its own container — a throwaway sealed box holding a fresh copy of the code — that
 can reach three Anthropic addresses and nothing else on the internet.
 
 The runner checks Docker is up before it does anything and stops immediately if it isn't.
 
-### A2. Git, and specifically Git Bash
+Docker Desktop may install its own WSL plumbing during setup. That is fine and expected —
+the rule in A3 is about which *terminal you type in*, not what Docker uses internally.
 
-Install Git for Windows. It comes with **Git Bash**, a Unix-style terminal.
+### A3. Git, and specifically Git Bash
+
+Install Git for Windows ([git-scm.com](https://git-scm.com)), accepting the defaults. It
+comes with **Git Bash**, a Unix-style terminal.
 
 **Every command in this project's docs is run from Git Bash, never from WSL.** WSL is
 Windows' built-in Linux; on the reference machine its Linux distro has no connection to
 Docker Desktop, so Docker commands from there fail in confusing ways. Use Git Bash.
 PowerShell is fine for git, but not for anything that runs a `.sh` script.
 
-### A3. Node.js
+Then tell git who you are — this name lands on every commit the pipeline makes on your
+behalf:
 
-Install a current LTS release. Node is the language the host-side runner is written in —
+```bash
+git config --global user.name "Your Name"
+git config --global user.email "you@example.com"
+```
+
+### A4. Node.js
+
+Install a current LTS release ([nodejs.org](https://nodejs.org)). Node is the language the host-side runner is written in —
 plain JavaScript with zero third-party packages, so there is nothing to `npm install`.
 
 (The container's Node is pinned separately at 22.23.1 inside the image. Your host version
 does not have to match it.)
 
-### A4. The GitHub CLI (`gh`), authenticated
+### A5. The GitHub CLI (`gh`), authenticated
+
+Install it ([cli.github.com](https://cli.github.com)), then in Git Bash:
 
 ```bash
-gh auth login
+gh auth login          # GitHub.com → HTTPS → login with a browser
 ```
 
 The pipeline hands work back as **pull requests**, and `gh` is what opens them. Log in as
@@ -62,7 +105,7 @@ review the result.
 
 You also need push access to whatever repositories you will point the pipeline at.
 
-### A5. Beads (`bd`) — the task queue
+### A6. Beads (`bd`) — the task queue
 
 ```bash
 npm install -g @beads/bd@1.1.0
@@ -75,9 +118,21 @@ database inside the repo rather than on a website.
 them keeps host and container behaviour identical. A newer `bd` has broken host scripts
 before by changing its output format by one blank line.
 
-### A6. The Claude Code CLI and your own token
+**Do not skip this on the grounds that the runner can fall back to the copy inside the
+container image.** It can, and that fallback is the worst kind of working: it starts one
+container per `bd` call, deadlocks against suites that drive their own containers, and gets
+killed at the 900-second timeout — while erroring nowhere, because the fallback is
+fail-safe (`runner/bd.js` documents the episode). Step B4 also needs host `bd` to fetch the
+issue database at all.
 
-Install the Claude Code CLI, then:
+### A7. The Claude Code CLI and your own token
+
+```bash
+npm install -g @anthropic-ai/claude-code
+```
+
+Run `claude` once in any folder and sign in with the account from A1. This is the agent you
+do planning sessions with. Then:
 
 ```bash
 claude setup-token
@@ -104,7 +159,7 @@ cd Multi-AgentPipelines
 ### B2. Put your token where the runner looks
 
 ```bash
-echo 'CLAUDE_CODE_OAUTH_TOKEN=<paste the token from A6>' > .env.pipeline
+echo 'CLAUDE_CODE_OAUTH_TOKEN=<paste the token from A7>' > .env.pipeline
 ```
 
 `.env.pipeline` is **git-ignored** — it never gets committed and it must stay that way. The
@@ -189,16 +244,23 @@ bash scripts/test-lock.sh
 These read files and run plain Node. If they fail, something is wrong with the clone
 itself, not with your Docker setup.
 
-### C2. The full sweep (slow — allow an hour or two)
+### C2. The full sweep (about ten minutes when healthy)
 
 ```bash
-bash scripts/test-all.sh
+bash scripts/test-all.sh --skip e2e --timeout 300
 ```
 
 This runs every suite in the repo, one at a time, and prints a summary table. It writes
 per-suite logs under `runs/sweeps/<timestamp>/`.
 
-Three things to know about it:
+**A healthy sweep is all green in roughly eight to twelve minutes** — the reference host's
+2026-08-03 sweep ran 32 suites green in 8:09. A sweep that takes an hour is not doing more
+work; it is suites *hanging* and being killed at the per-suite cap. Hence the two flags:
+`--timeout 300` turns a hang into a five-minute loss instead of fifteen (the slowest healthy
+suite on record is 1:32), and `--skip e2e` leaves out the one suite needing the fixture repo
+from C3. Drop both flags once you have a fixture and a baseline you trust.
+
+Four things to know about it:
 
 - **Never run it at the same time as anything else that uses Docker for this project.** It
   cleans up after each suite, and a live run's container looks exactly like something it
@@ -208,6 +270,10 @@ Three things to know about it:
   suites don't call any model, but the runner refuses to start without a token, so a
   missing token makes them fail with realistic-looking but meaningless errors. The tell is
   that they report very few assertions rather than many failures.
+- **`TIMEOUT` and `FAIL` are different facts.** A timed-out suite hung; it did not judge the
+  thing it tests. And before concluding anything is *your* machine, compare against the
+  latest sweep on a machine known to be working — a suite that is red there too is not
+  yours.
 
 ### C3. The end-to-end pass — optional, and only if you'll develop the pipeline itself
 
@@ -231,7 +297,13 @@ at once.
 
 ### D1. Onboard the project
 
-Follow `ONBOARDING.md` end to end, from inside the project you want worked on. It covers
+**You don't work through this checklist by hand.** Start `claude` from inside the project
+and tell it to follow the pipeline repo's `ONBOARDING.md` (or run the `pipeline-onboard`
+command if you have the harness plugin). Claude Code drives; you make the decisions. The
+same is true of scaffolding a brand-new project — start `claude` in an empty folder and
+describe what you want built.
+
+`ONBOARDING.md` covers
 the GitHub remote, the frozen-test folder, the project's config file and image, its issue
 database, and the rewrite of its instructions file so agents know they are running in a
 sealed container.
@@ -290,7 +362,18 @@ automatically by the next one — never delete it by hand.
 
 ## Part E — The rhythm from here on
 
-Plan → run → review in the morning → merge or send back.
+**Before your first planning session**, in this order — no installs, and worth the hour:
+
+- Open [`docs/pipeline-map.html`](docs/pipeline-map.html) in a browser. The whole system on
+  one page, written for a reader rather than a maintainer. Start here.
+- Read `CLAUDE.md` (the rules), `PLANNING.md` (how a planning session goes), and
+  `ONBOARDING.md`'s "Starting from nothing" section. In `DESIGN.md`, §4.11 (what outcomes a
+  run can have) and §3.1 (how a task gets specified and frozen) carry the most weight per
+  line — skip the rest until you need it.
+- Sit in on one planning session and one onboarding run by someone who has done them
+  before, then do your own.
+
+Then the loop: plan → run → review in the morning → merge or send back.
 
 1. **Plan** (with you, interactive): follow `PLANNING.md`. You approve a plain-English
    "Done means" list; the tests get written *before any code exists* and then frozen.
