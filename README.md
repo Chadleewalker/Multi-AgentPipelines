@@ -37,6 +37,8 @@ deterministic script running tests that were frozen before the code was written.
 ## Quick start
 
 Requires Docker Desktop running, Git Bash (not WSL), Node, and `gh` authenticated.
+Setting up a machine that has never seen this before — tool by tool, with the checks that
+prove each step worked — is [`SETUP.md`](SETUP.md).
 
 ```bash
 # 1. put your Claude subscription token where the runner can find it
@@ -68,6 +70,8 @@ on the shared base image, and `bd init` — [`PLANNING.md`](PLANNING.md) walks t
 | Path | What's in it |
 |---|---|
 | `DESIGN.md` | the authoritative design — decisions, contracts, change log |
+| `SETUP.md` | once per person: getting a new machine running the pipeline |
+| `ONBOARDING.md` | once per project: making a repo a valid pipeline target |
 | `PLANNING.md` | how a spec and its frozen tests get written and approved |
 | `docs/STATUS.md` | current state, gotchas, what's next |
 | `advisors/` | the specialist registry — one charter per critic/advisor lens |
