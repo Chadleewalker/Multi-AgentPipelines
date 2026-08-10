@@ -81,6 +81,17 @@ Two hard boundaries, both inherited:
 
 <!-- Newest at the top. Nothing here is committed to. -->
 
+- **Give the freeze-gate control fixture a dependency-exercising test** — the control
+  exists to distinguish "tests discriminate" from "harness broken", but a control that
+  never touches the target's heavy dependency (a game engine binary resolved through an
+  env var, in the session that hit this) stays green while every real test goes red for
+  the harness reason — a vacuous RED the gate then certifies as discriminating. Caught
+  only because the per-test failure lines were eyeballed; the honest state was exit 2,
+  not exit 0. The fix shape: the control should invoke the same runner path the real
+  tests do (one trivial engine-invoking test beside the trivially-passing one), so a
+  missing dependency turns the control red and the gate says "could not tell".
+  Related: PLANNING.md step 4 (§3.2, move 1). 2026-08-09
+
 ### Agent ideas
 
 The one heading this file allows itself, and here is the justification the grouping rule
