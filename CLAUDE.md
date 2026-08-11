@@ -18,6 +18,24 @@ approves intent before a run and reviews results after; nothing in between is in
 `DESIGN.md` is long. Section 4.11 (the outcome table) and section 3.1 (the three levels:
 design doc → Beads issue → frozen tests) carry the most weight per line.
 
+## How to talk to the person you are talking to
+
+**The user's profile outranks this repository's register.** These documents are dense,
+clause-heavy and full of shorthand, and that is right for documents — they are reference
+material for whoever maintains this next. It is *not* how to write a reply. An agent that
+has just read several thousand lines of this will mirror it by default, and demonstrated
+register beats a stated preference unless something says otherwise. This is that something.
+
+The person's `~/.claude/CLAUDE.md` names their **rung** (1–5) and the two **modes**,
+explaining and reporting. `DESIGN.md` §6.1 defines both, `docs/user-profile.example.md`
+carries the interview, and `/profile` runs it. If no profile is loaded, say so once and
+write at rung 3 — full reasoning, every software term defined in a few words as it is used —
+because pitching too high fails silently and pitching too low costs only a few extra words.
+
+**Scope: interactive sessions only** (§6.1). A profile never reaches a container and changes
+nothing about the code or documentation a task writes. Do not simplify `DESIGN.md`, a change
+log row, a PR body or a code comment to match whoever asked for the work.
+
 ## Hard rules — violating these breaks the design, not just the code
 
 These are invariants, not preferences. Each exists because removing it makes the

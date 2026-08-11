@@ -967,6 +967,98 @@ already argued for. What remains unbuilt is that page.
   dependencies — see 3.4 for the drift cross-check). Versions of the base OS, Node, and
   the CLI are pinned in the base Dockerfile.
 
+### 6.1 The user profile (how an agent addresses the person)
+
+A per-person, per-machine host input, decided here beside the token and `bd` because it is
+the same kind of thing: something each person supplies on their own machine, that no clone
+carries and no repo file can substitute for. `docs/user-profile.example.md` is the template;
+the live copy belongs at `~/.claude/CLAUDE.md`, which loads into every interactive session
+on that machine with nothing to configure. A copy kept in a repo is git-ignored, because a
+profile describes a *person* and this repo documents the machinery, never the people or the
+work done with it — the same boundary that keeps `runs/` out.
+
+**Scope, stated first because it is narrow.** The profile governs **interactive sessions
+only** — planning (3.2), review (5), and the conversation around them. It never reaches a
+container: it is not exported beside `.run/memory.md`, no new mount or credential exists for
+it, and 4.8's enumerated egress and hard rule 6 are untouched. It also changes nothing about
+the prose a docs phase writes into a target repo, or the wording of a PR body. The reason is
+ownership rather than caution — code and documentation are read by whoever maintains them
+next, so their register belongs to the repo; only the conversation belongs to the person
+having it.
+
+**Two axes, not one.** A single "how technical is this reader" scale is the obvious design
+and it mis-slots the exact reader this pipeline was built for. *Systems fluency* — reasoning
+about failure modes, invariants and trade-offs — and *software vocabulary* — whether
+`merge-base`, bind mount or CRLF mean anything — vary independently. A specifier who directs
+work they do not personally execute is high on the first and low on the second, and a
+one-dimensional ladder places them next to a reader who cannot follow the reasoning at all.
+The profile therefore fixes the vocabulary and leaves the reasoning intact: **simplify the
+words, never the argument.** Dropping a caveat to shorten an answer is a failure of the
+profile, not a success of it.
+
+**Five rungs.** The person picks one; it is the only level the profile sets. The rungs *are*
+the sensible pairings of the two axes, so nobody sets two numbers.
+
+| # | Reader | Systems | Vocabulary | What changes |
+|---|---|---|---|---|
+| 1 | Senior programmer | high | high | Paths, section refs and jargon as shorthand; the mechanism is assumed |
+| 2 | Entry-level programmer | medium | medium | Code and git basics assumed; deeper mechanics named and explained |
+| 3 | Engineer or specifier, not a programmer | high | low | Full reasoning, each software term defined in a few words as it is used; no analogies needed |
+| 4 | Non-technical professional | medium | none | Analogies carry the mechanism; reasoning intact, no jargon |
+| 5 | Outsider | low | none | The point and why it matters; mechanism dropped |
+
+**Two modes, the same for everyone.** *Explaining* and *reporting* differ in structure, not
+in register, so they are house rules rather than profile settings: explaining leads with the
+answer and follows with the mechanism; reporting leads with what it means for the reader,
+states risk, names cost, and reaches mechanism only if a decision turns on it. A rung-1
+reader gets the same reporting *shape* as a rung-4 one, in different words. The first draft
+of this table had six rows, splitting "engineer, not a programmer" from "technical manager /
+PM"; running the interview on the reference host showed they are one rung in two modes, not
+two rungs, and the row was merged.
+
+**How a person arrives at a rung.** Not by self-assessment, which fails in both directions
+and fails *silently* upward: a reader pitched too high does not notice a missed point, they
+feel vaguely lost, which is the state this section exists to end. `/profile` therefore
+interviews rather than asks, in three steps whose order is deliberate — a vocabulary check
+(lines of marker terms, answered as *which can you explain to someone else*, never as where
+you stopped, because reporting a deficit biases the instrument upward), two reasoning
+questions carrying no software vocabulary at all (which is what separates "doesn't know the
+words" from "can't follow the argument", the distinction the single-axis ladder destroys),
+and last a read-and-pick pass over worked samples, which outranks the other two because it
+is the product rather than a proxy for it. Three constraints on the instrument, each found
+by running it on a live subject rather than by review: a marker question asks what a person
+*can* do, a reasoning question poses a situation and asks for a judgement rather than
+stating a claim and asking whether it was obvious, and **a worked sample defines every term
+it uses** — a sample drawn from this pipeline measures familiarity with the pipeline, and a
+reader who cannot tell whether they are lost on the writing or on the subject will blame
+themselves. The rung is a default, not a contract: any person may override it for one answer
+mid-session, and a repeated override in one direction is the signal to edit the profile
+rather than keep overriding.
+
+**Fixed for everyone; a profile may not switch these off.** Say explicitly whether anything
+is at risk, *including when nothing is*. Lead with the answer. Ask for one decision at a
+time. These are safety properties of the review gate (3.3, 5), not taste: the risk line is
+what decides whether a human looks harder at a PR, and a profile trimmed for brevity would
+remove it first. **Free per person:** the rung, how much mechanism is wanted, whether
+analogies help, tolerance for length.
+
+**The profile outranks the repo's own register**, stated because the default resolution goes
+the other way. An agent reads this document and `CLAUDE.md` — thousands of lines of dense,
+clause-heavy prose — and then writes a reply; demonstrated register beats a stated
+preference unless something says otherwise. Nothing did, which is why a correctly-written
+profile could sit loaded in every session and change nothing observable. `CLAUDE.md` now
+states the precedence, and the template states its preferences as checkable rules rather
+than adjectives: "plain language" gives an agent no way to tell whether it complied, and an
+instruction that cannot be self-checked loses to one that can be copied.
+
+**What can be checked and what cannot.** That a profile exists, that it is not an unfilled
+copy of the template, and that it names a rung are all mechanical, and belong in a
+Docker-free host check that reads the person's own home directory and nothing else. That an
+answer actually landed at the right rung is not checkable by anything, which places this
+work on the same footing as the dashboard's page (change-log row `live-dashboard-page`): a
+frozen test can pin that a page is self-contained but not that it is legible, so the writing
+half is interactive work and the presence half is the only part a pipeline task can own.
+
 ## 7. Phasing
 
 **V1 — the implementation loop** (this project's first autonomous run):
@@ -1194,3 +1286,4 @@ version (`Status: READY v1.0`). The *document* still has a version; its *rows* n
 | 2026-08-11 | repo-kfg | the **live dashboard's reader ships**, the first implementing half of change-log row `live-dashboard`. `scripts/dashboard.js` binds `127.0.0.1` only and serves two routes — `GET /state`, the frozen JSON contract (`schema: 1`), and `GET /`, a deliberately minimal placeholder page; anything else is 404 with the exact body `not found\n`, because a reader with a static-file route is a file server. `DASHBOARD_RUNS_DIR` re-aims the root (blank means unset) and `DASHBOARD_PORT` sets the port (default 4770, `0` ephemeral, the chosen port announced as exactly one stdout line); a taken port exits 1 with one named stderr line and no stack trace. The contract is assembled per request from files the pipeline already writes: `runs/locks/*.lock`, each run's `run.log` and `run.json`, the live workspaces' `.run/status.json` found through the runner's unconditional `workspace ready:` line, and the collected `runs/<runId>/tasks/<id>/status.json`. Every derivation with two plausible readings is pinned: a run directory is a direct child holding `run.log` or `run.json` (never `locks` or `sweeps`, never a recency cutoff — a cap would hide a live project); a project is its canonical target path when any lock or `target:` line supplies one, else the manifest's remote, else `unknown:<runDirName>` one per orphan; the run shown is **the lock's `runId` whenever the holder is live**, else newest by `startedAt` with an undated run sorting oldest and ties broken by `runId`; the manifest's `concurrency` is never defaulted; `attemptsMax` is the constant 3. Malformed artifacts render as named terms in a closed `degraded` vocabulary at their own level — project, run or task — never as a 500 and never as a dropped project. It writes nothing anywhere, spawns nothing, requires only node built-ins, and re-reads the tree per request, so the only field that varies between two polls of an unchanged tree is `now`. **The page is not in this row**: the visible view is interactive work against this contract. Docker-free suite `scripts/test-dashboard.sh` / `tests/unit/dashboard.test.js` (the fourteenth) | the declaring row settled *what* to watch; what it could not settle in advance is which run a project is showing, and the cheap answer is wrong exactly when the tool matters. "Newest directory wins" hides the live run the moment a later run starts, so the join goes through the held lock's `runId` — and the frozen fixture makes the newest directory a decoy so an implementation that skipped the lock cannot pass. Two more readings had already cost something elsewhere and are pinned against their own falsifiers: `verdict.js` skips a directory with no `run.json`, which here would hide **every** run in flight, so a manifest-less run is `no-manifest` rather than absent; and the lock's liveness rule is re-implemented inline rather than required from `runner/lock.js`, because the file has to work as a copy from any repo-shaped root — a structural check on its requires is the only thing that can see that property decay. The degraded vocabulary is closed and each term has one home for the same reason the outcome table is closed: a watcher reading it at 2 AM needs the missing thing named, not an empty panel and not a stack trace |
 | 2026-08-11 | live-dashboard-page | the **live view ships**, closing change-log row `live-dashboard`: `GET /` now serves the real page instead of the placeholder, and the feature is complete. Still one inline template string in `scripts/dashboard.js` and still scheme-level self-contained - the frozen suite pins the properties (200 text/html, no `://`, no src attribute, no `@import`, every href an in-document anchor) rather than the bytes, which is exactly the room an unfrozen look needs. It renders what the brief asked for: a run header, the admit-claim-container-collect-finish queue with each in-flight task at its node, the code-verify-docs strip per running task with the current phase lit, elapsed from the server's own `now`, the storage row, and the queued strip. Three view decisions were taken here rather than in the contract. **Idle projects collapse to one line** (native `details`/`summary`), because the corpus holds one project per historical fixture target and 28 full cards bury the run someone opened the page to watch - the fixtures are not special-cased, the ranking is. **Degraded terms alarm only where a watcher can act**: `no-manifest` on a running run and `workspace-missing` on a finished one are the ordinary states of a run in flight and of the archive, so they render muted; red is reserved for what is actually wrong. And **the live attempt number is computed page-side as `attempt + 1` while a task is in flight**, capped at 3 | building the page found two defects nothing else could. The contract's `attempt` is `attempts.length`, and that array gains an entry only when the verifier has JUDGED one, so a task working its first attempt reports 0: the page would have read "attempt 0/3" for most of a task's life. The implementation matches its frozen test exactly, so this is a spec defect and the re-freeze is parked in `docs/IDEAS.md`; the page compensates in the meantime rather than shipping a number that is visibly wrong. The second was invisible until the page was looked at: the poll rebuilds the whole list every two seconds, which threw away the open/closed state of every panel, so an expanded project snapped shut within two seconds of being opened. Open panels are now keyed by project key across repaints, and an unchanged tree with no live project is not repainted at all. Both are the reason this was an interactive session and not a pipeline task (DESIGN.md 3.1): a frozen test can pin that a page is self-contained, but not that it is legible |
 | 2026-08-11 | verify-nobuffer | **a killed acceptance run is an error, never a failure** (§4.4). Both `spawnSync` calls in `pipeline/verify.js` now pass an explicit `maxBuffer` of 64 MiB, and the verdict rule moves into `pipeline/verify-classify.js` — a pure `classify(spawnSyncResult)` the verifier is the only caller of, on the `sweep-reclaim.js` precedent that the decision lives in one file and the caller renders it. The rule: exit 0 is `pass`, any *numeric* nonzero exit is `fail`, and `status === null` — the shape `spawnSync` reports when it killed the child rather than letting it exit, whether from the output cap (ENOBUFS), the timeout (ETIMEDOUT) or a signal — is `error`, carrying a `why` that names which limit was hit. Acceptance `error` writes exit 4, the code the entrypoint already routes to its internal-error path rather than to the retry loop, because retrying spends the attempt cap on a harness fault and lands on `stuck` with a truncated tail as its only evidence. The regression run gets the same classification and a fourth enum value in `schemas/verify.schema.json`: `fail` there would downgrade a passing task to `partial` (§4.11) on a harness fault, and `absent` — "no `regressionCommand` configured" — would hide it instead, so it gets its own word. New Docker-free suite `scripts/test-verify-buffer.sh` over `tests/unit/verify-buffer.test.js`, the fifteenth. Note the direction the change can move an outcome: a real nonzero exit is still `fail`, so nothing here can turn a failing suite into a passing one — hard rule 2 is not weakened, it is restored, because a gate whose verdict depends on how much the suite printed was not judging the code | Found by a coding agent on a real target task and raised through the concern channel (§3.3) — the one component an agent may not touch, reported by the agent it had just wronged. Node's `spawnSync` default cap is 1 MiB; past it the child is killed and `status` comes back `null`, and the pre-existing `acc.status === 0 ? 'pass' : 'fail'` recorded that as an acceptance **failure**. that task's first attempt emitted 1,058,241 bytes with every one of its suites green, burned an attempt on correct work, and the agent reproduced it byte-for-byte against the recorded tail before filing. This is the "plausible and wrong" family (§3.6; `docs/STATUS.md` defects 2, 5, 7, 8) at its worst site: the verifier's authority rests on its verdict being about the code, and `acceptanceOutput` keeps only the last 4 KB of a *truncated* capture, so the artifact a human reads is a log stopping mid-sentence with no `FAIL:` line and nothing naming a cause — the unactionable overnight failure §3.5 exists to prevent, arriving through the gate rather than through an LLM judge. It also scales with the target's chattiness rather than with any fault: a suite that prints a resource error per asset per boot can cross the ceiling on a task touching none of it, burn every attempt, and report `stuck`. And it had already begun deforming target code — that agent memoized an unrelated resource-loading loop in the target's own source to get back under the ceiling, a sound change made for a harness reason, which is how a defect like this buys its own invisibility. The suite's discriminating pair is two fixtures differing only in exit code while both printing 1.2 MiB: the passing one must read `pass` (the old code said `fail`), and the failing one must still read `fail`, which is the check that a careless fix for this defect would break |
+| 2026-08-11 | user-profile | §6 gains **6.1, the user profile**: the per-person, per-machine statement of how an agent should address the person, declared as a host input beside the token and `bd` because it is the same kind of thing — supplied on each person's own machine, carried by no clone, substitutable by no repo file. The template is `docs/user-profile.example.md`, the live copy belongs at `~/.claude/CLAUDE.md` (loaded into every interactive session with nothing to configure), and any copy kept in a repo is git-ignored, on the boundary that keeps `runs/` out. **Scope is interactive sessions only** — planning, review and the conversation around them: it is never exported beside `.run/memory.md`, adds no mount and no credential (4.8 and hard rule 6 untouched), and changes nothing about docs-phase prose or PR-body wording, because code and documentation are read by whoever maintains them next and their register belongs to the repo. The model is **two axes rather than one** — systems fluency and software vocabulary vary independently — expressed as **five rungs**, of which a person sets exactly one, and **two modes** (explaining, reporting) that differ in structure and are therefore house rules rather than profile settings. A person reaches a rung by **interview, never by self-assessment**: the repo-local `/profile` command (`.claude/commands/profile.md`, which arrives with a clone and needs no plugin) runs the three-step instrument the rewritten `docs/user-profile.example.md` scripts — marker terms answered as *which can you explain*, two reasoning questions carrying no software vocabulary, then a read-and-pick pass over worked samples — and writes the person's `~/.claude/CLAUDE.md`. `SETUP.md` Part A gains the step, so a new person makes a profile by working the checklist rather than by being told. Three properties are fixed for everyone and a profile may not switch them off: state whether anything is at risk *including when nothing is*, lead with the answer, ask one decision at a time. Free per person: the rung, mechanism depth, analogies, length tolerance. `CLAUDE.md` states the precedence — a person's profile outranks this repo's own register. The presence half (a profile exists, is not an unfilled template, names a rung) is mechanical and is the only part a pipeline task can own; the writing half is interactive, on the change-log row `live-dashboard-page` precedent | the template shipped and **nothing ever pointed at it** — no section in this document, therefore no `SETUP.md` step, therefore a second person working the once-per-person checklist end to end never learns a profile exists at all. The reference host's own filled profile exposed the second and larger failure: it was loaded into every session and changed nothing observable. It stated its preferences as adjectives — "plain language", "short and to the point" — which give an agent no way to tell whether it complied, while thousands of lines of `DESIGN.md` and `CLAUDE.md` demonstrated the opposite register by example and nothing anywhere said which one wins. Demonstrated register beats a stated preference by default, so the profile lost silently and for months, which is the invisible-absence failure the template itself warns about for `@import` arriving on a second axis. The two-axis model is the same finding's other half: a single "how technical" ladder seats a reader fluent in systems and not in software vocabulary beside one who follows neither — precisely the reader this pipeline exists for — and the answers it produces drop caveats to get shorter, failing the profile in the course of obeying it |

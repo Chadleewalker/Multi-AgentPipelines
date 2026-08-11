@@ -145,6 +145,35 @@ shareable and should not be. Every task the pipeline runs spends *your* usage al
 when you hit your limit, the run parks itself, waits for your window to reopen, and
 carries on. Two people cannot run off one subscription without starving each other.
 
+### A8. Your user profile — do this before your first planning session
+
+Once you have cloned this repo (Part B), start `claude` in it and run:
+
+```
+/profile
+```
+
+It asks you a handful of questions and writes `~/.claude/CLAUDE.md`, which loads into every
+session on this machine. That file tells an agent how to pitch what it writes *to you* — how
+much software vocabulary to assume, whether to lead with the answer or with what it costs
+you, when to stop and ask.
+
+**Skip it and nothing breaks loudly**, which is the problem. You get months of explanations
+pitched at the wrong level and no error anywhere. It is a five-minute step and it is the
+only one on this list that has no test to catch its absence.
+
+Two things worth knowing before you run it:
+
+- **It interviews you rather than asking you to rate yourself.** Self-rating fails in both
+  directions, and it fails silently upward — someone pitched too high does not notice a
+  missed point, they just feel vaguely lost.
+- **This is per *person*, not per project.** Onboarding (Part D) writes a `CLAUDE.md` into
+  each project you point the pipeline at, describing that code. Your profile is a different
+  file describing *you*, and you have exactly one across every project.
+
+`docs/user-profile.example.md` is what the command follows, and the reference if you would
+rather write yours by hand. `DESIGN.md` §6.1 is the decision behind it.
+
 ---
 
 ## Part B — Get the pipeline itself working (once per clone)
@@ -364,6 +393,8 @@ automatically by the next one — never delete it by hand.
 
 **Before your first planning session**, in this order — no installs, and worth the hour:
 
+- Run `/profile` if you have not (A8). Do it first, so everything you read about below gets
+  explained to you at the right level from the start.
 - Open [`docs/pipeline-map.html`](docs/pipeline-map.html) in a browser. The whole system on
   one page, written for a reader rather than a maintainer. Start here.
 - Read `CLAUDE.md` (the rules), `PLANNING.md` (how a planning session goes), and
