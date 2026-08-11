@@ -77,6 +77,11 @@ node runner/run.js --config run.config.<project>.json
 node scripts/verdict.js record <issue-id> <merged|rejected> "<why>"  # [--run <runId>] to override recency
 node scripts/verdict.js pending    # PR-bearing tasks with no verdict yet, newest run first
 
+# watching a run happen: a localhost-only pure reader over runs/ (§5, change-log row `repo-kfg`).
+# GET /state is the frozen JSON contract, re-read per request; GET / is a placeholder page
+# until the view ships. DASHBOARD_RUNS_DIR re-aims the root, DASHBOARD_PORT the port (0 = ephemeral).
+node scripts/dashboard.js          # prints one line: dashboard: http://127.0.0.1:4770/
+
 # the full sweep — every suite, one at a time, with a summary table
 bash scripts/test-all.sh
 
@@ -87,7 +92,7 @@ bash scripts/e2e.sh            # add --keep to leave branches and PRs up for ins
 bash scripts/test-verifier.sh
 bash scripts/test-runner-container.sh
 
-# the thirteen suites that need no Docker — seconds, safe to run anywhere, even in a container
+# the fourteen suites that need no Docker — seconds, safe to run anywhere, even in a container
 bash scripts/test-runner-memory.sh
 bash scripts/test-changelog.sh     # DESIGN.md §12 row identity (CHANGELOG_FILE re-aims it)
 bash scripts/test-sanitize.sh      # publication hygiene (SANITIZE_FIXTURE_DIR re-aims it)
@@ -101,6 +106,7 @@ bash scripts/test-sweep-assertions.sh # the sweep's PASSED column — both vocab
 bash scripts/test-trace.sh         # the traceability ledger — spec-to-code refs, report and backfill (change-log row `trace-ledger`)
 bash scripts/test-verdict.sh       # the review verdict recorder — which run a verdict lands in, and what refuses (change-log row `repo-1ie`)
 bash scripts/test-audit-runs.sh    # the run-history audit — buckets, joins, channels, quantiles, and that it writes nothing (change-log row `repo-73k`)
+bash scripts/test-dashboard.sh     # the live dashboard's /state joins, its degraded vocabulary, and that it writes nothing (change-log row `repo-kfg`)
 ```
 
 Reading the corpus itself is `node scripts/audit-runs.js` — a pure reader that prints one
@@ -309,13 +315,19 @@ the pipeline working on the pipeline's own code. The rules:
   because the recorder must keep spawning nothing and requiring nothing outside node's
   built-ins — a copy of that one file has to work from any repo-shaped root, and on a host
   where `bd` was never installed —
-  commit rather than blaming the last edit, and only the suite's reword trap proves that —
   and `sh scripts/test-audit-runs.sh` (`tests/unit/audit-runs.test.js`), which builds
   throwaway runs roots under the OS temp dir and drives the real CLI through the
   `AUDIT_RUNS_DIR` seam: run it if you touch `scripts/audit-runs.js`, because what that
   tool prints is a set of NUMBERS about the corpus, and the way it fails is the way its
   hand-written ancestor failed — reading a `concerns` key that is really `specConcerns` and
-  calling a 43-use channel unused, which is non-empty, well-formed and false.
+  calling a 43-use channel unused, which is non-empty, well-formed and false —
+  and `sh scripts/test-dashboard.sh` (`tests/unit/dashboard.test.js`), which builds
+  throwaway runs roots under the OS temp dir and drives `scripts/dashboard.js` both as a
+  required module and as a server on an ephemeral loopback port: run it if you touch
+  `scripts/dashboard.js`, and equally if you touch anything the reader JOINS — a `run.log`
+  line's wording in `runner/`, a `run.json` field name, the lock record's shape, or
+  `status.json`'s keys — because the dashboard is downstream of all four and the way it
+  breaks is silent, a well-formed empty picture rather than an error.
   Any new Docker-free suite belongs beside them in
   `tests/unit/`, and its seam stub must be a `.js` file invoked through
   `process.execPath`, never a `#!/bin/sh` script: `spawnSync` without a shell fails such a

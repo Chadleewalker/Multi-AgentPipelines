@@ -377,7 +377,12 @@ Then the loop: plan → run → review in the morning → merge or send back.
 
 1. **Plan** (with you, interactive): follow `PLANNING.md`. You approve a plain-English
    "Done means" list; the tests get written *before any code exists* and then frozen.
-2. **Run** (unattended): the command in D4. Walk away.
+2. **Run** (unattended): the command in D4. Walk away. If you want to look in on it
+   without disturbing it, `node scripts/dashboard.js` in a second terminal prints one
+   address on `127.0.0.1` and serves what the run has written so far — a reader, so
+   there is nothing you can click that changes a run (DESIGN.md §5, change-log row
+   `repo-kfg`). Its `GET /state` JSON is the finished part; the page it serves is a
+   placeholder until the view ships.
 3. **Review** (with you): each finished task arrives as a pull request carrying the spec,
    a summary of what changed, and the verification evidence. Failed work arrives as a
    pushed branch with its full attempt history. The run report orders them by how much

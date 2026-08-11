@@ -983,6 +983,49 @@ a panel — CLAUDE.md exempts it from task docs phases and nothing else updates 
 `docs/pipeline-diagram.md` already names the three phases it draws, and this task changed
 no shape there.
 
+## A run can be watched while it happens (`repo-kfg`, 2026-08-11)
+
+`scripts/dashboard.js` ships — the reader half of the live dashboard DESIGN.md §5 declared
+in change-log row `live-dashboard`, and now change-log row `repo-kfg`. Run
+`node scripts/dashboard.js` and open the one line it prints
+(`dashboard: http://127.0.0.1:4770/`); `DASHBOARD_RUNS_DIR` re-aims the runs root and
+`DASHBOARD_PORT` moves the port (`0` for an ephemeral one). `GET /state` is the frozen JSON
+contract — projects, the run each is showing, its park, its queue and its tasks with phase,
+attempt, workspace and PR — assembled per request from `runs/locks/*.lock`, `run.log`,
+`run.json` and the status files. `GET /` is a **placeholder page**: the visible view is
+interactive work against that contract and is the piece still outstanding.
+
+**Why the reader is the pipeline task and the page is not** is the split the planning
+session took on the scope critic's argument: JSON is a thing frozen tests can pin exactly,
+and a look is a thing you review by looking at it, which a three-attempt unattended
+container cannot do.
+
+**Two derivations are worth knowing, because both cheap answers are wrong.** The run a
+project shows is picked by **the held lock's `runId`**, not by which directory under
+`runs/` is newest — a live run is routinely not the newest directory, so "newest wins" goes
+dark exactly when someone is watching. And a run directory with **no `run.json` is a
+`no-manifest` run, never a skipped one**: the manifest is written when a run *ends*, so
+`verdict.js`'s rule of skipping such a directory would hide every run in flight. Both are
+pinned by fixtures the wrong reading cannot pass (the newest directory in the frozen suite
+is a decoy).
+
+**What it deliberately is not:** anything that can touch a run. It writes nothing anywhere,
+spawns nothing, holds no `bd` and no Docker, requires only node built-ins, and has no route
+by which to reach a container — the audit's contract (change-log row `repo-73k`) applied to
+a live tree. It binds `127.0.0.1` and nothing else, because the page names target repos, PR
+URLs and issue titles: that bind is the machinery/work boundary this repo is public on
+account of. Malformed artifacts render as named terms in a closed `degraded` vocabulary at
+their own level rather than as a 500 or a dropped project — a watcher at 2 AM needs the
+missing thing named, not a blank screen.
+
+**Host obligations, two.** Run `bash scripts/test-all.sh` on the reference host — the new
+suite is swept by glob and has never run there. And hand-update `docs/pipeline-map.html`,
+which CLAUDE.md exempts from task docs phases and which nothing else updates: its
+end-to-end panels draw the run and the post-hoc audit, and none of them yet shows the live
+reader hanging off the run in flight. `docs/pipeline-diagram.md`, which task docs phases
+*do* keep current, has the node. Nothing else is outstanding — the reader needs no Docker,
+no network and no target repo.
+
 ## What's next
 
 **The queue drained again on 2026-07-26**, after `repo-4l8` (the epic filter, planned and
@@ -1125,11 +1168,12 @@ design's central bet, and it is the first day it paid out repeatedly.
 
 ## Test suites
 
-All but twelve drive real Docker and share one network, so they must never run concurrently
+All but fourteen drive real Docker and share one network, so they must never run concurrently
 (`test-runner-memory.sh`, `test-changelog.sh`, `test-sanitize.sh`,
 `test-agent-hooks.sh`, `test-network-names.sh`, `test-lock.sh`,
 `test-sweep-hygiene.sh`, `test-concurrency.sh`, `test-pause-gate.sh`,
-`test-sweep-assertions.sh`, `test-trace.sh`, `test-verdict.sh` and `test-audit-runs.sh` are the exceptions —
+`test-sweep-assertions.sh`, `test-trace.sh`, `test-verdict.sh`, `test-audit-runs.sh`
+and `test-dashboard.sh` are the exceptions —
 see below; they need neither).
 **`scripts/test-all.sh` is the sweep** — it holds a lock, runs every suite sequentially,
 kills one that hangs (`--timeout`, default 900s), **reclaims what each suite leaked after
@@ -1166,8 +1210,9 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-trace.sh` | the traceability ledger (change-log row `trace-ledger`) — checkbox/ref parsing on both line endings, the three report lists, and backfill that recovers the ticking commit through later prose edits and refuses to guess |
 | `scripts/test-verdict.sh` | the review verdict recorder (change-log row `repo-1ie`) — which run a verdict lands in, what counts as PR-bearing, every refusal writing nothing, and the recorder staying self-contained |
 | `scripts/test-audit-runs.sh` | the run-history audit (change-log row `repo-73k`) — the three-bucket corpus taxonomy, `startedAt` joins, the `specConcerns` channel keys, nearest-rank quantiles, and the pure-reader contract checked by content hash |
+| `scripts/test-dashboard.sh` | the live run dashboard (change-log row `repo-kfg`) — the lock-to-run join, the run pick against its three wrong answers, the closed degraded vocabulary at each level, the loopback server contract, and the pure-reader contract checked by content hash |
 
-**`scripts/test-runner-memory.sh` is one of the twelve suites that need no Docker**
+**`scripts/test-runner-memory.sh` is one of the fourteen suites that need no Docker**
 (repo-dhp): it
 drives both §3.6 memory channels plus the `shouldFileMemory` outcome gate through the
 `PIPELINE_BD_CMD` seam, so it runs anywhere — including inside a task container, where
@@ -1426,6 +1471,33 @@ type-7 interpolation (816, a number no run ever produced) — interpolation is w
 quietly break byte-determinism. It also pins the structural constraints no behaviour can
 see: every `require` target a node built-in, no `child_process`, no `fs` write API, because
 the script is meant to be copied and that property decays silently.
+
+**`scripts/test-dashboard.sh` is the fourteenth** (change-log row `repo-kfg`): it covers
+`scripts/dashboard.js`, the live run dashboard's reader. It needs node only, builds
+throwaway runs roots under the OS temp directory, and drives the real file two ways — as a
+required module (`main()` sits behind `require.main === module`, the `repo-teq` shape) and
+as a server on an ephemeral loopback port through the `DASHBOARD_RUNS_DIR` /
+`DASHBOARD_PORT` seams — so it reads neither this repo's tree nor the real corpus.
+**Why it is re-runnable rather than left frozen**: what the reader answers is a set of
+JOINS over artifacts four other modules write — the lock record's shape, `run.log`'s line
+wording, `run.json`'s field names and `status.json`'s keys — and any of the four can be
+changed by a later task that has never heard of the dashboard. The failure is silent: a
+well-formed, empty, plausible picture, which is defect 8's shape pointed at a screen
+someone watches at 2 AM.
+Three fixtures are discriminating rather than merely realistic. The **run pick** has three
+plausible wrong answers on a real tree (readdir order, runId sort, directory mtime — the
+`repo-1ie` finding), so one project's correct run is the *first* directory name and
+another's is the *last*: no single wrong reading passes both. The **lock-to-run join** puts
+a newer, manifest-less decoy directory beside the run the held lock names, so an
+implementation that picks by recency instead of by `runId` renders the wrong run rather
+than no run. And the **degraded vocabulary** is planted one term at a time as unparseable
+bytes or a directory where a file belongs — never `chmod`, which is a no-op for root and on
+the Windows host — with the untouched project asserted intact in the same response, because
+the failure worth catching is the blanket catch that drops a whole project quietly. It also
+pins the structural constraints no behaviour can see: every `require` target a node
+built-in and no `child_process`, since the file has to work as a copy from any repo-shaped
+root and its lock-liveness logic is re-implemented inline rather than required from
+`runner/lock.js`.
 
 **A full sweep ran** after the five dogfood/queue PRs merged to `main`: all 18
 suites green, including `e2e.sh` (32 assertions, real PR opened and cleaned up). Two were
