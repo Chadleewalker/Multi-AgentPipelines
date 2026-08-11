@@ -74,6 +74,13 @@ flowchart TB
   class ADV specialist
 ```
 
+**Each of the three boundaries above also writes itself down.** On *entry* to the code,
+verify and docs phases the entrypoint sets `status.json`'s `phase` — `code` / `verify` /
+`docs`, the only values there are — through `pipeline/status.js`, which stays the sole
+writer of that file (change-log row `repo-bmd`). It is the live feed §5's dashboard reads
+to tell a task that is working from one that is being judged; the write is non-fatal and
+nothing in the diagram branches on it, so the arrows are unchanged by it.
+
 Slot 3 is the one that needs building, and the sockets are already in place: the
 `advisories` array exists in `status.schema.json` (typed, and documented as evidence
 that can never change the exit code), advisor definitions would ride in the existing

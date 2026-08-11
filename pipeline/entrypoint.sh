@@ -86,6 +86,12 @@ while :; do
   [ "$DONE" -eq 0 ] && rm -f "$RUN/feedback.txt"
 
   # ---- code phase: one headless agent invocation, prompt on stdin ----
+  # Phase boundary (§4.11): written on ENTRY to the phase, so a live reader sees the
+  # phase a task is in rather than the phase it finished. Non-fatal like the `model`
+  # write below — an unwritable status file must not fail a task — and it must stay
+  # ABOVE the `{ ... } > "$RUN/prompt-$N.md"` block: one line lower and it runs inside
+  # the redirect, where its output would silently become part of the agent's prompt.
+  node "$PIPE/status.js" set phase code 2>/dev/null
   {
     echo "You are implementing one task inside an autonomous pipeline (attempt $N of $MAX_ATTEMPTS)."
     echo "Work in the current directory: a git checkout on a task branch."
@@ -146,6 +152,10 @@ while :; do
   [ -n "$MODEL" ] && node "$PIPE/status.js" set model "$MODEL" 2>/dev/null
 
   # ---- verify phase: the authoritative gate (§4.4) ----
+  # Phase boundary (§4.11), non-fatal. Nothing may be inserted between the verifier
+  # invocation and the `VRC=$?` that captures its exit code — a command in between
+  # clobbers `$?` and every outcome below it is decided on the wrong number.
+  node "$PIPE/status.js" set phase verify 2>/dev/null
   node "$PIPE/verify.js"
   VRC=$?
   case "$VRC" in
@@ -154,6 +164,11 @@ while :; do
       git add -A
       git commit -qm "Task $ISSUE_ID: implementation (verified on attempt $N)" || true
       # ---- docs phase (§4.3, T9): one agent invocation, non-fatal after success ----
+      # Phase boundary (§4.11), non-fatal, and — like the code phase — written BEFORE
+      # the `{ ... } > "$RUN/prompt-docs.md"` block rather than inside it. A write
+      # placed after the docs invocation would leave every docs-phase task reading
+      # "verify" for as long as the phase actually lasts, which is where it matters.
+      node "$PIPE/status.js" set phase docs 2>/dev/null
       {
         echo "Verification for task $ISSUE_ID just passed. Two jobs:"
         echo "1. Update any in-repo documentation affected by the change (README, docs/)."

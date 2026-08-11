@@ -4,7 +4,7 @@ Where the build actually is. Update this when something changes — it is the fi
 session reads to pick up the thread, and unlike a machine-local memory folder it travels
 with the repo.
 
-_Last updated: 2026-08-04_
+_Last updated: 2026-08-11_
 
 ## Where things stand
 
@@ -941,6 +941,47 @@ else updates. Three of its panels draw the review decision (the end-to-end flow,
 none of them yet shows the verdict being written down; `docs/pipeline-diagram.md`, which
 task docs phases *do* keep current, has the node. Nothing else is outstanding: the recorder
 needs no Docker, no network and no target repo.
+
+## The status file says which phase a task is in (`repo-bmd`, 2026-08-11)
+
+`status.json` carries a `phase` — `code`, `verify` or `docs` — written by
+`pipeline/entrypoint.sh` on *entry* to each boundary through `pipeline/status.js`. It is
+the one deterministic feed DESIGN.md §5's live dashboard needed that the pipeline was not
+already writing (change-log rows `live-dashboard` and `repo-bmd`); the other half of that
+batch is `repo-kfg`, the `/state` reader. The draft's second half — a workspace-path log
+line — was dropped in fresh-context review, because `runner/workspace.js` already logs
+`workspace ready:` for every prepared workspace. **No `run.log` wording changed and
+nothing under `runner/` was touched**, so the Docker suites that grep those lines are
+unaffected.
+
+**Three properties are load-bearing, and each has a plausible wrong version.** The write is
+on *entry*, not exit: a single write at the end produces a final file that reads `docs`
+exactly as a correct implementation does, while leaving the field dark for the whole time a
+watcher would be looking at it — defect 8's shape, non-empty and false. It is **non-fatal**,
+styled on the `model` write (`2>/dev/null`, never `die30`): an unwritable status file must
+not turn a task into an internal error. And it is **not an outcome** — nothing in the
+runner, the verifier or the report branches on it, which is what keeps a watcher a reader
+(hard rules 5 and 7).
+
+**Two insertion hazards worth carrying forward**, because both are silent. The code- and
+docs-phase boundaries sit immediately above `{ … } > "$RUN/prompt-*.md"` blocks, so a write
+placed one line low runs *inside* the redirect and becomes part of the agent's prompt
+instead of the status file — the frozen suite checks the captured prompt for exactly that.
+And nothing may go between `node "$PIPE/verify.js"` and the `VRC=$?` that captures its exit
+code, or every outcome below is decided on the wrong number.
+
+**Coverage:** `tests/acceptance/repo-bmd/` (43 assertions, Docker-free) drives the real
+entrypoint against stub agents and stub verifiers, observing the phase *from inside* it —
+the agent and verify stubs snapshot `status.json` mid-phase — and checks every terminal
+path (10, 11, 20, and 0 with a docs-phase error) plus a drive where every `set phase` call
+fails outright. It is a frozen artifact of this task, so nothing re-runs it; the schema
+addition is additive (`required` and `additionalProperties` untouched), which is what keeps
+every status file in the existing corpus valid.
+
+**Host obligation, one:** hand-update `docs/pipeline-map.html` if the phase feed belongs on
+a panel — CLAUDE.md exempts it from task docs phases and nothing else updates it.
+`docs/pipeline-diagram.md` already names the three phases it draws, and this task changed
+no shape there.
 
 ## What's next
 
