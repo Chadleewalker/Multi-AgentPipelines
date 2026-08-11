@@ -31,6 +31,7 @@ flowchart TB
   L -->|"either way, one line per PR"| VD["Record the verdict — merged or rejected, and why<br/>runs/&lt;runId&gt;/tasks/&lt;id&gt;/verdict.json · evidence, never a gate"]
   K -.-> AUD["Across ALL past runs — node scripts/audit-runs.js<br/>joins the corpus, prints one report, changes nothing"]
   AUD -.-> B
+  J -.-> DASH["While THIS run is in flight — node scripts/dashboard.js<br/>localhost only · serves /state from runs/ · changes nothing"]
 
   classDef specialist fill:#fdf4e3,stroke:#a86c17,stroke-width:1.5px,stroke-dasharray:5 3,color:#14181d
   class SP1,SP2 specialist
@@ -40,6 +41,13 @@ The dotted branch off the run report is the only reader that spans runs (§5, ch
 row `repo-73k`). It is post-hoc and host-only: nothing in a run waits on it, it gates
 nothing, and what it finds reaches the pipeline the same way any other observation does —
 through a human, into a planning session.
+
+The dotted branch off the run itself is its live sibling (§5, change-log row `repo-kfg`):
+`node scripts/dashboard.js` reads the same `runs/` tree while a run is still in flight and
+serves it as `/state` on loopback. Both arrows are dotted for the same reason and no arrow
+leaves either node — a watcher that could reach a run would be a route around hard rule 1,
+and one that could gate would violate hard rule 5. The dashboard's own page is not built
+yet; the frozen JSON contract it serves is.
 
 Slots 1 and 2 need **no pipeline code**: they are prompts you run during a planning
 session, before anything is frozen. Slot 2 is the higher-leverage of the two — a domain

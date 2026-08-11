@@ -79,7 +79,7 @@ on the shared base image, and `bd init` — [`PLANNING.md`](PLANNING.md) walks t
 | `pipeline/` | what runs *inside* a container: entrypoint, verifier, agent stubs |
 | `schemas/` | the three frozen contracts between separately-built components |
 | `docker/` | the pinned base image and the allowlist proxy sidecar |
-| `scripts/` | one test suite per build task, the end-to-end pass, and the host-side readers — `audit-runs.js` joins every past run and prints one report, changing nothing |
+| `scripts/` | one test suite per build task, the end-to-end pass, and the host-side readers — `audit-runs.js` joins every past run into one report, `dashboard.js` serves the run in flight on localhost; both change nothing |
 | `tests/` | `acceptance/` — per-task tests, frozen at approval; `unit/` — Docker-free suites |
 | `beads/` | the task-queue issue template |
 
