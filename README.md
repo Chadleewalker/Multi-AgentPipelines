@@ -62,6 +62,11 @@ cp run.config.example.json run.config.myproject.json
 node runner/run.js --config run.config.myproject.json
 ```
 
+A run is unattended, not opaque: `node scripts/dashboard.js` in a second terminal serves
+what the run has written so far on `127.0.0.1` — projects, the run each is showing, its
+queue and its tasks. It is a pure reader, so watching cannot disturb anything; the JSON
+contract at `GET /state` is built, the page it serves is still a placeholder.
+
 Adding a project of your own means giving it a `pipeline.config.json`, a thin Dockerfile
 on the shared base image, and `bd init` — [`PLANNING.md`](PLANNING.md) walks through it.
 
