@@ -74,7 +74,13 @@ withEnv({ PIPELINE_BD_CMD: process.execPath, PIPELINE_IMAGE_BD_CMD: process.exec
 // ---- backward compatibility: what every existing suite rests on ------------------------
 
 withEnv({ PIPELINE_BD_CMD: process.execPath, PIPELINE_IMAGE_BD_CMD: undefined }, () => {
-  const r = bdmod.bd(cfg, [stub('forty-two.js', 'console.log(42);\n')]);
+  // The stub prints a STRING, never the number 42. `console.log` of a non-string runs it
+  // through util.inspect, which emits ANSI colour when colour is enabled — and a parent
+  // that exports FORCE_COLOR passes that down, so the child answers "\e[33m42\e[39m" and
+  // this check fails for a reason that has nothing to do with bd(). Real `bd` output is
+  // plain text; the stub has to be too, or the suite is green in a bare terminal and red
+  // under any colour-forcing parent. Cost one red sweep on 2026-08-11.
+  const r = bdmod.bd(cfg, [stub('forty-two.js', 'console.log("42");\n')]);
   ok((r.stdout || '').trim() === '42',
     'bd() with only the general seam set is unchanged — no -C prefix, no host probe, '
     + 'no Docker fallback');
