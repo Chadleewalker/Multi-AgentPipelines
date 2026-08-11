@@ -203,6 +203,68 @@ real use. All are fixed.
     `docs/IDEAS.md`. Until it is, **check `docker ps` and `runs/locks/` before blaming
     Docker for a 137.**
 
+12. **The verifier fails a task whose tests all passed, when the suite prints more than
+    1 MiB** (found 2026-08-11 by a coding agent on a real target task, and raised
+    through the concern channel — §3.3 working exactly as designed, on the one target the
+    agent is otherwise forbidden to touch). `pipeline/verify.js` runs both the acceptance
+    and the regression command through `spawnSync` **without passing `maxBuffer`**, so
+    Node's 1 MiB default applies. On overflow `spawnSync` kills the child and returns
+    `status: null` with `error.code === 'ENOBUFS'`; the very next line reads
+    `acc.status === 0 ? 'pass' : 'fail'`, so a suite that passed every test is recorded as
+    an acceptance **failure**. That task's first attempt emitted 1,058,241 bytes and burned an attempt
+    on correct work; the agent reproduced it byte-for-byte against the recorded tail before
+    filing.
+
+    This is the "plausible and wrong" family again (defects 2, 5, 7, 8), but it is the
+    worst-shaped instance so far, for three reasons.
+
+    - **It is the verifier.** Hard rule 2 says the verifier is the one thing an agent
+      cannot influence; the price of that authority is that its verdict has to be about the
+      code. A verdict that is really about stdout volume is not a verdict.
+    - **The evidence actively misleads.** `acceptanceOutput` keeps only the last 4 KB of a
+      *truncated* capture, so the artifact a human reads at 2 AM is a log stopping
+      mid-sentence with no `FAIL:` line and nothing naming a cause — the unactionable
+      overnight failure §3.5 exists to prevent, arriving through the gate rather than
+      through an LLM judge.
+    - **It scales with the target, not with the fault.** A chatty suite (Godot prints a
+      resource error per missing asset per boot) can cross the ceiling on a task that
+      touches none of this, burn all three attempts, and report `stuck`. Nothing in the
+      artifacts would say why.
+
+    Note what it did to the *target* repo: the agent's fix was to memoize
+    a repeated resource-loading call in the target's own source — a sound change
+    on its merits, made for the wrong reason, in a file the task was already editing. A
+    harness defect that pressures agents into unrelated target-code changes is buying its
+    own invisibility.
+
+    **Fixed 2026-08-11 (change-log row `verify-nobuffer`), at Chad's direction in the same
+    session.** Both `spawnSync` calls pass an explicit 64 MiB `maxBuffer`, and the verdict
+    rule moved to `pipeline/verify-classify.js` as a pure `classify()` — exit 0 is `pass`,
+    any *numeric* nonzero exit is `fail`, and `status === null` is `error` with a `why`
+    naming the limit hit. Acceptance `error` exits 4 into the entrypoint's existing
+    internal-error path, so a harness fault stops and says so instead of spending the
+    attempt cap and landing on `stuck`.
+
+    **What the new suite proves, and why it is the pair rather than the single case.**
+    `scripts/test-verify-buffer.sh` (the fifteenth Docker-free suite) builds throwaway
+    repositories whose acceptance command prints a chosen number of bytes and exits with a
+    chosen code. Two fixtures differ *only* in exit code, both printing 1.2 MiB: the
+    passing one must read `pass` — the old code said `fail` — and the failing one must
+    still read `fail`. That second case is the one that matters most, because the obvious
+    careless fix for this defect (treat a killed run as benign, or stop trusting a nonzero
+    exit that came with a big log) would buy the first case by breaking hard rule 2. The
+    suite was verified by reverting the fix behind a backup and re-running: it reproduces
+    the exact defect signature, `acceptance=fail rc=1` on a suite where every assertion
+    passed, plus the truncated-evidence symptom.
+
+    The lesson worth carrying past this defect: **a default is a decision nobody wrote
+    down.** Nothing in this file was configured wrongly — 1 MiB was simply what Node picks
+    when you say nothing, and it silently became the pipeline's policy on how loud a test
+    suite may be. That is why the shell wrapper asserts on the *source* that both calls
+    still pass an explicit `maxBuffer`: a behavioural check alone would go quiet again the
+    moment a future edit dropped the argument, and stay quiet until some target's suite
+    happened to get chatty.
+
 ## Gotchas that cost real time
 
 - **MSYS path conversion.** Git Bash rewrites container-side paths in `docker` arguments

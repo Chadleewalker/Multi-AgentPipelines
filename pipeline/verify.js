@@ -21,6 +21,11 @@ const { execSync, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
+// The verdict rule lives in its own file so a test can reach it without running the
+// verifier, and so nothing here keeps a second copy of it (change-log row
+// `verify-nobuffer`): a killed run is an error, never a failure.
+const { classify, MAX_BUFFER, RUN_TIMEOUT_MS } = require('./verify-classify.js');
+
 const WS = process.env.WORKSPACE || '/workspace';
 const OUT_DIR = path.join(WS, '.run');
 const TAIL = (s, n) => (s || '').slice(-n);
@@ -88,16 +93,35 @@ if (tampered.size > 0) {
 // --- Acceptance run: the authoritative gate. ---
 const testDir = `tests/acceptance/${result.issueId}/`;
 const acc = spawnSync('sh', ['-c', `${config.verifyCommand} ${testDir}`],
-  { cwd: WS, encoding: 'utf8', timeout: 15 * 60 * 1000 });
-result.acceptance = acc.status === 0 ? 'pass' : 'fail';
+  { cwd: WS, encoding: 'utf8', timeout: RUN_TIMEOUT_MS, maxBuffer: MAX_BUFFER });
+const accVerdict = classify(acc);
+result.acceptance = accVerdict.verdict;
 result.acceptanceOutput = TAIL((acc.stdout || '') + (acc.stderr || ''), 4000);
+// A killed run exits 4, the code the entrypoint already routes to its internal-error
+// path (§4.11) rather than to the retry loop. Retrying would spend the attempt cap on a
+// harness fault and end as "stuck", which is the unactionable overnight failure §3.5
+// exists to prevent; and the feedback fed to the next attempt would be a truncated tail
+// naming nothing. Stop, and say which of the harness's own limits was hit.
+if (accVerdict.verdict === 'error') {
+  result.error = `acceptance run produced no verdict: the suite ${accVerdict.why}`;
+  writeResult(result, 4);
+}
 
 // --- Regression run: evidence only (§4.4) — result never changes the exit code. ---
 if (config.regressionCommand) {
   const reg = spawnSync('sh', ['-c', config.regressionCommand],
-    { cwd: WS, encoding: 'utf8', timeout: 15 * 60 * 1000 });
-  result.regressions = reg.status === 0 ? 'pass' : 'fail';
+    { cwd: WS, encoding: 'utf8', timeout: RUN_TIMEOUT_MS, maxBuffer: MAX_BUFFER });
+  const regVerdict = classify(reg);
+  result.regressions = regVerdict.verdict;
   result.regressionOutput = TAIL((reg.stdout || '') + (reg.stderr || ''), 2000);
+  // Evidence, so a killed regression run is recorded and never fatal. It must not read
+  // 'fail' (that downgrades a passing task to `partial` — §4.11 — on a harness fault)
+  // and must not read 'absent' either, which means "no regressionCommand configured" and
+  // would silently upgrade it instead. It gets its own word.
+  if (regVerdict.verdict === 'error') {
+    result.regressionOutput = `regression run produced no verdict: the suite ${regVerdict.why}\n`
+      + result.regressionOutput;
+  }
 }
 
 writeResult(result, result.acceptance === 'pass' ? 0 : 1);

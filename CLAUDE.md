@@ -92,7 +92,7 @@ bash scripts/e2e.sh            # add --keep to leave branches and PRs up for ins
 bash scripts/test-verifier.sh
 bash scripts/test-runner-container.sh
 
-# the fourteen suites that need no Docker — seconds, safe to run anywhere, even in a container
+# the fifteen suites that need no Docker — seconds, safe to run anywhere, even in a container
 bash scripts/test-runner-memory.sh
 bash scripts/test-changelog.sh     # DESIGN.md §12 row identity (CHANGELOG_FILE re-aims it)
 bash scripts/test-sanitize.sh      # publication hygiene (SANITIZE_FIXTURE_DIR re-aims it)
@@ -107,6 +107,7 @@ bash scripts/test-trace.sh         # the traceability ledger — spec-to-code re
 bash scripts/test-verdict.sh       # the review verdict recorder — which run a verdict lands in, and what refuses (change-log row `repo-1ie`)
 bash scripts/test-audit-runs.sh    # the run-history audit — buckets, joins, channels, quantiles, and that it writes nothing (change-log row `repo-73k`)
 bash scripts/test-dashboard.sh     # the live dashboard's /state joins, its degraded vocabulary, and that it writes nothing (change-log row `repo-kfg`)
+bash scripts/test-verify-buffer.sh # the verifier's capture limit — a loud PASS is a pass, a loud FAIL is still a fail (change-log row `verify-nobuffer`)
 ```
 
 Reading the corpus itself is `node scripts/audit-runs.js` — a pure reader that prints one
@@ -327,7 +328,16 @@ the pipeline working on the pipeline's own code. The rules:
   `scripts/dashboard.js`, and equally if you touch anything the reader JOINS — a `run.log`
   line's wording in `runner/`, a `run.json` field name, the lock record's shape, or
   `status.json`'s keys — because the dashboard is downstream of all four and the way it
-  breaks is silent, a well-formed empty picture rather than an error.
+  breaks is silent, a well-formed empty picture rather than an error —
+  and `sh scripts/test-verify-buffer.sh` (`tests/unit/verify-buffer.test.js`), which builds
+  throwaway repositories under the OS temp dir and drives the real `pipeline/verify.js`
+  against them: run it if you touch `pipeline/verify.js` or `pipeline/verify-classify.js`,
+  because that pair decides whether **your own** work is judged to have passed, and the way
+  it failed once already was to call a suite that passed every assertion a failure — for no
+  reason but how much the suite printed (change-log row `verify-nobuffer`). Its two
+  load-bearing fixtures differ only in exit code while both printing 1.2 MiB, so read them
+  as a pair: the passing one proves the ceiling is gone, and the failing one proves it was
+  not bought by excusing real failures that happen to be noisy.
   Any new Docker-free suite belongs beside them in
   `tests/unit/`, and its seam stub must be a `.js` file invoked through
   `process.execPath`, never a `#!/bin/sh` script: `spawnSync` without a shell fails such a
