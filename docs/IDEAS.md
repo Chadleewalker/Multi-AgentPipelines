@@ -81,6 +81,25 @@ Two hard boundaries, both inherited:
 
 <!-- Newest at the top. Nothing here is committed to. -->
 
+- **The dashboard's live `attempt` reads one too low — re-freeze the `/state` contract
+  before the page session.** `scripts/dashboard.js` sets a task's `attempt` to
+  `status.attempts.length`, and its frozen suite pins exactly that (`tests/acceptance/`
+  `repo-kfg/`, check `C1 app-101 attempt 1 of attemptsMax 3`). But `attempts` is
+  append-only *on completion* — an attempt appears only once the verifier has judged it —
+  so a task actively working its first attempt carries `attempts: []` and the contract
+  says `attempt: 0`. Confirmed live, not inferred: a running task's workspace status file
+  read `{"issueId": …, "attempts": []}` while its container was ten minutes into the code
+  phase. The page renders "attempt n/3", so it would show `0/3` for most of a task's life
+  and `1/3` while the task is really on its second try. The implementation is **correct
+  against its spec** — this is a spec defect, so the fix is a re-freeze (`attempt` becomes
+  the in-flight number, `attempts.length + 1` while a task is running, plain
+  `attempts.length` once it has finished), not a patch to shipped code. Worth doing before
+  the page session rather than after, because the page is what surfaces the number.
+  Notable second-order point for PLANNING.md: the task agent had §3.3's concern channel
+  available and did not use it — the spec was internally consistent and its tests passed,
+  which is exactly the case a frozen test cannot catch. Related: change-log rows
+  `repo-kfg` and `live-dashboard`. 2026-08-11
+
 - **Give the freeze-gate control fixture a dependency-exercising test** — the control
   exists to distinguish "tests discriminate" from "harness broken", but a control that
   never touches the target's heavy dependency (a game engine binary resolved through an
