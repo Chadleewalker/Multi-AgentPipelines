@@ -99,6 +99,13 @@ Two hard boundaries, both inherited:
   available and did not use it — the spec was internally consistent and its tests passed,
   which is exactly the case a frozen test cannot catch. Related: change-log rows
   `repo-kfg` and `live-dashboard`. 2026-08-11
+  **Update, same day (change-log row `live-dashboard-page`):** the page now computes
+  `attempt + 1` for an in-flight task itself, so nothing user-visible is wrong today. That
+  lowers the urgency but does not close this: the *contract* still reports a number whose
+  meaning changes with the task's state, and every future reader of `/state` has to know
+  to correct it. Decide deliberately — either re-freeze `attempt` as the in-flight number,
+  or keep it as "attempts judged" and **rename it** so the trap is not reset for the next
+  reader.
 
 - **Give the freeze-gate control fixture a dependency-exercising test** — the control
   exists to distinguish "tests discriminate" from "harness broken", but a control that

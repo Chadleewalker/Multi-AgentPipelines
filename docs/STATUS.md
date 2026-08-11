@@ -1019,12 +1019,48 @@ their own level rather than as a 500 or a dropped project — a watcher at 2 AM 
 missing thing named, not a blank screen.
 
 **Host obligations, two.** Run `bash scripts/test-all.sh` on the reference host — the new
-suite is swept by glob and has never run there. And hand-update `docs/pipeline-map.html`,
-which CLAUDE.md exempts from task docs phases and which nothing else updates: its
-end-to-end panels draw the run and the post-hoc audit, and none of them yet shows the live
-reader hanging off the run in flight. `docs/pipeline-diagram.md`, which task docs phases
-*do* keep current, has the node. Nothing else is outstanding — the reader needs no Docker,
-no network and no target repo.
+suite is swept by glob and has never run there. *(Done 2026-08-11: 36 of 36 suites green in
+9:28.)* And hand-update `docs/pipeline-map.html`, which CLAUDE.md exempts from task docs
+phases and which nothing else updates: its end-to-end panels draw the run and the post-hoc
+audit, and none of them yet shows the live reader hanging off the run in flight.
+`docs/pipeline-diagram.md`, which task docs phases *do* keep current, has the node. Nothing
+else is outstanding — the reader needs no Docker, no network and no target repo.
+
+## The live view ships, and looking at it found two things (`live-dashboard-page`, 2026-08-11)
+
+`GET /` now serves the real page, which closes the live-dashboard feature declared in
+change-log row `live-dashboard`. `node scripts/dashboard.js`, open the one line it prints.
+The look is the house palette from `docs/pipeline-map.html` — teal flow, amber "the task is
+here" lamps — and the page renders exactly the brief: run header, the queue with each
+in-flight task at its node, a code/verify/docs strip per running task with the current phase
+lit, elapsed computed browser-side from the server's `now`, the storage row, the queued
+strip.
+
+**Why this was an interactive session and not a pipeline task** is settled by what building
+it found, because neither defect is reachable from a frozen test. The first: the contract's
+`attempt` is `status.attempts.length`, and that array gains an entry only once the verifier
+has **judged** an attempt — so a task working its first attempt reports `0`, and the page
+would have read "attempt 0/3" for most of a task's life. The implementation matches its
+frozen test exactly; the **spec** is what is wrong, so the re-freeze is parked at the top of
+`docs/IDEAS.md` and the page computes `attempt + 1` for an in-flight task in the meantime.
+The second was invisible until someone looked: the two-second poll rebuilds the whole list,
+which threw away the open/closed state of every panel, so an expanded project **snapped shut
+within two seconds of being opened**. Open panels are now keyed by project key across
+repaints, and an unchanged tree with no live project is not repainted at all.
+
+**One view decision worth knowing.** Idle projects collapse to a single line, expandable.
+The corpus on the reference host holds 34 projects, 28 of them historical e2e fixture targets
+all named `target`; a full card each buries the run someone opened the page to watch. The
+fixtures are **not** special-cased — that would be a lie about what the tree holds, and the
+handoff explicitly ruled it out. Live projects sort first and render full; everything else is
+one row until asked. Degraded terms follow the same principle: `no-manifest` on a *running*
+run and `workspace-missing` on a *finished* one are ordinary states, so they render muted,
+and red is kept for what a watcher can actually act on.
+
+**Proven against three trees, because a page that only works on fixtures is not proven:** the
+reference host's real 34-project corpus, a synthetic multi-task live fixture (two tasks in
+different phases, one queued, park absent), and a genuine live run in flight — the phase lamp,
+the container node and `attempt 1/3` all read correctly against a real container.
 
 ## What's next
 

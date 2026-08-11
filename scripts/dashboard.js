@@ -647,24 +647,513 @@ const PAGE = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>pipeline dashboard</title>
 <style>
-  body { font: 16px/1.6 system-ui, sans-serif; margin: 0; padding: 3rem 1.5rem;
-         background: #10131a; color: #d7dce5; }
-  main { max-width: 46rem; margin: 0 auto; }
-  h1 { font-size: 1.4rem; margin: 0 0 1rem; letter-spacing: .02em; }
-  code { background: #1b202b; border-radius: 4px; padding: .1em .4em; color: #9fd0ff; }
-  p { margin: 0 0 1rem; }
-  .dim { color: #7a8496; font-size: .9rem; }
+  :root {
+    --ink: #14181d; --paper: #f2f4f5; --surface: #ffffff; --rule: #e3e8e9;
+    --muted: #59626c; --flow: #2c7a6f; --gate: #a86c17; --refuse: #9d3a2f;
+    --node-fill: #eef2f1; --node-stroke: #2c7a6f; --node-text: #14181d;
+    --cluster-fill: #f6f8f8; --line: #6b7480;
+    --human-fill: #dfe2f4; --human-stroke: #4a55a0;
+    --store-fill: #eef0f1; --store-stroke: #8a939b;
+    --blocked-fill: #f7e2df; --idle-fill: #f4f5f6; --idle-stroke: #9aa3aa;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ink: #e6eaec; --paper: #101417; --surface: #161b1f; --rule: #262d32;
+      --muted: #949ea6; --flow: #5fb3a5; --gate: #d39a3f; --refuse: #d0705f;
+      --node-fill: #1d262b; --node-stroke: #5fb3a5; --node-text: #eaeef0;
+      --cluster-fill: #171e22; --line: #8a95a0;
+      --human-fill: #1f2440; --human-stroke: #8b95d8;
+      --store-fill: #191f23; --store-stroke: #6d767e;
+      --blocked-fill: #33201d; --idle-fill: #171c20; --idle-stroke: #6d767e;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink: #e6eaec; --paper: #101417; --surface: #161b1f; --rule: #262d32;
+    --muted: #949ea6; --flow: #5fb3a5; --gate: #d39a3f; --refuse: #d0705f;
+    --node-fill: #1d262b; --node-stroke: #5fb3a5; --node-text: #eaeef0;
+    --cluster-fill: #171e22; --line: #8a95a0;
+    --human-fill: #1f2440; --human-stroke: #8b95d8;
+    --store-fill: #191f23; --store-stroke: #6d767e;
+    --blocked-fill: #33201d; --idle-fill: #171c20; --idle-stroke: #6d767e;
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 1.5rem 1.25rem 4rem; background: var(--paper); color: var(--ink);
+         font: 15px/1.55 var(--sans); }
+  main { max-width: 78rem; margin: 0 auto; }
+
+  .top { display: flex; flex-wrap: wrap; align-items: baseline; gap: .75rem 1.25rem;
+         padding-bottom: .85rem; border-bottom: 1px solid var(--rule); margin-bottom: 1.5rem; }
+  h1 { font-size: 1.15rem; margin: 0; letter-spacing: .01em; font-weight: 650; }
+  .top .sp { flex: 1 1 auto; }
+  .tick { font: 12px/1 var(--mono); color: var(--muted); }
+  .count { font-size: .85rem; color: var(--muted); }
+
+  .proj { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px;
+          margin-bottom: 1.1rem; overflow: hidden; }
+  .proj.islive { border-color: var(--flow); box-shadow: 0 0 0 1px var(--flow); }
+  .phead { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .8rem;
+           padding: .8rem 1rem; border-bottom: 1px solid var(--rule); background: var(--cluster-fill); }
+  .pname { font-weight: 650; font-size: 1rem; }
+  .ppath { font: 12px/1.4 var(--mono); color: var(--muted); word-break: break-all; flex: 1 1 14rem; }
+
+  .lamp { display: inline-flex; align-items: center; gap: .4rem; font-size: .72rem;
+          text-transform: uppercase; letter-spacing: .07em; font-weight: 650; }
+  .lamp b { width: .55rem; height: .55rem; border-radius: 50%; background: var(--idle-stroke); }
+  .lamp.on { color: var(--gate); }
+  .lamp.on b { background: var(--gate); animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
+  @media (prefers-reduced-motion: reduce) { .lamp.on b { animation: none; } }
+
+  .runbar { display: flex; flex-wrap: wrap; gap: .35rem 1.1rem; padding: .6rem 1rem;
+            font: 12px/1.5 var(--mono); color: var(--muted); border-bottom: 1px solid var(--rule); }
+  .runbar s { text-decoration: none; color: var(--ink); }
+
+  .park { margin: 0; padding: .55rem 1rem; background: var(--blocked-fill);
+          border-bottom: 1px solid var(--rule); font-size: .82rem; color: var(--ink); }
+
+  .body { padding: .95rem 1rem 1.1rem; }
+  .lbl { font-size: .68rem; text-transform: uppercase; letter-spacing: .09em;
+         color: var(--muted); font-weight: 650; margin: 0 0 .5rem; }
+
+  .flow { display: flex; flex-wrap: wrap; align-items: stretch; gap: .3rem; margin-bottom: 1rem; }
+  .step { flex: 1 1 6.5rem; min-width: 6rem; border: 1px solid var(--idle-stroke);
+          background: var(--idle-fill); border-radius: 7px; padding: .45rem .55rem; }
+  .step.hot { border-color: var(--gate); background: var(--node-fill); box-shadow: inset 0 0 0 1px var(--gate); }
+  .step.done { border-color: var(--node-stroke); background: var(--node-fill); }
+  .step .sn { font-size: .72rem; text-transform: uppercase; letter-spacing: .06em;
+              color: var(--muted); font-weight: 650; }
+  .step.hot .sn { color: var(--gate); }
+  .step .occ { display: block; font: 11px/1.5 var(--mono); color: var(--ink);
+               margin-top: .2rem; word-break: break-all; }
+  .step .occ:empty { display: none; }
+
+  .task { border: 1px solid var(--rule); border-radius: 8px; padding: .7rem .8rem;
+          margin-bottom: .6rem; background: var(--paper); }
+  .task.run { border-color: var(--gate); }
+  .thead { display: flex; flex-wrap: wrap; align-items: baseline; gap: .4rem .7rem; }
+  .tid { font: 12px/1.4 var(--mono); font-weight: 650; }
+  .ttl { flex: 1 1 12rem; font-size: .88rem; color: var(--muted); }
+  .att { font: 11px/1 var(--mono); padding: .2rem .4rem; border-radius: 4px;
+         background: var(--node-fill); border: 1px solid var(--node-stroke); }
+  .facts { font: 11px/1.6 var(--mono); color: var(--muted); margin-top: .35rem; }
+
+  .store { display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .5rem; }
+  .cell { flex: 1 1 9rem; border: 1px solid var(--store-stroke); background: var(--store-fill);
+          border-radius: 6px; padding: .35rem .5rem; }
+  .cell i { display: block; font-style: normal; font-size: .64rem; text-transform: uppercase;
+            letter-spacing: .07em; color: var(--muted); font-weight: 650; }
+  .cell u { display: block; text-decoration: none; font: 11px/1.45 var(--mono);
+            word-break: break-all; margin-top: .1rem; }
+
+  .strip { display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .55rem; }
+  .pill { font: 11px/1 var(--mono); padding: .3rem .45rem; border-radius: 5px;
+          border: 1px solid var(--idle-stroke); background: var(--idle-fill); color: var(--muted); }
+  .pill.ok { border-color: var(--node-stroke); color: var(--flow); }
+  .pill.bad { border-color: var(--refuse); color: var(--refuse); background: var(--blocked-fill); }
+  .pill.wait { border-color: var(--human-stroke); color: var(--human-stroke); background: var(--human-fill); }
+
+  /* Degraded terms alarm only where a watcher can still act. On a finished run,
+     workspace-missing and phase-unknown are the ordinary state of the archive - a
+     cleaned-up workspace and a run older than the phase field - and painting those red
+     trains the eye to ignore the colour that matters. */
+  .deg { display: flex; flex-wrap: wrap; gap: .25rem; margin-top: .4rem; }
+  .deg span { font: 10px/1 var(--mono); padding: .25rem .4rem; border-radius: 4px;
+              background: var(--blocked-fill); color: var(--refuse); border: 1px solid var(--refuse); }
+  .deg.calm span { background: var(--idle-fill); color: var(--muted); border-color: var(--idle-stroke); }
+
+  details.proj > summary { cursor: pointer; list-style: none; }
+  details.proj > summary::-webkit-details-marker { display: none; }
+  /* Literal glyphs, not CSS escapes: a backslash cannot survive the template literal
+     this page is embedded in. */
+  details.proj > summary::before { content: "▸"; color: var(--muted); font-size: .7rem;
+                                   margin-right: .1rem; }
+  details.proj[open] > summary::before { content: "▾"; }
+  .sumbits { display: flex; flex-wrap: wrap; gap: .25rem; align-items: center; }
+
+  .empty { color: var(--muted); font-size: .85rem; padding: 2rem 0; text-align: center; }
+  .fail { border: 1px solid var(--refuse); background: var(--blocked-fill); color: var(--refuse);
+          border-radius: 8px; padding: .7rem .9rem; margin-bottom: 1rem; font-size: .85rem; }
+  .foot { margin-top: 1.6rem; padding-top: .8rem; border-top: 1px solid var(--rule);
+          color: var(--muted); font-size: .78rem; }
+  .idleproj .phead { opacity: .82; }
 </style>
 <main>
-  <h1>pipeline dashboard</h1>
-  <p>This is the placeholder page. The live view &mdash; the lit pipeline diagrams, the
-     per-project channel strip and the storage row &mdash; ships separately, built against
-     the frozen state contract this server already serves.</p>
-  <p>The contract is live now at <code>/state</code>: one JSON document, re-read from the
-     run tree on every request, <code>schema</code> 1.</p>
-  <p class="dim">A pure reader. It binds loopback only, writes nothing anywhere, and can
-     never gate a run.</p>
+  <div class="top">
+    <h1>pipeline dashboard</h1>
+    <span class="count" id="count"></span>
+    <span class="sp"></span>
+    <span class="tick" id="tick">connecting</span>
+  </div>
+  <div id="err"></div>
+  <div id="list"><p class="empty">reading the run tree</p></div>
+  <p class="foot">A pure reader, loopback only. Every field is a rendering of
+     <code>/state</code>; elapsed times are computed in the browser from the server's
+     <code>now</code>. Nothing here can touch a run.</p>
 </main>
+<script>
+'use strict';
+
+var PHASES = ['code', 'verify', 'docs'];
+var STEPS = ['admit', 'claim', 'container', 'collect', 'finish'];
+
+// Which idle projects the reader has opened. The page rebuilds its whole list on every
+// poll, which throws away the DOM and with it the open/closed state of every panel; a
+// panel that snaps shut every two seconds cannot be read. Keyed by project key, which is
+// stable across polls in a way DOM order is not.
+var OPEN = {};
+
+// The last painted state, minus "now". Repainting an unchanged tree makes the page flicker
+// and fights the reader; repainting is skipped when nothing but the clock moved. A live
+// project is the exception - its elapsed counters are derived from "now", so they have to
+// be redrawn even when no field on disk changed.
+var lastSig = null;
+
+function el(tag, cls, txt) {
+  var n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (txt !== undefined && txt !== null) n.textContent = String(txt);
+  return n;
+}
+
+function pad(n) { return (n < 10 ? '0' : '') + n; }
+
+// Strip the scheme from a URL for display. Written with indexOf rather than a regex
+// because this whole page is embedded in a template literal in scripts/dashboard.js: a
+// backslash escape there collapses on the way in, and the escaped slashes of a
+// scheme-matching regex would arrive as the very substring the self-containment check
+// forbids. No backslash appears anywhere in this document, on purpose.
+function bare(u) {
+  var cut = u.indexOf('//');
+  return cut < 0 ? u : u.slice(cut + 2);
+}
+
+function clock(iso) {
+  if (!iso) return '--';
+  var d = new Date(iso);
+  if (isNaN(d.getTime())) return '--';
+  return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+}
+
+// Elapsed is computed against the server's own "now", never the browser clock: the two
+// can differ, and the contract deliberately ships one timestamp so this stays honest.
+function since(iso, nowIso) {
+  if (!iso) return null;
+  var a = Date.parse(iso), b = Date.parse(nowIso);
+  if (isNaN(a) || isNaN(b)) return null;
+  return Math.max(0, Math.round((b - a) / 1000));
+}
+
+function dur(secs) {
+  if (secs === null || secs === undefined) return '--';
+  if (secs < 60) return secs + 's';
+  var m = Math.floor(secs / 60);
+  if (m < 60) return m + 'm';
+  return Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
+}
+
+// The one derivation the page does on its own, and it is deliberate. "attempt" in the
+// contract counts attempts the verifier has JUDGED, so a task working its first attempt
+// reports 0. A watcher wants the attempt now in progress, so an in-flight task shows
+// attempt + 1. Capped, because a fourth attempt cannot exist (DESIGN.md 4.6).
+function liveAttempt(t) {
+  var inFlight = t.state === 'running' || t.state === 'parked';
+  if (!inFlight) return t.attempt;
+  return Math.min(t.attempt + 1, t.attemptsMax);
+}
+
+// Which node of admit -> claim -> container -> collect -> finish a task sits at.
+function nodeOf(t) {
+  if (t.state === 'queued') return 0;
+  if (t.state === 'refused') return 0;
+  if (t.state === 'parked') return 1;
+  if (t.state === 'running') return t.workspace && t.workspace.state === 'live' ? 2 : 1;
+  if (t.state === 'finished') return t.prUrl || t.outcome ? 4 : 3;
+  return 0;
+}
+
+function degChips(list, calm) {
+  var box = el('div', calm ? 'deg calm' : 'deg');
+  (list || []).forEach(function (d) { box.appendChild(el('span', null, d)); });
+  return box;
+}
+
+function outcomeClass(o) {
+  if (o === 'done') return 'pill ok';
+  if (o === 'tampered' || o === 'stuck' || o === 'failed') return 'pill bad';
+  if (o === 'paused' || o === 'partial') return 'pill wait';
+  return 'pill';
+}
+
+function renderFlow(run) {
+  var wrap = el('div', 'flow');
+  var here = {};
+  (run.tasks || []).forEach(function (t) {
+    var i = nodeOf(t);
+    if (!here[i]) here[i] = [];
+    if (t.state === 'running' || t.state === 'parked' || t.state === 'queued') here[i].push(t.issueId);
+  });
+  STEPS.forEach(function (name, i) {
+    var s = el('div', 'step');
+    var occupants = here[i] || [];
+    if (occupants.length) s.className = 'step hot';
+    else if (run.state === 'finished' && i === 4) s.className = 'step done';
+    s.appendChild(el('span', 'sn', name));
+    s.appendChild(el('span', 'occ', occupants.join(' ')));
+    wrap.appendChild(s);
+  });
+  return wrap;
+}
+
+function renderPhases(t) {
+  var wrap = el('div', 'flow');
+  PHASES.forEach(function (name) {
+    var s = el('div', 'step');
+    if (t.phase === name) s.className = 'step hot';
+    else if (t.phase && PHASES.indexOf(t.phase) > PHASES.indexOf(name)) s.className = 'step done';
+    s.appendChild(el('span', 'sn', name));
+    wrap.appendChild(s);
+  });
+  return wrap;
+}
+
+function renderTask(t, run, now, live) {
+  var inFlight = t.state === 'running' || t.state === 'parked';
+  var box = el('div', inFlight ? 'task run' : 'task');
+
+  var head = el('div', 'thead');
+  head.appendChild(el('span', 'tid', t.issueId));
+  head.appendChild(el('span', 'ttl', t.title || ''));
+  if (t.outcome) head.appendChild(el('span', outcomeClass(t.outcome), t.outcome));
+  else head.appendChild(el('span', 'pill', t.state));
+  // A task that has not started has no attempt to report; "attempt 0/3" reads as a
+  // counter that failed rather than as a task waiting its turn.
+  if (t.state !== 'queued') {
+    head.appendChild(el('span', 'att', 'attempt ' + liveAttempt(t) + '/' + t.attemptsMax));
+  }
+  box.appendChild(head);
+
+  if (inFlight) box.appendChild(renderPhases(t));
+
+  var bits = [];
+  if (inFlight) {
+    var age = since(t.startedAt, now);
+    bits.push(age === null ? 'alive' : 'alive, ' + dur(age) + ' in');
+  } else if (t.activeSeconds !== null && t.activeSeconds !== undefined) {
+    bits.push('active ' + dur(t.activeSeconds));
+  }
+  if (t.pauses) bits.push(t.pauses + ' pause' + (t.pauses === 1 ? '' : 's'));
+  if (t.branch) bits.push(t.branch);
+  if (t.attemptResults && t.attemptResults.length) bits.push(t.attemptResults.join(' -> '));
+  if (bits.length) box.appendChild(el('div', 'facts', bits.join('  |  ')));
+
+  // The storage row answers "where is this task's stuff". A queued task has none of it
+  // yet, and four cells reading unknown/never/none is worse than saying nothing.
+  if (t.state === 'queued') {
+    if (t.degraded && t.degraded.length) box.appendChild(degChips(t.degraded, !live));
+    return box;
+  }
+
+  var store = el('div', 'store');
+  var ws = el('div', 'cell');
+  ws.appendChild(el('i', null, 'workspace'));
+  ws.appendChild(el('u', null, t.workspace && t.workspace.state ? t.workspace.state : 'unknown'));
+  store.appendChild(ws);
+
+  var st = el('div', 'cell');
+  st.appendChild(el('i', null, 'status written'));
+  st.appendChild(el('u', null, t.lastWrite ? clock(t.lastWrite) : 'never'));
+  store.appendChild(st);
+
+  var ar = el('div', 'cell');
+  ar.appendChild(el('i', null, 'artifacts'));
+  ar.appendChild(el('u', null, run.runId ? 'runs/' + run.runId : 'not collected'));
+  store.appendChild(ar);
+
+  var pr = el('div', 'cell');
+  pr.appendChild(el('i', null, 'pull request'));
+  // Deliberately text, never a link: every href on this page starts with '#', because a
+  // page naming private work must not be able to reach out. Copy the id and open it.
+  pr.appendChild(el('u', null, t.prUrl ? bare(t.prUrl) : 'none yet'));
+  store.appendChild(pr);
+  box.appendChild(store);
+
+  if (t.degraded && t.degraded.length) box.appendChild(degChips(t.degraded, !live));
+  return box;
+}
+
+// The head of a live project: the full identity row.
+function liveHead(p) {
+  var head = el('div', 'phead');
+  head.appendChild(el('span', 'pname', p.name || p.key));
+  head.appendChild(el('span', 'ppath', p.path || p.remote || p.key));
+  var lamp = el('span', 'lamp on');
+  lamp.appendChild(el('b'));
+  lamp.appendChild(el('span', null, 'live'));
+  head.appendChild(lamp);
+  return head;
+}
+
+// The head of an idle project: one line that answers "anything to see here?" without
+// opening it. The corpus holds one project per historical fixture target, so a host with
+// a long history has dozens of these; a full card each buries the run someone opened the
+// page to watch. Collapsed by default, and native details/summary so no href is needed.
+function idleSummary(p, run) {
+  var s = el('summary', 'phead');
+  s.appendChild(el('span', 'pname', p.name || p.key));
+  var bits = el('span', 'sumbits');
+  var outcomes = {};
+  (run.tasks || []).forEach(function (t) {
+    if (t.outcome) outcomes[t.outcome] = (outcomes[t.outcome] || 0) + 1;
+  });
+  var names = Object.keys(outcomes).sort();
+  if (names.length) {
+    names.forEach(function (o) {
+      bits.appendChild(el('span', outcomeClass(o), outcomes[o] + ' ' + o));
+    });
+  } else {
+    bits.appendChild(el('span', 'pill', run.runId ? 'no task rows' : 'no run'));
+  }
+  s.appendChild(bits);
+  s.appendChild(el('span', 'ppath', run.finishedAt
+    ? 'last run finished ' + clock(run.finishedAt)
+    : (run.startedAt ? 'last run started ' + clock(run.startedAt) : '')));
+  var lamp = el('span', 'lamp');
+  lamp.appendChild(el('b'));
+  lamp.appendChild(el('span', null, 'idle'));
+  s.appendChild(lamp);
+  return s;
+}
+
+function renderProject(p, now) {
+  var run = p.run || {};
+  var card = p.live ? el('div', 'proj islive') : el('details', 'proj idleproj');
+  card.appendChild(p.live ? liveHead(p) : idleSummary(p, run));
+  if (!p.live) {
+    if (OPEN[p.key]) card.open = true;
+    card.addEventListener('toggle', function () {
+      if (card.open) OPEN[p.key] = true; else delete OPEN[p.key];
+    });
+  }
+
+  var bar = el('div', 'runbar');
+  var add = function (label, value) {
+    var w = el('span');
+    w.appendChild(document.createTextNode(label + ' '));
+    w.appendChild(el('s', null, value));
+    bar.appendChild(w);
+  };
+  if (!p.live) add('path', p.path || p.remote || p.key);
+  add('run', run.runId || 'none');
+  add('started', run.startedAt ? clock(run.startedAt) : '--');
+  if (p.live) add('elapsed', dur(since(run.startedAt, now)));
+  else if (run.finishedAt) add('finished', clock(run.finishedAt));
+  add('concurrency', run.concurrency === null || run.concurrency === undefined ? 'unstated' : run.concurrency);
+  add('state', run.state || 'unknown');
+  card.appendChild(bar);
+
+  var park = run.park || {};
+  if (park.open) {
+    var msg = 'Rate-limit park is OPEN for this run - no new task is admitted until the '
+      + 'window reopens. ' + (park.cycles || 0) + ' wait cycle(s) spent'
+      + (park.until ? ', reported reset ' + clock(park.until) : ', reset time unknown') + '.';
+    card.appendChild(el('p', 'park', msg));
+  }
+
+  var body = el('div', 'body');
+  body.appendChild(el('p', 'lbl', 'queue'));
+  body.appendChild(renderFlow(run));
+
+  var tasks = (run.tasks || []).slice().sort(function (a, b) {
+    var rank = function (t) {
+      if (t.state === 'running' || t.state === 'parked') return 0;
+      if (t.state === 'queued') return 1;
+      return 2;
+    };
+    return rank(a) - rank(b) || (a.issueId < b.issueId ? -1 : a.issueId > b.issueId ? 1 : 0);
+  });
+
+  if (tasks.length) {
+    body.appendChild(el('p', 'lbl', 'tasks'));
+    tasks.forEach(function (t) { body.appendChild(renderTask(t, run, now, p.live)); });
+  } else {
+    body.appendChild(el('p', 'facts', 'no task rows in this run'));
+  }
+
+  if (run.queued && run.queued.length) {
+    var strip = el('div', 'strip');
+    strip.appendChild(el('span', 'pill wait', 'queued in order'));
+    run.queued.forEach(function (id) { strip.appendChild(el('span', 'pill', id)); });
+    body.appendChild(strip);
+  }
+
+  // A run in flight has not written its manifest yet - that file is written when a run
+  // ENDS. So no-manifest is the ordinary state of exactly the run this page exists to
+  // watch, and alarming on it would mean the live card is always red.
+  var pdeg = (p.degraded || []).concat(run.degraded || []);
+  var hot = [], calm = [];
+  pdeg.forEach(function (d) {
+    if (!p.live || (run.state === 'running' && d === 'no-manifest')) calm.push(d);
+    else hot.push(d);
+  });
+  if (hot.length) body.appendChild(degChips(hot, false));
+  if (calm.length) body.appendChild(degChips(calm, true));
+
+  card.appendChild(body);
+  return card;
+}
+
+function paint(state) {
+  var list = document.getElementById('list');
+  var live = state.projects.filter(function (p) { return p.live; }).length;
+  document.getElementById('count').textContent =
+    state.projects.length + ' project' + (state.projects.length === 1 ? '' : 's')
+    + ' - ' + live + ' live';
+  document.getElementById('tick').textContent = 'updated ' + clock(state.now);
+
+  var sig = JSON.stringify(state.projects);
+  if (sig === lastSig && !live) return;
+  lastSig = sig;
+
+  var next = document.createDocumentFragment();
+  if (!state.projects.length) {
+    next.appendChild(el('p', 'empty', 'no runs on this host yet'));
+  } else {
+    // Live projects first, then the rest by name: the reason to have the page open is
+    // always at the top, however many idle fixture targets the corpus holds.
+    state.projects.slice().sort(function (a, b) {
+      if (a.live !== b.live) return a.live ? -1 : 1;
+      return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+    }).forEach(function (p) { next.appendChild(renderProject(p, state.now)); });
+  }
+  list.textContent = '';
+  list.appendChild(next);
+}
+
+function fail(msg) {
+  var box = document.getElementById('err');
+  box.textContent = '';
+  box.appendChild(el('div', 'fail', msg));
+  document.getElementById('tick').textContent = 'stalled';
+}
+
+function poll() {
+  fetch('/state', { cache: 'no-store' })
+    .then(function (r) { return r.json(); })
+    .then(function (s) {
+      document.getElementById('err').textContent = '';
+      paint(s);
+    })
+    .catch(function () {
+      fail('Cannot reach /state. The dashboard process is not running, or it was stopped.');
+    });
+}
+
+poll();
+setInterval(poll, 2000);
+</script>
 </html>
 `;
 
