@@ -342,52 +342,6 @@ deterministic aggregation, not an agent. Read both before proposing a new agent.
   a ritual that already happens, such as the sweep summary or planning step 0, rather than a
   new file. 2026-08-04
 
-- **A live dashboard that lights up the pipeline diagrams as tasks move through them** — an
-  unattended run is currently watched by tailing `run.log` in a terminal, and a batch at
-  `concurrency` 3 interleaves three tasks' lines into one stream with only the trace id to tell
-  them apart. `docs/pipeline-diagram.md` already draws the exact state a reader wants to know,
-  and `docs/pipeline-map.html` already proves the delivery shape works here — one
-  self-contained page, no external fetches, pan/zoom. The idea is its live sibling: the same
-  mermaid, re-rendered with the node each task currently occupies highlighted, and the
-  diagrams already carry `classDef` styling to hang that on.
-  **How detailed it can be, honestly, split three ways** — this is the part worth writing down,
-  because two thirds of it needs no new plumbing:
-  *Free today.* Which projects are running at all, from the `runs/locks/*.lock` registry keyed
-  by canonical target repo (change-log row `repo-os9`). The whole host-side queue diagram —
-  admit, claim, collect, finish — from `run.log`, which `runner/log.js` appends live as
-  `<ISO> LEVEL [runId/issueId] msg`, so it is already a timestamped per-task event stream on
-  disk. Attempt number and each attempt's verdict, pauses and the reported reset time, branch
-  and commit status, final outcome — all of it from the workspace's `.run/status.json`, which
-  the entrypoint updates at every boundary (`init`, `append pass|fail|tampered|error`,
-  `set rateLimitResetAt`, `summary`) and which lives on a host bind mount, so it can be read
-  live without giving the container a route out. The `open → in_progress → closed|blocked`
-  state diagram falls straight out of that.
-  *One small deterministic change.* Where *inside* the container a task is right now — code
-  phase, verifier, docs phase — is the one thing the inner diagram needs and the one thing
-  nothing records, because `status.json` is written *after* each phase rather than on entry to
-  it. A `phase` field set by `pipeline/entrypoint.sh` at each boundary would light that diagram
-  up; it is a scaffolding write with no LLM anywhere near it (hard rule 7). The alternative —
-  grepping `container.log`, which *is* streamed to the host live — is the log-scraping this
-  repo has already banned once for good reasons (§3.6).
-  *Not available at any sane price.* Progress *within* the code phase. That is the existing
-  entry below on periodic self-reported progress, and its catch stands: an LLM cannot keep
-  wall-clock time. A dashboard makes the deterministic half of that entry more attractive than
-  the agent-reported half — "alive, 14 minutes in, log still growing" is a host-side timer, and
-  it answers the question a watcher actually has.
-  **Two of the five diagrams animate; the rest are context.** *Inside one task container* and
-  *how a task moves through the queue* carry live per-task state, and the state diagram does
-  too. *End to end* and *where the walls are* have no runtime state — the planning half is
-  interactive and long finished by the time a run starts. Worth deciding that up front rather
-  than discovering it after building a renderer for all five.
-  **Constraints, all inherited.** Read-only and host-side: a dashboard that can write is a
-  route around hard rule 1. And the page would name target repos, PR URLs and issue titles, so
-  it is git-ignored output like everything else under `runs/` — the same boundary the audit
-  idea above runs into, and for the same reason. Related: the audit-corpus entry above is the
-  same data on the other time axis (that one reads finished runs, this one reads the live one),
-  which is an argument for whatever shape gets built first defining the read model once.
-  Related: `docs/pipeline-diagram.md`, `docs/pipeline-map.html`, `DESIGN.md` §4.7, §4.12, §7.
-  2026-08-02
-
 - **Make the sweep and a live run mutually exclusive** — on 2026-08-01 a sweep running in
   another terminal `docker rm -f`'d a real run's task container twice, and the run reported it
   as exit 137 with an empty log, which reads exactly like an OOM kill. A session was spent on
@@ -573,6 +527,7 @@ shipped thing survives — the same reason the `DESIGN.md` change log keeps its 
 | 2026-08-04 | Audit the pipeline's own history across runs, not one run at a time — the corpus was on disk, structured, and had never been read as one. Parked 2026-08-02 with its own experiment attached: read the runs by hand once, and let that decide aggregation-versus-agent. The hand pass ran 2026-08-04 and aggregation won — every repeated pattern fell out of joining structured fields, none needed judgment | `DESIGN.md` §5 + change-log row `run-audit`: `scripts/audit-runs.js`, deterministic and host-only, joining `run.json`/`status.json`/`verify.json`/`verdict.json`; the LLM reader stays unbuilt, with the reason recorded in §5. Frozen as issue `repo-73k` with tests at `tests/acceptance/repo-73k/`; shipped with `scripts/test-audit-runs.sh` (change-log row `repo-73k`) |
 | 2026-08-04 | Capture the reviewer's verdict on every run — merged / sent back, and why — at the only moment it exists. Extracted from the two agent-shaped entries that both named it the most valuable field the pipeline does not own, and both concluded the shape is a cheap capture step, not a reviewing agent. Parked and promoted the same day | `DESIGN.md` §5 + change-log row `review-verdict`; frozen as issue `repo-1ie` with tests at `tests/acceptance/repo-1ie/` (freeze gate RED against a green control, 2026-08-04), then **shipped** as change-log row `repo-1ie`: `scripts/verdict.js` (`record` + `pending`, self-contained, chooses the run by `startedAt`) and the Docker-free suite `scripts/test-verdict.sh` / `tests/unit/verdict.test.js` |
 | 2026-08-04 | Record spec-to-code traceability at the moment it is created, instead of inferring it later — a ticked box carries the id of the issue that ticked it, so reconciliation is mechanical and nothing ever guesses an edge. The cheapest honest version of a knowledge graph; parked and promoted the same day because it collapses six drift entries into one convention | change-log row `trace-ledger`: the convention, `scripts/trace.js` (report + deterministic backfill via `git log -L`), the Docker-free suite `scripts/test-trace.sh` / `tests/unit/trace.test.js`, and the PLANNING.md step-0 drift read |
+| 2026-08-10 | A live dashboard that lights up the pipeline diagrams as tasks move through them — parked 2026-08-02 with its own three-way feasibility split (free today / one small deterministic change / not at any sane price), which held up under the planning session's read of the code. One correction from that read: the second deterministic change the entry contemplated finding a workspace was unnecessary — the runner's unconditional `workspace ready:` line already existed | `DESIGN.md` §5 + change-log row `live-dashboard`: the reader `scripts/dashboard.js` with a frozen `/state` contract (issue `repo-kfg`, tests at `tests/acceptance/repo-kfg/`), the `phase` field feed (issue `repo-bmd`, tests at `tests/acceptance/repo-bmd/`), and the page as interactive work against the frozen contract — the look deliberately unfrozen, so it is reviewed by looking at it |
 
 ## Dropped
 
