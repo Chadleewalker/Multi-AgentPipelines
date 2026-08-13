@@ -13,7 +13,7 @@ approves intent before a run and reviews results after; nothing in between is in
 | `PLANNING.md` | The playbook for a planning session: how a task spec and its frozen tests get written and approved. |
 | `docs/IDEAS.md` | The idea inbox — parked "this should probably become a design someday" notes. Costs nothing to add to, commits to nothing, and is where a planning session looks for candidates. Not a backlog: an entry here is not work. |
 | `docs/pipeline-diagram.md` | The same design as diagrams — compact mermaid, for someone about to change the code. **Task docs phases keep it current**, so amend it in the same PR that changes the shape it draws. |
-| `docs/pipeline-map.html` | The whole system explained for a reader rather than a maintainer: one page, nine diagrams, pan/zoom. Hand-maintained and **not** updated by task docs phases — check it against `DESIGN.md` when you touch it, because nothing else will. |
+| `docs/pipeline-map.html` | The whole system explained for a reader rather than a maintainer: one page, ten diagrams, pan/zoom. Hand-maintained and **not** updated by task docs phases — check it against `DESIGN.md` when you touch it, because nothing else will. **This is the source page; it draws no diagrams itself.** After editing it run `node scripts/build-pipeline-map.js`, which writes the committed `docs/pipeline-map.built.html` — the copy to open, publish or hand to a reader (change-log row `map-prerender`). |
 
 `DESIGN.md` is long. Section 4.11 (the outcome table) and section 3.1 (the three levels:
 design doc → Beads issue → frozen tests) carry the most weight per line.
@@ -44,6 +44,29 @@ pipeline unable to be trusted unattended.
    dependencies into the image at planning time instead.
 7. **No LLM in the runner, the verifier, or the report generator.** Control flow,
    timeouts, and outcomes are deterministic. Agents do fuzzy work only.
+
+## Standing authorizations
+
+Some sessions start with a default of "don't spawn subagents unless the user asks". That
+default has an escape hatch — *unless the user requested it* — and this section is that
+request, made once, in writing, so it does not have to be made again every session.
+
+**Fresh-context subagents are pre-authorized for the planning steps that require them**, and
+for those steps Claude spawns them without asking:
+
+- `PLANNING.md` step 1b — drafting a spec's acceptance criteria against the code, in a
+  context that has not been primed by the discussion that produced the intent;
+- `PLANNING.md` step 2 — the critic panel (`advisors/`), one independent review per charter.
+
+**Fresh context is the mechanism, not a convenience.** The critics are not smarter than the
+drafter; they are unprimed and reading the implementation, which is exactly what the drafter
+— many specs deep in one sitting — cannot be. A self-review by the drafter is a different and
+weaker thing, and labelling it as the panel would make the trail dishonest. In the first full
+panel run on a real backlog, 9 of 9 specs came back with findings.
+
+This authorization is deliberately narrow: it covers planning-time review and nothing else.
+It is not a licence to fan out on ordinary work, and it says nothing about workflows or
+deep research, which stay opt-in per request.
 
 ## Environment (the reference host)
 
@@ -92,7 +115,11 @@ bash scripts/e2e.sh            # add --keep to leave branches and PRs up for ins
 bash scripts/test-verifier.sh
 bash scripts/test-runner-container.sh
 
-# the fifteen suites that need no Docker — seconds, safe to run anywhere, even in a container
+# redrawing the reader's map after editing docs/pipeline-map.html (§12, change-log row `map-prerender`).
+# Host-only: needs `cd tools/mapbuild && npm install` once, and never runs in a container.
+node scripts/build-pipeline-map.js   # writes docs/pipeline-map.built.html + a per-diagram node count
+
+# the sixteen suites that need no Docker — seconds, safe to run anywhere, even in a container
 bash scripts/test-runner-memory.sh
 bash scripts/test-changelog.sh     # DESIGN.md §12 row identity (CHANGELOG_FILE re-aims it)
 bash scripts/test-sanitize.sh      # publication hygiene (SANITIZE_FIXTURE_DIR re-aims it)
@@ -108,6 +135,7 @@ bash scripts/test-verdict.sh       # the review verdict recorder — which run a
 bash scripts/test-audit-runs.sh    # the run-history audit — buckets, joins, channels, quantiles, and that it writes nothing (change-log row `repo-73k`)
 bash scripts/test-dashboard.sh     # the live dashboard's /state joins, its degraded vocabulary, and that it writes nothing (change-log row `repo-kfg`)
 bash scripts/test-verify-buffer.sh # the verifier's capture limit — a loud PASS is a pass, a loud FAIL is still a fail (change-log row `verify-nobuffer`)
+bash scripts/test-pipeline-map.sh  # the reader's map is drawn at build time — an error card is not a diagram (change-log row `map-prerender`)
 ```
 
 Reading the corpus itself is `node scripts/audit-runs.js` — a pure reader that prints one
@@ -338,6 +366,17 @@ the pipeline working on the pipeline's own code. The rules:
   load-bearing fixtures differ only in exit code while both printing 1.2 MiB, so read them
   as a pair: the passing one proves the ceiling is gone, and the failing one proves it was
   not bought by excusing real failures that happen to be noisy.
+  And `sh scripts/test-pipeline-map.sh` (`tests/unit/pipeline-map-build.test.js`), which
+  drives `scripts/build-pipeline-map.js` through its `MAP_MMDC` seam against a stand-in
+  renderer it writes into a temp directory: run it if you touch that builder or
+  `docs/pipeline-map.html`. It needs no mermaid and no npm — the real renderer lives in
+  the git-ignored `tools/mapbuild/node_modules`, which does not exist in here, so **do not
+  try to run the builder itself from a container**; the suite is the part that travels.
+  Its load-bearing pair is a good SVG whose stylesheet carries the words an error card
+  carries, and a real error card: every successful mermaid render defines `.error-icon`,
+  so a guard that searches the whole file for that word fails every diagram on the page,
+  and one that searches for nothing passes a page of error cards. Neither check means
+  anything alone.
   Any new Docker-free suite belongs beside them in
   `tests/unit/`, and its seam stub must be a `.js` file invoked through
   `process.execPath`, never a `#!/bin/sh` script: `spawnSync` without a shell fails such a
