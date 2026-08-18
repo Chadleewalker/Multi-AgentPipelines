@@ -244,7 +244,7 @@ place the closed-network policy would have to be revisited deliberately.
 
 | Outcome | Exit | Report status | Beads | Branch pushed | PR |
 |---|---|---|---|---|---|
-| Acceptance pass, regressions pass or absent | 0 | done | closed | yes | yes |
+| Acceptance pass, regressions pass, absent or error | 0 | done | closed | yes | yes |
 | Acceptance pass, regressions fail | 0 | partial | closed | yes | yes, flagged |
 | Bailed after 3 attempts | 10 | stuck | blocked | yes, WIP | no |
 | Frozen tests modified | 11 | tampered | blocked | yes, WIP | no |

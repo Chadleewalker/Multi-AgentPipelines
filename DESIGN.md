@@ -658,7 +658,7 @@ source of truth.
 
     | Outcome | Exit code | Report status | Beads status after | Branch pushed? | PR? |
     |---|---|---|---|---|---|
-    | Acceptance pass, regressions pass or absent | 0 | done | closed | yes | yes |
+    | Acceptance pass, regressions pass, absent or error | 0 | done | closed | yes | yes |
     | Acceptance pass, regressions fail | 0 | partial | closed | yes | yes, flagged |
     | Bailed at the attempt cap (default 3) | 10 | stuck | blocked | yes (WIP) | no |
     | Test tampering detected | 11 | tampered | blocked | yes (WIP) | no |
@@ -666,7 +666,11 @@ source of truth.
     | Internal error | 30 | failed | blocked | if commits exist | no |
     | Wall-clock kill (host `docker kill`, no exit code) | — | failed, timeout noted | blocked | if commits exist | no |
 
-    The runner distinguishes done from partial by reading `verify.json`. The runner sets
+    The runner distinguishes done from partial by reading `verify.json`, and it downgrades
+    on `regressions: "fail"` and on nothing else: a regression run the verifier *killed*
+    before it reached a verdict is `error` (4.4, change-log row `verify-nobuffer`) and
+    leaves a passing task `done`, because a harness fault is not a regression. The manifest
+    records that value verbatim rather than mapping it (change-log row `repo-4d8`). The runner sets
     an issue in-progress when its task starts; **blocked** is what takes failed work out
     of the ready queue (it needs a human decision in review — fix the spec, fix the doc,
     or drop it), so the run loop can never re-pick a failed issue. Timeout kills treat
