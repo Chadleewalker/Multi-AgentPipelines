@@ -55,7 +55,7 @@
             "additionalProperties": false,
             "properties": {
               "acceptance": { "enum": ["pass", "fail", "tampered", "error"] },
-              "regressions": { "enum": ["pass", "fail", "absent"] },
+              "regressions": { "enum": ["pass", "fail", "absent", "error"] },
               "evidence": { "type": "string" }
             }
           },

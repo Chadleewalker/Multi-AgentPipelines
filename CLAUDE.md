@@ -137,7 +137,7 @@ bash scripts/test-runner-container.sh
 # Host-only: needs `cd tools/mapbuild && npm install` once, and never runs in a container.
 node scripts/build-pipeline-map.js   # writes docs/pipeline-map.built.html + a per-diagram node count
 
-# the sixteen suites that need no Docker — seconds, safe to run anywhere, even in a container
+# the seventeen suites that need no Docker — seconds, safe to run anywhere, even in a container
 bash scripts/test-runner-memory.sh
 bash scripts/test-changelog.sh     # DESIGN.md §12 row identity (CHANGELOG_FILE re-aims it)
 bash scripts/test-sanitize.sh      # publication hygiene (SANITIZE_FIXTURE_DIR re-aims it)
@@ -154,6 +154,7 @@ bash scripts/test-audit-runs.sh    # the run-history audit — buckets, joins, c
 bash scripts/test-dashboard.sh     # the live dashboard's /state joins, its degraded vocabulary, and that it writes nothing (change-log row `repo-kfg`)
 bash scripts/test-verify-buffer.sh # the verifier's capture limit — a loud PASS is a pass, a loud FAIL is still a fail (change-log row `verify-nobuffer`)
 bash scripts/test-pipeline-map.sh  # the reader's map is drawn at build time — an error card is not a diagram (change-log row `map-prerender`)
+bash scripts/test-schema-drift.sh  # the verifier's vocabulary and the manifest's still agree (SCHEMA_DRIFT_DIR re-aims it; change-log row `repo-4d8`)
 ```
 
 Reading the corpus itself is `node scripts/audit-runs.js` — a pure reader that prints one
@@ -395,6 +396,16 @@ the pipeline working on the pipeline's own code. The rules:
   so a guard that searches the whole file for that word fails every diagram on the page,
   and one that searches for nothing passes a page of error cards. Neither check means
   anything alone.
+  And `sh scripts/test-schema-drift.sh` (`tests/unit/schema-drift.test.js`), which reads
+  two JSON files and compares them: run it if you touch `schemas/run.schema.json`,
+  `schemas/verify.schema.json`, or the place in `runner/run.js` that copies the verifier's
+  verdicts onto the manifest task row. Those two enums are ONE vocabulary written down
+  twice — the copy is verbatim, with no mapping — so a value added to the verifier alone is
+  invisible until a run emits it and its own `run.json` fails ajv, which reads as a schema
+  error rather than as the harness fault it is (change-log rows `verify-nobuffer`,
+  `repo-4d8`). It checks both directions on both copied fields, and pins `error` present on
+  both sides, because plain set equality is also satisfied by NARROWING the verifier — the
+  perverse fix that would put a killed regression run back to looking like a real failure.
   Any new Docker-free suite belongs beside them in
   `tests/unit/`, and its seam stub must be a `.js` file invoked through
   `process.execPath`, never a `#!/bin/sh` script: `spawnSync` without a shell fails such a

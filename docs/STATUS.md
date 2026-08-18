@@ -4,7 +4,7 @@ Where the build actually is. Update this when something changes — it is the fi
 session reads to pick up the thread, and unlike a machine-local memory folder it travels
 with the repo.
 
-_Last updated: 2026-08-11_
+_Last updated: 2026-08-18_
 
 ## Where things stand
 
@@ -265,6 +265,23 @@ real use. All are fixed.
     moment a future edit dropped the argument, and stay quiet until some target's suite
     happened to get chatty.
 
+    **Its sequel, found by reading rather than by a run (change-log row `repo-4d8`).** The
+    fourth value went into `schemas/verify.schema.json` and not into
+    `schemas/run.schema.json`, whose task row declares the same two verdict fields.
+    `runner/run.js` copies the verifier's values onto that row **verbatim**, so the first
+    run whose regression pass got killed would have written a `run.json` that fails its own
+    ajv validation in `scripts/test-report.sh` and `scripts/e2e.sh` — and the artifact a
+    human opens would have blamed the schema for what was really a killed suite. It stayed
+    latent because it takes a killed regression run to fire and none has. Nothing else was
+    at risk: `runner/queue.js`'s `outcomeFor` downgrades on `regressions === 'fail'` and on
+    nothing else, so `error` already left a passing task `done`, and the report, the PR body
+    and both readers under `scripts/` interpolate the value as a string or never read it.
+    The fix is one enum member, plus the seventeenth Docker-free suite
+    (`scripts/test-schema-drift.sh`) to keep the two files in step: both directions, both
+    copied fields, `error` pinned present on **both** sides — because plain set equality is
+    satisfied just as well by deleting the value from the verifier, which is the perverse
+    fix that would put a harness fault back to looking like a real regression.
+
 ## Gotchas that cost real time
 
 - **MSYS path conversion.** Git Bash rewrites container-side paths in `docker` arguments
@@ -281,6 +298,12 @@ real use. All are fixed.
   `/repo` produces `repo-xxx` ids. Mount at a meaningful path (`/fix`, or whatever names
   the project) when running `bd init`.
 - **`node --test <dir>/` is broken on Node 22+** (MODULE_NOT_FOUND). Always pass the file.
+- **A value copied verbatim between two files makes them one contract.** `runner/run.js`
+  copies the verifier's `acceptance` and `regressions` onto the manifest task row with no
+  mapping, so `verify.schema.json`'s enums and `run.schema.json`'s copies of them must move
+  together; editing one is silent until a run emits the new value. `test-schema-drift.sh`
+  is the checker (change-log row `repo-4d8`). The same shape is worth watching wherever a
+  vocabulary is written down twice.
 - **`PIPELINE_BD_CMD` stubs the whole bd layer.** Set it and `runner/bd.js` spawns that
   executable directly with the bare bd argument vector — no `-C` prefix, no host-`bd`
   probe, no Docker fallback — which is how the Docker-free acceptance tests exercise
@@ -1266,12 +1289,13 @@ design's central bet, and it is the first day it paid out repeatedly.
 
 ## Test suites
 
-All but fourteen drive real Docker and share one network, so they must never run concurrently
+All but seventeen drive real Docker and share one network, so they must never run concurrently
 (`test-runner-memory.sh`, `test-changelog.sh`, `test-sanitize.sh`,
 `test-agent-hooks.sh`, `test-network-names.sh`, `test-lock.sh`,
 `test-sweep-hygiene.sh`, `test-concurrency.sh`, `test-pause-gate.sh`,
-`test-sweep-assertions.sh`, `test-trace.sh`, `test-verdict.sh`, `test-audit-runs.sh`
-and `test-dashboard.sh` are the exceptions —
+`test-sweep-assertions.sh`, `test-trace.sh`, `test-verdict.sh`, `test-audit-runs.sh`,
+`test-dashboard.sh`, `test-verify-buffer.sh`, `test-pipeline-map.sh`
+and `test-schema-drift.sh` are the exceptions —
 see below; they need neither).
 **`scripts/test-all.sh` is the sweep** — it holds a lock, runs every suite sequentially,
 kills one that hangs (`--timeout`, default 900s), **reclaims what each suite leaked after
@@ -1309,8 +1333,11 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-verdict.sh` | the review verdict recorder (change-log row `repo-1ie`) — which run a verdict lands in, what counts as PR-bearing, every refusal writing nothing, and the recorder staying self-contained |
 | `scripts/test-audit-runs.sh` | the run-history audit (change-log row `repo-73k`) — the three-bucket corpus taxonomy, `startedAt` joins, the `specConcerns` channel keys, nearest-rank quantiles, the per-model cross-tab (change-log row `model-crosstab`) whose two fixture models disagree on first-attempt rate, and the pure-reader contract checked by content hash |
 | `scripts/test-dashboard.sh` | the live run dashboard (change-log row `repo-kfg`) — the lock-to-run join, the run pick against its three wrong answers, the closed degraded vocabulary at each level, the loopback server contract, and the pure-reader contract checked by content hash |
+| `scripts/test-verify-buffer.sh` | the verifier's capture limit (change-log row `verify-nobuffer`) — two fixtures differing only in exit code while both printing 1.2 MiB, so a loud PASS reads `pass` and a loud FAIL still reads `fail` |
+| `scripts/test-pipeline-map.sh` | the reader's map is drawn at build time (change-log row `map-prerender`) — the `MAP_MMDC` seam against a stand-in renderer, and a good SVG vs a real error card, which mean nothing read apart |
+| `scripts/test-schema-drift.sh` | the verifier's vocabulary and the manifest's (change-log row `repo-4d8`) — both copied verdict fields compared in both directions, `error` pinned present on both sides so narrowing cannot pass for agreement, and a planted drifted pair through `SCHEMA_DRIFT_DIR` proving it goes red |
 
-**`scripts/test-runner-memory.sh` is one of the fourteen suites that need no Docker**
+**`scripts/test-runner-memory.sh` is one of the seventeen suites that need no Docker**
 (repo-dhp): it
 drives both §3.6 memory channels plus the `shouldFileMemory` outcome gate through the
 `PIPELINE_BD_CMD` seam, so it runs anywhere — including inside a task container, where

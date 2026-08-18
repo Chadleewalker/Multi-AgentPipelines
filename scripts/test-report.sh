@@ -33,6 +33,17 @@ const tasks = [
     pushed: true, prUrl: "https://example.test/pr/2", attempts: 3, pauses: 1, activeSeconds: 90,
     diffLines: 40, changeSummary: "Fixed it eventually.",
     verification: { acceptance: "pass", regressions: "absent" }, attemptNotes: ["run x: outcome done"] },
+  // A killed regression run (change-log rows `verify-nobuffer`, `repo-4d8`): the verifier
+  // reached no verdict, so the value is `error` — neither `fail`, which would downgrade
+  // this passing task to partial on a harness fault, nor `absent`, which would hide it.
+  // The row is here so the ajv call below actually exercises the widened enum: a schema
+  // value no fixture ever produces is a contract nothing checks. Its diffLines put it
+  // between i-retry and i-done1, so first-try `done` still sorts last (checked at 5b).
+  { issueId: "i-kill", title: "regression run killed", outcome: "done", exitCode: 0, branch: "task/i-kill",
+    pushed: true, prUrl: "https://example.test/pr/4", attempts: 1, pauses: 0, activeSeconds: 30,
+    diffLines: 9, changeSummary: "Landed it; the regression suite never finished.",
+    verification: { acceptance: "pass", regressions: "error", evidence: "regression run killed at the output cap" },
+    attemptNotes: ["run x: outcome done"] },
   { issueId: "i-fail", title: "internal error", outcome: "failed", exitCode: 30, branch: "task/i-fail",
     pushed: false, prUrl: null, attempts: 0, pauses: 0, activeSeconds: 3, diffLines: 0,
     error: "container died", attemptNotes: ["run x: outcome failed"] },
@@ -70,10 +81,10 @@ fi
 
 # 2. Scrutiny ordering: tampered > stuck > partial > failed > done-with-retries > done-first-try.
 ORDER=$(grep -o '^## [a-z0-9-]*' "$REP" | sed 's/## //' | tr '\n' ' ')
-[ "$ORDER" = "i-tamp i-stuck i-part i-fail i-retry i-done1 " ] \
+[ "$ORDER" = "i-tamp i-stuck i-part i-fail i-retry i-kill i-done1 " ] \
   && pass "report ordered by scrutiny needed" || fail "ordering wrong: $ORDER"
 MORDER=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).tasks.map(t=>t.issueId).join(" "))' "$MAN")
-[ "$MORDER" = "i-tamp i-stuck i-part i-fail i-retry i-done1" ] \
+[ "$MORDER" = "i-tamp i-stuck i-part i-fail i-retry i-kill i-done1" ] \
   && pass "manifest itself is stored in scrutiny order" || fail "manifest order wrong: $MORDER"
 
 # 3. done-with-retries outranks done-first-try (the tie-break inside 'done').
@@ -99,7 +110,7 @@ grep -q "PR: none — review the branch directly" "$REP" && pass "pushed-but-unP
 grep -q "not pushed — no commits" "$REP" && pass "empty branch marked not pushed" || fail "no-commit note missing"
 grep -q "bailed after 3 failed verification attempts" "$REP" && pass "stuck state surfaced" || fail "stuck state missing"
 grep -q "Rate-limit pauses: 1" "$REP" && pass "rate-limit pauses reported" || fail "pause count missing"
-grep -q "6 task(s)" "$REP" && pass "summary counts tasks" || fail "summary missing"
+grep -q "7 task(s)" "$REP" && pass "summary counts tasks" || fail "summary missing"
 
 # 5b. Spec concerns reach the report (§3.7). Until this existed the host-side half of the
 # channel was unbuilt and a concern reached only the status file — the agent could say "this
