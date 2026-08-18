@@ -81,6 +81,45 @@ Two hard boundaries, both inherited:
 
 <!-- Newest at the top. Nothing here is committed to. -->
 
+- **Choose the model per phase and per task, not per run** — `model` in
+  `run.config.*.json` is one alias for the whole run, and it reaches both agent phases
+  through a single `AGENT_CMD` in `pipeline/entrypoint.sh`, so the docs phase runs on the
+  same tier as the code phase and an easy task runs on the same tier as a hard one. Why
+  you'd want it: the verifier is deterministic, so a cheaper model can only fail
+  honestly — three attempts and a `stuck` row, never a weaker gate — which makes
+  downshifting a cost question rather than a quality risk. The cheap half is the docs
+  phase, which summarises and edits docs. The per-task half is the one with a design
+  question in it: "this task is easy" is a planning-time judgment, so the tier would have
+  to come off the frozen spec rather than the run config, and that is a new field in the
+  contract. The likely split is not the intuitive one: the docs phase (summarise the change,
+  edit the files it owns) is Sonnet-tier work, while the code phase is the hardest thing in the
+  pipeline and stays on the top tier. Related: `DESIGN.md` §4.3, and §4.11 — the resolved id is
+  already recorded per task, so provenance survives either change. 2026-08-17
+
+- **Give a run a spend ceiling it cannot cross — "budget exhausted" as a first-class
+  outcome** — borrowed from a session harness's workflow budget (a hard token cap past
+  which no new agent starts; the trail is change-log row `panel-workflow`). An overnight
+  run's only stops today are the queue draining, the three-attempt cap and the rate-limit
+  park; nothing bounds cumulative spend, so a long queue burns whatever the subscription
+  window holds and the human finds out in the morning. Shape: the runner sums per-task
+  usage and stops **claiming** once a configured cap is crossed — checked at task
+  boundaries only, never mid-attempt, so no in-flight work is abandoned — and the report
+  names the outcome and the tasks left unclaimed. Deterministic and host-side (hard rule 7
+  untouched), and it converts "how much will tonight cost" from a guess into a setting.
+  Blocked on: the per-task cost recording entry below (2026-08-04) — a ceiling needs the
+  meter first. Related: `DESIGN.md` §7. 2026-08-13
+
+- **Make the note and concern caps loud — a capped agent should be visible, not
+  silent** — `status.js note` past 20 and `concern` past 5 are documented as "silently a
+  no-op", which is a silent cap of exactly the kind this repo's own doctrine forbids
+  elsewhere ("assert the artifact is right, not merely present"; the sweep names what it
+  drops). A concern is the channel for "the frozen spec is wrong" — the one result a run
+  exists to surface — so the sixth concern being dropped without trace is the worst
+  possible place for silence. Cheap shape: `status.js` counts what it refused
+  (`notesDropped`, `concernsDropped`) in the status file it already writes, and the run
+  report prints the counts; one deterministic counter, no cap change, no new channel.
+  Related: `DESIGN.md` §3.3, §3.6. 2026-08-13
+
 - **The dashboard's live `attempt` reads one too low — re-freeze the `/state` contract
   before the page session.** `scripts/dashboard.js` sets a task's `attempt` to
   `status.attempts.length`, and its frozen suite pins exactly that (`tests/acceptance/`
