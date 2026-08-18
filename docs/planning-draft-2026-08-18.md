@@ -606,3 +606,83 @@ writing C4's schema checks knows it is out of scope rather than overlooked.
   `pipeline.config.json`'s `dependencies` and no image rebuild is needed.
 - Step 8's pre-run checklist (ready queue, image present, Docker Desktop up) is a
   run-time check, not a planning one.
+
+---
+
+# Task 3 — the regressions enum drift (approved 2026-08-18, same session)
+
+The sibling defect the `task-cost` panel found and deliberately excluded from both
+measurement diffs. Approved as its own task; specced here through the same path.
+
+**Issue: `repo-4d8`** — "Close the regressions enum drift between verify.schema.json and
+run.schema.json", priority 1, no dependencies. Independent of `repo-t3h` / `repo-ybl` in
+both directions: different files, no shared criterion.
+
+## The defect, verified rather than assumed
+
+`schemas/verify.schema.json` accepts four values for `regressions`; change-log row
+`verify-nobuffer` added `error`, meaning the regression run was killed before reaching a
+verdict — deliberately distinct from `fail` (which would downgrade a passing task to
+`partial` on a harness fault) and from `absent` (which would hide it).
+`schemas/run.schema.json` accepts three. `runner/run.js` copies the value onto the
+manifest task row **verbatim** — no mapping, no filtering — so a run whose regression pass
+is killed writes a `run.json` that fails its own ajv validation in `scripts/test-report.sh`
+and `scripts/e2e.sh`.
+
+Checked in the code before drafting, not remembered:
+
+- `runner/queue.js`'s `outcomeFor` downgrades to `partial` on `regressions === 'fail'` and
+  on nothing else, so `error` **already** leaves a passing task `done`. That is the
+  behaviour `verify-nobuffer` intended and this task must not touch it.
+- `runner/report.js` and `runner/publish.js` interpolate the value as a string with no
+  enum of their own; `scripts/audit-runs.js` and `scripts/dashboard.js` never read the
+  field. The blast radius really is the one schema.
+- The only consumers of `run.schema.json` are two `npx --yes ajv` calls. Neither suite's
+  fixture carries a row with `regressions: "error"` today, so a schema-only fix would
+  widen a contract that nothing ever exercises.
+
+## Panel
+
+Label proposed **`trivial`**, revised to **`medium`** — not for size, but because the
+critic showed the deliverable was larger than "one enum value" (finding 1 below). One
+critic, per the `trivial`/`medium` tier: `testability`, fresh context, charter verbatim.
+Verdict **`concerns`**, six findings, **all six accepted, none rejected or deferred.**
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | **The durability claim had no criterion behind it.** A frozen acceptance test is run by `pipeline/verify.js` during its own task's run and **never again** — `scripts/test-all.sh` discovers suites by the glob `scripts/test-*.sh`, and nothing in `scripts/` ever runs an acceptance directory. So "the two schemas cannot drift apart again" was false as designed: the check would stop executing the moment the task closed | **Accepted, and it grew the task.** New criterion D4 requires a re-runnable `scripts/test-schema-drift.sh` over `tests/unit/schema-drift.test.js`, discovered by the sweep glob, on the `test-audit-runs.sh` / `test-dashboard.sh` precedent. **Verified independently before acting** — the glob is at `scripts/test-all.sh:79` and both precedent suites carry a header saying why they are re-runnable rather than frozen |
+| 2 | The cross-schema equality check **passes vacuously** if either lookup misses: the field nests four levels deep in one file and one level deep in the other, so a mis-navigation compares `undefined` to `undefined` and reads as agreement | **Accepted.** Both JSON paths are pinned in the criterion text, and each side is asserted to be a located array of length ≥ 4 **before** the comparison runs |
+| 3 | "Otherwise unmoved" checked by four sampled properties would pass an implementation that also widened the `outcome` enum, deleted `concurrency`, flipped `additionalProperties` or dropped a `maxItems` | **Accepted.** D5 deep-equals the parsed file against an image of the fork-point file with the single new member added, and names the first differing path. The baseline cannot go stale — fork-point state is fixed history |
+| 4 | The admitter's fidelity to **ajv** is unpinned; if it is permissive where ajv is not, the criterion is green while the real validator still rejects | **Accepted.** The load-bearing assertion is now a direct one on the parsed enum arrays; the admitter is demoted to what it can honestly show — a full row is accepted, an invented value is not. The `repo-bmd` precedent does exactly this |
+| 5 | The admitted fixture was a two-key stub; with `additionalProperties: false` on both the row and the `verification` object, that tests **strictly less** than the artifact that fails in the field | **Accepted.** The fixture is now a realistic row of the shape `runner/run.js` writes, including `verification.evidence` and the optional `model` / `changeSummary` / `stuckState` / `specConcerns` keys |
+| 6 | Nothing pinned how the schema files are located — a `cwd`-relative read passes in the container and from the repo root and fails silently-differently elsewhere, turning into the empty-set comparison of finding 2 | **Accepted.** Both paths resolve from `__dirname`, and both files are asserted to have parsed before any comparison, with a loud harness-broken exit if either did not |
+
+## Criteria, after the panel
+
+**D1** the manifest admits every value the verifier can emit — paths pinned, each enum
+located and non-trivial before comparison, vocabulary read from `verify.schema.json`
+rather than written down, realistic row shape. **D2 [guard]** the verifier's vocabulary is
+not narrowed and the admitter can in fact reject, on the same path D1 admitted.
+**D3 [guard]** `error` still does not downgrade a passing task — `outcomeFor` driven
+in-process over four probes. **D4** the drift check keeps running: the new suite is green
+against the real schemas and **red against a planted drifted pair** through its
+`SCHEMA_DRIFT_DIR` seam. **D5 [guard]** `run.schema.json` is otherwise unmoved.
+
+## Freeze-gate evidence
+
+`tests/acceptance/repo-4d8/test.js` — **red on the feature, green on every guard.** D1
+fails on the located-but-short enum and on the `error` row; D4 fails because neither the
+suite nor its checker exists yet; D5 fails naming the exact path
+(`$.properties.tasks.items.properties.verification.properties.regressions.enum: length 3
+vs 4`). D2 and D3 are green, as labelled guards should be. Gate exit 0.
+
+## Two things deliberately not done
+
+- **No `DESIGN.md` change-log row.** This restores a contract §4.11 already implies rather
+  than deciding anything new, so the row is the implementing task's to write, keyed on
+  `repo-4d8` — the repo's convention for a row a pipeline task produces.
+- **No proof that the two Docker suites now accept such a manifest under real ajv.** Both
+  need ajv and Docker, which frozen tests may not use. The constraint requiring
+  `scripts/test-report.sh`'s fixture to gain a row carrying `regressions: "error"` is what
+  puts the widened enum in front of real ajv on the host; that proof belongs to the host
+  sweep, and is stated as out of scope rather than left as a silent orphan.
