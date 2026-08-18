@@ -413,12 +413,57 @@ function render(corpus) {
 
   line('### Models');
   line();
+  line('Outcome, first-attempt pass rate and review verdicts, cut by resolved model id.');
+  line('The model is recorded per TASK (§4.11), not per run, so a corpus whose config');
+  line('changed part way through still cross-tabs correctly. This is the only place the');
+  line('corpus can answer "was the cheaper model good enough for this work" — the flat');
+  line('tally it replaced could say which models ran and the outcome table could say how');
+  line('the work went, and neither could say whether the two were related.');
+  line();
   const models = new Map();
   for (const run of runs) {
-    for (const task of run.tasks) tally(models, task.model === null ? '(none recorded)' : task.model);
+    for (const task of run.tasks) {
+      const key = task.model === null ? '(none recorded)' : task.model;
+      if (!models.has(key)) {
+        models.set(key, {
+          rows: 0, outcomes: new Map(), doneWithAttempts: 0, firstAttempt: 0, verdicts: new Map(),
+        });
+      }
+      const m = models.get(key);
+      m.rows += 1;
+      tally(m.outcomes, task.outcome);
+      // The denominator is done tasks that RECORDED an attempt count, never all done
+      // tasks: `attempts` is null on rows written before the field existed, and folding
+      // those in either way invents a pass rate out of a missing field. The printed
+      // fraction carries its own denominator for exactly that reason.
+      if (task.outcome === 'done' && task.attempts !== null) {
+        m.doneWithAttempts += 1;
+        if (task.attempts === 1) m.firstAttempt += 1;
+      }
+      // Same PR-bearing rule the coverage section uses: a verdict recorded against a
+      // row with no PR is anomalous data, and counting it here while the coverage
+      // section skips it would have one report disagree with itself about how many
+      // verdicts exist.
+      const v = task.prUrl !== null && task.verdict ? str(task.verdict.verdict) : null;
+      if (v !== null) tally(m.verdicts, v);
+    }
   }
   if (!models.size) line('- (no task rows)');
-  for (const [model, count] of byKey(models)) line(`- ${model}: ${count}`);
+  for (const [model, m] of byKey(models)) {
+    line(`- ${model}: ${m.rows} task row(s)`);
+    for (const [outcome, count] of byCountThenKey(m.outcomes)) line(`  - ${outcome}: ${count}`);
+    if (m.doneWithAttempts === 0) {
+      line('  - done on attempt 1: (no done task with a recorded attempt count)');
+    } else {
+      line(`  - done on attempt 1: ${m.firstAttempt} of ${m.doneWithAttempts} done task(s) with a recorded attempt count`);
+    }
+    const verdictTotal = [...m.verdicts.values()].reduce((sum, n) => sum + n, 0);
+    if (verdictTotal === 0) line('  - review verdicts: (no verdict recorded)');
+    else {
+      const parts = byCountThenKey(m.verdicts).map(([k, c]) => `${k} ${c}`).join(', ');
+      line(`  - review verdicts: ${parts} (of ${verdictTotal} recorded)`);
+    }
+  }
   line();
 
   // ---- partial forensics ------------------------------------------------------------

@@ -1307,7 +1307,7 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-sweep-assertions.sh` | the sweep's `PASSED` column — both assertion vocabularies, one honest total from a log carrying both, and "could not tell" rendered apart from a zero |
 | `scripts/test-trace.sh` | the traceability ledger (change-log row `trace-ledger`) — checkbox/ref parsing on both line endings, the three report lists, and backfill that recovers the ticking commit through later prose edits and refuses to guess |
 | `scripts/test-verdict.sh` | the review verdict recorder (change-log row `repo-1ie`) — which run a verdict lands in, what counts as PR-bearing, every refusal writing nothing, and the recorder staying self-contained |
-| `scripts/test-audit-runs.sh` | the run-history audit (change-log row `repo-73k`) — the three-bucket corpus taxonomy, `startedAt` joins, the `specConcerns` channel keys, nearest-rank quantiles, and the pure-reader contract checked by content hash |
+| `scripts/test-audit-runs.sh` | the run-history audit (change-log row `repo-73k`) — the three-bucket corpus taxonomy, `startedAt` joins, the `specConcerns` channel keys, nearest-rank quantiles, the per-model cross-tab (change-log row `model-crosstab`) whose two fixture models disagree on first-attempt rate, and the pure-reader contract checked by content hash |
 | `scripts/test-dashboard.sh` | the live run dashboard (change-log row `repo-kfg`) — the lock-to-run join, the run pick against its three wrong answers, the closed degraded vocabulary at each level, the loopback server contract, and the pure-reader contract checked by content hash |
 
 **`scripts/test-runner-memory.sh` is one of the fourteen suites that need no Docker**
