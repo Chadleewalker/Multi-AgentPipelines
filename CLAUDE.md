@@ -150,7 +150,7 @@ bash scripts/test-pause-gate.sh    # the §7 run-level rate-limit park — one s
 bash scripts/test-sweep-assertions.sh # the sweep's PASSED column — both vocabularies, one honest total
 bash scripts/test-trace.sh         # the traceability ledger — spec-to-code refs, report and backfill (change-log row `trace-ledger`)
 bash scripts/test-verdict.sh       # the review verdict recorder — which run a verdict lands in, and what refuses (change-log row `repo-1ie`)
-bash scripts/test-audit-runs.sh    # the run-history audit — buckets, joins, channels, quantiles, and that it writes nothing (change-log row `repo-73k`)
+bash scripts/test-audit-runs.sh    # the run-history audit — buckets, joins, channels, quantiles, the per-model cross-tab, and that it writes nothing (change-log rows `repo-73k`, `model-crosstab`)
 bash scripts/test-dashboard.sh     # the live dashboard's /state joins, its degraded vocabulary, and that it writes nothing (change-log row `repo-kfg`)
 bash scripts/test-verify-buffer.sh # the verifier's capture limit — a loud PASS is a pass, a loud FAIL is still a fail (change-log row `verify-nobuffer`)
 bash scripts/test-pipeline-map.sh  # the reader's map is drawn at build time — an error card is not a diagram (change-log row `map-prerender`)
