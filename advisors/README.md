@@ -110,7 +110,9 @@ reply, no trailing commentary. Emit exactly one object; a charter never returns 
 | [`scope.md`](scope.md) | Planning critic | Is this secretly several tasks? |
 
 These three staff the full critic panel that `PLANNING.md` step 2 runs against a spec
-labelled **hard** (DESIGN.md §3.2). A **medium** spec gets one light pass — in practice
-`testability.md`, since untestable criteria are the failure that survives review most
-often. A **trivial** spec gets none. No run-time advisors are registered yet; V1 builds
-none, and the shadow trial is the experiment that reveals which are actually wanted.
+labelled **hard** (DESIGN.md §3.2). A **trivial** or **medium** spec gets one light pass —
+in practice `testability.md`, since untestable criteria are the failure that survives
+review most often. There is no zero-critic tier: the label decides depth, never existence
+(change-log row `spec-panel-below-line`). No run-time advisors are registered yet; V1
+builds none, and the shadow trial is the experiment that reveals which are actually
+wanted.

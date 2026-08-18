@@ -133,6 +133,21 @@ Two hard boundaries, both inherited:
   read the port from the environment, or drop the knob entirely — a config option nothing
   can satisfy but one value is a trap, not an option.
 
+- **Choose the model per phase and per task, not per run** — `model` in
+  `run.config.*.json` is one alias for the whole run, and it reaches both agent phases
+  through a single `AGENT_CMD` in `pipeline/entrypoint.sh`, so the docs phase runs on the
+  same tier as the code phase and an easy task runs on the same tier as a hard one. Why
+  you'd want it: the verifier is deterministic, so a cheaper model can only fail
+  honestly — three attempts and a `stuck` row, never a weaker gate — which makes
+  downshifting a cost question rather than a quality risk. The cheap half is the docs
+  phase, which summarises and edits docs. The per-task half is the one with a design
+  question in it: "this task is easy" is a planning-time judgment, so the tier would have
+  to come off the frozen spec rather than the run config, and that is a new field in the
+  contract. The likely split is not the intuitive one: the docs phase (summarise the change,
+  edit the files it owns) is Sonnet-tier work, while the code phase is the hardest thing in the
+  pipeline and stays on the top tier. Related: `DESIGN.md` §4.3, and §4.11 — the resolved id is
+  already recorded per task, so provenance survives either change. 2026-08-17
+
 - **See the usage limit coming, and refuse to start work that cannot finish before it —
   not freeze work that is already running.** §4.7 and §7 already make a usage limit a pause
   that resumes itself: the container exits 20, the run-level gate opens one shared wait on
