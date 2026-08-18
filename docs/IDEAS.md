@@ -81,6 +81,58 @@ Two hard boundaries, both inherited:
 
 <!-- Newest at the top. Nothing here is committed to. -->
 
+- **Capture all planning-session info going forward — a session ledger under `runs/`.**
+  (User directive, 2026-08-18: "I need to capture all session info going forward.")
+  Runs are fully recorded; planning sessions are not — yet a planning session is where
+  most of the day's agent work and every load-bearing decision actually happens. What
+  the 2026-08-17/18 session against a real target project produced that survives nowhere durable or only as
+  disposable draft prose:
+  - *Subagent activity*: every survey/drafter/critic/test-writer spawn with its purpose,
+    duration, and token usage (~2 hours and ~1.7M tokens, reconstructible tonight only
+    from the live session's context).
+  - *Review rigor*: critic findings and their dispositions, spec-lint runs, freeze-gate
+    verdicts — currently prose in planning drafts, which the playbook calls disposable
+    after freeze.
+  - *Decisions with owners*: user approvals (slicing, direction model, hardware-faithful
+    reversal), and which evidence changed which decision.
+  - *Incidents*: preflight refusals, infra outages, session-limit cutoffs and resumes —
+    what they cost and how they resolved.
+  - *External evidence*: bench findings (packet captures decoded, designer Q&A) — tonight
+    these live in a wave-2 planning draft that is formally deletable.
+  Shape suggestion: an append-only `runs/sessions/<date>/session.jsonl` the interactive
+  session writes as it works (same host-writes-everything discipline as the task ledger),
+  plus a place drafts' permanent-value sections (hardware findings, dispositions) get
+  promoted to instead of dying with the draft. This is the recording half; the
+  build-stats skill below is the reader half. V2's `/spec` skill is the natural home for
+  the writing hooks.
+
+- **A build-stats skill: one command that writes the "how much work did we do" summary.**
+  After two real task waves against one target project (2026-08-17/18) the user asked for a day's-work record — agent
+  time, lines, files, pass rates, review rigor — and it was assembled by hand from three
+  sources: git diffstats on the target repo, `Active time`/`Diff` lines grepped out of
+  run reports, and subagent durations that existed only in the interactive session's own
+  context. Make it a skill (`/build-stats <target-repo> [--since <ref|date>]`) that joins
+  git + the `runs/` corpus (the same pure-reader discipline as `audit-runs.js` — print
+  markdown, write nothing unless asked) and emits the stats file. Two design notes from
+  doing it by hand: (1) container-side model/token usage is not in the run reports today,
+  and planning-side subagent time/tokens are recorded nowhere durable at all — the skill
+  is only as good as what the corpus keeps, so this idea probably splits into "record
+  planning-session agent usage somewhere under `runs/`" plus the reader that summarises
+  it; (2) the most persuasive numbers were the rigor ones (findings dispositioned,
+  red-with-green-control gates, first-attempt pass rate), which live in planning drafts
+  and freeze-gate output, not in any machine-readable place — deciding what of that to
+  structure is the real design work.
+
+- **Preflight should validate `proxyPort` against what the proxy image actually listens
+  on.** The config accepts any port, squid's `http_port 3128` is hard-coded, and the two
+  only meet at the readiness probe — which fails after 15 s with a message that names
+  neither. The target project's first real run (2026-08-17) died in preflight because onboarding had
+  written `proxyPort: 3129`, presumably for per-project uniqueness the private network
+  already provides. Either assert the value in preflight (cheap: grep squid.conf at image
+  build is wrong-layer; probe the container's listening port before the loop), have squid
+  read the port from the environment, or drop the knob entirely — a config option nothing
+  can satisfy but one value is a trap, not an option.
+
 - **Choose the model per phase and per task, not per run** — `model` in
   `run.config.*.json` is one alias for the whole run, and it reaches both agent phases
   through a single `AGENT_CMD` in `pipeline/entrypoint.sh`, so the docs phase runs on the
@@ -96,29 +148,41 @@ Two hard boundaries, both inherited:
   pipeline and stays on the top tier. Related: `DESIGN.md` §4.3, and §4.11 — the resolved id is
   already recorded per task, so provenance survives either change. 2026-08-17
 
-- **Give a run a spend ceiling it cannot cross — "budget exhausted" as a first-class
-  outcome** — borrowed from a session harness's workflow budget (a hard token cap past
-  which no new agent starts; the trail is change-log row `panel-workflow`). An overnight
-  run's only stops today are the queue draining, the three-attempt cap and the rate-limit
-  park; nothing bounds cumulative spend, so a long queue burns whatever the subscription
-  window holds and the human finds out in the morning. Shape: the runner sums per-task
-  usage and stops **claiming** once a configured cap is crossed — checked at task
-  boundaries only, never mid-attempt, so no in-flight work is abandoned — and the report
-  names the outcome and the tasks left unclaimed. Deterministic and host-side (hard rule 7
-  untouched), and it converts "how much will tonight cost" from a guess into a setting.
-  Blocked on: the per-task cost recording entry below (2026-08-04) — a ceiling needs the
-  meter first. Related: `DESIGN.md` §7. 2026-08-13
-
-- **Make the note and concern caps loud — a capped agent should be visible, not
-  silent** — `status.js note` past 20 and `concern` past 5 are documented as "silently a
-  no-op", which is a silent cap of exactly the kind this repo's own doctrine forbids
-  elsewhere ("assert the artifact is right, not merely present"; the sweep names what it
-  drops). A concern is the channel for "the frozen spec is wrong" — the one result a run
-  exists to surface — so the sixth concern being dropped without trace is the worst
-  possible place for silence. Cheap shape: `status.js` counts what it refused
-  (`notesDropped`, `concernsDropped`) in the status file it already writes, and the run
-  report prints the counts; one deterministic counter, no cap change, no new channel.
-  Related: `DESIGN.md` §3.3, §3.6. 2026-08-13
+- **See the usage limit coming, and refuse to start work that cannot finish before it —
+  not freeze work that is already running.** §4.7 and §7 already make a usage limit a pause
+  that resumes itself: the container exits 20, the run-level gate opens one shared wait on
+  the reported reset time, and a fresh container relaunches against the same workspace with
+  the attempt counter intact. What is missing is the *predictive* half — every one of those
+  parks is discovered by hitting the wall. Worth having because the wasted thing is not the
+  interrupted turn (minutes, and no attempt is burned) but the tail of a window: launching a
+  40-minute task into 20 minutes of remaining budget spends the rest of the window on work
+  that will be interrupted anyway. The shape is therefore **admission control, not process
+  freezing** — a fourth condition on `gate.admit()`, which already has exactly three states
+  and is already consulted before `claim()`, so a refused task never touches Beads and its
+  issue stays `open` for the next run.
+  **Freezing the container was the reading to reject, and the reason is worth keeping so
+  nobody re-derives it.** `docker pause` is real, works on the reference host, and uses the
+  kernel's cgroup freezer to suspend every process in the container — but it preserves
+  memory and *not* the open TCP connection to the Anthropic endpoint. A container thawed
+  after a multi-hour window resumes into a dead socket, and the entrypoint's detector
+  (§4.7) matches on `usage limit|rate.?limit` in the agent log, so a socket error falls
+  through to `die30` — exit 30, a genuine failed attempt. Suspend would convert today's free
+  pause into a burned one of three. Freezing *between* requests would be safe and is not
+  reachable: the request loop lives inside the CLI.
+  **The host/container split is not the obstacle it looks like.** Nothing outside a container
+  spends meaningfully against the window — the runner clones, launches and waits, and the only
+  host-side model call is the minimal probe in `pause.js`. The host needs to sleep, which it
+  already does; there is no Windows-side suspend to design.
+  **The open question that decides feasibility, and the reason this is parked rather than
+  specced:** is remaining subscription budget readable by a machine at all? Counting our own
+  spend under-reports, because interactive sessions draw on the same window; and any
+  undocumented usage surface would put an unstable third-party output format in the runner's
+  control path, which is the same disease as scraping an agent log — the existing exit-20
+  detector greps only because it has no alternative. Settle that before designing anything.
+  The deterministic first step needs none of it: record per-task cost and size batches from
+  the corpus. Related: `DESIGN.md` §4.7, §7; change-log rows `pause-cycle-cap` and `repo-i9y`;
+  the *Record what each task cost* entry below, which is the measurement this depends on.
+  2026-08-14
 
 - **The dashboard's live `attempt` reads one too low — re-freeze the `/state` contract
   before the page session.** `scripts/dashboard.js` sets a task's `attempt` to
@@ -321,57 +385,11 @@ deterministic aggregation, not an agent. Read both before proposing a new agent.
   the slowest green suite in the corpus is 1:30. Related: `DESIGN.md` §4.8; the *Make the
   sweep and a live run mutually exclusive* entry below, which is the other way the sweep
   produces a red that is not about the code. 2026-08-05
-
-- **Have the sweep reclaim stale run locks, not just containers and networks** — when the
-  sweep kills a suite at its timeout, `runs/locks/*.lock` survives it, and the next sweep's
-  `test-lock` fails on the leftover. That happened on 2026-08-05: a suite killed at 09:14
-  left `t14-success`'s lock behind, naming a temp target directory that no longer existed,
-  and the afternoon sweep three hours later reported `test-lock` red — a suite with no
-  relationship whatever to the one that was killed. Deleting the file turned it green with
-  no other change.
-  Worth having because it is the most misleading class of red there is: it points at the
-  wrong component, it is deterministic so it looks like a real defect rather than flake, and
-  it survives across sweeps and across days, so whoever hits it is usually not the person
-  who caused it. The fix is small — `scripts/sweep-reclaim.js` already owns the
-  before/after snapshot diff and the ownership question is easier here than for containers,
-  since a lock records its own `runId`, `pid` and `startedAt` and §4.12 already knows how to
-  decide a holder is gone. The two rules that travel with the Docker reclaimer travel with
-  this one unchanged: no baseline, no removal; and cleanup is never a verdict.
-  The honest catch: a lock left by a *killed* suite and a lock held by a **live run in
-  another terminal** look similar from the outside, which is the same hazard change-log row
-  `repo-zje` exists for — so this wants the liveness check §4.12 already implements
-  (`isHolderLive`), not a name match. Related: `DESIGN.md` §4.12; change-log row `repo-os9`;
-  the *Make the sweep and a live run mutually exclusive* entry below, which would remove the
-  ambiguity outright. 2026-08-05
-
-- **Stop batch siblings failing each other's frozen suites — a `partial` that means
-  "planned together", not "regressed"** — when a batch of tasks is frozen in one planning
-  session, every task branch forks from an integration branch that already carries all the
-  siblings' frozen acceptance tests but none of their implementations, so each task's
-  regression pass fails on `tests/acceptance/<sibling>/` and the task lands `partial` with
-  a flagged PR. The audit's first corpus read (change-log row `run-audit`) showed this is
-  not an edge case: nine of the corpus's eleven partials are this shape, including one
-  batch of three tasks all blaming each other, tagged same-run by the partial forensics
-  section. Worth having because a structural partial buries the genuine ones — a reviewer
-  who learns "partial usually means batch noise" stops reading the one flag that exists to
-  say a real regression slipped through, and §4.11's scrutiny ordering puts these above
-  every clean done. The design question to answer (not here): whether the regression pass
-  may treat a sibling suite whose issue is open in the same run as expected-red, and how
-  to say that without weakening hard rule 2. 2026-08-05
-
-- **Declare a `regressionCommand` for this repo, so frozen-suite blast radius stops being
-  held by grep** — three tasks running (`repo-teq`, `repo-i9y`) have now navigated the same
-  hazard: frozen acceptance directories assert literal strings against `run.js` source,
-  nothing ever re-runs a frozen directory, and this repo declares no `regressionCommand` — so
-  a restructure can invalidate 50+ assertions silently, and the defence each time was a
-  hand-written guard criterion pinning strings to non-comment lines. That is discipline
-  standing where scaffolding was designed to stand: the verifier already runs a target's
-  `regressionCommand` from the fork point, and the fourteen Docker-free suites — which hold
-  exactly the coverage extracted from those frozen directories — run inside a task container
-  by design. Declaring them as this repo's regression command makes drift red automatically.
-  The honest catch: it lengthens every attempt's verify step, and a suite that goes stale
-  then blocks unrelated tasks — which is an argument for starting with the fast, pure ones.
-  Related: `DESIGN.md` §4.4. 2026-08-04
+  *The cheap half was promoted 2026-08-12 (change-log row `sweep-trustworthy`, via
+  `docs/handoff-sweep-trustworthy.md`): the 300s default ships with the exclusivity task.
+  The investigation itself stays parked, deliberately — the mechanism is unproven, a frozen
+  test against a guessed cause is a task that cannot honestly pass, and the 300s cap is
+  what makes the experiment cheap to repeat. Do it after that batch lands.*
 
 - **Retire and bound the memory channel before it grows without limit** — the note store only
   ever grows (104 notes exported into the first production run, 146 by the fifth, 66 keys in
@@ -406,20 +424,6 @@ deterministic aggregation, not an agent. Read both before proposing a new agent.
   sixth channel that can go unread — the fix may be surfacing outstanding obligations inside
   a ritual that already happens, such as the sweep summary or planning step 0, rather than a
   new file. 2026-08-04
-
-- **Make the sweep and a live run mutually exclusive** — on 2026-08-01 a sweep running in
-  another terminal `docker rm -f`'d a real run's task container twice, and the run reported it
-  as exit 137 with an empty log, which reads exactly like an OOM kill. A session was spent on
-  Docker Desktop and the WSL2 VM before anyone opened the sweep summary, where it was written
-  down plainly. Worth having because the exclusion is cheap and already half-built: §4.12's
-  per-project lock lives in `runs/locks/`, and the sweep could take one of its own and refuse to
-  start while any is held, with the runner refusing symmetrically. The reason it isn't just a
-  bug fix in `sweep-reclaim.js` is that the reclaimer is *correct* — a before/after snapshot diff
-  genuinely cannot tell "appeared because my suite made it" from "appeared because something
-  else did", so the guarantee has to come from exclusivity rather than from better
-  classification. Second-order: a reclamation of anything matching `task-` deserves to be loud
-  (stderr, non-quiet), since by construction it is either a real leak or someone's live work.
-  Related: `DESIGN.md` §4.12; `docs/STATUS.md` defect 11. 2026-08-01
 
 - **Verify a stated mechanic exists in the code before speccing against it** — a planning session
   on 2026-07-31 spent a full exchange designing around "the ship can pull a tethered astronaut",
@@ -592,6 +596,10 @@ shipped thing survives — the same reason the `DESIGN.md` change log keeps its 
 | 2026-08-04 | Audit the pipeline's own history across runs, not one run at a time — the corpus was on disk, structured, and had never been read as one. Parked 2026-08-02 with its own experiment attached: read the runs by hand once, and let that decide aggregation-versus-agent. The hand pass ran 2026-08-04 and aggregation won — every repeated pattern fell out of joining structured fields, none needed judgment | `DESIGN.md` §5 + change-log row `run-audit`: `scripts/audit-runs.js`, deterministic and host-only, joining `run.json`/`status.json`/`verify.json`/`verdict.json`; the LLM reader stays unbuilt, with the reason recorded in §5. Frozen as issue `repo-73k` with tests at `tests/acceptance/repo-73k/`; shipped with `scripts/test-audit-runs.sh` (change-log row `repo-73k`) |
 | 2026-08-04 | Capture the reviewer's verdict on every run — merged / sent back, and why — at the only moment it exists. Extracted from the two agent-shaped entries that both named it the most valuable field the pipeline does not own, and both concluded the shape is a cheap capture step, not a reviewing agent. Parked and promoted the same day | `DESIGN.md` §5 + change-log row `review-verdict`; frozen as issue `repo-1ie` with tests at `tests/acceptance/repo-1ie/` (freeze gate RED against a green control, 2026-08-04), then **shipped** as change-log row `repo-1ie`: `scripts/verdict.js` (`record` + `pending`, self-contained, chooses the run by `startedAt`) and the Docker-free suite `scripts/test-verdict.sh` / `tests/unit/verdict.test.js` |
 | 2026-08-04 | Record spec-to-code traceability at the moment it is created, instead of inferring it later — a ticked box carries the id of the issue that ticked it, so reconciliation is mechanical and nothing ever guesses an edge. The cheapest honest version of a knowledge graph; parked and promoted the same day because it collapses six drift entries into one convention | change-log row `trace-ledger`: the convention, `scripts/trace.js` (report + deterministic backfill via `git log -L`), the Docker-free suite `scripts/test-trace.sh` / `tests/unit/trace.test.js`, and the PLANNING.md step-0 drift read |
+| 2026-08-12 | Make the sweep and a live run mutually exclusive — parked 2026-08-01 after a sweep `docker rm -f`'d a live run's task container and the run read as an OOM kill. Bundled into `docs/handoff-sweep-trustworthy.md` with its second-order point (loud `task-` reclamation) and the 300s-cap cheap half of the degradation entry | `DESIGN.md` §4.12 + change-log row `sweep-trustworthy`; specced in the 2026-08-12 planning session |
+| 2026-08-12 | Have the sweep reclaim stale run locks, not just containers and networks — parked 2026-08-05 after a killed suite's leftover lock failed an unrelated suite three hours later. Its honest catch (live lock vs stale lock look similar from outside) is why it ships after exclusivity, and its `isHolderLive`-not-name-match requirement became the exported-liveness decision | `DESIGN.md` §4.12 + change-log row `sweep-trustworthy`; specced in the 2026-08-12 planning session |
+| 2026-08-12 | Declare a `regressionCommand` for this repo, so frozen-suite blast radius stops being held by grep — parked 2026-08-04 after three tasks hand-wrote the same guard criterion | change-log row `self-regression`: `pipeline.config.json` gains the key, naming a Docker-free wrapper over the fast pure suites; specced in the 2026-08-12 planning session |
+| 2026-08-12 | Stop batch siblings failing each other's frozen suites — parked 2026-08-05; nine of the corpus's eleven partials were this shape. The design question it deferred was answered by Chad on 2026-08-12: no expected-red in the verifier, ever — the report labels instead | `DESIGN.md` §4 item 9 + change-log row `batch-sibling-partials`: the `sibling-batch` label, sorted after genuine partials within the partial band; specced in the 2026-08-12 planning session |
 | 2026-08-10 | A live dashboard that lights up the pipeline diagrams as tasks move through them — parked 2026-08-02 with its own three-way feasibility split (free today / one small deterministic change / not at any sane price), which held up under the planning session's read of the code. One correction from that read: the second deterministic change the entry contemplated finding a workspace was unnecessary — the runner's unconditional `workspace ready:` line already existed | `DESIGN.md` §5 + change-log row `live-dashboard`: the reader `scripts/dashboard.js` with a frozen `/state` contract (issue `repo-kfg`, tests at `tests/acceptance/repo-kfg/`), the `phase` field feed (issue `repo-bmd`, tests at `tests/acceptance/repo-bmd/`), and the page as interactive work against the frozen contract — the look deliberately unfrozen, so it is reviewed by looking at it. The reader **shipped** as change-log row `repo-kfg` (`scripts/dashboard.js`, the Docker-free suite `scripts/test-dashboard.sh` / `tests/unit/dashboard.test.js`); what is left of this entry is the `phase` feed and the page session |
 
 ## Dropped
