@@ -584,6 +584,94 @@ deterministic aggregation, not an agent. Read both before proposing a new agent.
   calls interleaving over one embedded Dolt database. Blocked on: nothing; `repo-teq` has
   merged. Related: §4.12 (the runner drains the ready queue), §7. 2026-07-31
 
+- **A transient upstream error is not a failed task — 529 falls straight through to
+  `failed` / blocked** — on 2026-08-19 an agent call came back `API Error 529 Overloaded`
+  with zero output tokens and no work attempted. The entrypoint's rate-limit branch greps
+  the agent log for `usage limit|rate.?limit` (`pipeline/entrypoint.sh`), which "Overloaded"
+  does not match, so the call falls through to `die30` — exit 30, which the §4.11 table maps
+  to report status `failed` and Beads `blocked`. `die30` exits on the spot, so the attempt
+  cap never engages either: one busy moment upstream ends the task on attempt 1 of 3.
+  That is honest at the level the entrypoint can see (the agent command failed) but it
+  conflates *this task is wrong* with *the API was busy for a second*, and the two have
+  opposite recoveries. Nothing about the spec, the frozen tests or the fork point was
+  involved; unblocking the issue and re-running is the entire fix. The cost is that a
+  blocked issue leaves `bd ready`, so an overnight run's other tasks are unaffected while
+  this one silently drops out of the *next* run's queue until a human touches it — the
+  quiet-hole failure mode this repo keeps rediscovering.
+  The run-level park (§7, change-log row `repo-i9y`) is the wrong instrument here and should
+  not simply be widened to catch 529. A usage limit is a property of the **subscription
+  window** — waited out on a reported reset time or a probe, minutes to hours, correctly
+  shared across every task in the run. A 529 is a property of the **upstream at that
+  instant** — seconds, per-call, retryable in place. Feeding one into the other would park a
+  whole run behind a shared wait sized for a rate-limit window because one call got unlucky.
+  Options worth weighing, none chosen: a bounded in-container retry with backoff before
+  `die30` (cheapest, no contract change, but invisible unless it logs what it swallowed —
+  and this repo has been bitten by silent swallowing more than once); a sibling exit code to
+  20 meaning *transient upstream*, which the runner relaunches after a short backoff with its
+  own small cap and which leaves the issue `in_progress` rather than blocked (reuses the
+  relaunch machinery and keeps the record honest, at the price of a new row in the §4.11
+  table and in everything downstream that reads it — `runner/queue.js`'s `OUTCOMES`,
+  `run.schema.json`, the report, the audit, the dashboard); or leaving classification alone
+  and only stopping exit 30 from blocking the issue (cheapest for the queue, worst for the
+  record, since a genuinely broken task would then return every run with nothing marking it).
+  Two things should settle it before anything is specced. First, whether the CLI already
+  retries 529 internally: if it does, a 529 that reaches the log is one that already survived
+  the CLI's own backoff, which argues against adding a second retry loop underneath it and
+  for the exit-code route. Second, **detection must not become a list of upstream error
+  strings** — that is precisely the pattern banned in `CLAUDE.md`'s log-scraping rule
+  (change-log row `repo-52m`); check whether the CLI's JSON envelope carries a structural
+  error or status field first, and only fall back to prose matching if it does not.
+  Related: §4.7, §7, §4.11. 2026-08-19
+
+- **Assert at publish time that no committed entry is a symlink escaping the workspace** — a
+  target project's container may legitimately create symlinks *inside* the workspace: baking
+  dependencies into the image and linking them into place on first use is the standard way to
+  satisfy the no-egress rule (hard rule 6), and a coding agent has no way to tell such a link
+  apart from project content. The host currently trusts the target repository's own ignore
+  rules to keep those links out of a commit, and a `.gitignore` rule written as `node_modules/`,
+  `dist/` or `__pycache__/` matches **directories only** — so a symlink of that name is not
+  ignored at all, shows as ordinary untracked content, and a `git add` takes it. On a host the
+  same path *is* a real directory, so `git check-ignore` reports it as ignored, which is why
+  every human who reads the rule reads it as correct. One target project shipped such an entry
+  in a task that verified on attempt 1 with zero concerns and passed a 31-file human review; a
+  mode `120000` addition renders as a one-line file in a diff view.
+  The damage is downstream and actively misdirecting. On a host that already has the real
+  directory, every checkout of the merged commit fails partway *and deletes part of the real
+  directory on the way down*, manufacturing the symptom it appears to be reporting — a day was
+  lost to a handoff that blamed a damaged dependency install for what the failed checkout had
+  caused. On a fresh clone with `core.symlinks=false` (the Windows default, and the reference
+  host's) it does not even fail: git writes a plain text file containing the target path, the
+  clone reports success, and the dependency install then fails for a reason that mentions
+  neither git nor symlinks.
+  Cheap and deterministic to check: scan the task branch's diff against the fork point for mode
+  `120000` blobs whose content is absolute or escapes the repository root. Host-side, in the
+  publish stage, before the push — where the design already puts authority, and where unlike a
+  container-side check the agent cannot edit it.
+  **What the host then does about it is the question to settle before this is specced**, and it
+  is not the gate-versus-evidence question. Both candidates are evidence: failing a task for a
+  link it was told to create is exactly the hazard hard rule 5 exists to prevent, and neither
+  option touches the outcome. But they do different amounts of work. *Surfacing* it in the run
+  report warns about a trap it leaves armed — the branch is still pushed, the PR still carries
+  the entry, and the damage lands at merge, which is precisely where review already missed it
+  once. *Stripping* it prevents the merge, but the host writing to a task branch is a new
+  capability: `runner/publish.js` pushes and opens a PR and creates no commits at all. The
+  variant that does not rewrite what the container authored is a separate host-authored hygiene
+  commit on top of the branch, visible in the PR and named in the report. Price that against
+  surfacing before either is chosen.
+  A configuration-only variant is worth considering *in addition* rather than instead: have
+  onboarding read a candidate project's ignore rules for trailing-slash patterns a container
+  symlink could slip past, at planning time, where a human is present. The two cheaper
+  alternatives are both weaker. Appending dependency-directory names to `.git/info/exclude`
+  alongside `.run/` reuses a path that already exists (`runner/workspace.js`), but the pipeline
+  cannot know those names for an arbitrary target — so it either hard-codes a list that goes
+  stale or reads one from `pipeline.config.json`, which is the same trust that failed here.
+  Telling the agent in its prompt not to commit symlinks costs nothing and catches nothing
+  reliably; a prompt is not scaffolding.
+  Reproducible without a run: in any repository whose `.gitignore` says `dir/`, create a symlink
+  named `dir` and run `git status` — it is untracked and stageable. Related: §4.4 (the
+  verifier's remit is `frozenPaths`, so the committed file *set* has no gate today, only its
+  content does), §4.10, hard rules 5 and 6. 2026-08-19
+
 ---
 
 ## Promoted
