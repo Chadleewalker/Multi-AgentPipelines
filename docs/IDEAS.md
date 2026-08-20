@@ -86,6 +86,28 @@ Two hard boundaries, both inherited:
 
 <!-- Newest at the top. Nothing here is committed to. -->
 
+- **Give the sweep lock the liveness rule the run lock already has, and stop printing
+  `rm -rf` as the remedy.** When `scripts/test-all.sh` finds `runs/.test-all.lock` it prints
+  the holder's pid and the time, then suggests removing the directory "if that process is
+  gone" — leaving the reader to answer the one question the script could answer itself. On
+  this host the reader gets it *wrong*: the recorded pid is a Git Bash (MSYS) pid, which
+  Windows `tasklist` cannot see, so the obvious check reports a live sweep as dead with
+  complete confidence. Checking `docker ps` does not rescue it either — a sweep sits between
+  containers for seconds at a time, so an empty listing is not an idle sweep. Doing exactly
+  that on 2026-08-20 cleared a live sweep's lock, ran a second sweep on top of the first, and
+  produced **7 red suites out of 39** whose signatures were all infrastructure (exit 137 and
+  125, `network still up after run`, a reclaimed `pipeline-net`) rather than code — the
+  precise disease change-log row `sweep-trustworthy` exists to prevent, arrived at by
+  overriding the lock that row installed. A re-run on a quiet host was 39 green.
+  The machinery is already built and already exported for exactly this reason:
+  `runner/lock.js`'s `isHolderLive` was made an export rather than a second copy
+  (`sweep-trustworthy`), and the sweep already reclaims stale *run* locks with it. Its own
+  lock is the one place it does not use it. Worth having because a lock a human overrides by
+  hand is not a lock, and the failure it lets through is expensive twice: once in the wasted
+  ~10 minutes, and once in the far worse outcome where the reds get believed and someone
+  hunts a regression that does not exist. Related: `DESIGN.md` §4.12; change-log rows
+  `sweep-trustworthy` and `repo-zje`. 2026-08-20
+
 - **A transient upstream error is not a failed task — 529 falls straight through to
   `failed` / blocked** — on 2026-08-19 an agent call came back `API Error 529 Overloaded`
   with zero output tokens and no work attempted. The entrypoint's rate-limit branch greps
