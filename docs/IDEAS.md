@@ -86,16 +86,6 @@ Two hard boundaries, both inherited:
 
 <!-- Newest at the top. Nothing here is committed to. -->
 
-- **A "batch ready" marker a planning session files when specs are frozen, so the launch
-  step reads state instead of memory.** Also Gas Town-shaped (everything routes through
-  the ledger, even notes between agents). Today "the queue is ready to run" exists only
-  in the user's head between the planning session ending and the word "go"; a marker on
-  disk would let the launch step confirm what it is launching ("batch of 4, frozen
-  2026-08-19 — go?") and would make an un-launched batch visible to the next session.
-  The honest catch: it must not be a queue item — the runner drains the queue unattended,
-  and an inbox that can start a container is not an inbox (this file's own rule). A
-  marker the *human-side* launch ritual reads, never the runner. 2026-08-19
-
 - **A merge-order helper for PR stacks — evidence, never a merge.** When batches get
   bigger, several PRs land at once and merge *order* becomes real work: docs-phase
   conflicts (see the merge-strategy entry below) and sibling-suite interactions mean some
@@ -539,6 +529,27 @@ deterministic aggregation, not an agent. Read both before proposing a new agent.
   parked is the half no ref can see: a claim satisfied by merged work that never carried an
   issue id, which only reading the code detects.*
 
+- **Re-read the ready queue when a worker goes idle, so finishing a task can unblock the
+  next one** — `bd ready` is already blocker-aware, but `runner/run.js` reads it **once**,
+  before the pool starts, and drains that snapshot. So a dependency chain cannot run in one
+  batch: if B is blocked on A and A closes ten minutes in, B waits for a whole second run
+  even though the host knows it is ready and a worker is sitting idle. Worth having because
+  the queue this project actually accumulates is chain-shaped — `repo-sls` → `repo-teq` →
+  `repo-i9y` was three batches on three separate runs, and each handoff cost a human
+  starting the next one. It also compounds with the concurrency knob rather than duplicating
+  it: the measured 1.28× on a two-task batch was one worker idle for 1464s with nothing to
+  pick up, which is precisely the hole an unblocked task would have filled.
+  Care lives in the details, not the idea: never re-claim what is already in flight, do not
+  spin when the queue is genuinely dry, and bound the re-read so an unblock cascade cannot
+  loop forever. Legal under hard rule 1 as-is — the host is the only thing reading Beads,
+  and it already reads it exactly this way, just once.
+  **Not** the same as the two forms of cross-task waiting that already exist and are fine:
+  the pool has no barrier (a free worker takes the next queued item immediately), and the
+  seconds that `prepare()` / `publish()` / every `bd` call spend blocking the event loop are
+  a priced-in trade, load-bearing in the `bd` case — `spawnSync` is what stops two Beads
+  calls interleaving over one embedded Dolt database. Blocked on: nothing; `repo-teq` has
+  merged. Related: §4.12 (the runner drains the ready queue), §7. 2026-07-31
+
 - **Let a task report progress while it is still running, roughly every 10 minutes** — right now
   a container is opaque from the outside: nothing is visible until it exits and the run report is
   written. A task that has been going for an hour is indistinguishable from a task that is wedged,
@@ -588,27 +599,6 @@ deterministic aggregation, not an agent. Read both before proposing a new agent.
   and a panel pass rejecting it. §3.1 or §3.2 is the natural home. 2026-07-30
   *Found by the critic panel on the first real project, 2026-07-30.*
 
-- **Re-read the ready queue when a worker goes idle, so finishing a task can unblock the
-  next one** — `bd ready` is already blocker-aware, but `runner/run.js` reads it **once**,
-  before the pool starts, and drains that snapshot. So a dependency chain cannot run in one
-  batch: if B is blocked on A and A closes ten minutes in, B waits for a whole second run
-  even though the host knows it is ready and a worker is sitting idle. Worth having because
-  the queue this project actually accumulates is chain-shaped — `repo-sls` → `repo-teq` →
-  `repo-i9y` was three batches on three separate runs, and each handoff cost a human
-  starting the next one. It also compounds with the concurrency knob rather than duplicating
-  it: the measured 1.28× on a two-task batch was one worker idle for 1464s with nothing to
-  pick up, which is precisely the hole an unblocked task would have filled.
-  Care lives in the details, not the idea: never re-claim what is already in flight, do not
-  spin when the queue is genuinely dry, and bound the re-read so an unblock cascade cannot
-  loop forever. Legal under hard rule 1 as-is — the host is the only thing reading Beads,
-  and it already reads it exactly this way, just once.
-  **Not** the same as the two forms of cross-task waiting that already exist and are fine:
-  the pool has no barrier (a free worker takes the next queued item immediately), and the
-  seconds that `prepare()` / `publish()` / every `bd` call spend blocking the event loop are
-  a priced-in trade, load-bearing in the `bd` case — `spawnSync` is what stops two Beads
-  calls interleaving over one embedded Dolt database. Blocked on: nothing; `repo-teq` has
-  merged. Related: §4.12 (the runner drains the ready queue), §7. 2026-07-31
-
 ---
 
 ## Promoted
@@ -616,17 +606,20 @@ deterministic aggregation, not an agent. Read both before proposing a new agent.
 Ideas that made it out, and what they became. Kept so the trail from a half-thought to a
 shipped thing survives — the same reason the `DESIGN.md` change log keeps its rationale.
 
+<!-- Newest at the top, same as the inbox. -->
+
 | Date | Idea | Became |
 |---|---|---|
-| 2026-08-04 | Audit the pipeline's own history across runs, not one run at a time — the corpus was on disk, structured, and had never been read as one. Parked 2026-08-02 with its own experiment attached: read the runs by hand once, and let that decide aggregation-versus-agent. The hand pass ran 2026-08-04 and aggregation won — every repeated pattern fell out of joining structured fields, none needed judgment | `DESIGN.md` §5 + change-log row `run-audit`: `scripts/audit-runs.js`, deterministic and host-only, joining `run.json`/`status.json`/`verify.json`/`verdict.json`; the LLM reader stays unbuilt, with the reason recorded in §5. Frozen as issue `repo-73k` with tests at `tests/acceptance/repo-73k/`; shipped with `scripts/test-audit-runs.sh` (change-log row `repo-73k`) |
-| 2026-08-04 | Capture the reviewer's verdict on every run — merged / sent back, and why — at the only moment it exists. Extracted from the two agent-shaped entries that both named it the most valuable field the pipeline does not own, and both concluded the shape is a cheap capture step, not a reviewing agent. Parked and promoted the same day | `DESIGN.md` §5 + change-log row `review-verdict`; frozen as issue `repo-1ie` with tests at `tests/acceptance/repo-1ie/` (freeze gate RED against a green control, 2026-08-04), then **shipped** as change-log row `repo-1ie`: `scripts/verdict.js` (`record` + `pending`, self-contained, chooses the run by `startedAt`) and the Docker-free suite `scripts/test-verdict.sh` / `tests/unit/verdict.test.js` |
-| 2026-08-04 | Record spec-to-code traceability at the moment it is created, instead of inferring it later — a ticked box carries the id of the issue that ticked it, so reconciliation is mechanical and nothing ever guesses an edge. The cheapest honest version of a knowledge graph; parked and promoted the same day because it collapses six drift entries into one convention | change-log row `trace-ledger`: the convention, `scripts/trace.js` (report + deterministic backfill via `git log -L`), the Docker-free suite `scripts/test-trace.sh` / `tests/unit/trace.test.js`, and the PLANNING.md step-0 drift read |
+| 2026-08-19 | A "batch ready" marker a planning session files when specs are frozen, so the launch step reads state instead of memory. Parked and promoted the same day. The handoff between freezing and launching was a spoken word: two different sessions, nothing on disk between them, so the launch could not confirm what it was launching and a batch frozen and not launched was invisible to the next session | `DESIGN.md` §3.9 + change-log row `batch-ready-marker`: `runs/batches/<project>-<YYYY-MM-DD>.json`, host-only and immutable (no `launched` flag — "still pending" is a join over the run corpus, `verdict.js pending`'s move), read by `scripts/batch.js` (`show`, `pending`). The reconciliation against `bd ready` is the point rather than the confirmation, and is bounded: built-ins only except a `BATCH_BD_CMD` seam that reads and never writes, and an absent `bd` labels the batch unreconciled rather than printing the marker as if the queue agreed. Never a queue item, never a gate, never the source of truth for what runs. Thread: [`docs/threads/batch-ready-marker.md`](threads/batch-ready-marker.md) |
+| 2026-08-19 | Give every idea thread a durable identity file from its first exchange, so the session working it is disposable. Borrowed from the persistent-identity / ephemeral-session split — the discipline, explicitly not the autonomy. Parked and promoted the same day: the thread's state (question, current thinking, decisions and whose they were, open questions) lived in one interactive session's context, so a session working an idea was expensive to kill and expensive to resume | `DESIGN.md` §3.8 + change-log row `thread-identity-files`: `docs/threads/<slug>.md`, tracked, undated, flat, with the slug doubling as the future change-log ref (`trace-ledger`'s identity-at-creation move, one layer earlier) and exactly one mutable section. `docs/threads/README.md` carries the convention and the template; `PLANNING.md` step 0 reads `ready` threads; this file gains the `Thread:` optional extra; `ONBOARDING.md` creates the directory for a new target. No reader tooling, deliberately. First live example, and the thread that produced it: [`docs/threads/thread-identity-files.md`](threads/thread-identity-files.md) |
 | 2026-08-12 | Make the sweep and a live run mutually exclusive — parked 2026-08-01 after a sweep `docker rm -f`'d a live run's task container and the run read as an OOM kill. Bundled into `docs/handoff-sweep-trustworthy.md` with its second-order point (loud `task-` reclamation) and the 300s-cap cheap half of the degradation entry | `DESIGN.md` §4.12 + change-log row `sweep-trustworthy`; specced in the 2026-08-12 planning session |
 | 2026-08-12 | Have the sweep reclaim stale run locks, not just containers and networks — parked 2026-08-05 after a killed suite's leftover lock failed an unrelated suite three hours later. Its honest catch (live lock vs stale lock look similar from outside) is why it ships after exclusivity, and its `isHolderLive`-not-name-match requirement became the exported-liveness decision | `DESIGN.md` §4.12 + change-log row `sweep-trustworthy`; specced in the 2026-08-12 planning session |
 | 2026-08-12 | Declare a `regressionCommand` for this repo, so frozen-suite blast radius stops being held by grep — parked 2026-08-04 after three tasks hand-wrote the same guard criterion | change-log row `self-regression`: `pipeline.config.json` gains the key, naming a Docker-free wrapper over the fast pure suites; specced in the 2026-08-12 planning session |
 | 2026-08-12 | Stop batch siblings failing each other's frozen suites — parked 2026-08-05; nine of the corpus's eleven partials were this shape. The design question it deferred was answered by Chad on 2026-08-12: no expected-red in the verifier, ever — the report labels instead | `DESIGN.md` §4 item 9 + change-log row `batch-sibling-partials`: the `sibling-batch` label, sorted after genuine partials within the partial band; specced in the 2026-08-12 planning session |
 | 2026-08-10 | A live dashboard that lights up the pipeline diagrams as tasks move through them — parked 2026-08-02 with its own three-way feasibility split (free today / one small deterministic change / not at any sane price), which held up under the planning session's read of the code. One correction from that read: the second deterministic change the entry contemplated finding a workspace was unnecessary — the runner's unconditional `workspace ready:` line already existed | `DESIGN.md` §5 + change-log row `live-dashboard`: the reader `scripts/dashboard.js` with a frozen `/state` contract (issue `repo-kfg`, tests at `tests/acceptance/repo-kfg/`), the `phase` field feed (issue `repo-bmd`, tests at `tests/acceptance/repo-bmd/`), and the page as interactive work against the frozen contract — the look deliberately unfrozen, so it is reviewed by looking at it. The reader **shipped** as change-log row `repo-kfg` (`scripts/dashboard.js`, the Docker-free suite `scripts/test-dashboard.sh` / `tests/unit/dashboard.test.js`); what is left of this entry is the `phase` feed and the page session |
-| 2026-08-19 | Give every idea thread a durable identity file from its first exchange, so the session working it is disposable. Borrowed from the persistent-identity / ephemeral-session split — the discipline, explicitly not the autonomy. Parked and promoted the same day: the thread's state (question, current thinking, decisions and whose they were, open questions) lived in one interactive session's context, so a session working an idea was expensive to kill and expensive to resume | `DESIGN.md` §3.8 + change-log row `thread-identity-files`: `docs/threads/<slug>.md`, tracked, undated, flat, with the slug doubling as the future change-log ref (`trace-ledger`'s identity-at-creation move, one layer earlier) and exactly one mutable section. `docs/threads/README.md` carries the convention and the template; `PLANNING.md` step 0 reads `ready` threads; this file gains the `Thread:` optional extra; `ONBOARDING.md` creates the directory for a new target. No reader tooling, deliberately. First live example, and the thread that produced it: [`docs/threads/thread-identity-files.md`](threads/thread-identity-files.md) |
+| 2026-08-04 | Audit the pipeline's own history across runs, not one run at a time — the corpus was on disk, structured, and had never been read as one. Parked 2026-08-02 with its own experiment attached: read the runs by hand once, and let that decide aggregation-versus-agent. The hand pass ran 2026-08-04 and aggregation won — every repeated pattern fell out of joining structured fields, none needed judgment | `DESIGN.md` §5 + change-log row `run-audit`: `scripts/audit-runs.js`, deterministic and host-only, joining `run.json`/`status.json`/`verify.json`/`verdict.json`; the LLM reader stays unbuilt, with the reason recorded in §5. Frozen as issue `repo-73k` with tests at `tests/acceptance/repo-73k/`; shipped with `scripts/test-audit-runs.sh` (change-log row `repo-73k`) |
+| 2026-08-04 | Capture the reviewer's verdict on every run — merged / sent back, and why — at the only moment it exists. Extracted from the two agent-shaped entries that both named it the most valuable field the pipeline does not own, and both concluded the shape is a cheap capture step, not a reviewing agent. Parked and promoted the same day | `DESIGN.md` §5 + change-log row `review-verdict`; frozen as issue `repo-1ie` with tests at `tests/acceptance/repo-1ie/` (freeze gate RED against a green control, 2026-08-04), then **shipped** as change-log row `repo-1ie`: `scripts/verdict.js` (`record` + `pending`, self-contained, chooses the run by `startedAt`) and the Docker-free suite `scripts/test-verdict.sh` / `tests/unit/verdict.test.js` |
+| 2026-08-04 | Record spec-to-code traceability at the moment it is created, instead of inferring it later — a ticked box carries the id of the issue that ticked it, so reconciliation is mechanical and nothing ever guesses an edge. The cheapest honest version of a knowledge graph; parked and promoted the same day because it collapses six drift entries into one convention | change-log row `trace-ledger`: the convention, `scripts/trace.js` (report + deterministic backfill via `git log -L`), the Docker-free suite `scripts/test-trace.sh` / `tests/unit/trace.test.js`, and the PLANNING.md step-0 drift read |
 
 ## Dropped
 
