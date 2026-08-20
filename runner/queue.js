@@ -148,6 +148,14 @@ function attemptNotes(runId, outcome, status, memoryIn) {
   return [lines.join('\n')];
 }
 
+// `EXCLUDED_TYPES` and `typeOf` are exported as a pair, and only as a pair: the deny-list is
+// meaningless without the normalisation that decides what an entry's type IS (absent, null
+// and '' all read as '' and are therefore KEPT). `scripts/batch.js` applies exactly this
+// filter before calling any live-queue entry an extra, because bd returns epic parents by
+// design and a reader that reported them would raise the false alarm every time. A second
+// copy of the rule would drift from the runner's, and the whole value of the reconciliation
+// is that it predicts what the runner will actually drain.
 module.exports = {
   readyQueue, queueSummary, claim, exportIssue, finish, outcomeFor, attemptNotes, OUTCOMES,
+  EXCLUDED_TYPES, typeOf,
 };

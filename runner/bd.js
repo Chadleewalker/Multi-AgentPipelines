@@ -203,7 +203,13 @@ function bdJson(cfg, args) {
   }
 }
 
+// `hostBdSpec` is exported for the same reason `shimTarget` and `spawnOptions` are: it is
+// the ONLY answer to "how would this host invoke bd", shims and all, and a second copy of
+// that probe would drift the moment npm changes a shim (change-log row `sweep-trustworthy`
+// made the same call for `isHolderLive`). `scripts/batch.js` assembles its own read-only
+// argument vector and spawns it itself — it must not route through the helpers below, whose
+// last resort starts a container — but it asks THIS function which command to spawn.
 module.exports = {
-  bd, bdJson, bdOnHost, bdInImage, haveHostBd, toMountPath, shimTarget, spawnOptions,
-  DEFAULT_BD_TIMEOUT_MS,
+  bd, bdJson, bdOnHost, bdInImage, haveHostBd, hostBdSpec, toMountPath, shimTarget,
+  spawnOptions, DEFAULT_BD_TIMEOUT_MS,
 };

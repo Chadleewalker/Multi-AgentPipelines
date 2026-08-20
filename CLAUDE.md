@@ -119,11 +119,16 @@ node scripts/verdict.js record <issue-id> <merged|rejected> "<why>"  # [--run <r
 node scripts/verdict.js pending    # PR-bearing tasks with no verdict yet, newest run first
 
 # confirming a batch before launching it: the marker a planning session wrote at the end of
-# PLANNING.md step 8, read back (§3.9, change-log row `repo-0b3`). Pure reader over
-# runs/batches/ — writes nothing, spawns nothing, exits 0 on findings. BATCH_RUNS_DIR re-aims
-# the root. The `bd ready` reconciliation is NOT WIRED YET: `show` always reports the batch as
-# `unreconciled bd-unavailable`, so step 8's "the queue lists exactly these ids" is still a
-# check done by eye.
+# PLANNING.md step 8, read back (§3.9, change-log rows `repo-0b3` and `repo-8v0`). Pure reader
+# over runs/batches/ — writes nothing, exits 0 on findings. BATCH_RUNS_DIR re-aims the root.
+# `show` also reconciles against the LIVE QUEUE, which is what the marker exists for: it reads
+# the run.config.<project>.json the marker names (from BATCH_CONFIG_DIR, else the repo root)
+# for its targetRepoPath, asks that working copy once through the existing PIPELINE_BD_CMD
+# seam — read-only, bounded by bdTimeoutMs — and reports each id `ready` or `not-ready` plus
+# any `stray` the run would also drain, with the runner's own epic filter applied so a parent
+# in the queue is not a finding. `pending` still spawns nothing. Where a link of that join
+# fails it prints `unreconciled` with one reason (`run-config-absent`, `bd-unavailable`,
+# `bd-unreadable`) and no queue state at all.
 node scripts/batch.js pending      # batches no run has worked since their freeze, newest first
 node scripts/batch.js show         # the newest marker, launched or not, with a per-id breakdown
 node scripts/batch.js show <project>-<YYYY-MM-DD>   # one named marker
@@ -164,7 +169,7 @@ bash scripts/test-audit-runs.sh    # the run-history audit — buckets, joins, c
 bash scripts/test-dashboard.sh     # the live dashboard's /state joins, its degraded vocabulary, and that it writes nothing (change-log row `repo-kfg`)
 bash scripts/test-verify-buffer.sh # the verifier's capture limit — a loud PASS is a pass, a loud FAIL is still a fail (change-log row `verify-nobuffer`)
 bash scripts/test-pipeline-map.sh  # the reader's map is drawn at build time — an error card is not a diagram (change-log row `map-prerender`)
-bash scripts/test-batch.sh         # the batch marker reader — the marker shape, the corpus join and its degraded labels (change-log row `repo-0b3`)
+bash scripts/test-batch.sh         # the batch marker reader — the marker shape, the corpus join, the live-queue reconciliation and both degraded vocabularies (change-log rows `repo-0b3`, `repo-8v0`)
 ```
 
 Reading the corpus itself is `node scripts/audit-runs.js` — a pure reader that prints one
@@ -434,6 +439,16 @@ the pipeline working on the pipeline's own code. The rules:
   manifest-less run dated once before and once after one freeze (a join copied from
   `verdict.js` skips such a run and answers the same way in both), and a `batches/`
   directory holding a hyphenated project name, a bare date, a `.txt` and truncated JSON.
+  Run it equally if you touch `runner/queue.js`'s `EXCLUDED_TYPES`/`typeOf` or
+  `runner/bd.js`'s `hostBdSpec`: `show`'s live-queue reconciliation imports both rather than
+  keeping a second copy, so a change to either changes what a launching session is told, and
+  its fixtures are the pair that has to be read together — the degraded ones alone pass a
+  tool that always says `unreconciled`, and a reconciling one alone passes a tool that never
+  notices `bd` is dead. Two more of its checks come from things that cost a whole run:
+  `-C` is sent past the first argument (node's own parser owns `-C` and would eat it before
+  a stubbed seam saw which repo was consulted), and a queue larger than 1 MiB still
+  reconciles (a capture overflow and a timeout kill the child identically, so an unraised
+  ceiling reports a query that answered at once as one that never answered).
   Any new Docker-free suite belongs beside them in
   `tests/unit/`, and its seam stub must be a `.js` file invoked through
   `process.execPath`, never a `#!/bin/sh` script: `spawnSync` without a shell fails such a

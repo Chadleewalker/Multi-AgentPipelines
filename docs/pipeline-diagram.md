@@ -51,14 +51,16 @@ and one that could gate would violate hard rule 5. The dashboard's own page is n
 yet; the frozen JSON contract it serves is.
 
 The dotted branch off the freeze is the handoff between the two halves of the process (§3.9,
-change-log rows `batch-ready-marker` and `repo-0b3`). A planning session's last act writes the
-marker; a later, different session reads it back — `node scripts/batch.js show` to confirm
-what it is about to launch, `pending` to see a batch frozen days ago and never run. **No
-arrow leaves it**: nothing in `runner/` or `pipeline/` reads `runs/batches/`, a missing marker
-does not stop a launch and a disagreeing one does not refuse it. The marker is what was
-*intended*; the Beads queue on the solid path is what actually runs, and the reconciliation
-between the two is not built yet — `show` says `unreconciled bd-unavailable` and step 8 still
-does that check by eye.
+change-log rows `batch-ready-marker`, `repo-0b3` and `repo-8v0`). A planning session's last act
+writes the marker; a later, different session reads it back — `node scripts/batch.js show` to
+confirm what it is about to launch, `pending` to see a batch frozen days ago and never run.
+**No arrow leaves it**: nothing in `runner/` or `pipeline/` reads `runs/batches/`, a missing
+marker does not stop a launch and a disagreeing one does not refuse it. The marker is what was
+*intended*; the Beads queue on the solid path is what actually runs — and `show` now reads
+that queue too, through the run config the marker names, reporting each id `ready` or
+`not-ready` and each entry the batch never named a `stray` (or `unreconciled` with one reason,
+where a link of that join cannot be made). It reads the queue the runner will drain; it never
+changes it.
 
 Slots 1 and 2 need **no pipeline code**: they are prompts you run during a planning
 session, before anything is frozen. Slot 2 is the higher-leverage of the two — a domain

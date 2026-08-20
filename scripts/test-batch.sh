@@ -9,8 +9,10 @@
 # temp directory and drives the real CLI against them, so it touches neither this repo's
 # own `runs/` tree nor its working tree. The sweep discovers it by glob
 # (scripts/test-*.sh) and it is safe to run anywhere node exists, including inside a task
-# container — the reader itself needs no Docker, no network and, in this task, no `bd`,
-# which is the whole point of it being deterministic host-side scaffolding.
+# container. `show` does consult the live queue (DESIGN.md §3.9), but every check drives it
+# through the existing `PIPELINE_BD_CMD` seam against a stand-in, so no real `bd` runs and
+# no target repo is opened — which is the whole point of it being deterministic host-side
+# scaffolding.
 #
 # Run from Git Bash:  bash scripts/test-batch.sh
 # POSIX sh only in the body: it must also run as `sh <path>`, which is dash in a container
@@ -23,8 +25,12 @@ pass() { echo "PASS  $1"; }
 fail() { echo "FAIL  $1"; FAIL=1; }
 
 # The checker owns its fixtures. A seam inherited from the caller's shell would aim the
-# reader at a real runs root — which is a directory this suite must never write into.
+# reader at a real runs root — which is a directory this suite must never write into — or,
+# worse, at a real run config plus the host's own `bd`, which would have this suite query a
+# target project's database.
 unset BATCH_RUNS_DIR
+unset BATCH_CONFIG_DIR
+unset PIPELINE_BD_CMD
 
 LC_ALL=C
 export LC_ALL
@@ -49,10 +55,10 @@ fi
 # The count is the guard against a checker that silently stops asserting: a suite whose
 # every check vanished still exits 0.
 CHECKS="$(echo "$OUT" | grep -c '^ok - ')"
-if [ "$CHECKS" -ge 40 ]; then
+if [ "$CHECKS" -ge 60 ]; then
   pass "checker ran $CHECKS checks"
 else
-  fail "checker ran only $CHECKS checks (expected at least 40)"
+  fail "checker ran only $CHECKS checks (expected at least 60)"
 fi
 
 if [ "$FAIL" -eq 0 ]; then echo "== ALL BATCH CHECKS PASSED =="; else echo "== BATCH CHECKS FAILED =="; fi
