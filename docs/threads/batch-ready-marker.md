@@ -170,6 +170,18 @@ session that specs this:)*
   inbox entry moved to the **Promoted** table citing this thread.
   `scripts/test-changelog.sh` and `scripts/test-sanitize.sh` green.
 
+- 2026-08-19 — Planning session run end to end. Fresh-context criteria (step 1b), spec-lint
+  clean, full panel returning `concerns` three times (25 findings, 24 accepted, 1 partially
+  rejected). Split into two tasks on the panel's reading: `repo-0b3` (marker + `pending`) and
+  `repo-8v0` (the reconciliation). §3.9 amended with four user-approved decisions and the
+  change-log row given a same-day amendment clause. Frozen tests committed on the
+  `thread-identity-files` branch (PR #39); the freeze gate is RED on both against a green
+  control, and was re-run against a deliberately wrong build to prove the tests discriminate
+  rather than merely detecting a missing file — which caught a broken guard in criterion
+  5(iii) that a correct implementation would have failed. Both issues left DEFERRED: task
+  branches fork from `main`, so the freeze is only real once #39 merges. The first real
+  marker was written to `runs/batches/` — this batch's own.
+
 ## Outcome
 
 **Promoted 2026-08-19 to `DESIGN.md` §3.9 and change-log row `batch-ready-marker`.**
