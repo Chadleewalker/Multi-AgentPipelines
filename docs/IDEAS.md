@@ -86,15 +86,17 @@ Two hard boundaries, both inherited:
 
 <!-- Newest at the top. Nothing here is committed to. -->
 
-- **A merge-order helper for PR stacks — evidence, never a merge.** When batches get
-  bigger, several PRs land at once and merge *order* becomes real work: docs-phase
-  conflicts (see the merge-strategy entry below) and sibling-suite interactions mean some
-  orders are cheaper than others. A read-only helper that suggests an order and names the
-  expected conflicts would make the human merge pass faster without touching the boundary
-  that matters: merging stays the user's act, per the outcome contract. The cautionary
-  tale is Gas Town's Refinery/Mayor auto-merging PRs despite failing integration tests
-  (DoltHub field report, 2026-01) — the inspiration is the *queue discipline*, explicitly
-  not the autonomy. Related: `DESIGN.md` §5; hard rule 5. 2026-08-19
+- **Teach the corpus readers which `runs/` subdirectories are not runs.**
+  `scripts/audit-runs.js` buckets any direct child of the runs root that has neither
+  `run.json` nor `run.log` as `other`/`no-artifacts` and prints it by name in its totals, so
+  the batch markers at `runs/batches/` (`DESIGN.md` §3.9) will show up in the audit report
+  as a stray corpus entry. Cosmetic and honest today — it *is* an entry the reader does not
+  recognise — but the session-ledger idea would add `runs/sessions/` and the same thing
+  happens again, so the general answer is a named list of non-run subdirectories rather than
+  a special case per tool. `scripts/verdict.js` and `scripts/dashboard.js` already skip
+  them and need nothing. Deliberately excluded from the batch-marker tasks: fixing it there
+  would have doubled that PR's blast radius into a second reader with its own frozen suite.
+  Related: `DESIGN.md` §5, §3.9. 2026-08-19
 
 - **Capture all planning-session info going forward — a session ledger under `runs/`.**
   (User directive, 2026-08-18: "I need to capture all session info going forward.")
@@ -610,6 +612,7 @@ shipped thing survives — the same reason the `DESIGN.md` change log keeps its 
 
 | Date | Idea | Became |
 |---|---|---|
+| 2026-08-19 | A merge-order helper for the PR stack a run hands back — evidence, never a merge. Parked and promoted the same day. Two corrections came out of working it: the PRs are a **fan**, not a stack (every task clones fresh and branches off the integration branch, so they are siblings whose fork points can differ), and **ordering cannot reduce the conflict count** — a file touched by k PRs conflicts in k−1 merges whatever the order — so the value is landing the clean PRs first with zero judgment, clustering the rest, and naming staleness and expected-to-clear failures | `DESIGN.md` §5 + change-log row `merge-order`: `scripts/merge-order.js`, the fourth pure reader on the §5 model. It **computes** merges rather than predicting them from file overlap — `git merge-tree --write-tree` chained through `git commit-tree` simulates a whole order and names the real conflicted paths — and keeps the `repo-73k` pure-reader contract literally, by running both under a redirected `GIT_OBJECT_DIRECTORY` measured to write zero objects into the real repository. Input is a run id, dependency order is inferred from the run record rather than read from Beads, and the expected-to-clear regression join ships with its 2000-character-tail limit printed where it prints (all three, user, 2026-08-19). Never merges, pushes or touches a PR; never a gate. Thread: [`docs/threads/merge-order.md`](threads/merge-order.md) |
 | 2026-08-19 | A "batch ready" marker a planning session files when specs are frozen, so the launch step reads state instead of memory. Parked and promoted the same day. The handoff between freezing and launching was a spoken word: two different sessions, nothing on disk between them, so the launch could not confirm what it was launching and a batch frozen and not launched was invisible to the next session | `DESIGN.md` §3.9 + change-log row `batch-ready-marker`: `runs/batches/<project>-<YYYY-MM-DD>.json`, host-only and immutable (no `launched` flag — "still pending" is a join over the run corpus, `verdict.js pending`'s move), read by `scripts/batch.js` (`show`, `pending`). The reconciliation against `bd ready` is the point rather than the confirmation, and is bounded: built-ins only except a `BATCH_BD_CMD` seam that reads and never writes, and an absent `bd` labels the batch unreconciled rather than printing the marker as if the queue agreed. Never a queue item, never a gate, never the source of truth for what runs. Thread: [`docs/threads/batch-ready-marker.md`](threads/batch-ready-marker.md) |
 | 2026-08-19 | Give every idea thread a durable identity file from its first exchange, so the session working it is disposable. Borrowed from the persistent-identity / ephemeral-session split — the discipline, explicitly not the autonomy. Parked and promoted the same day: the thread's state (question, current thinking, decisions and whose they were, open questions) lived in one interactive session's context, so a session working an idea was expensive to kill and expensive to resume | `DESIGN.md` §3.8 + change-log row `thread-identity-files`: `docs/threads/<slug>.md`, tracked, undated, flat, with the slug doubling as the future change-log ref (`trace-ledger`'s identity-at-creation move, one layer earlier) and exactly one mutable section. `docs/threads/README.md` carries the convention and the template; `PLANNING.md` step 0 reads `ready` threads; this file gains the `Thread:` optional extra; `ONBOARDING.md` creates the directory for a new target. No reader tooling, deliberately. First live example, and the thread that produced it: [`docs/threads/thread-identity-files.md`](threads/thread-identity-files.md) |
 | 2026-08-12 | Make the sweep and a live run mutually exclusive — parked 2026-08-01 after a sweep `docker rm -f`'d a live run's task container and the run read as an OOM kill. Bundled into `docs/handoff-sweep-trustworthy.md` with its second-order point (loud `task-` reclamation) and the 300s-cap cheap half of the degradation entry | `DESIGN.md` §4.12 + change-log row `sweep-trustworthy`; specced in the 2026-08-12 planning session |
