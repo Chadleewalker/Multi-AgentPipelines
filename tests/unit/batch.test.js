@@ -650,6 +650,30 @@ function record(r) { outputs.push(both(r)); return r; }
     rec.strays.some((s) => s.id === 'u-1' && s.type === 'untyped'));
   check('G29 an entry with no usable id is skipped, and junk entries do not throw',
     rec.queued.length === 2 && rec.state('q-1') === 'ready' && rec.state('q-3') === 'not-ready');
+
+  // The capture ceiling — this reader's own limit, not anything bd did. It belongs beside
+  // G19–G21 and is numbered here only to leave those numbers alone: `spawnSync` kills an
+  // overflowing child with the SAME killSignal the bound uses and leaves the SAME
+  // `status: null, signal` shape behind, so the two are indistinguishable by shape and an
+  // implementation that tests for the bound first reports a bd that answered AT ONCE as one
+  // that never answered at all. Both are `bd-unreadable`, which is why the reason alone
+  // cannot carry this and the detail is what has to. One layer down from change-log row
+  // `verify-nobuffer`, and the same defect: the call SUCCEEDED and a ceiling failed it.
+  const flood = stub('flood.js', [
+    "const chunk = 'x'.repeat(1024 * 1024);",
+    // writeSync, never process.stdout.write: process.exit truncates a pending pipe write, and
+    // a truncated flood is unparseable JSON — which fails for a DIFFERENT reason and would
+    // leave this check green with the ceiling never reached (repo-zje-note-2).
+    'for (let i = 0; i < 64; i += 1) sfs.writeSync(1, chunk);',
+    'process.exit(0);',
+  ].join('\n'));
+  const f = run('alpha-2026-08-15', withStub(flood));
+  const fo = both(f);
+  check('G30 an answer past the reader’s capture ceiling exits 0, lists every id, and is bd-unreadable',
+    f.status === 0 && IDS.every((id) => fo.includes(id))
+    && fo.includes('unreconciled') && fo.includes('bd-unreadable') && !RECONCILED.test(fo));
+  check('G31 and the detail says the answer was too long, never that bd failed to answer',
+    /exceeded/.test(fo) && !/within \d+ms/.test(fo));
 }
 
 for (const t of temps) fs.rmSync(t, { recursive: true, force: true, maxRetries: 5 });

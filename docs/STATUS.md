@@ -1216,12 +1216,28 @@ run `bash scripts/test-all.sh`, since `scripts/test-runner-queue.sh`, `test-bd-s
 `test-bd-shim.sh` cover the two runner files this touched and all three need Docker.
 
 **The re-runnable coverage is where the proof lives.** `tests/unit/batch.test.js` grew from
-46 checks to 88: the epic filter and the stray rule driven directly at the shapes a real
+46 checks to 90: the epic filter and the stray rule driven directly at the shapes a real
 queue grows, every degraded reason including a config with no `targetRepoPath` and a
 `runConfig` reaching out of its directory, `pending` proven to consult no queue at all, and
 the bound *fired* — against a stub that swallows the missing-program-slot error and holds a
 timer open, because a stub that merely fails to exit is killed by node anyway and proves
 nothing.
+
+**Gotcha worth carrying to the next reader that spawns anything.** `spawnSync`'s default
+`maxBuffer` is 1 MiB, which a real backlog's `bd ready --json` — whole issue records,
+descriptions included — can exceed, and the shape an overflow leaves behind is
+*indistinguishable from a timeout*: the child is killed with the same `killSignal`, `status`
+is `null`, and only `error.code` says `ENOBUFS` rather than `ETIMEDOUT`. Test for the bound
+first and a `bd` that answered **at once** is reported as one that never answered. So the
+reader raises the ceiling to 8 MiB (generous, but present: a pure reader run during a launch
+ritual must not be able to exhaust memory over a wedged `bd` that never stops writing) and
+tests for the overflow ahead of the bound. Both are `bd-unreadable`, which is exactly why the
+reason cannot carry the difference and the *detail* has to — the reason says which half
+failed, the detail says where to look. `G30`/`G31` pin it as a pair: G30 alone passes either
+way, and the fixture floods with `fs.writeSync(1, …)` rather than `process.stdout.write`,
+because `process.exit` truncates a pending pipe write and a truncated flood fails as
+unparseable JSON — a different reason, and a check that never reached the ceiling
+(repo-zje-note-2).
 
 ## What's next
 

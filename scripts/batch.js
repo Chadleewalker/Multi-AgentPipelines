@@ -411,6 +411,14 @@ function readSpec(env = process.env) {
   return hostBdSpec();
 }
 
+// How much of bd's answer this reader is willing to hold. `spawnSync`'s own default is 1 MiB,
+// which a real backlog's `ready --json` — whole issue records, descriptions included — can
+// exceed, and the failure it produces is the shape change-log row `verify-nobuffer` was about:
+// the call SUCCEEDED and the ceiling turned it into a failure. Generous rather than absent,
+// because a pure reader run during a launch ritual must not be able to exhaust memory over a
+// wedged `bd` that never stops writing.
+const CAPTURE_LIMIT_BYTES = 8 * 1024 * 1024;
+
 // One bounded, read-only call. Every failure is classified into exactly one reason, and the
 // two that look alike are kept apart on purpose: NOT SPAWNED AT ALL is `bd-unavailable`
 // (there is no queue to compare against on this host), while SPAWNED AND UNUSABLE — a
@@ -420,9 +428,18 @@ function readSpec(env = process.env) {
 function readReadyQueue(cfg, env = process.env) {
   const spec = readSpec(env);
   if (!spec) return { ok: false, reason: 'bd-unavailable', detail: 'no host bd resolved' };
-  const opts = spawnOptions(cfg, { env: process.env });
+  const opts = spawnOptions(cfg, { env: process.env, maxBuffer: CAPTURE_LIMIT_BYTES });
   const argv = [...spec.pre, '-C', cfg.targetRepoPath, 'ready', '--json'];
   const r = spawnSync(spec.cmd, argv, opts);
+
+  // An answer past the ceiling, checked BEFORE the timeout test below and not after it: an
+  // overflow is killed with the SAME `killSignal` and leaves the SAME `status: null` shape,
+  // so the later test would claim `bd` never answered when it answered at once and this
+  // reader stopped listening. Same reason either way, and the reason is only half the
+  // message — the detail is what sends someone to the right thing to look at.
+  if (r.error && r.error.code === 'ENOBUFS') {
+    return { ok: false, reason: 'bd-unreadable', detail: `answer exceeded ${CAPTURE_LIMIT_BYTES} bytes` };
+  }
 
   // spawnSync does not report a timeout as a failure a caller can read: it returns status
   // null with the kill signal, and error.code ETIMEDOUT. Checked FIRST, because that same
