@@ -57,6 +57,11 @@ stopped being an idea and wants a design doc.
 Optional extras, only when they're actually true:
 - `Blocked on:` — something that has to land first. Name the change-log row or issue id.
 - `Related:` — an existing design section this would touch.
+- `Thread:` — the identity file for this idea, once someone is actually working it:
+  `docs/threads/<slug>.md` (DESIGN.md §3.8, change-log row `thread-identity-files`). That
+  file carries the structure this one refuses to hold — current thinking, decisions and
+  who made them, open questions — which is what lets an entry here stay a paragraph even
+  while the idea is being designed. Most entries never get one.
 
 **Grouping:** this is one flat list on purpose. Add headings only when the flat list
 genuinely stops being skimmable — an inbox with a taxonomy is a filing system, and a
@@ -80,6 +85,26 @@ Two hard boundaries, both inherited:
 ## Inbox
 
 <!-- Newest at the top. Nothing here is committed to. -->
+
+- **A "batch ready" marker a planning session files when specs are frozen, so the launch
+  step reads state instead of memory.** Also Gas Town-shaped (everything routes through
+  the ledger, even notes between agents). Today "the queue is ready to run" exists only
+  in the user's head between the planning session ending and the word "go"; a marker on
+  disk would let the launch step confirm what it is launching ("batch of 4, frozen
+  2026-08-19 — go?") and would make an un-launched batch visible to the next session.
+  The honest catch: it must not be a queue item — the runner drains the queue unattended,
+  and an inbox that can start a container is not an inbox (this file's own rule). A
+  marker the *human-side* launch ritual reads, never the runner. 2026-08-19
+
+- **A merge-order helper for PR stacks — evidence, never a merge.** When batches get
+  bigger, several PRs land at once and merge *order* becomes real work: docs-phase
+  conflicts (see the merge-strategy entry below) and sibling-suite interactions mean some
+  orders are cheaper than others. A read-only helper that suggests an order and names the
+  expected conflicts would make the human merge pass faster without touching the boundary
+  that matters: merging stays the user's act, per the outcome contract. The cautionary
+  tale is Gas Town's Refinery/Mayor auto-merging PRs despite failing integration tests
+  (DoltHub field report, 2026-01) — the inspiration is the *queue discipline*, explicitly
+  not the autonomy. Related: `DESIGN.md` §5; hard rule 5. 2026-08-19
 
 - **Capture all planning-session info going forward — a session ledger under `runs/`.**
   (User directive, 2026-08-18: "I need to capture all session info going forward.")
@@ -601,6 +626,7 @@ shipped thing survives — the same reason the `DESIGN.md` change log keeps its 
 | 2026-08-12 | Declare a `regressionCommand` for this repo, so frozen-suite blast radius stops being held by grep — parked 2026-08-04 after three tasks hand-wrote the same guard criterion | change-log row `self-regression`: `pipeline.config.json` gains the key, naming a Docker-free wrapper over the fast pure suites; specced in the 2026-08-12 planning session |
 | 2026-08-12 | Stop batch siblings failing each other's frozen suites — parked 2026-08-05; nine of the corpus's eleven partials were this shape. The design question it deferred was answered by Chad on 2026-08-12: no expected-red in the verifier, ever — the report labels instead | `DESIGN.md` §4 item 9 + change-log row `batch-sibling-partials`: the `sibling-batch` label, sorted after genuine partials within the partial band; specced in the 2026-08-12 planning session |
 | 2026-08-10 | A live dashboard that lights up the pipeline diagrams as tasks move through them — parked 2026-08-02 with its own three-way feasibility split (free today / one small deterministic change / not at any sane price), which held up under the planning session's read of the code. One correction from that read: the second deterministic change the entry contemplated finding a workspace was unnecessary — the runner's unconditional `workspace ready:` line already existed | `DESIGN.md` §5 + change-log row `live-dashboard`: the reader `scripts/dashboard.js` with a frozen `/state` contract (issue `repo-kfg`, tests at `tests/acceptance/repo-kfg/`), the `phase` field feed (issue `repo-bmd`, tests at `tests/acceptance/repo-bmd/`), and the page as interactive work against the frozen contract — the look deliberately unfrozen, so it is reviewed by looking at it. The reader **shipped** as change-log row `repo-kfg` (`scripts/dashboard.js`, the Docker-free suite `scripts/test-dashboard.sh` / `tests/unit/dashboard.test.js`); what is left of this entry is the `phase` feed and the page session |
+| 2026-08-19 | Give every idea thread a durable identity file from its first exchange, so the session working it is disposable. Borrowed from the persistent-identity / ephemeral-session split — the discipline, explicitly not the autonomy. Parked and promoted the same day: the thread's state (question, current thinking, decisions and whose they were, open questions) lived in one interactive session's context, so a session working an idea was expensive to kill and expensive to resume | `DESIGN.md` §3.8 + change-log row `thread-identity-files`: `docs/threads/<slug>.md`, tracked, undated, flat, with the slug doubling as the future change-log ref (`trace-ledger`'s identity-at-creation move, one layer earlier) and exactly one mutable section. `docs/threads/README.md` carries the convention and the template; `PLANNING.md` step 0 reads `ready` threads; this file gains the `Thread:` optional extra; `ONBOARDING.md` creates the directory for a new target. No reader tooling, deliberately. First live example, and the thread that produced it: [`docs/threads/thread-identity-files.md`](threads/thread-identity-files.md) |
 
 ## Dropped
 

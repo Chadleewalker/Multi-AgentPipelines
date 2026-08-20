@@ -430,6 +430,81 @@ ready queue once before the task loop. Both halves have now shipped — the cont
 as `repo-1cy`, the host side as change-log row `spec-concern-surfacing`, which the first
 real concern prompted by reaching the status file and going no further.
 
+### 3.8 Idea threads (state that outlives a session)
+
+§3.6 gives knowledge that outlives a *task* a canonical home. A thought being worked
+between sessions had none. `docs/IDEAS.md` holds a parked idea as a paragraph, and
+§3.2's planning session produces a `docs/planning-draft-<date>.md` — but everything
+between those two points, which is where the design work actually happens, lived in one
+interactive session's context. Losing or resetting that session lost the thread, so a
+session working an idea was expensive to kill and expensive to resume.
+
+**An idea thread gets a durable identity file from its first exchange**, at
+`docs/threads/<slug>.md` in the repo the thread is about. The session becomes the
+disposable half: any fresh session picks the thread up by reading one file, which is
+what makes many parallel working sessions cheap to run and cheap to abandon.
+
+**Four properties of the location, each forced by something already decided.** *Tracked,
+not under `runs/`*: `runs/` is git-ignored host-only run data (§4.12), and a half-thought
+that does not survive a machine or a clone has not been made durable — a thread file is
+intent about the machinery, the same class as `docs/IDEAS.md`. *In the repo the thread is
+about*: the `docs/IDEAS.md` boundary applies unchanged — a thread about a target project
+opens in that project's tree, and one opened in this repo names no target
+(`scripts/test-sanitize.sh` reads the tracked tree as bytes). *Undated filename*: a date
+in a filename reads as immutable and an agent will not rewrite such a file, which is why
+`docs/handoff-sweep-trustworthy.md` is deliberately undated; a thread is worked and
+amended until it is discharged. *Flat, no subdirectories and no index*: status lives in
+the header, so the live list is a grep — a taxonomy and a hand-maintained index are both
+things that go stale, which is the argument `docs/IDEAS.md` already makes about headings.
+
+**The slug is the filename and is the change-log ref the thread will use if it is
+promoted.** This is change-log row `trace-ledger`'s move applied one layer earlier —
+identity assigned when the thing is created, so nothing downstream guesses an edge — and
+one string then follows the thought from first exchange to shipped row.
+`scripts/test-changelog.sh` already enforces that refs are kebab-case and unique across
+the log, so a colliding thread slug is caught by a suite that exists. A thread may
+produce several rows or none; the slug is the default ref, never a promise of one.
+
+**Exactly one section is mutable.** The file carries a header block (slug, status, opened
+date, origin, related refs), the question the thread has to answer, **Current thinking**,
+Decisions, Open questions, a Log, and an Outcome. Only *Current thinking* is rewritten in
+place — it is the revival payload. Decisions, the Log and the Outcome append, which is
+what the §12 change log, the `docs/IDEAS.md` Promoted/Dropped tables and the §3.1 attempt
+log all already do and is why none of them can quietly lose a fact. **Decisions carries
+the most weight**, for PLANNING.md's disposition reason: a decision silently absorbed into
+prose is indistinguishable from one never made, so each is dated and marked whose call it
+was — hard rule 4 splits that ownership, and which half decided a thing is the fact most
+likely to be needed and least likely to survive.
+
+**Five statuses:** `open`, `parked` (with what it waits on), `ready` (has a
+decision-shaped answer waiting for a planning session), `promoted`, `dropped`.
+
+**The promotion path does not change; a thread is state alongside it.** A
+`docs/IDEAS.md` entry gains an optional `Thread:` extra beside `Blocked on:` and
+`Related:`, which is the reconciliation with that file's resist-adding-structure rule —
+the inbox entry stays a paragraph and the thread file carries the structure the inbox
+refuses to hold. Threads are opened for entries being *worked*, never for all of them.
+PLANNING.md step 0 reads `docs/threads/` for `ready` threads alongside the inbox and the
+drift report. At promotion the slug is already right: the §12 row takes it, the inbox row
+moves to **Promoted** citing the thread, and the thread's status and Outcome record what
+it became. **A closed thread file stays** — what stops an idea being re-raised every few
+months is the recorded reason, and the reason lives in the thread rather than in a
+one-line table cell (§12's *Why* column exists for the same reason).
+
+**Two boundaries.** A thread is **never a queue item** — `docs/IDEAS.md`'s own rule, that
+an inbox which can start a container is not an inbox; threads live in `docs/`, nothing in
+`runner/` or `pipeline/` reads them, and no thread file is a Beads issue. And a thread is
+**not a sixth channel of unread prose** — the `docs/IDEAS.md` session-reviewer entry makes
+that argument against itself and it applies here. The defence is that this adds no channel:
+it is a consistent shape for prose that already exists in three inconsistent ones (handoff
+documents, the permanent-value sections of planning drafts, and session context that
+survives nowhere at all), and it should replace those rather than sit beside them.
+
+**Deliberately no tooling.** No reader script ships with this. A grep over a flat
+directory answers every question a reader has today, and a reader written before there
+are ten threads would be guessing at what to report — the same restraint §5 applied to
+the corpus audit, which was written only after the corpus had been read by hand once.
+
 ## 4. The Implementation Phase (the execution layer)
 
 Carried over from v3, amended over two critic-review rounds; this section is the single
@@ -1351,3 +1426,4 @@ version (`Status: READY v1.0`). The *document* still has a version; its *rows* n
 | 2026-08-13 | panel-workflow | **the critic panel stays harness-agnostic — a Claude Code saved workflow for it was built and reverted the same session.** The workflow (`.claude/workflows/critic-panel.js`, plus a CLAUDE.md standing authorization naming it) ran `PLANNING.md` step 2 as one Workflow-tool invocation: one fresh-context agent per charter, answers schema-checked against the `advisories` shape, a critic that returned nothing recorded as an `error` advisory. The user rejected it on portability: the Workflow tool exists in one vendor's harness only, and the playbook must stay followable from any agent CLI, so the panel's mechanism remains what step 2 already says — one fresh-context review per charter, by whatever fan-out the session's harness provides. What survives: `advisors/README.md`'s registry note is brought in line with the no-zero-critic rule from change-log row `spec-panel-below-line` | The workflow encoded real invariants — per-charter isolation, schema-checked output, no silently dropped critic — but encoded them in a vendor-specific runtime, and the invariants belong in playbook text every harness can follow, not in a script only one can run. Recorded so the idea does not come back looking new: adopt it only if planning is ever deliberately committed to a single harness |
 | 2026-08-18 | model-crosstab | the audit's `### Models` section becomes a **cross-tab instead of a flat tally**: per resolved model id, the outcome breakdown, the first-attempt pass rate, and the review verdicts. Two rules are pinned rather than assumed. The first-attempt denominator is done tasks that **recorded an attempt count**, never all done tasks — `attempts` is null on rows written before the field existed, and folding those in either direction invents a rate out of a missing field, so the printed fraction carries its own denominator (`1 of 1`, not `100%`). And the verdict count applies the **same PR-bearing rule the coverage section already applies**: a verdict recorded against a row whose `prUrl` is null is not counted, because coverage refuses it too and one report disagreeing with itself about how many verdicts a corpus holds is exactly the plausible-and-wrong number §3.6 is about. Nothing else moves — same section order, same pure-reader, never-a-gate, byte-deterministic contract, still node built-ins only. Nine checks added to `tests/unit/audit-runs.test.js` (54 → 63) | the corpus already recorded everything needed to answer "was the cheaper model good enough for this work" — `model` is written per TASK (§4.11), beside `outcome`, `attempts` and the verdict join — and the report could not answer it, because it printed which models ran in one place and how the work went in another and never crossed them. The join is the whole question: a run-level comparison cannot survive a config that changed part way through the corpus. What the new checks add beyond "a section appears" is that the two fixture models are built to **disagree** — model-a passes 1 of 1 first time, model-b 1 of 2 — so an implementation that computed the rate corpus-wide and printed it under each model prints the same fraction twice and fails; both that and the PR-bearing verdict rule were confirmed by mutation, each check going red against a deliberately broken build before being trusted. First reading of the real corpus on this change: 141 rows on `claude-opus-5` at 120 of 124 first-attempt, and 3 rows attributed to `claude-haiku-4-5-20251001` — which is not a Haiku run but the mis-recorded id from STATUS defect 8, now visible as its own block instead of buried in a tally |
 | 2026-08-18 | task-cost | **§4.3 and §4.11 gain the per-task cost record.** `status.json` gains an additive `modelTokens` object — per model id, the four counts `inputTokens` / `outputTokens` / `cacheReadInputTokens` / `cacheCreationInputTokens` — accumulated over **every** agent invocation of a task (each code attempt and the docs call) from the same `modelUsage` table §4.3's resolved-model rule already reads and today discards, and the runner carries it verbatim onto the task row in `run.json` so the report and `scripts/audit-runs.js` can price a task beside its outcome. Four properties are pinned rather than left to the implementation, because every way of getting this wrong produces a well-formed plausible number (§3.6; `docs/STATUS.md` defects 2, 5, 7, 8): extraction happens **before** `envelope.js flatten` overwrites the log, since the collected artifact is the flattened one and a host-side reader would find the docs phase's tokens and none of the code phase's — roughly a tenth of the truth, and non-empty; accumulation lives in the **status file**, not in container memory, because a status file survives a rate-limit relaunch (§4.7) and an in-memory accumulator silently discards everything spent before the pause; keys are written in **sorted order**, because encounter order varies run to run (the CLI lists the helper model first — change-log row `repo-wxh`) and the report's regeneration-idempotence claim rests on identical bytes; and the write is **non-fatal and never an outcome** — nothing branches on it, and it is deliberately outside `scrutinyKey`, on the `phase`-feed precedent (change-log row `repo-bmd`). Two mechanisms are new rather than reused: `envelope.js usage <file>` prints the table as JSON, added so that `flatten`'s stdout can stay the model id and nothing else (the entrypoint captures it in a command substitution, and a second line silently corrupts the recorded id), and `status.js tokens <json>` merges additively, since `set` assigns a string from argv and cannot carry an object. `costUSD` and `webSearchRequests` are **not** recorded — the first is a list price the subscription token does not pay, the second is not a token — and the recorded figure is an accepted **floor**: an invocation killed by the rate limit exits 20 before its envelope is read. The field is `modelTokens` and not `usage` because `usage` already means the rate-limit window here (`rateLimitResetAt`, `runner/pause.js`, the report's `PAUSED` label), and a field called `usage` on a task row reads as park state. The audit's per-model cost cut ships as its own task and keys on the **record's own** model ids, never folded into the resolved-model buckets, which would attribute tokens to a model that did not spend them | every scaling statement in this design is priced in wall-clock alone — "concurrency buys elapsed time, not throughput", "N containers exhaust the window N times faster" — each true and each numberless, while the CLI has been reporting the numbers all along and the pipeline has been throwing them away. Three parked ideas were blocked behind the same missing column: the per-phase model split cannot be evaluated without a before and an after, a spend ceiling has nothing to count, and a build-stats reader can only report what the corpus keeps. The per-model cross-tab (change-log row `model-crosstab`) already cuts outcome and first-attempt rate by model, so cost is the column it was built to hold — and it turns "was the cheaper model good enough for this work" from an argument into arithmetic. Declared at planning time and approved before freezing (hard rule 4); the implementing tasks add their own rows when they ship |
+| 2026-08-19 | thread-identity-files | **§3.8 is new: an idea thread gets a durable identity file from its first exchange**, at `docs/threads/<slug>.md` in the repo the thread is about — tracked (not host-only under `runs/`, since a half-thought that dies with a machine is not durable), undated (a dated filename reads as immutable and stops the file being maintained — the `docs/IDEAS.md` entry of 2026-07-31, and why `docs/handoff-sweep-trustworthy.md` carries no date), and flat with status in the header rather than a directory taxonomy or an index. The **slug is the filename and is the change-log ref the thread will use if promoted**, which is change-log row `trace-ledger`'s identity-at-creation move applied one layer earlier and makes `scripts/test-changelog.sh` the collision check for free. The file has **exactly one mutable section** — *Current thinking*, the revival payload; Decisions, Log and Outcome append, and Decisions is dated and marked user-or-drafter because hard rule 4 splits that ownership and which half decided a thing is the fact least likely to survive a session. Five statuses (`open`, `parked`, `ready`, `promoted`, `dropped`). The promotion path is **unchanged**: `docs/IDEAS.md` gains an optional `Thread:` extra, `PLANNING.md` step 0 reads `docs/threads/` for `ready` threads beside the inbox and the drift report, and a closed thread file stays rather than being deleted. `ONBOARDING.md` creates the directory for a new target alongside the idea inbox; `docs/threads/README.md` carries the template. No reader tooling ships — a grep over a flat directory answers everything today, and a reader written before there are ten threads would be guessing, the same restraint §5 applied to the corpus audit | the repo had four homes for a thought and, after `docs/IDEAS.md`, five — and the gap between "parked paragraph" and "planning draft" is where the design work actually happens. That state lived in one interactive session's context, so a session working an idea was expensive to kill and expensive to resume, and the facts that died with it were the load-bearing ones: which decisions the user made and why, what was ruled out, what an open question is waiting on. The sibling `docs/IDEAS.md` entry on a session ledger wants the same information *for the record*; this wants it *for revival*, and they are different artifacts — the ledger records what a session did, a thread holds what a thread thinks. The honest risk, named in the section rather than left for a later reader to discover, is that this becomes a sixth channel of unread prose, which the inbox's own session-reviewer entry argues against convincingly; the defence is that it adds no channel but gives a consistent shape to prose already scattered across handoff documents, planning drafts' permanent-value sections, and context that survives nowhere. Borrowed shape: the persistent-identity / ephemeral-session split, adopted for the discipline and not for any of the autonomy that travels with it |

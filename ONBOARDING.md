@@ -114,7 +114,7 @@ coverage that matters is of the area about to be tasked out, not of the whole sy
       (shell scripts run inside Linux containers; a CRLF checkout on Windows breaks
       them and can read as tampering).
 
-### 2. The frozen-test home and the idea inbox
+### 2. The frozen-test home, the idea inbox and the thread directory
 - [ ] Create `tests/acceptance/` with a short README stating the freeze rules: tests
       land here during planning (PLANNING.md step 6), are committed to the integration
       branch before a run, and are diffed against the fork point by the verifier —
@@ -138,6 +138,14 @@ coverage that matters is of the area about to be tasked out, not of the whole sy
       in the pipeline repo, which is public and documents the machinery, never the work
       done with it. This is the same boundary that makes `run.config.<project>.json`
       git-ignored there.
+- [ ] Create `docs/threads/` with a copy of this pipeline repo's `docs/threads/README.md`
+      — the durable identity file an idea thread gets from its first exchange (§3.8). One
+      file per thread being worked, `docs/threads/<slug>.md`, undated, with status in its
+      header; the session working it becomes disposable, so a fresh session picks the
+      thread up by reading one file. Nothing in the runner reads this directory and no
+      thread file is a Beads issue. **Each project keeps its own**, for the same boundary
+      as the idea inbox above — a thread about this project must never be filed in the
+      public pipeline repo.
 
 ### 3. `pipeline.config.json` (§3.4)
 - [ ] Write it in the repo root:
