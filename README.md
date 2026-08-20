@@ -19,7 +19,8 @@ Three phases joined by a task queue:
    the plain-English "Done means" list, and then the tests are frozen. Freezing ends by
    writing down what was frozen — `node scripts/batch.js show` reads that marker back in
    whatever session eventually launches the run, so "this batch is ready" lives on disk
-   rather than in someone's memory.
+   rather than in someone's memory, and says how the live queue differs from it before
+   anything starts.
 2. **Implementation** (autonomous) — a plain script on your PC works through the queue.
    Each task gets a fresh container that can reach nothing except three Anthropic
    endpoints, holds no git credentials, and cannot edit its own tests. It writes code,
@@ -87,7 +88,7 @@ on the shared base image, and `bd init` — [`PLANNING.md`](PLANNING.md) walks t
 | `pipeline/` | what runs *inside* a container: entrypoint, verifier, agent stubs |
 | `schemas/` | the three frozen contracts between separately-built components |
 | `docker/` | the pinned base image and the allowlist proxy sidecar |
-| `scripts/` | one test suite per build task, the end-to-end pass, and the host-side readers — `audit-runs.js` joins every past run into one report, `dashboard.js` serves the run in flight on localhost, `batch.js` says which frozen batches have never been launched; all change nothing |
+| `scripts/` | one test suite per build task, the end-to-end pass, and the host-side readers — `audit-runs.js` joins every past run into one report, `dashboard.js` serves the run in flight on localhost, `batch.js` says which frozen batches have never been launched and how the live queue differs from what was frozen; all change nothing |
 | `tests/` | `acceptance/` — per-task tests, frozen at approval; `unit/` — Docker-free suites |
 | `beads/` | the task-queue issue template |
 

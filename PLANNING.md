@@ -319,9 +319,15 @@ install anything at run time):
   the answers — the launch only ever reads. The marker is **immutable and never a queue
   item**: nothing stamps it launched, and nothing in `runner/` or `pipeline/` reads it.
   Confirm it with `node scripts/batch.js show`, which prints the marker and, per id,
-  `worked` or `not-worked`. It also prints `unreconciled bd-unavailable`: the check this
-  step does by eye — *`bd ready` lists exactly these ids* — is **not yet automated**, so
-  keep doing it by hand here.
+  `worked` or `not-worked` against the run corpus **and** `ready` or `not-ready` against the
+  live queue — plus one `stray` line for anything the queue offers that this batch never
+  named. That is the first bullet of this checklist, automated: it reads the
+  `run.config.<project>.json` the marker points at for its `targetRepoPath`, asks that
+  working copy, and applies the runner's own `epic` filter, so a parent in the list is not
+  reported as a stray. It is **evidence, never a gate** — it exits 0 on findings and changes
+  nothing. Where a link of that join cannot be made it prints `unreconciled` with the reason
+  (`run-config-absent`, `bd-unavailable` or `bd-unreadable`) and says nothing at all about
+  the queue; in that case, do the first bullet by eye.
 
 Then start the runner. From here the implementation phase is autonomous; the next human
 touchpoint is the run report (§5).
