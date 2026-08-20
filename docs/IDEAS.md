@@ -196,17 +196,35 @@ Two hard boundaries, both inherited:
   verifier's remit is `frozenPaths`, so the committed file *set* has no gate today, only its
   content does), §4.10, hard rules 5 and 6. 2026-08-19
 
-- **Teach the corpus readers which `runs/` subdirectories are not runs.**
-  `scripts/audit-runs.js` buckets any direct child of the runs root that has neither
-  `run.json` nor `run.log` as `other`/`no-artifacts` and prints it by name in its totals, so
-  the batch markers at `runs/batches/` (`DESIGN.md` §3.9) will show up in the audit report
-  as a stray corpus entry. Cosmetic and honest today — it *is* an entry the reader does not
-  recognise — but the session-ledger idea would add `runs/sessions/` and the same thing
-  happens again, so the general answer is a named list of non-run subdirectories rather than
-  a special case per tool. `scripts/verdict.js` and `scripts/dashboard.js` already skip
-  them and need nothing. Deliberately excluded from the batch-marker tasks: fixing it there
-  would have doubled that PR's blast radius into a second reader with its own frozen suite.
-  Related: `DESIGN.md` §5, §3.9. 2026-08-19
+- **Teach the corpus readers what in `runs/` is not reviewable work — the non-run
+  subdirectories and the e2e fixture runs.** Two shapes of one problem, parked separately
+  and merged because a reader that knows one and not the other still prints a corpus
+  nobody trusts.
+  *Not runs at all:* `scripts/audit-runs.js` buckets any direct child of the runs root that
+  has neither `run.json` nor `run.log` as `other`/`no-artifacts` and prints it by name in
+  its totals, so the batch markers at `runs/batches/` (`DESIGN.md` §3.9) will show up in the
+  audit report as a stray corpus entry. Cosmetic and honest today — it *is* an entry the
+  reader does not recognise — but the session-ledger idea would add `runs/sessions/` and the
+  same thing happens again, so the general answer is a named list of non-run subdirectories
+  rather than a special case per tool. `scripts/verdict.js` and `scripts/dashboard.js`
+  already skip them and need nothing.
+  *Runs, but synthetic:* the first full read of the pending list (2026-08-06) found 112
+  rows, of which 20 were PRs the e2e suite opens against its own fixture repo — test
+  artifacts nobody reviews, so no verdict is ever an honest answer for them. Recording one
+  anyway is fake data; leaving them means `verdict.js pending` never empties, and a list
+  that cannot reach zero trains the reader to skim past it — the same discount-the-signal
+  disease as a sweep that goes red for environmental reasons. These are distinguishable
+  mechanically too, by the `e2e-` prefix the harness assigns to the run id, so the shape is
+  a filter in `pending`, not a schema change.
+  Both halves want the same decision made once — **what counts as the corpus**, declared in
+  one place every reader consults, rather than a skip list per tool. The honest question the
+  e2e half still carries is whether the exclusion belongs in the readers at all or upstream,
+  in whether e2e runs should land under `runs/` in the first place; settle that first,
+  because it decides whether a non-run list is the whole answer or only half of it.
+  Deliberately excluded from the batch-marker tasks: fixing it there would have doubled that
+  PR's blast radius into a second reader with its own frozen suite.
+  Related: `DESIGN.md` §5, §3.9; change-log row `repo-1ie`. 2026-08-19 (merged from entries
+  parked 2026-08-06 and 2026-08-19)
 
 - **Capture all planning-session info going forward — a session ledger under `runs/`.**
   (User directive, 2026-08-18: "I need to capture all session info going forward.")
@@ -473,18 +491,6 @@ declined, and the **run-corpus audit** row in Promoted is the one that graduated
 deterministic aggregation, not an agent. Read both before proposing a new agent.*
 
 ---
-
-- **Have `verdict.js pending` skip e2e-fixture runs, so the list can actually reach
-  zero** — the first full read of the pending list (2026-08-06) found 112 rows, of which
-  20 were PRs the e2e suite opens against its own fixture repo: test artifacts nobody
-  reviews, so no verdict is ever an honest answer for them. Recording one anyway is fake
-  data; leaving them means the list never empties, and a list that cannot reach zero
-  trains the reader to skim past it — the same discount-the-signal disease as a sweep
-  that goes red for environmental reasons. The runs are already distinguishable
-  mechanically (their run ids carry the `e2e-` prefix the harness assigns), so the shape
-  is a filter in `pending`, not a schema change — though the honest question to settle is
-  whether the exclusion belongs in the recorder or upstream, in whether e2e runs should
-  land in the corpus at all. Related: `DESIGN.md` §5; change-log row `repo-1ie`. 2026-08-06
 
 - **Find out why the container path degrades over a long sweep, before the sweep stops
   being believed** — two full sweeps on 2026-08-05 went red six times each, and every one
