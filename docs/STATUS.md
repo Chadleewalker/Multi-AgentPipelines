@@ -4,7 +4,7 @@ Where the build actually is. Update this when something changes — it is the fi
 session reads to pick up the thread, and unlike a machine-local memory folder it travels
 with the repo.
 
-_Last updated: 2026-08-11_
+_Last updated: 2026-08-20_
 
 ## Where things stand
 
@@ -1124,6 +1124,51 @@ reference host's real 34-project corpus, a synthetic multi-task live fixture (tw
 different phases, one queued, park absent), and a genuine live run in flight — the phase lamp,
 the container node and `attempt 1/3` all read correctly against a real container.
 
+## The batch marker has a reader (`repo-0b3`, 2026-08-20)
+
+`scripts/batch.js` ships — the first half of DESIGN.md §3.9's planning-to-launch handoff
+(change-log row `batch-ready-marker`, now `repo-0b3`). A planning session's last act writes
+`runs/batches/<project>-<YYYY-MM-DD>.json`; a later session reads it back with
+`node scripts/batch.js show` (the newest marker, **launched or not**, with `worked` /
+`not-worked` per id) or `node scripts/batch.js pending` (batches no run has worked since
+their freeze, newest freeze first). `BATCH_RUNS_DIR` re-aims the root. The marker shape is
+pinned here: `runConfig`, `frozenAt` and `issues[{id,title}]` required, `integrationBranch`,
+`freezeCommit`, `intent` and `approvedBy` optional and printed only when present.
+
+**The `bd ready` reconciliation is not wired** — that is `repo-8v0`, split out by the panel
+because it adds a host dependency, a second join through a git-ignored run config, and a
+degraded vocabulary of its own. Until it lands, `show` prints `unreconciled bd-unavailable`
+on every batch and `PLANNING.md` step 8 still tells you to eyeball the queue by hand. The
+split bought a property worth keeping: this half **spawns nothing at all**, so the suite
+proving it cannot pass vacuously on a host where `bd` was never installed.
+
+**Two derivations, both of whose cheap answers are wrong.** A run's clock is `startedAt` from
+`run.json` *when there is one*, else the leading instant on the first line of `run.log` — 74
+of the reference host's 272 run directories have no manifest, and `verdict.js`'s rule of
+skipping such a directory (correct for its own purpose) would report an interrupted run's
+batch as never launched. And a run datable by neither **counts as having worked** the ids it
+names, labelled `run-time-unknown`: a false "pending" invites a double launch, a false
+"launched" only sends someone to look. The frozen fixture that pins this is one manifest-less
+run dated once before and once after the same freeze, which a `verdict.js`-shaped join gets
+wrong the same way in both halves.
+
+**The filename's date is naming only.** `frozenAt` is the clock; the stem is anchored at both
+ends with the project taken greedily, so `orbit-lab-2026-08-19` is the project `orbit-lab`
+rather than `orbit`, a file that is only a date is not a marker, and anything else under
+`batches/` — a `.txt`, truncated JSON, a JSON array — is skipped silently rather than crashed
+on, because a human writes into that directory too.
+
+**One known and accepted consequence:** `scripts/audit-runs.js` counts `batches/` under its
+Corpus **other entries**. That is expected — it is not a run directory and the audit says so
+correctly — and re-teaching the audit about a directory it has no other reason to know is
+parked in `docs/IDEAS.md`. The `repo-0b3` guard excludes exactly that accounting and pins
+everything else the audit prints as unchanged, along with byte-identical `verdict.js pending`
+output and a deep-equal dashboard `/state`.
+
+**Host obligation, one:** run `bash scripts/test-all.sh` on the reference host — the new
+suite is swept by glob and has never run there. Nothing else is outstanding; the reader needs
+no Docker, no network, no target repo and, in this half, no `bd`.
+
 ## What's next
 
 **The queue drained again on 2026-07-26**, after `repo-4l8` (the epic filter, planned and
@@ -1266,12 +1311,13 @@ design's central bet, and it is the first day it paid out repeatedly.
 
 ## Test suites
 
-All but fourteen drive real Docker and share one network, so they must never run concurrently
+All but seventeen drive real Docker and share one network, so they must never run concurrently
 (`test-runner-memory.sh`, `test-changelog.sh`, `test-sanitize.sh`,
 `test-agent-hooks.sh`, `test-network-names.sh`, `test-lock.sh`,
 `test-sweep-hygiene.sh`, `test-concurrency.sh`, `test-pause-gate.sh`,
-`test-sweep-assertions.sh`, `test-trace.sh`, `test-verdict.sh`, `test-audit-runs.sh`
-and `test-dashboard.sh` are the exceptions —
+`test-sweep-assertions.sh`, `test-trace.sh`, `test-verdict.sh`, `test-audit-runs.sh`,
+`test-dashboard.sh`, `test-verify-buffer.sh`, `test-pipeline-map.sh`
+and `test-batch.sh` are the exceptions —
 see below; they need neither).
 **`scripts/test-all.sh` is the sweep** — it holds a lock, runs every suite sequentially,
 kills one that hangs (`--timeout`, default 900s), **reclaims what each suite leaked after
@@ -1309,6 +1355,9 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-verdict.sh` | the review verdict recorder (change-log row `repo-1ie`) — which run a verdict lands in, what counts as PR-bearing, every refusal writing nothing, and the recorder staying self-contained |
 | `scripts/test-audit-runs.sh` | the run-history audit (change-log row `repo-73k`) — the three-bucket corpus taxonomy, `startedAt` joins, the `specConcerns` channel keys, nearest-rank quantiles, the per-model cross-tab (change-log row `model-crosstab`) whose two fixture models disagree on first-attempt rate, and the pure-reader contract checked by content hash |
 | `scripts/test-dashboard.sh` | the live run dashboard (change-log row `repo-kfg`) — the lock-to-run join, the run pick against its three wrong answers, the closed degraded vocabulary at each level, the loopback server contract, and the pure-reader contract checked by content hash |
+| `scripts/test-verify-buffer.sh` | the verifier's capture limit (change-log row `verify-nobuffer`) — a loud passing suite is a pass, a loud failing one is still a fail |
+| `scripts/test-pipeline-map.sh` | the reader's map drawn at build time (change-log row `map-prerender`) — a good SVG's stylesheet versus a real error card, neither check meaning anything alone |
+| `scripts/test-batch.sh` | the batch marker reader (change-log row `repo-0b3`) — the marker name anchored at both ends, the manifest-less run dated from `run.log`, the conservative `run-time-unknown` direction, the degraded labels, byte-identical repeat output, and the pure-reader contract checked by sha1 snapshot and parsed `require` specifiers |
 
 **`scripts/test-runner-memory.sh` is one of the fourteen suites that need no Docker**
 (repo-dhp): it

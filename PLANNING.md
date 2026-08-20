@@ -308,6 +308,20 @@ install anything at run time):
 - The per-project image exists; Docker Desktop is running.
 - Anything the task needs to *know* (API details, conventions) is in the repo or attached
   to the issue — the container has no internet beyond the Anthropic endpoints (§4.8).
+- **Last act: write the batch marker** (§3.9) — one JSON object at
+  `runs/batches/<project>-<YYYY-MM-DD>.json` **in this repo** (git-ignored; never in the
+  target's tree, since it names a project and its issue ids). Required keys: `runConfig`
+  (the `run.config.<project>.json` the launch will type), `frozenAt` (an **instant**, e.g.
+  `2026-08-19T21:40:00Z` — a bare date cannot be compared with a run's UTC `startedAt`),
+  and `issues` as `[{id, title}]` in the intended priority order. Optional and printed when
+  present: `integrationBranch`, `freezeCommit`, `intent` (one line in the user's words) and
+  `approvedBy` (hard rule 4's split). Write it here, in this session, while you still know
+  the answers — the launch only ever reads. The marker is **immutable and never a queue
+  item**: nothing stamps it launched, and nothing in `runner/` or `pipeline/` reads it.
+  Confirm it with `node scripts/batch.js show`, which prints the marker and, per id,
+  `worked` or `not-worked`. It also prints `unreconciled bd-unavailable`: the check this
+  step does by eye — *`bd ready` lists exactly these ids* — is **not yet automated**, so
+  keep doing it by hand here.
 
 Then start the runner. From here the implementation phase is autonomous; the next human
 touchpoint is the run report (§5).
