@@ -344,3 +344,43 @@ wrong, kept because they are why the criteria are shaped as they are.
 on the filename, and the failure would be a silent overwrite of an immutable artifact. The
 reader treats every file independently and is unaffected; refusing the overwrite belongs to
 the writer, which does not exist yet.
+
+---
+
+## Re-freeze — 2026-08-20 (Task B only)
+
+`repo-8v0` ran and came back **stuck** at three attempts with no PR. The cause was a defect
+in the frozen test, not in the work: `runShow` sets `NODE_OPTIONS=--require <stub>` to fake
+`bd`, but `NODE_OPTIONS` reaches **every** node process — including the
+`node scripts/batch.js` child the suite spawns. Each stub therefore preloaded into the
+reader itself and its `process.exit()` killed it before its first line, so the suite was
+measuring the stub. **11 of 29 checks were unreachable by any implementation.**
+
+The tell is the part worth keeping: `C6 bd is consulted exactly once` **passed only while
+`batch.js` was dead** — a live run logs two argv lines, the reader's own preload and the
+child's. A check that passes *because* the thing under test is broken is the worst kind of
+green, and it was in a criterion the panel had already made me rewrite once for being a
+broken gate.
+
+**How it surfaced.** The task agent used §3.3's concern channel — four concerns, with a
+diagnosis, a one-line repair, and a proof obtained by patching a copy under `/tmp` and
+getting all 29 green against its own unchanged implementation. It never touched the frozen
+file. This is the channel working exactly as designed: the agent could not change the spec,
+so it did the best work the spec allowed and filed the evidence.
+
+**The repair**, in `writeStub` and nowhere else: a stand-aside guard as the stub's first
+statement, above the argv log — below it, the reader's own preload writes a line and
+"consulted exactly once" fails for the wrong reason. The guard keys on the reader's own
+script path rather than on any flag, so it makes no demand on the argv an implementation
+chooses to send its `bd` child.
+
+**Verified both ways, which the first freeze could not claim.** Against the fork point the
+suite is RED with a green control; against the complete `task/repo-8v0` change — its
+`scripts/batch.js` *and* its `runner/queue.js` / `runner/bd.js` exports, which have to be
+taken together — all 29 pass. Red without the work, green with it.
+
+**No criterion changed.** The "Done means" list is untouched; only the harness that was
+preventing it being met. A second host fact the agent surfaced and the implementation had
+already handled: node owns `-C` as the short form of `--conditions`, so a bare `-C <path>`
+at the head of a seam argv is eaten before any stub sees it — which is why the seam fills a
+program slot first.

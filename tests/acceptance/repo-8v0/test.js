@@ -70,9 +70,18 @@ function digest(dir) {
 // The stub stands in for `bd`. It is a .js file preloaded through process.execPath —
 // never a #!/bin/sh script, which spawnSync fails with EFTYPE on the Windows host, so a
 // shell stub would pass in a container and fail in the host sweep.
+// The stand-aside guard is load-bearing and must come FIRST, above the argv log.
+// `NODE_OPTIONS=--require` reaches EVERY node process, including the `node scripts/batch.js`
+// child this suite spawns — so without a guard the stub preloads into the reader itself and
+// its `process.exit()` kills it before its first line, leaving the suite measuring the stub
+// and calling that a pass. It has to be above the log too: below it, the reader's own
+// preload writes a line and "bd is consulted exactly once" fails for the wrong reason.
+// The guard keys on the reader's own script path rather than on any flag, so it makes no
+// demand at all on the argv the implementation chooses to send its bd child.
 function writeStub(dir, name, body) {
   const p = path.join(dir, name);
   fs.writeFileSync(p, `'use strict';\nconst fs = require('fs');\nconst argv = process.argv.slice(1);\n`
+    + `if (argv.some((a) => /batch\\.js$/.test(String(a)))) return;\n`
     + `if (process.env.STUB_LOG) fs.appendFileSync(process.env.STUB_LOG, JSON.stringify(argv) + '\\n');\n`
     + `${body}\n`);
   return p;

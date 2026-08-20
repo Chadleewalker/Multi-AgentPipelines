@@ -255,6 +255,25 @@ note keys are cited so the trail back to the run survives.
   all of this — workspaces clone with `core.autocrlf=false` and `core.eol=lf`, so the
   container never sees CRLF at all.
 
+- **A `NODE_OPTIONS=--require` stub reaches EVERY node process, not just the one you meant.**
+  The house pattern for stubbing `bd` is a `.js` file preloaded through `process.execPath`
+  (`tests/unit/memory.test.js`), and it is safe *there* because the code under test runs
+  **in-process**. It becomes a trap the moment a suite spawns `node <script>` as a child: the
+  preload loads into that child too, and a stub ending in `process.exit()` kills the script
+  before its first line — leaving the suite measuring the stub and calling that a pass. Give
+  every such stub a **stand-aside guard as its first statement** (return unless this process
+  really is the stubbed child), and put it **above** any argv log: below it, the script's own
+  preload writes a line too and an "invoked exactly once" assertion fails for the wrong
+  reason. Key the guard on something structural — the script under test appearing in argv —
+  never on a flag, because node owns `-C` as the short form of `--conditions` and eats a bare
+  `-C <path>` at the head of an argv before any stub sees it, which is why a seam argv must
+  fill a program slot first. This cost a whole task run: `repo-8v0` reached `stuck` at three
+  attempts against a frozen suite in which **11 of 29 checks were unreachable by any
+  implementation**, and the giveaway was a check that passed *only while the tool under test
+  was dead*. Found through §3.3's concern channel by the task agent, not by the suite — and
+  the criterion it hid in had already been rewritten once, by the critic panel, for being a
+  broken gate. Prove a suite both ways before freezing it: red without the work, green with
+  it.
 - **Never remove a Docker resource you cannot prove you created.** The reference host runs
   unrelated long-lived containers, and `docker`'s `--filter name=` is a **substring** match,
   not a prefix one: `--filter name=task-` force-removed `my-task-runner` and anything else
