@@ -560,8 +560,8 @@ root so the suite can drive the real CLI.
 **The reconciliation against the live queue is the point, not the confirmation.** The
 marker says four issues; `bd ready` in the target says five are runnable and one of the
 four is blocked. That mismatch is invisible everywhere else — the runner has no picker of
-its own (§4.12), so a stray unblocked issue simply runs — and it is the check step 8 does
-by eye and then throws away. This is the one part that needs `bd` on the host, which
+its own (§4.12), so a stray unblocked issue simply runs — and it is the check step 8 used
+to do by eye and then throw away. This is the one part that needs `bd` on the host, which
 `scripts/verdict.js` deliberately does not, so it is bounded rather than absorbed: reading
 the marker and computing `pending` stay node built-ins only and spawn nothing, the `bd`
 call goes through the existing `PIPELINE_BD_CMD` seam, it **reads and never writes** (hard
