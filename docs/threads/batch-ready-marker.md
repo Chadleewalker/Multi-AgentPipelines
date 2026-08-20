@@ -182,12 +182,24 @@ session that specs this:)*
   branches fork from `main`, so the freeze is only real once #39 merges. The first real
   marker was written to `runs/batches/` — this batch's own.
 
+- 2026-08-20 — **`repo-0b3` ran and passed on attempt 1**: the marker shape, `pending` and
+  `show` ship as `scripts/batch.js`, with `scripts/test-batch.sh` over
+  `tests/unit/batch.test.js` as the seventeenth Docker-free suite (change-log row
+  `repo-0b3`). Its docs phase wrote the `PLANNING.md` step 8 line and the CLAUDE.md
+  "Running things" entry this thread parked, both saying plainly that the reconciliation is
+  not there yet. `repo-8v0` — the `bd ready` half, and with it the reconciled vocabulary —
+  is still open.
+
 ## Outcome
 
-**Promoted 2026-08-19 to `DESIGN.md` §3.9 and change-log row `batch-ready-marker`.**
+**Promoted 2026-08-19 to `DESIGN.md` §3.9 and change-log row `batch-ready-marker`.
+Half-built 2026-08-20** — `scripts/batch.js` reads the marker and computes `pending`
+(change-log row `repo-0b3`), and `show` labels every batch `unreconciled bd-unavailable`
+until the queue half lands.
 
-What is left is the implementing task, which a planning session specs and freezes:
-`scripts/batch.js` (`show`, `pending`, `BATCH_RUNS_DIR`, the `BATCH_BD_CMD` read-only
-seam), a Docker-free suite beside the others in `tests/unit/`, and the `PLANNING.md`
-step 8 and `CLAUDE.md` "Running things" edits — which belong to that task's docs phase,
-since until it ships they would document a tool that does not exist.
+What is left is `repo-8v0`, the reconciliation against `bd ready`: the seam is the
+**existing `PIPELINE_BD_CMD`** and not the `BATCH_BD_CMD` this thread first imagined —
+`runner/bd.js` gives `PIPELINE_BD_CMD` absolute precedence at every entry point, so a
+second seam name would leave the reference host with a suite that passes vacuously. It
+reads and never writes (hard rule 1), and it joins three sources rather than two, since
+`run.json` records a git remote URL and never the config name.

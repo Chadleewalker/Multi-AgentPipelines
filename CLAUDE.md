@@ -118,6 +118,16 @@ node runner/run.js --config run.config.<project>.json
 node scripts/verdict.js record <issue-id> <merged|rejected> "<why>"  # [--run <runId>] to override recency
 node scripts/verdict.js pending    # PR-bearing tasks with no verdict yet, newest run first
 
+# confirming a batch before launching it: the marker a planning session wrote at the end of
+# PLANNING.md step 8, read back (§3.9, change-log row `repo-0b3`). Pure reader over
+# runs/batches/ — writes nothing, spawns nothing, exits 0 on findings. BATCH_RUNS_DIR re-aims
+# the root. The `bd ready` reconciliation is NOT WIRED YET: `show` always reports the batch as
+# `unreconciled bd-unavailable`, so step 8's "the queue lists exactly these ids" is still a
+# check done by eye.
+node scripts/batch.js pending      # batches no run has worked since their freeze, newest first
+node scripts/batch.js show         # the newest marker, launched or not, with a per-id breakdown
+node scripts/batch.js show <project>-<YYYY-MM-DD>   # one named marker
+
 # watching a run happen: a localhost-only pure reader over runs/ (§5, change-log row `repo-kfg`).
 # GET /state is the frozen JSON contract, re-read per request; GET / is a placeholder page
 # until the view ships. DASHBOARD_RUNS_DIR re-aims the root, DASHBOARD_PORT the port (0 = ephemeral).
@@ -137,7 +147,7 @@ bash scripts/test-runner-container.sh
 # Host-only: needs `cd tools/mapbuild && npm install` once, and never runs in a container.
 node scripts/build-pipeline-map.js   # writes docs/pipeline-map.built.html + a per-diagram node count
 
-# the sixteen suites that need no Docker — seconds, safe to run anywhere, even in a container
+# the seventeen suites that need no Docker — seconds, safe to run anywhere, even in a container
 bash scripts/test-runner-memory.sh
 bash scripts/test-changelog.sh     # DESIGN.md §12 row identity (CHANGELOG_FILE re-aims it)
 bash scripts/test-sanitize.sh      # publication hygiene (SANITIZE_FIXTURE_DIR re-aims it)
@@ -154,6 +164,7 @@ bash scripts/test-audit-runs.sh    # the run-history audit — buckets, joins, c
 bash scripts/test-dashboard.sh     # the live dashboard's /state joins, its degraded vocabulary, and that it writes nothing (change-log row `repo-kfg`)
 bash scripts/test-verify-buffer.sh # the verifier's capture limit — a loud PASS is a pass, a loud FAIL is still a fail (change-log row `verify-nobuffer`)
 bash scripts/test-pipeline-map.sh  # the reader's map is drawn at build time — an error card is not a diagram (change-log row `map-prerender`)
+bash scripts/test-batch.sh         # the batch marker reader — the marker shape, the corpus join and its degraded labels (change-log row `repo-0b3`)
 ```
 
 Reading the corpus itself is `node scripts/audit-runs.js` — a pure reader that prints one
@@ -395,6 +406,15 @@ the pipeline working on the pipeline's own code. The rules:
   so a guard that searches the whole file for that word fails every diagram on the page,
   and one that searches for nothing passes a page of error cards. Neither check means
   anything alone.
+  And `sh scripts/test-batch.sh` (`tests/unit/batch.test.js`), which builds throwaway runs
+  roots under the OS temp dir and drives the real `scripts/batch.js` through the
+  `BATCH_RUNS_DIR` seam: run it if you touch that reader, because what it answers — *has
+  this batch already been launched?* — is a JOIN over artifacts other code writes, and the
+  expensive failure is a false "pending" that gets a batch launched twice. Its fixtures are
+  chosen so a plausible implementation fails rather than merely being exercised: the same
+  manifest-less run dated once before and once after one freeze (a join copied from
+  `verdict.js` skips such a run and answers the same way in both), and a `batches/`
+  directory holding a hyphenated project name, a bare date, a `.txt` and truncated JSON.
   Any new Docker-free suite belongs beside them in
   `tests/unit/`, and its seam stub must be a `.js` file invoked through
   `process.execPath`, never a `#!/bin/sh` script: `spawnSync` without a shell fails such a
