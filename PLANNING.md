@@ -319,9 +319,13 @@ install anything at run time):
   the answers — the launch only ever reads. The marker is **immutable and never a queue
   item**: nothing stamps it launched, and nothing in `runner/` or `pipeline/` reads it.
   Confirm it with `node scripts/batch.js show`, which prints the marker and, per id,
-  `worked` or `not-worked`. It also prints `unreconciled bd-unavailable`: the check this
-  step does by eye — *`bd ready` lists exactly these ids* — is **not yet automated**, so
-  keep doing it by hand here.
+  `worked` or `not-worked` — and reconciles it against the live queue of the run config it
+  names: each id comes back `ready` or `not-ready`, and every `stray` the run would also
+  drain is named. That *is* this step's check — *`bd ready` lists exactly these ids* — so
+  read it rather than repeating it by hand. Epic parents are filtered out first, so an epic
+  in the queue is not a stray. If it prints `unreconciled` instead, the reason beside it says
+  which half failed (`bd-unavailable`, `bd-unreadable`, `run-config-absent`) and the check is
+  yours to do by eye until that is fixed.
 
 Then start the runner. From here the implementation phase is autonomous; the next human
 touchpoint is the run report (§5).

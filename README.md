@@ -87,7 +87,7 @@ on the shared base image, and `bd init` — [`PLANNING.md`](PLANNING.md) walks t
 | `pipeline/` | what runs *inside* a container: entrypoint, verifier, agent stubs |
 | `schemas/` | the three frozen contracts between separately-built components |
 | `docker/` | the pinned base image and the allowlist proxy sidecar |
-| `scripts/` | one test suite per build task, the end-to-end pass, and the host-side readers — `audit-runs.js` joins every past run into one report, `dashboard.js` serves the run in flight on localhost, `batch.js` says which frozen batches have never been launched; all change nothing |
+| `scripts/` | one test suite per build task, the end-to-end pass, and the host-side readers — `audit-runs.js` joins every past run into one report, `dashboard.js` serves the run in flight on localhost, `batch.js` says which frozen batches have never been launched and reconciles one against the live queue before you launch it; all change nothing |
 | `tests/` | `acceptance/` — per-task tests, frozen at approval; `unit/` — Docker-free suites |
 | `beads/` | the task-queue issue template |
 

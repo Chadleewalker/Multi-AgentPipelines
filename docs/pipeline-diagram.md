@@ -56,9 +56,12 @@ marker; a later, different session reads it back — `node scripts/batch.js show
 what it is about to launch, `pending` to see a batch frozen days ago and never run. **No
 arrow leaves it**: nothing in `runner/` or `pipeline/` reads `runs/batches/`, a missing marker
 does not stop a launch and a disagreeing one does not refuse it. The marker is what was
-*intended*; the Beads queue on the solid path is what actually runs, and the reconciliation
-between the two is not built yet — `show` says `unreconciled bd-unavailable` and step 8 still
-does that check by eye.
+*intended*; the Beads queue on the solid path is what actually runs, and `show` now
+reconciles the two (change-log row `repo-8v0`): one bounded, read-only `bd ready --json`
+against the `targetRepoPath` of the run config the marker names, each id reported `ready` or
+`not-ready`, each queue entry the batch never named a `stray`, epic parents filtered first.
+The reader is still on the dotted path — the reconciliation is a report, never a gate, and it
+still leaves no arrow into the runner.
 
 Slots 1 and 2 need **no pipeline code**: they are prompts you run during a planning
 session, before anything is frozen. Slot 2 is the higher-leverage of the two — a domain

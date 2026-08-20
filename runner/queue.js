@@ -33,6 +33,12 @@ function outcomeFor(exitCode, verify) {
 // has bug, feature, chore and decision, and the runner drains all of them. Admitting
 // only 'task' would make a legitimately-typed issue carrying a full spec vanish from
 // every run with nothing to say why.
+//
+// Both of these are EXPORTED because `scripts/batch.js` reconciles a frozen batch marker
+// against the same live queue and must reach the same verdict about the same entries: an
+// epic parent bd returns by design is not an issue the run would drain, so calling it a
+// stray is a false alarm at exactly the moment someone is deciding whether to launch. A
+// second copy of the rule there would drift from this one silently (§3.9).
 const EXCLUDED_TYPES = new Set(['epic']);
 
 // The type as bd reports it, normalised for comparison. Absent, null or empty comes
@@ -150,4 +156,5 @@ function attemptNotes(runId, outcome, status, memoryIn) {
 
 module.exports = {
   readyQueue, queueSummary, claim, exportIssue, finish, outcomeFor, attemptNotes, OUTCOMES,
+  EXCLUDED_TYPES, typeOf,
 };

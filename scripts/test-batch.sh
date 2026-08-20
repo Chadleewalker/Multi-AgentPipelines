@@ -9,8 +9,10 @@
 # temp directory and drives the real CLI against them, so it touches neither this repo's
 # own `runs/` tree nor its working tree. The sweep discovers it by glob
 # (scripts/test-*.sh) and it is safe to run anywhere node exists, including inside a task
-# container — the reader itself needs no Docker, no network and, in this task, no `bd`,
-# which is the whole point of it being deterministic host-side scaffolding.
+# container. The live-queue half (change-log row `repo-8v0`) needs no real `bd` either: the
+# checker owns both seams — it stubs `PIPELINE_BD_CMD` where it wants an answer, and points
+# `BATCH_CONFIG_DIR` at an empty directory everywhere else, so no check can reach the host's
+# own database by accident and no result depends on whether this machine has `bd` installed.
 #
 # Run from Git Bash:  bash scripts/test-batch.sh
 # POSIX sh only in the body: it must also run as `sh <path>`, which is dash in a container

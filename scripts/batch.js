@@ -16,12 +16,12 @@
 //
 // FOUR PROPERTIES ARE LOAD-BEARING, and every decision below follows from one of them:
 //
-//   1. Deterministic scaffolding (hard rule 7). No LLM, and — for now — no subprocess of
-//      any kind: marker reading and the pending join are node built-ins only. §3.9's
-//      reconciliation against the live queue is the one part that needs `bd`, and it is
-//      bounded rather than absorbed, which is why it is a separate task. Until it lands,
-//      `show` says so out loud rather than printing a marker as if the queue agreed with
-//      it: every batch reports `unreconciled bd-unavailable`.
+//   1. Deterministic scaffolding (hard rule 7). No LLM, and at most ONE subprocess in the
+//      whole tool: marker reading and the pending join are node built-ins only, and §3.9's
+//      reconciliation against the live queue spawns `bd … ready --json` exactly once, under
+//      a bound, reading and never writing (hard rule 1). Where that one call cannot be made
+//      or cannot be read, `show` says which half failed rather than printing a marker as if
+//      the queue had agreed with it.
 //   2. Pure reader (§5, hard rule 5's shape). It creates no file, edits no artifact and
 //      mutates no marker; `pending` exits 0 whatever it finds, because it is a report.
 //      A marker is immutable and there is no `launched` flag to stamp — "still pending" is
@@ -31,12 +31,18 @@
 //   3. Never a queue item. Nothing in `runner/` or `pipeline/` reads `runs/batches/`; the
 //      marker records what was *intended*, Beads decides what runs, and when the two
 //      disagree that is the finding rather than an error.
-//   4. Host-only and self-contained. Like `scripts/verdict.js`: node built-ins only, no
-//      requires of anything else in this repo, and the runs root comes from
-//      `BATCH_RUNS_DIR` or from THIS FILE's location — never from the working directory,
-//      since the launching session runs this from wherever it happens to be. Keep it that
-//      way: a copy of this one file has to work from any repo-shaped root, on a host where
-//      `bd` was never installed.
+//   4. Host-only, and self-contained apart from two SHARED RULES it may not copy. The runs
+//      root comes from `BATCH_RUNS_DIR` or from THIS FILE's location — never from the
+//      working directory, since the launching session runs this from wherever it happens to
+//      be — and the run config from `BATCH_CONFIG_DIR`, defaulting to the repo root the
+//      same way. The two imports are `runner/bd.js`'s host-bd probe (`hostBdSpec`) with its
+//      spawn bound (`spawnOptions`), and `runner/queue.js`'s epic deny-list
+//      (`EXCLUDED_TYPES`, `typeOf`). Both are rules the RUNNER applies to the same queue,
+//      and this reader's entire value is answering the question the runner is about to
+//      answer — a second copy of either would drift from the original in silence.
+//      Everything else is node built-ins, and nothing here reads `runner/config.js`:
+//      `loadConfig` throws on unrelated missing keys, and a report must not die because a
+//      config it only wanted one field from is incomplete for some other purpose.
 //
 // PINNED DECISIONS a future reader would otherwise re-litigate:
 //
@@ -67,13 +73,47 @@
 //   * Anything under `batches/` that is not a marker — a plain file, a name with no
 //     project segment, truncated JSON, a JSON array — is skipped silently and never named
 //     in the output. This is a report over a directory a human also writes into.
+//   * THE RECONCILIATION IS THE POINT, not the confirmation (§3.9). The runner has no
+//     picker: it drains whatever queue it finds, so an issue nobody meant to include simply
+//     runs and a blocked one silently does not, and nothing else in the pipeline holds the
+//     INTENT to compare the queue against. `show` therefore reports each of the marker's
+//     ids as `ready` or `not-ready` and each queue entry the batch never named as a
+//     `stray` — three literal tokens, one per line, no summary line repeating them.
+//   * THE QUEUE IS READ AGAINST THE MARKER'S OWN RUN CONFIG. `run.json` records a git
+//     remote and never a config name, so the `run.config.<project>.json` the marker names
+//     is what has to be opened, for `targetRepoPath` and `bdTimeoutMs` alone, by plain
+//     JSON parse. `-C <targetRepoPath>` is always in the argv, so which repo was consulted
+//     is observable rather than assumed.
+//   * EPIC PARENTS ARE FILTERED BEFORE ANYTHING IS CALLED A STRAY. `bd ready` returns them
+//     by design and the runner drops them (`EXCLUDED_TYPES`), so reporting one would be a
+//     false alarm at exactly the moment someone is deciding whether to launch.
+//   * A BROKEN JOIN NAMES ITSELF. `unreconciled` never appears without exactly one reason:
+//     `bd-unavailable` (no bd could be spawned at all — no host bd resolved, or the seam
+//     names something unexecutable), `bd-unreadable` (bd ran and exited non-zero, printed
+//     something that is not the expected array, or was killed at the bound), and
+//     `run-config-absent` (the marker names a config this host does not have, or one with
+//     no `targetRepoPath`). A degraded `show` prints no reconciled token and a reconciled
+//     one prints no degraded term, because "which half failed" is the whole answer.
+//   * BD'S OWN OUTPUT IS NEVER ECHOED. The reason and a short fixed detail are all that is
+//     printed: a reader whose vocabulary can be forged by the text of an error message
+//     cannot be read at a glance, which is the one thing this tool is for.
 //
-// Covered by tests/unit/batch.test.js through scripts/test-batch.sh (Docker-free; the
-// sweep discovers it by glob). `BATCH_RUNS_DIR` is the test seam that re-aims the runs
-// root, the same shape as `VERDICT_RUNS_DIR` and `AUDIT_RUNS_DIR`.
+// Covered by tests/unit/batch.test.js through scripts/test-batch.sh (no containers, no
+// network, no real `bd` — the sweep discovers it by glob). `BATCH_RUNS_DIR` re-aims the
+// runs root and `BATCH_CONFIG_DIR` the config directory, the same shape as
+// `VERDICT_RUNS_DIR` and `AUDIT_RUNS_DIR`.
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const { spawnSync } = require('child_process');
+// The two shared rules (property 4). Nothing else in this repo is reached from here, and
+// neither of these two modules is asked to RUN anything: `hostBdSpec` answers how host bd
+// would be invoked, `spawnOptions` answers with what bound, and the queue pair answers
+// which entries the runner would refuse to drain. The general helpers next to them are
+// deliberately not used — their fallback when no host bd resolves starts a container per
+// call, and a pure reader may not do that during a launch ritual.
+const { hostBdSpec, spawnOptions } = require('../runner/bd.js');
+const { EXCLUDED_TYPES, typeOf } = require('../runner/queue.js');
 
 // The marker name, anchored at both ends. Greedy `.+` is what keeps a hyphenated project
 // whole; the date group is fixed-width so a file that is *only* a date cannot match.
@@ -98,8 +138,8 @@ const USAGE = [
   '  node scripts/batch.js show [<project>-<YYYY-MM-DD>]',
   '',
   'The runs root is $BATCH_RUNS_DIR, else <script dir>/../runs; markers live in its',
-  'batches/ subdirectory. Reconciliation against the live queue is not wired up yet, so',
-  'every batch is reported as unreconciled bd-unavailable.',
+  'batches/ subdirectory. show also reconciles the marker against the live queue of the',
+  'run config it names, resolved from $BATCH_CONFIG_DIR, else the repo root.',
 ].join('\n');
 
 // Exit codes, following scripts/verdict.js. Non-zero is the contract; which non-zero is an
@@ -325,6 +365,125 @@ function markerLabels(marker) {
   return labels;
 }
 
+// ---- the live queue (§3.9's reconciliation) ---------------------------------------------
+// The config directory, resolved exactly like the runs root and for the same reason: the
+// launching session types this command from wherever it happens to be, so the working
+// directory is never consulted. A blank seam is a shell accident, not a request.
+function configDir(env = process.env) {
+  const seam = env.BATCH_CONFIG_DIR;
+  if (typeof seam === 'string' && seam.trim()) return path.resolve(seam.trim());
+  return path.resolve(__dirname, '..');
+}
+
+// The marker names a run config file; this reads it for TWO FIELDS and nothing else. Not
+// `runner/config.js`'s loadConfig: that validates a whole run's worth of keys and throws on
+// any missing one, which would turn a report into a crash over a field this tool never
+// looks at. A name carrying a path separator is refused rather than resolved — a marker is
+// a file a human writes, and `batches/` is not a place to reach out of.
+function readRunConfig(marker, env = process.env) {
+  const name = marker.runConfig;
+  if (!name || name.includes('/') || name.includes('\\')) return null;
+  const file = path.join(configDir(env), name);
+  const value = readJsonObject(file);
+  if (!value) return null;
+  const targetRepoPath = nonEmptyString(value.targetRepoPath);
+  if (!targetRepoPath) return null;
+  return { file, targetRepoPath, bdTimeoutMs: value.bdTimeoutMs };
+}
+
+// The argv's leading element on the SEAM path, and why it exists. Seam stubs in this repo
+// are .js files preloaded into `process.execPath` (a `#!/bin/sh` stub fails with EFTYPE on
+// the Windows host), so the command spawned here is the node binary — and node's own CLI
+// parser owns `-C`, which is the short form of `--conditions`. A bare `-C <path>` at the
+// head of the argv is therefore eaten by node before the stub ever sees it, and the suite
+// cannot observe which repo was consulted. Filling the program slot the way the host shim
+// path fills it (with the resolved bd.js) puts `-C` past the first non-option argument,
+// where every parser leaves it alone. The stub exits from its preload, so this slot is
+// never opened.
+const SEAM_PROGRAM_SLOT = 'bd';
+
+// How to invoke bd for one read. The seam takes ABSOLUTE precedence over the host probe,
+// matching every entry point in runner/bd.js — a suite that stubs it must not be able to
+// reach the host's real database by accident. Null means nothing could be spawned at all.
+function readSpec(env = process.env) {
+  const seam = env.PIPELINE_BD_CMD;
+  if (seam) return { cmd: seam, pre: [SEAM_PROGRAM_SLOT] };
+  return hostBdSpec();
+}
+
+// One bounded, read-only call. Every failure is classified into exactly one reason, and the
+// two that look alike are kept apart on purpose: NOT SPAWNED AT ALL is `bd-unavailable`
+// (there is no queue to compare against on this host), while SPAWNED AND UNUSABLE — a
+// non-zero exit, output that is not the expected array, or a kill at the bound — is
+// `bd-unreadable` (there is a queue and this reader could not read it). The first sends
+// someone to install bd; the second sends them to look at the database.
+function readReadyQueue(cfg, env = process.env) {
+  const spec = readSpec(env);
+  if (!spec) return { ok: false, reason: 'bd-unavailable', detail: 'no host bd resolved' };
+  const opts = spawnOptions(cfg, { env: process.env });
+  const argv = [...spec.pre, '-C', cfg.targetRepoPath, 'ready', '--json'];
+  const r = spawnSync(spec.cmd, argv, opts);
+
+  // spawnSync does not report a timeout as a failure a caller can read: it returns status
+  // null with the kill signal, and error.code ETIMEDOUT. Checked FIRST, because that same
+  // shape would otherwise be mistaken for "could not be spawned".
+  const timedOut = !!(r.error && (r.error.code === 'ETIMEDOUT' || /ETIMEDOUT/.test(r.error.message || '')))
+    || (r.status === null && r.signal === opts.killSignal);
+  if (timedOut) return { ok: false, reason: 'bd-unreadable', detail: `no answer within ${opts.timeout}ms` };
+  if (r.error) return { ok: false, reason: 'bd-unavailable', detail: r.error.code || 'could not be spawned' };
+  if (r.status === null) return { ok: false, reason: 'bd-unreadable', detail: `killed by ${r.signal}` };
+  if (r.status !== 0) return { ok: false, reason: 'bd-unreadable', detail: `exit ${r.status}` };
+  let data;
+  try { data = JSON.parse(r.stdout || ''); } catch {
+    return { ok: false, reason: 'bd-unreadable', detail: 'output is not JSON' };
+  }
+  // `bd ready --json` answers with a bare array. Anything else is a bd this reader does not
+  // understand, and guessing at an empty queue would report every id as absent from it.
+  if (!Array.isArray(data)) return { ok: false, reason: 'bd-unreadable', detail: 'output is not a JSON array' };
+  return { ok: true, entries: data };
+}
+
+// Batch against queue. `queued` is what the runner would actually drain — epic parents are
+// dropped first, because bd returns them by design and calling one a stray is the false
+// alarm PLANNING.md step 8 warns about — and a stray is a queued id the marker never named.
+function reconcile(marker, entries) {
+  const named = new Set(marker.issues.map((issue) => issue.id));
+  const queued = [];
+  let excluded = 0;
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    if (EXCLUDED_TYPES.has(typeOf(entry))) { excluded += 1; continue; }
+    const id = nonEmptyString(entry.id);
+    if (!id) continue;                       // an entry with no id cannot be compared at all
+    queued.push({ id, type: typeOf(entry) || 'untyped' });
+  }
+  const queuedIds = new Set(queued.map((q) => q.id));
+  return {
+    queued,
+    excluded,
+    state: (id) => (queuedIds.has(id) ? 'ready' : 'not-ready'),
+    strays: queued.filter((q) => !named.has(q.id)),
+  };
+}
+
+// The whole join, in the order the two halves can fail: the config first (no target repo
+// means there is nothing to ask), then the one call, then the comparison.
+function queueReport(marker, env = process.env) {
+  const cfg = readRunConfig(marker, env);
+  if (!cfg) {
+    return {
+      ok: false,
+      reason: 'run-config-absent',
+      detail: marker.runConfig
+        ? `no usable ${marker.runConfig} under ${configDir(env)}`
+        : `the marker names no run config`,
+    };
+  }
+  const queue = readReadyQueue(cfg, env);
+  if (!queue.ok) return { ...queue, cfg };
+  return { ok: true, cfg, ...reconcile(marker, queue.entries) };
+}
+
 // ---- pending ----------------------------------------------------------------------------
 // A report, never a gate: exit 0 whatever it finds, including nothing and including a runs
 // root that does not exist.
@@ -406,6 +565,7 @@ function show(argv, out, err) {
 
   const worked = workedSince(readRuns(root), marker.frozenMs);
   const labels = markerLabels(marker);
+  const queue = queueReport(marker);
 
   out(`== batch ${marker.stem} ==`);
   out(`${pad('project')}${marker.project}`);
@@ -422,14 +582,23 @@ function show(argv, out, err) {
       witness ? 'worked' : 'not-worked',
       ...(witness ? [`by ${witness.runId}`] : []),
       ...(witness && !witness.timeKnown ? ['run-time-unknown'] : []),
+      // The reconciled token rides on the id's own line, and only when there IS a
+      // reconciliation: a degraded run must not speak this vocabulary at all, or "the queue
+      // agreed" and "the queue was never asked" read the same at a glance.
+      ...(queue.ok ? [queue.state(issue.id)] : []),
       ...(issue.title ? [issue.title] : []),
     ].join('  '));
   }
 
-  // §3.9's reconciliation against the live queue is a separate, bounded task. Until it
-  // lands this reader says so in the degraded vocabulary rather than printing the marker as
-  // if the queue had agreed with it.
-  out(`${pad('queue')}unreconciled bd-unavailable — the live queue is not consulted yet`);
+  if (queue.ok) {
+    out(`${pad('queue')}${queue.queued.length} entries at ${queue.cfg.targetRepoPath}`
+      + `${queue.excluded ? `  (${queue.excluded} epic parent${queue.excluded === 1 ? '' : 's'} excluded)` : ''}`);
+    // Strays only when there are any: a "none" placeholder would put the word on a line of
+    // its own, and the whole point of the token is that seeing it means something.
+    for (const stray of queue.strays) out(`    ${stray.id}  stray  ${stray.type}`);
+  } else {
+    out(`${pad('queue')}unreconciled ${queue.reason} — ${queue.detail}`);
+  }
   if (labels.length) out(`${pad('degraded')}${labels.join(' ')}`);
   return EXIT_OK;
 }
@@ -449,5 +618,6 @@ if (require.main === module) process.exit(main(process.argv.slice(2)));
 
 module.exports = {
   main, pending, show, runsRoot, readMarkers, readRuns, workedSince, isPending, byFreeze,
-  leadingInstant, MARKER_STEM, USAGE, EXIT_OK, EXIT_USAGE, EXIT_NOT_FOUND,
+  leadingInstant, configDir, readRunConfig, readSpec, readReadyQueue, reconcile, queueReport,
+  MARKER_STEM, SEAM_PROGRAM_SLOT, USAGE, EXIT_OK, EXIT_USAGE, EXIT_NOT_FOUND,
 };

@@ -38,6 +38,21 @@
 //     deliberately and the one a "some ids outstanding" reading would invert.
 //   * Purity is asserted over the whole tree after EVERY subcommand including the failing
 //     ones, and self-containment is checked structurally rather than trusted.
+//   * THE BOUND ON THE `bd` CALL IS ACTUALLY FIRED, against a stub that really does hang.
+//     A stub that merely fails to exit is not enough on its own: node kills it anyway when
+//     it cannot resolve the main module, so the fixture passes without the bound existing.
+//     Section G's hang stub swallows that error and keeps a timer alive, which is the only
+//     shape that can tell a bound apart from a coincidence.
+//
+// THE STUB GUARD, and why every stub in section G opens with it. The repo's EFTYPE-safe bd
+// stub recipe is `PIPELINE_BD_CMD=process.execPath` plus `NODE_OPTIONS=--require <stub.js>`
+// (repo-dhp-note-1). That works unchanged where the code under test runs IN-PROCESS and only
+// `bd` is spawned — tests/unit/memory.test.js — but scripts/batch.js is itself spawned as a
+// child here, and NODE_OPTIONS reaches it too. An unguarded stub therefore preloads into the
+// tool under test, and the moment its body calls process.exit it kills the reader before its
+// first line: stdout becomes the stub's own answer and the fixture measures nothing. The
+// guard is one line — stand aside unless this process IS the bd child — and the tell that it
+// is missing is an argv log holding ONE line where a live run logs two.
 'use strict';
 const fs = require('fs');
 const os = require('os');
@@ -49,8 +64,12 @@ const ROOT = path.resolve(__dirname, '..', '..');
 const SCRIPT = path.join(ROOT, 'scripts', 'batch.js');
 
 // The suite owns its fixtures: a seam inherited from the shell would let the caller's
-// environment decide the result — and, worse, aim a reader at the host's real runs root.
+// environment decide the result — and, worse, aim a reader at the host's real runs root, or
+// let a stray PIPELINE_BD_CMD decide what the live queue answers.
 delete process.env.BATCH_RUNS_DIR;
+delete process.env.BATCH_CONFIG_DIR;
+delete process.env.PIPELINE_BD_CMD;
+delete process.env.PIPELINE_IMAGE_BD_CMD;
 
 const batchjs = require(SCRIPT);
 
@@ -96,12 +115,19 @@ function logOnlyRun(root, id, firstInstant, issueIds) {
   for (const i of issueIds) writeJson(path.join(root, id, 'tasks', i, 'status.json'), { issueId: i });
 }
 
+// An empty config directory, so that sections A–F never resolve a run config and therefore
+// never spawn anything: the reconciliation is section G's subject, and a suite whose other
+// checks quietly consulted the host's real `bd` would answer differently on every machine.
+const NO_CONFIGS = mktemp('noconfigs');
+
 function cli(runsRoot, args, env) {
   return spawnSync(process.execPath, [SCRIPT, ...args], {
     encoding: 'utf8',
-    env: Object.assign({}, process.env, { BATCH_RUNS_DIR: runsRoot }, env || {}),
+    env: Object.assign({}, process.env,
+      { BATCH_RUNS_DIR: runsRoot, BATCH_CONFIG_DIR: NO_CONFIGS }, env || {}),
   });
 }
+function fwd(p) { return p.replace(/\\/g, '/'); }   // NODE_OPTIONS eats backslashes
 const both = (r) => `${r.stdout || ''}${r.stderr || ''}`;
 
 function digest(dir) {
@@ -337,9 +363,13 @@ function record(r) { outputs.push(both(r)); return r; }
   check('E5 show accepts the filename tab completion produces',
     (record(cli(t, ['show', 'older-2026-08-01.json'])).stdout || '') === older);
 
-  check('E6 show always reports unreconciled bd-unavailable in this task',
-    o.includes('unreconciled') && o.includes('bd-unavailable'));
-  check('E7 nothing here speaks the reconciled vocabulary',
+  // These markers name run configs that this fixture's config directory does not hold, so
+  // the join stops at its first half and says which half. `unreconciled` never travels
+  // alone, and a degraded show speaks none of the reconciled vocabulary — otherwise "the
+  // queue agreed" and "the queue was never asked" read identically at a glance.
+  check('E6 a marker whose run config is not on this host says run-config-absent',
+    o.includes('unreconciled') && o.includes('run-config-absent'));
+  check('E7 a degraded show speaks no reconciled token, here or in any earlier output',
     outputs.every((s) => !RECONCILED.test(s)) && !RECONCILED.test(o));
 
   const nf = record(cli(t, ['show', 'nosuch-2026-01-01']));
@@ -365,17 +395,46 @@ function record(r) { outputs.push(both(r)); return r; }
 }
 
 // ---- F. self-containment, checked rather than trusted -----------------------------------------
-// A copy of this one file has to work from any repo-shaped root, on a host where `bd` was
-// never installed. Both constraints decay silently the first time someone reaches for a
-// shared helper, and neither shows up in any behavioural check above.
+// A copy of this one file has to work from any repo-shaped root. That constraint decays
+// silently the first time someone reaches for a convenient helper, and it shows up in no
+// behavioural check above. Two imports are permitted and no more, and the reason they are
+// permitted is the same reason a THIRD copy of them would be a defect: they are rules the
+// runner applies to the same queue, and this reader exists to answer the question the runner
+// is about to answer.
 {
   const src = fs.readFileSync(SCRIPT, 'utf8');
   const requires = [...src.matchAll(/require\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1]);
-  const BUILTINS = ['fs', 'path', 'os', 'url', 'util', 'crypto'];
-  check('F1 scripts/batch.js requires node built-ins only',
-    requires.length > 0 && requires.every((r) => BUILTINS.includes(r)));
-  check('F2 it requires no child_process: the marker reader and the pending join spawn nothing',
-    !requires.includes('child_process'));
+  const BUILTINS = ['fs', 'path', 'os', 'url', 'util', 'crypto', 'child_process'];
+  const SHARED = ['../runner/bd.js', '../runner/queue.js'];
+  check('F1 scripts/batch.js requires node built-ins plus exactly the two shared rules',
+    requires.length > 0 && requires.every((r) => BUILTINS.includes(r) || SHARED.includes(r))
+    && SHARED.every((s) => requires.includes(s)));
+
+  // Presence is half a check (CLAUDE.md's "plausible and wrong" rule): an import of a name
+  // the module stopped exporting is `undefined`, and `undefined.has(...)` would throw at the
+  // one moment this tool is used. So the exports are pinned by VALUE, against the runner's
+  // own copy rather than against a restatement of it here.
+  const runnerBd = require(path.join(ROOT, 'runner', 'bd.js'));
+  const runnerQueue = require(path.join(ROOT, 'runner', 'queue.js'));
+  check('F2 runner/bd.js still exports the shim probe and the spawn bound this depends on',
+    typeof runnerBd.hostBdSpec === 'function' && typeof runnerBd.spawnOptions === 'function'
+    && runnerBd.spawnOptions({}).timeout === runnerBd.DEFAULT_BD_TIMEOUT_MS
+    && runnerBd.spawnOptions({ bdTimeoutMs: 1500 }).timeout === 1500);
+  check('F2b runner/queue.js still exports the epic deny-list, and it still denies epics',
+    runnerQueue.EXCLUDED_TYPES instanceof Set && runnerQueue.EXCLUDED_TYPES.has('epic')
+    && typeof runnerQueue.typeOf === 'function'
+    && runnerQueue.typeOf({ issue_type: ' EPIC ' }) === 'epic'
+    && runnerQueue.typeOf({}) === '');
+  check('F2c and the reader carries no second copy of either: no type name, no PATH probe',
+    !/['"]epic['"]/.test(src) && !/path\.delimiter/.test(src) && !/bd\.cmd/.test(src));
+
+  // The frozen suite pins these two as well (repo-8v0 C8). They are re-asserted here because
+  // a frozen directory is never executed again, and both are one careless import from being
+  // false: the general helpers in runner/bd.js fall back to running `bd` inside the image
+  // when no host bd resolves, and a pure reader may not start a container during a launch.
+  check('F2d it starts no container: the source never names one, directly or by helper',
+    !/docker/i.test(src) && !/\bbdJson\s*\(/.test(src) && !/[^.\w]bd\s*\(/.test(src));
+
   check('F3 it reads its runs root from the seam or its own location, never the cwd',
     !/process\.cwd\(\)/.test(src));
   check('F4 it is requirable as a module: main() stays behind require.main === module',
@@ -393,6 +452,204 @@ function record(r) { outputs.push(both(r)); return r; }
   }
   check(`F5 nothing in runner/ or pipeline/ reads runs/batches/ (a marker is never a queue item)${
     offenders.length ? ` — ${offenders.join(', ')}` : ''}`, offenders.length === 0);
+}
+
+// ---- G. the reconciliation against the live queue (§3.9) --------------------------------------
+// The check the whole design exists for. The runner has no picker (§4.12) — it drains
+// whatever queue it finds — so an issue nobody meant to include simply runs and a blocked one
+// silently does not, and nothing else in the pipeline holds the INTENT to compare the queue
+// against. Everything here goes through the real CLI as a child, because the argv it builds is
+// half of what is being asserted.
+{
+  const bin = mktemp('bd');
+  const argsLog = path.join(bin, 'bd-args.log');
+
+  // See the header. The guard is the load-bearing line: without it this stub preloads into
+  // scripts/batch.js as well as into the bd child it spawns, and kills the reader at its
+  // first process.exit — after which every check below passes or fails without the
+  // implementation having run at all.
+  function stub(name, body) {
+    const p = path.join(bin, name);
+    fs.writeFileSync(p, [
+      "'use strict';",
+      "const sfs = require('fs');",
+      'const argv = process.argv.slice(1);',
+      "if (!argv.includes('-C')) return;    // not the bd child — stand aside",
+      "if (process.env.BD_ARGS_LOG) sfs.appendFileSync(process.env.BD_ARGS_LOG, JSON.stringify(argv) + '\\n');",
+      body,
+    ].join('\n') + '\n');
+    return p;
+  }
+  const withStub = (p, extra) => Object.assign(
+    { PIPELINE_BD_CMD: process.execPath, NODE_OPTIONS: `--require "${fwd(p)}"` }, extra || {});
+  const badPath = (p) => ({ PIPELINE_BD_CMD: p });   // a seam naming something unexecutable
+
+  // Two configs naming DIFFERENT target repos, and two markers carrying the SAME three ids.
+  // Only the config a marker names can change its verdict, so an implementation that ignores
+  // targetRepoPath answers identically for both and is caught by G4 rather than by luck.
+  const cfg = mktemp('cfg');
+  const repoA = mk(path.join(mktemp('repoA'), 'alpha'));
+  const repoB = mk(path.join(mktemp('repoB'), 'beta'));
+  writeJson(path.join(cfg, 'run.config.alpha.json'), { targetRepoPath: repoA, bdTimeoutMs: 20000 });
+  writeJson(path.join(cfg, 'run.config.beta.json'), { targetRepoPath: repoB, bdTimeoutMs: 20000 });
+  writeJson(path.join(cfg, 'run.config.noteal.json'), { image: 'pipeline-base' }); // no targetRepoPath
+
+  const t = mktemp('queue');
+  const IDS = ['q-1', 'q-2', 'q-3'];
+  const seed = (stem, runConfig) => marker(t, stem, {
+    runConfig, frozenAt: '2026-08-15T00:00:00.000Z',
+    issues: IDS.map((id) => ({ id, title: `title for ${id}` })),
+  });
+  seed('alpha-2026-08-15', 'run.config.alpha.json');
+  seed('beta-2026-08-15', 'run.config.beta.json');
+  seed('noteal-2026-08-15', 'run.config.noteal.json');
+  seed('escape-2026-08-15', '../run.config.alpha.json');
+  seed('nameless-2026-08-15', null);
+  seed('ghost-2026-08-15', 'run.config.ghost.json');   // a config no host has
+
+  // Answers from the -C argument it was handed. Under repoA: two of the batch's ids, an EPIC
+  // parent (bd returns those by design — never a stray), and one unrelated task (the real
+  // stray). Under anything else: one id, so the same marker ids reconcile differently.
+  const live = stub('live.js', [
+    "const target = argv[argv.indexOf('-C') + 1];",
+    `const answer = target === ${JSON.stringify(repoA)}`,
+    "  ? [{id:'q-1',priority:1,issue_type:'task'}, {id:'q-2',priority:1,issue_type:'task'},",
+    "     {id:'q-9',priority:0,issue_type:'epic'}, {id:'wander-1',priority:2,issue_type:'task'}]",
+    "  : [{id:'q-1',priority:1,issue_type:'task'}];",
+    'process.stdout.write(JSON.stringify(answer));',
+    'process.exit(0);',
+  ].join('\n'));
+
+  const run = (stem, env) => cli(t, ['show', stem],
+    Object.assign({ BATCH_CONFIG_DIR: cfg, BD_ARGS_LOG: argsLog }, env || {}));
+  const lineFor = (text, id) => (text.split(/\r?\n/).find((l) => l.includes(id)) || '');
+  const counted = (text, re) => text.split(/\r?\n/).filter((l) => re.test(l)).length;
+
+  fs.writeFileSync(argsLog, '');
+  const a = run('alpha-2026-08-15', withStub(live));
+  const ao = both(a);
+  check('G1 an id the live queue holds is ready, and one it does not is not-ready',
+    a.status === 0 && /\bready\b/.test(lineFor(ao, 'q-1')) && /\bready\b/.test(lineFor(ao, 'q-2'))
+    && /\bnot-ready\b/.test(lineFor(ao, 'q-3')));
+  check('G2 an id the run would drain that the batch never named is exactly one stray',
+    counted(ao, /\bstray\b/) === 1 && lineFor(ao, 'wander-1').includes('stray'));
+  check('G3 an epic parent is filtered before anything is called a stray, and never named',
+    !ao.includes('q-9'));
+  check('G4 a reconciled show speaks no degraded term at all',
+    !/\b(?:unreconciled|bd-unavailable|bd-unreadable|run-config-absent)\b/.test(ao));
+
+  // The argv, and the tell. Exactly one line means the reader ran and the stub stood aside:
+  // a stub that hijacked scripts/batch.js logs one line too, but it is batch.js's own argv.
+  const logged = fs.readFileSync(argsLog, 'utf8').trim().split(/\r?\n/).filter(Boolean);
+  const argv = logged.length === 1 ? JSON.parse(logged[0]) : [];
+  check('G5 bd is consulted exactly once, and it is bd that was consulted',
+    logged.length === 1 && !argv.some((x) => String(x).endsWith('batch.js')));
+  check('G6 the argv names the target repo of the config THIS marker names',
+    argv.includes('-C') && argv[argv.indexOf('-C') + 1] === repoA);
+  check('G7 the argv asks for the ready queue as JSON',
+    argv.includes('ready') && argv.includes('--json'));
+  check('G8 the call reads and never writes (hard rule 1)',
+    !argv.some((x) => ['update', 'close', 'create', 'import', 'sync', 'dolt', 'note', 'remember']
+      .includes(String(x))));
+
+  fs.writeFileSync(argsLog, '');
+  const b = run('beta-2026-08-15', withStub(live));
+  const bo = both(b);
+  check('G9 the same ids under a different run config get a different verdict',
+    b.status === 0 && counted(bo, /\bnot-ready\b/) === 2 && counted(bo, /\bstray\b/) === 0);
+  check('G10 and the argv proves why: the other config named the other repo',
+    JSON.parse(fs.readFileSync(argsLog, 'utf8').trim())[2] === repoB);
+
+  // Every way the join can fail, each naming itself. `unreconciled` never travels without
+  // exactly one reason, and none of these may speak the reconciled vocabulary — the half that
+  // is load-bearing in the other direction is G1–G4, without which a tool that always says
+  // unreconciled would pass this whole block.
+  const degraded = (label, stem, env, reason, notReason) => {
+    const r = run(stem, env);
+    const o = both(r);
+    check(`${label} exits 0, lists every id, and says ${reason}`,
+      r.status === 0 && IDS.every((id) => o.includes(id))
+      && o.includes('unreconciled') && o.includes(reason)
+      && (!notReason || !o.includes(notReason)));
+    check(`${label} speaks no reconciled token`, !RECONCILED.test(o));
+  };
+  degraded('G11 a seam naming something unexecutable', 'alpha-2026-08-15',
+    badPath(path.join(bin, 'definitely-not-here')), 'bd-unavailable');
+  degraded('G12 a bd that exits non-zero', 'alpha-2026-08-15',
+    withStub(stub('fail.js', "process.stderr.write('bd exploded'); process.exit(4);")), 'bd-unreadable');
+  degraded('G13 a bd printing unparseable output', 'alpha-2026-08-15',
+    withStub(stub('junk.js', "process.stdout.write('not json at all'); process.exit(0);")), 'bd-unreadable');
+  degraded('G14 a bd answering something that is not the expected array', 'alpha-2026-08-15',
+    withStub(stub('object.js', "process.stdout.write('{\"issues\":[]}'); process.exit(0);")), 'bd-unreadable');
+  const ok = stub('ok.js', "process.stdout.write('[]'); process.exit(0);");
+  degraded('G15 a marker naming a config this host has not got', 'ghost-2026-08-15',
+    withStub(ok), 'run-config-absent', 'bd-unavailable');
+  degraded('G16 a config carrying no targetRepoPath', 'noteal-2026-08-15',
+    withStub(ok), 'run-config-absent', 'bd-unavailable');
+  degraded('G17 a runConfig reaching out of the config directory', 'escape-2026-08-15',
+    withStub(ok), 'run-config-absent', 'bd-unavailable');
+  degraded('G18 a marker naming no run config at all', 'nameless-2026-08-15',
+    withStub(ok), 'run-config-absent', 'bd-unavailable');
+
+  // The bound, fired for real. A stub that merely never exits is NOT enough on its own: node
+  // kills it anyway the moment it cannot resolve the program slot, so the elapsed time proves
+  // nothing. Swallowing that and holding a timer open is the only shape that hangs, and the
+  // lower bound below is what separates "killed at the bound" from "died on its own".
+  writeJson(path.join(cfg, 'run.config.slow.json'), { targetRepoPath: repoA, bdTimeoutMs: 2000 });
+  seed('slow-2026-08-15', 'run.config.slow.json');
+  const hang = stub('hang.js', [
+    "process.on('uncaughtException', () => {});",
+    'setInterval(() => {}, 1000);',
+  ].join('\n'));
+  const t0 = Date.now();
+  const h = run('slow-2026-08-15', withStub(hang));
+  const elapsed = Date.now() - t0;
+  const ho = both(h);
+  check('G19 a bd that never answers is killed at the run config’s bdTimeoutMs',
+    h.status === 0 && elapsed >= 1500 && elapsed < 30000);
+  check('G20 and a kill at the bound is bd-unreadable, not bd-unavailable — bd DID run',
+    ho.includes('unreconciled') && ho.includes('bd-unreadable') && !ho.includes('bd-unavailable'));
+  check('G21 it says nothing about the queue it never read', !RECONCILED.test(ho));
+
+  // Still a pure reader on the reconciled path, and `pending` still spawns nothing at all:
+  // the queue is `show`'s question, and a listing that woke bd once per marker would make the
+  // cheapest command in the tool the most expensive.
+  const before = digest(t);
+  run('alpha-2026-08-15', withStub(live));
+  fs.writeFileSync(argsLog, '');
+  const p = cli(t, ['pending'], withStub(live, { BATCH_CONFIG_DIR: cfg, BD_ARGS_LOG: argsLog }));
+  check('G22 pending consults no queue: it answers from the run corpus alone',
+    p.status === 0 && fs.readFileSync(argsLog, 'utf8').trim() === '');
+  check('G23 the runs root is byte-identical after a reconciled show', digest(t) === before);
+
+  // The two seams, computed rather than only exercised: the frozen suite always exports
+  // BATCH_CONFIG_DIR, so a reader resolving it from the working directory passes every
+  // behavioural check above. And PIPELINE_BD_CMD must win outright — a suite that stubs it
+  // and still reached the host's own bd would be answering from the host's real database.
+  check('G24 with the seam unset the config directory is the repo root, never the cwd',
+    batchjs.configDir({}) === ROOT && batchjs.configDir({ BATCH_CONFIG_DIR: '  ' }) === ROOT
+    && batchjs.configDir({ BATCH_CONFIG_DIR: cfg }) === path.resolve(cfg));
+  const spec = batchjs.readSpec({ PIPELINE_BD_CMD: '/nowhere/bd' });
+  check('G25 the seam takes absolute precedence over the host probe',
+    spec !== null && spec.cmd === '/nowhere/bd');
+  check('G26 and the argv it builds leads with a program slot, so `-C` survives the parser',
+    Array.isArray(spec.pre) && spec.pre.length === 1
+    && spec.pre[0] === batchjs.SEAM_PROGRAM_SLOT);
+
+  // The epic filter and the stray rule, driven directly, at the shapes a real queue grows:
+  // an entry with no id, an untyped entry (kept — the deny-list is a deny-list), a nested
+  // junk entry. A behavioural check cannot reach these without a stub per shape.
+  const m = { issues: [{ id: 'q-1' }, { id: 'q-3' }] };
+  const rec = batchjs.reconcile(m, [
+    { id: 'q-1', issue_type: 'task' }, { id: 'e-1', issue_type: 'EPIC' },
+    { id: 'u-1' }, { id: '', issue_type: 'task' }, null, ['nope'], { issue_type: 'task' },
+  ]);
+  check('G27 the epic filter is case-insensitive and drops the entry before the stray rule',
+    rec.excluded === 1 && !rec.strays.some((s) => s.id === 'e-1'));
+  check('G28 an untyped entry is KEPT, so a legitimately-typed spec cannot vanish silently',
+    rec.strays.some((s) => s.id === 'u-1' && s.type === 'untyped'));
+  check('G29 an entry with no usable id is skipped, and junk entries do not throw',
+    rec.queued.length === 2 && rec.state('q-1') === 'ready' && rec.state('q-3') === 'not-ready');
 }
 
 for (const t of temps) fs.rmSync(t, { recursive: true, force: true, maxRetries: 5 });

@@ -119,11 +119,15 @@ node scripts/verdict.js record <issue-id> <merged|rejected> "<why>"  # [--run <r
 node scripts/verdict.js pending    # PR-bearing tasks with no verdict yet, newest run first
 
 # confirming a batch before launching it: the marker a planning session wrote at the end of
-# PLANNING.md step 8, read back (§3.9, change-log row `repo-0b3`). Pure reader over
-# runs/batches/ — writes nothing, spawns nothing, exits 0 on findings. BATCH_RUNS_DIR re-aims
-# the root. The `bd ready` reconciliation is NOT WIRED YET: `show` always reports the batch as
-# `unreconciled bd-unavailable`, so step 8's "the queue lists exactly these ids" is still a
-# check done by eye.
+# PLANNING.md step 8, read back (§3.9, change-log rows `repo-0b3` and `repo-8v0`). Pure reader
+# over runs/batches/ — writes nothing, mutates no marker, exits 0 on findings. BATCH_RUNS_DIR
+# re-aims the root; BATCH_CONFIG_DIR the directory the marker's run config is resolved from.
+# `show` reconciles the batch against the live queue of that config's targetRepoPath — one
+# bounded, read-only `bd ready --json`, epic parents filtered — and reports each id `ready` or
+# `not-ready` plus every `stray` the run would also drain. That is step 8's "the queue lists
+# exactly these ids", automated. Where a join cannot be made it prints `unreconciled` with one
+# reason (`bd-unavailable`, `bd-unreadable`, `run-config-absent`) and no reconciled token,
+# so "the queue agreed" and "the queue was never asked" never read alike.
 node scripts/batch.js pending      # batches no run has worked since their freeze, newest first
 node scripts/batch.js show         # the newest marker, launched or not, with a per-id breakdown
 node scripts/batch.js show <project>-<YYYY-MM-DD>   # one named marker
@@ -164,7 +168,7 @@ bash scripts/test-audit-runs.sh    # the run-history audit — buckets, joins, c
 bash scripts/test-dashboard.sh     # the live dashboard's /state joins, its degraded vocabulary, and that it writes nothing (change-log row `repo-kfg`)
 bash scripts/test-verify-buffer.sh # the verifier's capture limit — a loud PASS is a pass, a loud FAIL is still a fail (change-log row `verify-nobuffer`)
 bash scripts/test-pipeline-map.sh  # the reader's map is drawn at build time — an error card is not a diagram (change-log row `map-prerender`)
-bash scripts/test-batch.sh         # the batch marker reader — the marker shape, the corpus join and its degraded labels (change-log row `repo-0b3`)
+bash scripts/test-batch.sh         # the batch marker reader — the marker shape, the corpus join, the live-queue reconciliation and its degraded labels (change-log rows `repo-0b3`, `repo-8v0`)
 ```
 
 Reading the corpus itself is `node scripts/audit-runs.js` — a pure reader that prints one
@@ -408,18 +412,32 @@ the pipeline working on the pipeline's own code. The rules:
   anything alone.
   And `sh scripts/test-batch.sh` (`tests/unit/batch.test.js`), which builds throwaway runs
   roots under the OS temp dir and drives the real `scripts/batch.js` through the
-  `BATCH_RUNS_DIR` seam: run it if you touch that reader, because what it answers — *has
-  this batch already been launched?* — is a JOIN over artifacts other code writes, and the
-  expensive failure is a false "pending" that gets a batch launched twice. Its fixtures are
-  chosen so a plausible implementation fails rather than merely being exercised: the same
-  manifest-less run dated once before and once after one freeze (a join copied from
-  `verdict.js` skips such a run and answers the same way in both), and a `batches/`
-  directory holding a hyphenated project name, a bare date, a `.txt` and truncated JSON.
+  `BATCH_RUNS_DIR`, `BATCH_CONFIG_DIR` and `PIPELINE_BD_CMD` seams: run it if you touch that
+  reader, and equally if you touch what it now IMPORTS — `runner/queue.js`'s
+  `EXCLUDED_TYPES`/`typeOf` or `runner/bd.js`'s `hostBdSpec`/`spawnOptions` — because what it
+  answers, *has this batch already been launched, and does the queue hold what we froze?*, is
+  a JOIN over artifacts and rules other code owns, and the expensive failures are a false
+  "pending" that gets a batch launched twice and a false `stray` that stops a good launch.
+  Its fixtures are chosen so a plausible implementation fails rather than merely being
+  exercised: the same manifest-less run dated once before and once after one freeze (a join
+  copied from `verdict.js` skips such a run and answers the same way in both), a `batches/`
+  directory holding a hyphenated project name, a bare date, a `.txt` and truncated JSON, and
+  two markers carrying the SAME ids under run configs naming DIFFERENT repos (a reader that
+  ignores `targetRepoPath` answers identically for both).
   Any new Docker-free suite belongs beside them in
   `tests/unit/`, and its seam stub must be a `.js` file invoked through
   `process.execPath`, never a `#!/bin/sh` script: `spawnSync` without a shell fails such a
   script with EFTYPE on the Windows host, so the suite would pass in here and fail in the
-  host sweep.
+  host sweep. **And if the thing under test is itself spawned as a child, that stub needs a
+  guard.** `NODE_OPTIONS=--require <stub>` reaches every node process that inherits the
+  environment, not only the `bd` the code spawns — harmless in `tests/unit/memory.test.js`,
+  where the code under test runs in-process, and fatal in a suite that runs a CLI as a child,
+  because the stub preloads into the CLI too and its first `process.exit` kills it before its
+  first line. The fixture then measures the stub, and passes or fails without the
+  implementation having run at all. Open the stub with a stand-aside line
+  (`if (!argv.includes('-C')) return;` — CommonJS permits top-level `return`) and pin the
+  tell: an argv log holding ONE line where a live run logs two. It cost 11 checks of
+  `tests/acceptance/repo-8v0/` (change-log row `repo-8v0`).
 - You cannot push (no credentials, no git-host network). Commit locally at every
   meaningful boundary; the host pushes your branch after the container exits.
 - The `bd` quick-reference below is for interactive host sessions — in here you have no

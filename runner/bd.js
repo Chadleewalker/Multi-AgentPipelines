@@ -38,6 +38,14 @@ function shimTarget(text, dir) {
 
 // { cmd, pre } — how to invoke host bd, or null when there is none. Memoized: the probe
 // costs a process spawn and the answer cannot change inside one run.
+//
+// EXPORTED, and not only for the runner. `scripts/batch.js` assembles its own read-only
+// `ready --json` argv and spawns it once, because every general entry point below falls
+// back to `bdInImage` when no host bd resolves — a pure reader must not start a container
+// during a launch ritual. What it must NOT do is carry a second copy of this probe: the
+// shim shapes are a host fact, and two copies of a host fact drift (change-log row
+// `sweep-trustworthy` exported `isHolderLive` for the same reason). So the probe is shared
+// and only the argv differs.
 let hostBd; // undefined = not probed yet, null = no host bd
 function hostBdSpec() {
   if (hostBd !== undefined) return hostBd;
@@ -204,6 +212,6 @@ function bdJson(cfg, args) {
 }
 
 module.exports = {
-  bd, bdJson, bdOnHost, bdInImage, haveHostBd, toMountPath, shimTarget, spawnOptions,
-  DEFAULT_BD_TIMEOUT_MS,
+  bd, bdJson, bdOnHost, bdInImage, haveHostBd, hostBdSpec, toMountPath, shimTarget,
+  spawnOptions, DEFAULT_BD_TIMEOUT_MS,
 };
