@@ -1429,7 +1429,7 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-pipeline-map.sh` | the reader's map drawn at build time (change-log row `map-prerender`) — a good SVG's stylesheet versus a real error card, neither check meaning anything alone |
 | `scripts/test-batch.sh` | the batch marker reader (change-log rows `repo-0b3`, `repo-8v0`) — the marker name anchored at both ends, the manifest-less run dated from `run.log`, the conservative `run-time-unknown` direction, the degraded labels, byte-identical repeat output, the pure-reader contract checked by sha1 snapshot and parsed `require` specifiers, and the live-queue reconciliation: the argv the reader builds, the epic filter, every degraded reason, `pending` spawning nothing, and the `bdTimeoutMs` bound fired against a stub that really hangs |
 
-**`scripts/test-runner-memory.sh` is one of the fourteen suites that need no Docker**
+**`scripts/test-runner-memory.sh` is one of the seventeen suites that need no Docker**
 (repo-dhp): it
 drives both §3.6 memory channels plus the `shouldFileMemory` outcome gate through the
 `PIPELINE_BD_CMD` seam, so it runs anywhere — including inside a task container, where
