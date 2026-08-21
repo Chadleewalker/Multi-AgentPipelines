@@ -86,6 +86,20 @@ Two hard boundaries, both inherited:
 
 <!-- Newest at the top. Nothing here is committed to. -->
 
+- **Give `PLANNING.md` step 3 a charter and fresh context, the way step 1b got them.**
+  Step 1b already drafts the acceptance criteria in fresh context; step 3 then writes the
+  frozen tests back inside the primed session, and states no context requirement at all —
+  that undecided half is the idea. Worth wanting because the tests are what judges every
+  attempt of a run, and `docs/STATUS.md` ("What this does not prove") already records the
+  cost of the primed seat: specs drafted by one context that also wrote and reviewed its own
+  criteria, where "the panel's value came precisely from being unprimed". A test-writer
+  subagent is already spawned ad hoc, with no charter and no record — the planning-session
+  ledger entry in this inbox records one. Against it: a fresh-context author cannot see the
+  design discussion, and knows least about the harness it is writing tests for — shadow-01's
+  self-nesting `npm test` was a harness-knowledge failure, not a priming one. Not §3.5
+  slot 2, which is a *domain* specialist. 2026-08-21
+  Related: `PLANNING.md` steps 1b and 3; `DESIGN.md` §3.2 ("Below the panel", move 5).
+
 - **Give the sweep lock the liveness rule the run lock already has, and stop printing
   `rm -rf` as the remedy.** When `scripts/test-all.sh` finds `runs/.test-all.lock` it prints
   the holder's pid and the time, then suggests removing the directory "if that process is
