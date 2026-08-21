@@ -222,6 +222,13 @@ The process, as `DESIGN.md` §3.2 step 1 defines it:
 5. **Test it against the readiness bar,** including the dry-run decomposition.
 6. **Then, and only then, decompose into work.**
 
+**Before the scaffold, not after** (change-log row `design-before-scaffold`). Scaffolding a
+project is where its language and main technologies get chosen, and that is question 6 —
+so scaffolding first answers question 6 before questions 1 to 5 have been asked. The stack
+that results is rarely wrong; what goes wrong is that the design is built around a stack
+nobody argued for, and the stack is then recorded as a constraint when it was a preference.
+`ONBOARDING.md` carries the four-stage path this sits in.
+
 Expect several rounds, and expect them to converge rather than terminate. In this repository
 three rounds went from roughly twenty findings to seven to four, and round three produced
 nothing requiring a decision from the user — which was the bar, and was the signal to stop.
