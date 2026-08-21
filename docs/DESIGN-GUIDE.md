@@ -229,6 +229,11 @@ that results is rarely wrong; what goes wrong is that the design is built around
 nobody argued for, and the stack is then recorded as a constraint when it was a preference.
 `ONBOARDING.md` carries the four-stage path this sits in.
 
+**Where it lives while it is being written:** the project's own repo, as its own `DESIGN.md`,
+from the first draft. Making that repo is a folder and `git init` — no language, no template,
+no files — which is not a decision and so does not wait for the design (change-log row
+`empty-repo-first`). A remote can wait; nothing in a design session needs one.
+
 Expect several rounds, and expect them to converge rather than terminate. In this repository
 three rounds went from roughly twenty findings to seven to four, and round three produced
 nothing requiring a decision from the user — which was the bar, and was the signal to stop.

@@ -19,7 +19,15 @@ than in a wrapper, so every entry point inherits it (change-log row `adoption-as
 
 Four stages, in order. Each is interactive, each happens once except the last:
 
-1. **Write the design doc** — for a project the pipeline will seriously develop, a
+1. **Make the empty repo, then write the design doc.** The repo comes first and costs
+   nothing to make: a folder and `git init`, no language, no template, no files. **That is
+   not a decision, which is why it does not wait for the design** — the design doc has to
+   live somewhere, and it is the project's own `DESIGN.md`, in the project's own repo, from
+   the first draft. Choosing the *stack* is the decision, and that is what waits (stage 2,
+   and change-log rows `design-before-scaffold` and `empty-repo-first`). A GitHub remote can
+   wait for stage 3; nothing about the design session needs one.
+
+   Then the doc itself — for a project the pipeline will seriously develop, a
    `DESIGN.md` in its repo: intent, architecture, decisions and why, amendable only via
    its change log. **`docs/DESIGN-GUIDE.md` in this repo is how**: the sections one needs
    and how each fails without it, and the six-question interview — shown to the user in
