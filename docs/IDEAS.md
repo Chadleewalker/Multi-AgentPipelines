@@ -81,6 +81,22 @@ Two hard boundaries, both inherited:
 
 <!-- Newest at the top. Nothing here is committed to. -->
 
+- **Give test-writing its own charter and fresh context, the way criteria drafting got them.**
+  `PLANNING.md` step 3 writes the frozen acceptance tests inside the same primed session that
+  just drafted the spec and read the critic findings — the exact seat step 1b was pulled out
+  of. The evidence that moved 1b applies harder here: the tests are what judges every attempt
+  of a run, and a test carrying the drafter's assumption about the implementation is how
+  shadow-01 went — correct code on attempt 1, contorted until a broken gate went green. In
+  practice a test-writer subagent is already being spawned ad hoc (see the planning-session
+  ledger entry above) with no charter, no fresh-context requirement and no record, which is
+  the weakest of the three available states. **This is not slot 2:** §3.5's test author is a
+  *domain* specialist, and this is the generic step every spec goes through. The
+  counter-argument parks here too — a fresh-context author cannot see the design discussion
+  and may write tests against a reading of the spec the session already rejected, so the
+  honest version probably splits step 3 the way 1b split step 1 rather than moving the whole
+  step. 2026-08-21
+  Related: `DESIGN.md` §3.2 ("Below the panel", move 5) and §3.5 slot 2; `PLANNING.md` steps 1b and 3.
+
 - **Capture all planning-session info going forward — a session ledger under `runs/`.**
   (User directive, 2026-08-18: "I need to capture all session info going forward.")
   Runs are fully recorded; planning sessions are not — yet a planning session is where

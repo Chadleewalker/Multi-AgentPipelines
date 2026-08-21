@@ -14,7 +14,7 @@ Beads queue is the join between them.
 ```mermaid
 flowchart TB
   A["Design doc — DESIGN.md"] --> B["Decompose into task-sized specs"]
-  B --> C["Critics, sized to difficulty<br/>none · light · full panel"]
+  B --> C["Critics, sized to difficulty<br/>light · full panel"]
   SP1["SLOT 1 — domain critic<br/>physics · aesthetic · security<br/>attacks the spec, finds the holes"] -.-> C
   C --> D["Write acceptance tests<br/>before any code exists"]
   SP2["SLOT 2 — domain test author<br/>writes the domain's own checks<br/>energy conserved · contrast ratio"] -.-> D
