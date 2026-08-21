@@ -19,30 +19,46 @@ than in a wrapper, so every entry point inherits it (change-log row `adoption-as
 
 Four stages, in order. Each is interactive, each happens once except the last:
 
-1. **Create the project** — however you normally scaffold one. The language and main
-   technologies (framework, data storage, hosting — whatever the project actually has)
-   are chosen together — Claude lays out the options with a recommendation, the user
-   decides — then Claude writes the project's `CLAUDE.md` and gets a spec approved
-   before building anything. If you know at that point that the pipeline will work on
-   this project, stage 3 can happen in the same sitting. An existing project skips this
-   stage entirely.
-2. **Write the design doc** — for a project the pipeline will seriously develop, a
+1. **Write the design doc** — for a project the pipeline will seriously develop, a
    `DESIGN.md` in its repo: intent, architecture, decisions and why, amendable only via
-   its change log (§3.1–3.2 of this pipeline's own DESIGN.md describe the session:
-   bounded interview, critics, dry-run decomposition as the readiness test). Identify
+   its change log. **`docs/DESIGN-GUIDE.md` in this repo is how**: the sections one needs
+   and how each fails without it, and the six-question interview — shown to the user in
+   full before the first question is asked (change-log row `design-interview-questions`).
+   §3.1–3.2 of this pipeline's own DESIGN.md describe the same session from the process
+   side: interview, critics, dry-run decomposition as the readiness test. Identify
    each change-log row by a kebab-case slug — the issue id for a row a task produced, a
    short descriptive name for a row a planning session produced — never by a version
    number, which parallel agents cannot assign uniquely (§12). Small
-   projects can live on the scaffold's `SPEC.md` alone and enter planning per-task —
-   the doc layer is for work big enough to decompose.
+   projects skip this stage and live on the scaffold's `SPEC.md` alone, entering planning
+   per-task — the doc layer is for work big enough to decompose. An existing project that
+   never had a design doc is a separate case: see "if the verdict calls for a design doc"
+   below, and do not reverse-engineer one.
+2. **Create the project** — however you normally scaffold one. The language and main
+   technologies (framework, data storage, hosting — whatever the project actually has)
+   are chosen together — Claude lays out the options with a recommendation, the user
+   decides — then Claude writes the project's `CLAUDE.md` and gets a spec approved
+   before building anything. Where stage 1 happened, the stack is **chosen against the
+   design doc** and its decisions are recorded there, not invented here. If you know at
+   this point that the pipeline will work on this project, stage 3 can happen in the same
+   sitting. An existing project skips this stage entirely.
 3. **Onboard** — the checklist below: GitHub remote, integration branch recorded,
    frozen-test home, config, image, task database, container-aware `CLAUDE.md`. Once,
    ever.
 4. **Plan and run, forever** — every feature from here on is a PLANNING.md session and
    an autonomous run. See "the life of an onboarded project" at the end of this file.
 
-Stages 1–2 can also run in the other order (design first, scaffold after) — what
-matters is that both exist before planning tries to decompose anything.
+**The design doc comes first, and this order is the decided one** (change-log row
+`design-before-scaffold`). Scaffolding chooses the language and main technologies, which is
+the design interview's question 6 — *what has already been decided, and is each item forced
+or preferred* — so scaffolding first answers question 6 before questions 1 to 5 have been
+asked. The cost is not that the stack turns out wrong; it usually does not. The cost is that
+the design is then built around a stack nobody argued for, and the stack is recorded as a
+constraint when it was a preference — which is the one distinction the doc exists to keep
+straight, because a constraint is never revisited and a preference is.
+
+Scaffold first only where stage 1 is being skipped anyway: a project small enough to live on
+`SPEC.md` and enter planning per task. What still matters in every case is that whatever
+exists — design doc or `SPEC.md` — exists before planning tries to decompose anything.
 
 ## Stage 0 — read the ground (existing codebases only)
 
