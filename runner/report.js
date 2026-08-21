@@ -8,9 +8,15 @@
 const fs = require('fs');
 const path = require('path');
 
-// Scrutiny order (§4.9): tampered > stuck > partial > failed > done-with-retries >
-// done-first-try, ties broken by attempt count then diff size.
-const RANK = { tampered: 0, stuck: 1, partial: 2, failed: 3, paused: 4, done: 5 };
+// Scrutiny order (§4.9): tampered > undispatchable > stuck > partial > failed >
+// done-with-retries > done-first-try, ties broken by attempt count then diff size.
+//
+// `undispatchable` (§4.11, §4.12) ranks second, behind `tampered`: a batch that could not
+// run at all is the first thing a person opening the report needs to see. Its rank is
+// INSERTED FRACTIONALLY and never renumbered — `scrutinyKey`'s fallback for an unknown
+// outcome is the literal rank `failed` holds, so renumbering would silently re-home every
+// future unknown outcome, which is not this table's to do.
+const RANK = { tampered: 0, undispatchable: 0.5, stuck: 1, partial: 2, failed: 3, paused: 4, done: 5 };
 
 function scrutinyKey(t) {
   const base = RANK[t.outcome] === undefined ? 3 : RANK[t.outcome];
@@ -42,6 +48,8 @@ const LABEL = {
   tampered: 'TAMPERED — frozen tests were modified',
   failed: 'FAILED',
   paused: 'PAUSED — usage window did not reopen',
+  // A label of its own, because the fallback below prints the bare outcome word (§4.12).
+  undispatchable: 'UNDISPATCHABLE — no frozen acceptance suite on the integration branch',
 };
 
 function renderReport(manifest) {
@@ -80,6 +88,18 @@ function renderReport(manifest) {
     if (t.model) facts.push(`Model: ${t.model}`);
     for (const f of facts) L.push(`- ${f}`);
     L.push('');
+
+    // §4.12's refusal, stated even for a row carrying nothing else. The remedy is the whole
+    // point of the row — a reader who learns only that a task did not run learns nothing
+    // actionable — and it must not depend on the manufactured fields being present, because
+    // an older manifest, or any other writer of this outcome, carries none of them.
+    if (t.outcome === 'undispatchable') {
+      L.push('**Not dispatched.** The ready queue refused this issue before anything was '
+        + 'claimed, so Beads was never touched and it is still `open`. Freeze its acceptance '
+        + `suite at \`tests/acceptance/${t.issueId}/\` on the branch task containers fork `
+        + 'from and **push it** — freezing locally is not freezing — then re-run.');
+      L.push('');
+    }
 
     // §3.7, ABOVE "what changed" AND ON PURPOSE. A concern cannot change an outcome, so a
     // task that raises one still sorts by its outcome — and `done` sorts LAST. The first

@@ -16,6 +16,7 @@ const DEFAULTS = {
   maxPauseCycles: 96,           // §4.7/§7 stop condition: total wait cycles per RUN (~24h at 15m)
   agentCommand: null,           // optional override -> PIPELINE_AGENT_CMD (§4.3 seam)
   bdTimeoutMs: 60000,           // §4.1 bound on every runner `bd` call (runner/bd.js)
+  gitTimeoutMs: 60000,          // §4.12 bound on the dispatch gate's git calls (runner/queue.js)
   concurrency: 1,               // §7 how many task containers ONE runner works at once
   // "opus" is an alias the CLI resolves to the CURRENT latest Opus, so the pipeline
   // follows model releases without edits here. The entrypoint records the RESOLVED
@@ -109,6 +110,14 @@ function loadConfig(file) {
   // reject it here, by name, before a run starts.
   if (raw.bdTimeoutMs !== undefined && !(Number.isInteger(raw.bdTimeoutMs) && raw.bdTimeoutMs > 0)) {
     throw new Error(`run.config.json: 'bdTimeoutMs' must be a positive whole number`);
+  }
+  // The bound on the dispatch gate's git calls (§4.12), validated exactly as bdTimeoutMs is
+  // and for the same reason: it goes straight into spawnSync's `timeout`, which rejects a
+  // fractional or non-positive value late and obscurely. `git fetch` against an unreachable
+  // host parks indefinitely, and an unbounded gate parks the whole run before it claims
+  // anything at all.
+  if (raw.gitTimeoutMs !== undefined && !(Number.isInteger(raw.gitTimeoutMs) && raw.gitTimeoutMs > 0)) {
+    throw new Error(`run.config.json: 'gitTimeoutMs' must be a positive whole number`);
   }
   // §7's concurrency knob: how many task containers ONE runner process holds at once.
   // Default 1 — strictly sequential, exactly as before the knob existed. The ceiling is a
