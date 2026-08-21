@@ -366,6 +366,44 @@ Two hard boundaries, both inherited:
   missing dependency turns the control red and the gate says "could not tell".
   Related: PLANNING.md step 4 (§3.2, move 1). 2026-08-09
 
+- **Lint a frozen test for guards that enumerate what later work may change** — a criterion
+  that pins a list of names, hashes a whole build, or diffs the branch against its own fork
+  point does not merely go stale: it goes red *precisely because* an unrelated later task did
+  its job correctly, and it keeps doing so forever. One target repo has now lost at least
+  eight frozen files across six suites this way — an eleven-name key list broken by a task
+  that legitimately added a twelfth, "exactly 30 flavour entries" broken by the task that grew
+  it to 61, and one that diffs its own branch over three source directories and will therefore
+  fail every code-touching task in that repository from now on. `scripts/freeze-gate.js` is the
+  only thing that reads a suite before it freezes, and it asks one question (is this red?) that
+  these files all answer correctly. A warning at freeze time costs nothing and is the only
+  moment anyone is looking. Not a runner bug and deliberately not folded into the dispatch
+  gate. Related: change-log row `dispatch-gate`, PLANNING.md step 4, DESIGN.md §3.2 move 1.
+  2026-08-21
+
+- **Surface a repeated spec concern louder than a report footnote** — §3.7's channel works:
+  across two runs against one target, seven task agents independently diagnosed the same
+  host-side dispatch fault, correctly, with evidence, naming each other by issue id. Nothing
+  consumed any of them, so the second run repeated the first run's mistake at eight times the
+  scale. A concern's readership today is a per-task section of one run report, which is the
+  wrong place after an unattended run — the signal that matters is not one concern but *the
+  same concern arriving n times*, and that fact exists only across tasks and across runs,
+  where no current artifact looks. Cheap shapes to consider: a run-report section that groups
+  concerns by similarity before the per-task list, or `scripts/audit-runs.js` reporting repeat
+  shapes across the corpus, which is already the tool that reads every run. Evidence only, never
+  a gate (hard rule 5). Related: DESIGN.md §3.7, §5, change-log row `dispatch-gate`. 2026-08-21
+
+- **Teach the batch reader that `ready` is no longer the same as `will dispatch`** — once the
+  dispatch gate lands (change-log row `dispatch-gate`), the runner has a second admission rule
+  and `scripts/batch.js show` knows only the first. It imports `EXCLUDED_TYPES`/`typeOf` from
+  `runner/queue.js` precisely so it *predicts what the runner will actually drain* — that
+  sentence is the export comment's own warrant — and after the gate an id can read `ready` in
+  the launch confirmation and then never dispatch. That is the exact false confidence the
+  marker exists to remove, arriving through the marker itself. The fix is probably the same
+  move again: import the dispatchability check rather than keeping a second copy, and report a
+  third token beside `ready` / `not-ready`. Deliberately out of scope for the gate task, whose
+  design says nothing about `batch.js`. Related: DESIGN.md §3.9, §4.12, change-log rows
+  `repo-8v0` and `dispatch-gate`. 2026-08-21
+
 ### Agent ideas
 
 The one heading this file allows itself, and here is the justification the grouping rule

@@ -845,11 +845,12 @@ source of truth.
     | Usage limit hit | 20 | paused (transient) | in-progress (runner parks it) | not yet | not yet |
     | Internal error | 30 | failed | blocked | if commits exist | no |
     | Wall-clock kill (host `docker kill`, no exit code) | — | failed, timeout noted | blocked | if commits exist | no |
+    | Not dispatched: no frozen suite on the fork branch | — (never launched) | undispatchable | unchanged (`open`) | no | no |
 
     The runner distinguishes done from partial by reading `verify.json`. The runner sets
     an issue in-progress when its task starts; **blocked** is what takes failed work out
     of the ready queue (it needs a human decision in review — fix the spec, fix the doc,
-    or drop it), so the run loop can never re-pick a failed issue. Timeout kills treat
+    or drop it), so the run loop can never re-pick a failed issue. **`undispatchable` is the one row that touches Beads not at all**: the issue is refused before `claim()`, so it is never in-progress, never blocked, and the next run picks it up unchanged the moment its suite is pushed (see 12). Timeout kills treat
     the status file as best-effort (it may be half-written). Alongside the codes, the
     entrypoint maintains `/workspace/.run/status.json` — attempt summaries (number,
     verifier result, timestamp), the docs-phase change summary, the resolved model id
@@ -872,7 +873,9 @@ source of truth.
     `run.config.json` in this repo: target repo path and remote, image name, wall-clock
     default, the attempt cap (`maxAttempts`, default 3 — see 4.6), probe interval,
     the bound on every runner `bd` call (`bdTimeoutMs`, default 60000 — see 4.1;
-    validated, like the other numeric tunables, as a positive whole number),
+    validated, like the other numeric tunables, as a positive whole number), the same bound on
+    every `git` call the dispatch gate makes (`gitTimeoutMs`, default 60000, validated
+    identically),
     network/proxy identifiers, and an optional `agentCommand`
     override (passed into containers as `PIPELINE_AGENT_CMD` — how the E2E pass injects
     its stubs). **The network and proxy names are per project and have no shared
@@ -1047,6 +1050,141 @@ source of truth.
     instead — a mistyped issue with no criteria gets a run, bails at the attempt cap, and
     appears in the report where someone can see it. The runner logs the id and type of
     everything it skips, and of anything it runs whose type is not `task`.
+
+    **A task whose frozen suite is not on the fork branch is never dispatched**
+    (change-log row `dispatch-gate`). The type filter above was the ready queue's *only*
+    admission rule, so the run's answer to "should this go out?" was "`bd ready` returned it
+    and it is not an epic" — and `bd ready` cannot know more, because Beads tracks issues and
+    not freezes. Any open, unblocked issue is ready to it, which is correct behaviour for
+    Beads and the wrong input to trust alone. The gap it leaves is total: the verifier's first
+    act is `<verifyCommand> tests/acceptance/<issue-id>/`, which against a missing directory
+    prints `FAIL: test dir not found` and exits 1 **before any of the agent's work is
+    consulted**, three times, once per attempt. Nothing in the container's diff can change
+    that outcome, and the one move that looks like a rescue is strictly worse: 4.4's frozen
+    set is `tests/acceptance/` plus `frozenPaths`, diffed against the fork point *and* read
+    from the `??` lines of `git status --porcelain`, so an agent that writes the missing suite
+    is recorded `tampered`. There is no play available to a task agent, which is by design —
+    a frozen test an agent can author is not frozen. The tamper check is correct and stays.
+    The dispatch is what was wrong. Two consecutive runs against one target dispatched
+    fourteen tasks of which eight could never have passed, the second spending 3h11m to
+    record eight `stuck` and nothing else. The repo already had the *concept* —
+    `scripts/freeze-gate.js` proves a suite present and red at the fork point — and no file
+    under `runner/` referenced it.
+
+    So `readyQueue()` gains a **third population beside `skipped`** — keyed
+    `undispatchable`, the outcome's own word, never `refused`, which `runner/run.js` already
+    spends on the run-level rate-limit population. One `git fetch <targetRepoRemote>
+    <branch>` per run into a throwaway repository, then one `git ls-tree -d --name-only
+    FETCH_HEAD -- tests/acceptance/<issue-id>` per candidate: empty output, not
+    dispatchable. Five properties are load-bearing, and each names a way of getting it wrong
+    that was genuinely available:
+
+    - **The gate fetches the remote by URL and reads `FETCH_HEAD` — never `origin/…`, never
+      the working tree, never a local branch.** Five of the seven observed failures had their
+      suite present *locally*: in a commit nobody pushed, or untracked in someone's working
+      copy. A check against the checkout passes all five and changes nothing at all.
+      **Freezing locally is not freezing** — that sentence is the whole lesson and the check
+      has to encode it. Going by URL rather than by remote name closes a second gap in the
+      same move: `targetRepoPath` and `targetRepoRemote` are two independent config keys that
+      nothing relates (`runner/config.js`), so a working copy whose `origin` points elsewhere
+      would have the gate answering confidently about a different repository — non-empty,
+      well-formed and false, the failure family this design keeps paying for. Containers fork
+      from a clone of that URL (2); the gate asks that URL. One fetch per run, then one
+      `git ls-tree -d --name-only FETCH_HEAD -- tests/acceptance/<issue-id>` per candidate.
+      The `-d` is not leniency to be tidied away later: a suite committed as a single *file*
+      answers empty and is refused, which matches the verifier, whose `<verifyCommand>
+      tests/acceptance/<issue-id>/` would fail on a file too.
+    - **Which branch to fetch is resolved without a literal fallback, and failing to resolve
+      it aborts.** `pipeline.config.json`'s `defaultBranch` in the target working copy wins;
+      otherwise the remote is asked directly (`git ls-remote --symref <targetRepoRemote>
+      HEAD`); and if neither answers, or the resolved branch does not exist on the remote,
+      the run aborts. This deliberately does **not** reuse
+      `runner/workspace.js`'s `detectDefaultBranch`, whose chain ends at the literal `'main'`
+      — correct there, because it only ever runs against a fresh clone where `origin/HEAD` is
+      always set, and catastrophic here, where guessing `main` for a `master` project makes
+      `ls-tree` empty for *every* issue and refuses the whole queue with a confident wrong
+      reason. Different input, different last resort, stated rather than inherited.
+    - **A fetch that fails, or hangs, aborts the run and names the remote and the branch.**
+      The discriminator is unavailable and dispatching blind is the failure being fixed:
+      3.2's rule that an unavailable discriminator must announce itself rather than quietly
+      weaken the verdict, applied at dispatch instead of at freeze. It forfeits nothing,
+      since every task clones from that same remote seconds later and a run that cannot reach
+      it has no work it could have done. **Bounded like every other thing the runner shells
+      out to** (1): a `gitTimeoutMs`, default 60000, validated as a positive whole number
+      like the other numeric tunables — `git fetch` against an unreachable host parks
+      indefinitely in exactly the way an unbounded `bd` once parked whole runs. And the abort
+      travels in its **own** channel: `run.js` today logs a failed `readyQueue` as "cannot
+      read the Beads ready queue", and a fetch failure reported under that cause sends a
+      person to the wrong system.
+    - **The refusal is per issue and never per run.** A queue holding three frozen tasks and
+      one unfrozen one runs the three. That blast radius is why the check lives in
+      `queue.js` and not in `preflight()`, which gates the *environment* and is rightly
+      all-or-nothing.
+    - **It runs before `claim()`, so Beads is untouched.** A refused issue stays `open` with
+      no note, no status change and no attempt-log line — the same property the run-level
+      rate-limit refusal already has (7). It is not blocked and not failed; it is merely not
+      frozen yet, and a freeze session has to be able to pick it straight up. A per-run note
+      would also accumulate on an issue that legitimately sits unfrozen for weeks.
+    - **It is named in the queue-summary line, with the remedy.** A skip nobody can see is
+      the silent-failure family this design keeps paying for, and this one is worse than most
+      because the tasks *did* appear in the report — as three-attempt failures indexed under
+      the agent's name rather than under the missing freeze. The historic
+      `ready queue: N task(s) — …` prefix is **appended to and never rewoven**;
+      `scripts/test-runner-queue.sh` greps it at six sites.
+
+    - **It repeals a shipped property, and the repeal is deliberate.** Until now an
+      unreachable `targetRepoRemote` was a *task* failure: the clone failed inside
+      `prepare()`, the task was reported and the run carried on at exit 0 — asserted as such
+      by `scripts/test-runner-workspace.sh`'s clone-failure check. The gate reaches that same
+      remote first, so an unreachable remote now aborts the run before anything is claimed.
+      That is the better report — every task would have failed at clone seconds later, and
+      eight task-level clone failures are a worse artifact than one abort naming the remote —
+      but it changes a tested behaviour, so the check is rewritten to assert the new one
+      rather than quietly deleted. A tested property that stops being true and takes its own
+      test with it is indistinguishable from one that was never tested.
+
+    Two smaller rules keep the gate from failing in the two ways a gate fails. It is **lazy**:
+    a queue with no candidates left after the type filter is fetched for nothing and must not
+    abort, or a legitimately empty run becomes an exit-1 failure. And the fetch runs in a
+    **throwaway repository under the OS temp dir, never in `targetRepoPath`** — `FETCH_HEAD`
+    is per-repository state, and writing it into the working copy an operator is using is the
+    kind of side effect §5's readers are forbidden from having.
+
+    A refused task **is a manifest row and not a hole.** It never enters `drainQueue` at
+    all, so unlike the rate-limit refusal there is no row for `main()`'s `.filter(Boolean)`
+    to preserve — the rows are **manufactured** from the third population and concatenated
+    into the results before the manifest is written, which is the only place that information
+    still exists. The distinction matters because the failure it prevents is the same one
+    either way: after exactly the unattended run where nobody watched it happen, a refused
+    task that produced no row is indistinguishable from a task nobody queued. The
+    construction is a **pure exported function** rather than inline code in `main()`, on the
+    precedent `queueSummary` set in the same file and for the same reason — `main()` sits
+    behind the token load and the Docker preflight, so anything written there is unreachable
+    to every Docker-free test, and a gate that refuses correctly while manufacturing nothing
+    would pass a suite that never looked. For the same reason the drain's own closing line
+    must name the refusals rather than reading `queue drained: (nothing ran)`, which is true
+    and reads like an empty queue. The row carries 4.11's new `undispatchable` outcome and
+    enough beside it to be worth reading — the title, and an attempt-log note carrying the
+    remedy — because the report renders a row's body from those fields and a minimal row
+    produces a section that says "no change summary produced" and tells the reader nothing to
+    do, which is the outcome this whole amendment exists to prevent. `undispatchable` ranks
+    second in scrutiny order behind `tampered` — a batch that could not run is the first
+    thing a person opening the report needs to see — maps to no Beads status at all, and gets
+    a label of its own, since the report's fallback prints the bare outcome word. Its rank is
+    **fractional, inserted rather than renumbered**: `scrutinyKey`'s fallback for an unknown
+    outcome is the literal rank `failed` holds, so renumbering silently re-homes every future
+    unknown outcome, and that fallback is not this amendment's to move.
+
+    One consequence is recorded here rather than left to be discovered. `scripts/batch.js
+    show` reconciles a batch marker against the live queue and **imports** the type filter
+    from `runner/queue.js` rather than copying it, precisely so that its answer tracks the
+    runner's admission rules (3.9). This amendment adds a second admission rule and does not
+    teach it to the reader, so from the moment it ships an id can read `ready` in the launch
+    confirmation and then never dispatch — the false confidence that reader exists to remove,
+    arriving through the reader itself. Closing it is a follow-up task sequenced immediately
+    after this one and depending on it, not an inbox note; the shape is the same move again,
+    importing the check rather than keeping a second copy.
+
     The Beads database's canonical home is the working copy at the configured
     target-repo path on the host; the runner runs `bd` against it, and in V1 (single
     machine) its state is not pushed anywhere. **The runner writes a per-run manifest**
@@ -1175,9 +1313,102 @@ by **the held lock's `runId`**, not by which directory is newest, because a live
 routinely not the newest directory on disk. A run directory with no `run.json` is a
 `no-manifest` run, never a skipped one — every run *in flight* is manifest-less, so the
 `verdict.js` rule of skipping such a directory would hide exactly what this tool exists to
-show. And the page it serves is a placeholder on purpose: the visible view is built
-interactively against the contract, which is the split this section's delivery paragraph
-already argued for. What remains unbuilt is that page.
+show. And the page it serves is built interactively against that contract, which is the
+split this section's delivery paragraph already argued for; it shipped as change-log row
+`live-dashboard-page`.
+
+**The dashboard says where a task is, not how it got there** (change-log row
+`task-timeline`). Each task row answers *running / finished / stuck, attempt 2 of 3* and
+stops, which is the wrong half of the question after an unattended run: a watcher opening
+the page at 2 AM wants the sequence — when it started, what the container did, which
+attempt failed verification and on what, whether the push or the PR is what actually broke.
+Every fact needed is already read on each `/state` request and then thrown away.
+`buildTask()` receives every parsed `run.log` event for its issue id and keeps four scalars
+from them; it reads `status.json` and keeps only `attempts[].verifierResult`, discarding
+each attempt's `timestamp` and its `feedback` — which §4.4 defines as the short
+verifier-failure digest, and which is precisely the explanation the row is missing. So each
+task in the contract gains an additive **`timeline`**: a time-ordered merge of three sources
+the reader already opens — the log events, the per-attempt records, and `stuckState` /
+`docsPhaseError` — each entry a timestamp, a term from a closed vocabulary of 34, a short
+detail, and, on the four `verify-*` terms alone, the attempt number, which has nowhere else
+to live once the detail is spoken for by the failure digest.
+`schema` stays `1`; the field is additive and its only consumer ships in the same
+file. It is not a `degraded` term, because an overflowing timeline is a fact about a long
+task, not a defect.
+
+Two bounds are set against the way each would otherwise fail. The list is capped at 60
+entries, but **the first 5 are kept alongside the newest 55**, and the dropped count is
+stated as `timelineOmitted` rather than silently truncated. Newest-only is the obvious rule
+and it is wrong here: `maxPauseCycles` defaults to 96 (`runner/config.js`) and the probe
+path emits two lines a cycle, so a run that parks all night can offer ~192 candidates and a
+newest-60 window holds nothing but probe lines — no start, no workspace, no attempt — on
+precisely the run whose story is being asked for. And free text is truncated to 200
+characters **head-kept everywhere except `feedback`, which is tail-kept**, because
+`pipeline/status.js` already writes that field as the last 2000 characters of the verifier's
+output: head-keeping the head of a tail returns the test harness's start-up banner, which is
+non-empty, well-formed, and carries none of the failure. Control characters are stripped and
+a truncation never splits a surrogate pair.
+
+**The vocabulary has to be complete, and completeness has to be enforced by something other
+than care.** The reader identifies log lines by literal prefix and drops what it does not
+recognise, which is what makes this structural parsing rather than scraping and stays
+exactly as it is. But its table declares eleven per-task prefixes — of which it actually
+*consumes* nine, `launching container ` and `container ran ` having been declared and never
+referenced — against the **43** `runner/` can emit, and the ones it does not know are
+disproportionately those that explain a bad ending: `workspace preparation failed`,
+`docker run failed to start`, `giving up on the pause`, `push failed for …`,
+`PR creation failed for …`, `wall-clock budget exhausted — killing …`. A timeline built on
+today's table would be non-empty, well-formed, and silent on exactly the runs it exists for
+— the §4.11 artifact rule's failure mode again. Every per-task line the runner can emit
+therefore carries a term, in one of two classes: **shown**, or **known-but-not-shown** for
+bookkeeping with no watcher value (the `memory:` lines, `integration branch:`,
+`workspace kept at`, the probe lines a night-long park repeats, and the restatements the
+shown entries already carry). Classifying the noise is what lets completeness be checked
+without the timeline degenerating into a log dump: an unclassified line is a defect, a line
+classified as noise is a decision on the record.
+
+**"Per-task call site" is a definition the spec pins, not a number an implementer's regex
+discovers.** It is a `log.info` / `log.error` in `runner/` whose trace argument is a task
+trace id — 16 `tr` plus 29 `traceId`, less the two in `runner/preflight.js` whose parameter
+is only ever passed the run pseudo-task, giving 43 across `run.js`, `container.js`,
+`workspace.js`, `publish.js` and `pause.js`. `pause.js` is the one a casual count drops, and
+it is the last one that should be: eleven of the 43 are its, and they are the lines that
+explain a park. Three of the 43 resist a pure prefix table and are decided here rather than
+at attempt two. `branch ` heads a line in both `run.js` and `workspace.js`, and since
+workspace branches are named `task/<issueId>` the two are identical for far longer than
+their prefixes — they collapse to one term classified as noise, the facts being carried
+already by `pushed …` and `no commits on the branch`. `run-level park: ` is a strict prefix
+of two longer lines and `paused: ` heads two, so **matching is longest-prefix-first**, not
+the first-match-wins loops the reader uses today. And `holding: the run-level rate-limit
+park is open` is **unreachable as a task row by construction**: `runner/run.js` calls
+`gate.admit(issue.id)` with the bare issue id rather than the task trace, so the line is
+logged under a trace with no slash and the reader's grouping drops it. It is classified
+shown and recorded here as a defect rather than quietly called noise, which would put a
+false decision on the record; the one-line trace-id fix is a separate issue, because this
+task changes nothing in `runner/`.
+
+The enforcement is **two halves, because either alone passes a broken implementation**.
+Behavioural fixtures prove each known line maps to the right term, timestamp and detail —
+the house pattern this file already uses for the lock's liveness rule, which the reader
+re-implements inline because it may `require` nothing from `runner/` and must work as a copy
+from any repo-shaped root. That property is why a shared `runner/log-events.js` imported by
+both was considered and **rejected**: the join belongs in the test, not in the code. The
+second half is an inventory check that fails when any extracted prefix is unclassified — the
+half that fires the day someone adds a log line six months from now. What it asserts is an
+**exhaustive partition**, not a count: every `log.*` call site in `runner/` is per-task, or
+run-level with a literal message, or run-level with a computed one, and **none is left
+over**. A count floor alone fails in both directions — pinned at today's exact number it
+reds the sweep for years on unrelated edits, and loosened it invites the cheapest green
+available, which is deleting the log line that will not classify rather than classifying it,
+since `runner/` is not a frozen path. A partition closes both: the population is defined by
+what is *there* rather than by a number, so a future per-task line written under a new trace
+identifier leaves a leftover and fails loudly instead of vanishing from a scan keyed on
+variable names. A loose floor is kept underneath it only so a regex matching nothing fails
+rather than reporting a clean sweep — the same shape as a suite that could not execute its
+own stub and called every check a genuine failure. Delivery splits on the `live-dashboard-page` precedent: the contract, the
+vocabulary and both guard halves are a pipeline task; rendering the strip on the page is
+interactive, because a frozen test can pin that a page is self-contained but not that it is
+legible.
 
 **The merge pass gets a reader too** (change-log row `merge-order`). Everything upstream of
 the merge has scaffolding — queue, workspace, verifier, report, verdict recorder, corpus
@@ -1605,3 +1836,5 @@ version (`Status: READY v1.0`). The *document* still has a version; its *rows* n
 | 2026-08-19 | merge-order | **§5 gains a fourth pure reader: `scripts/merge-order.js`, which computes the cheapest merge order for the PR fan a run hands back and names the conflicts, without ever merging.** Two facts about the artifact shape it: the PRs are a **fan, not a stack** (`runner/workspace.js` clones fresh per task and branches off `origin/<defaultBranch>`, so they are siblings whose fork points can differ), and **ordering cannot reduce the conflict count** — a file touched by k PRs conflicts in k−1 merges whatever the order — so the report states that ceiling before any benefit and claims only what ordering does buy: the non-colliding PRs merged first with zero judgment, the rest named and clustered, dependencies never inverted, staleness and expected-to-clear failures named per step. It **computes** merges rather than predicting them from file-set overlap, which is the STATUS defect 8 shape: `git merge-tree --write-tree` merges in memory and names conflicted paths, and chaining its tree through `git commit-tree` simulates a whole order, so every conflict reported is one that happened. Bounded at N choose 2 pairwise merges plus one N-step simulation, never N!; exact for merge and squash, approximate for rebase-and-merge, and it says which it simulated. The `repo-73k` pure-reader contract is kept literally and **by measurement**: both commands run with `GIT_OBJECT_DIRECTORY` at a temporary directory and `GIT_ALTERNATE_OBJECT_DIRECTORIES` at the real object store, measured to write zero objects into the real repository (git 2.54, 2026-08-19). It never fetches without `--fetch` and touches no working tree, index or ref, because it runs during a review against a working copy in use. Three scope calls at declaration (user): input is a **run id**; dependency order is **inferred from the run record** and labelled inferred rather than read from Beads; the **expected-to-clear regression section ships**, joining sibling issue ids against stored regression evidence with its 2000-character-tail limit printed where it prints — a match is evidence, silence is not. Never merges, pushes or touches a PR, holds no `gh` and no network, and never a gate (exit 0 on any finding) | the merge pass is the only part of the loop with no scaffolding, so a human rediscovers the same three things per batch: docs-phase collisions (every task's docs phase edits the target's `DESIGN.md`, `README.md` and `SPEC.md`, so every merge after the first conflicts in prose even when the code is disjoint), sibling-suite noise (`PLANNING.md` step 8 puts the whole batch's frozen tests on the integration branch before the run, so each task's regression run fails on work nobody has done — the recorded cause of a batch reading `partial` in the 2026-08-04 hand pass), and the evidence staleness the first merge creates for every PR after it. Borrowed from an agent platform that auto-merged PRs past failing integration tests (public field report, 2026-01): the **queue discipline** is the inspiration and the autonomy explicitly is not, which is why hard rule 5's shape — evidence, never a gate — is load-bearing here rather than incidental. One consequence recorded rather than left to be found: the docs-phase merge strategy still parked in `docs/IDEAS.md` would, if adopted, remove most of these collisions and shrink this tool to its dependency and staleness halves, which argues for building it first, since measuring the collisions is what makes that parked entry's three options an evidence-led choice. Declared at planning time; the implementing task adds its own row when it ships and owns the CLAUDE.md "Running things" entry. Thread: `docs/threads/merge-order.md` |
 | 2026-08-20 | repo-0b3 | the batch marker gets its **reader's first half**: `scripts/batch.js`, with the marker shape pinned (required `runConfig`, `frozenAt`, `issues[{id,title}]`; optional `integrationBranch`, `freezeCommit`, `intent`, `approvedBy`, printed only when present) and two subcommands. `pending` lists the batches **none** of whose ids any run has worked since `frozenAt`, newest freeze first and ties by filename ascending — `verdict.js`'s `byRecency` over a different clock, so two invocations over an unchanged tree are byte-identical. `show [<stem>]` prints one marker with a per-id `worked`/`not-worked` breakdown and defaults to the newest marker by `frozenAt` **launched or not**. Three rules are pinned rather than left to the reading. The filename's date is naming only and its stem is anchored at both ends with the project taken greedily (`orbit-lab-2026-08-19` is the project `orbit-lab`, and a file that is only a date is not a marker); a run's clock is `startedAt` from `run.json` when there is one, **else the leading instant on the first line of `run.log`**, since 74 of 272 real run directories have no manifest and a manifest-only join would report an interrupted run's batch as never launched; and a run datable by neither **counts as having worked** the ids it names, labelled `run-time-unknown`, because a false "pending" invites a double launch. The `bd` reconciliation is **not wired**: `show` always prints `unreconciled bd-unavailable`, and the reconciled tokens `ready` / `not-ready` / `stray` do not exist in this half. Same `repo-73k` contract as the other readers, checked by a sha1 snapshot of the runs root and by the parsed `require` specifiers (node built-ins only, no `child_process`): it creates no file, mutates no marker, spawns nothing, exits 0 on findings, 2 on usage and 3 on a well-formed stem naming no marker, and takes its root from `BATCH_RUNS_DIR` or its own location, never the cwd. Covered by `scripts/test-batch.sh` over `tests/unit/batch.test.js` — the seventeenth Docker-free suite. Docs phase owns the `PLANNING.md` step 8 line and the CLAUDE.md "Running things" entry, both of which say the reconciliation is not there yet | the row above declared the marker at planning time and the panel split the work in two, on the reading that the marker shape plus the corpus join is a bounded thing frozen tests can pin exactly, while the queue reconciliation adds a host dependency (`bd`), a second join through a git-ignored run config, and a degraded vocabulary of its own. Splitting it also keeps the property that makes the reader copyable — it spawns nothing at all in this half, so the suite that proves it cannot pass vacuously on a host where `bd` was never installed. The load-bearing fixtures are the ones a plausible implementation fails rather than the ones that merely exercise it: a `batches/` directory holding a hyphenated project, a bare date, a `.txt` and truncated JSON (an unanchored glob admits three batches, a split on the first hyphen names the project `orbit`), a manifest-less run dated once before and once after the same freeze from the same fixture (a `verdict.js`-shaped join gets both wrong the same way), and a `show` default over a batch that has already run (newest-*pending* names the older marker and hides the double launch the tool exists to surface) |
 | 2026-08-20 | repo-8v0 | the batch marker's **reconciliation ships**, closing change-log row `batch-ready-marker`'s second half and superseding `repo-0b3`'s "not wired" note. `scripts/batch.js show` now resolves the `run.config.<project>.json` the marker names from `BATCH_CONFIG_DIR` (else this repo's root, never the cwd) by plain `JSON.parse` for `targetRepoPath` alone — **not** `runner/config.js`'s loader, which validates a whole run and throws over keys a reader has no opinion about — and asks that working copy once: `-C <targetRepoPath> ready --json`, through the **existing `PIPELINE_BD_CMD`** seam with the absolute precedence every entry point in `runner/bd.js` gives it, bounded by that config's `bdTimeoutMs` (default 60000), with no `create`, `update`, `close`, `note`, `import`, `sync` or `dolt` in the vector (hard rule 1). Each of the batch's ids is reported `ready` or `not-ready`, each queue entry the batch never named is a `stray`, and `unreconciled` is never printed alone: `run-config-absent`, `bd-unavailable` or `bd-unreadable`, exactly one, with no queue state beside it. `pending` still spawns nothing. Two rules are **imported rather than copied** — `runner/queue.js`'s `EXCLUDED_TYPES`/`typeOf` (so an epic parent, which `bd ready` returns by design, is never a stray) and `runner/bd.js`'s `hostBdSpec` (so npm's shim pair resolves the one way this host resolves it) — both newly exported for this, the call `sweep-trustworthy` made for `isHolderLive`. The reader stays pure and never starts a container: it assembles its own vector rather than calling `bd()`/`bdJson()`, whose last resort runs the query inside the per-project image | the mismatch this catches has no other detector — the runner has no picker (§4.12) and drains whatever queue it finds, so an issue nobody meant to include simply runs and a blocked one silently does not, and nothing else in the pipeline holds the *intent* to compare a queue against. Three of the decisions are the kind that only look arbitrary until they cost a run. A call killed at the bound is `bd-unreadable`, not `bd-unavailable` — `bd` was there and did not answer, which sends a person somewhere different. The capture ceiling is raised to 8 MiB and tested for **before** the bound, because `spawnSync` reports an overflow and a timeout identically (null status, same kill signal, `error.code` the only difference), so a reader that checked the bound first would call a query that answered at once one that never answered. And the vector handed to the seam leads with a throwaway program slot, because node's own parser owns `-C` as the short form of `--conditions` and eats a leading `-C <path>` before any stubbed seam sees it — which repo was consulted would stop being observable to the only suites that can prove it. The frozen suite pins both halves together on purpose: the degraded fixtures alone pass a tool that always says `unreconciled`, and the reconciled one alone passes a tool that never notices `bd` is dead |
+| 2026-08-20 | task-timeline | §5 gains a **per-task timeline** on the live dashboard, declared here at planning time; the implementing task adds its own row when it ships. Each task in the `/state` contract gains an additive `timeline` — a time-ordered merge of three sources `scripts/dashboard.js` **already reads on every request and discards**: the parsed `run.log` events for the issue (kept today only as four scalars), the `status.json` `attempts[]` records (kept today only as `verifierResult`, dropping each attempt's `timestamp` and its §4.4 `feedback` digest — the missing explanation), and `stuckState` / `docsPhaseError`. Bounded against the way each bound would otherwise fail: 60 entries but the **first 5 kept alongside the newest 55** (`maxPauseCycles` defaults to 96 and the probe path emits two lines a cycle, so a newest-60 window on a night-long park holds probe lines and nothing else), the dropped count stated as `timelineOmitted`, free text truncated at 200 characters **head-kept except `feedback`, which is tail-kept** because `pipeline/status.js` already stores it as the last 2000 characters of verifier output and head-keeping the head of a tail returns the harness banner. Not a `degraded` term, because a long task is not a defect. `schema` stays `1` — additive, one consumer, same file. The load-bearing half is **not** the timeline but its vocabulary: the reader declares eleven per-task prefixes and consumes nine against the **43** `runner/` emits, and the ones it does not know are those that explain a bad ending (`workspace preparation failed`, `docker run failed to start`, `giving up on the pause`, `push failed for …`, `PR creation failed for …`, `wall-clock budget exhausted`). Every per-task line therefore carries a term, classified **shown** or **known-but-not-shown**, with the definition of a per-task call site and its floor pinned in the spec rather than left to an implementer regex, matching longest-prefix-first, and three collision cases decided at declaration (`branch ` merged to noise; `run-level park: ` a strict prefix of two longer lines; `holding: …` unreachable as a task row because `run.js` admits with the bare issue id, classified shown and filed as its own defect). Enforced by two checks that are useless apart — behavioural fixtures pinning each line to its term, timestamp and detail, and an inventory scan asserting an **exhaustive partition** of every `log.*` call site in `runner/` into per-task / run-level-literal / run-level-computed with none left over — a partition rather than a count, because a floor pinned at today’s exact number reds the sweep for years on unrelated edits while a loose one invites the cheapest green, deleting the line that will not classify rather than classifying it (`runner/` is not a frozen path), and because a population defined by variable name alone cannot see a future per-task line written under a new identifier. Delivery splits on the `live-dashboard-page` precedent: contract, vocabulary and both guards are a pipeline task; the page strip is interactive | dropping unrecognised lines is what makes this parsing rather than log scraping and is correct, but paired with a table covering a third of the runner it produces the §4.11 failure mode exactly — an artifact that is non-empty, well-formed, and dark precisely where the tool is opened. The guard is doubled for the same reason: fixtures alone prove the mapping right and cannot see a line nobody mapped, an inventory scan alone passes a regex that matches nothing, and a scanner reporting a clean sweep over zero call sites is the shape of the suite that could not execute its own stub and called every check a genuine failure. It is floored against the real tree and proved red-then-green against a fixture runner so neither can pass vacuously. A shared `runner/log-events.js` required by both reader and runner was considered and **rejected**: `scripts/dashboard.js` must work as a copy from any repo-shaped root, which is a property `repo-kfg` already pins structurally, so the join lives in the test. Not to be confused with the `docs/IDEAS.md` entry on in-flight progress reporting — that generates new signal from inside a container and carries an unresolved wall-clock problem; this surfaces what the host already wrote to disk, with no LLM (hard rule 7) and no new egress (hard rule 6) |
+| 2026-08-21 | dispatch-gate | **§4.12 gains the ready queue's second admission rule: a task whose frozen acceptance suite is not present on the branch its container will fork from is never dispatched**, declared here at planning time; the implementing task adds its own row when it ships. The type filter was the *only* rule, so a run's answer to "should this go out?" was "`bd ready` returned it and it is not an epic" — and Beads tracks issues, not freezes, so it cannot know more. `readyQueue()` gains a third population beside `skipped`, keyed by the outcome's own word and never `refused`, which `runner/run.js` already spends on the run-level rate-limit population. One `git fetch <targetRepoRemote> <branch>` per run into a throwaway repository, then one `git ls-tree -d --name-only FETCH_HEAD -- tests/acceptance/<issue-id>` per candidate; refusals are named in the queue-summary line with the remedy, manufactured into `run.json` rows by a pure exported function, and carry §4.11's new `undispatchable` outcome — the one row in that table that touches Beads not at all, since the refusal happens before `claim()` and the issue stays `open` for a freeze session to pick straight up. The choices that only look arbitrary until they cost a run. The gate **fetches by URL and reads `FETCH_HEAD`**, never `origin/…` and never the checkout: five of the seven observed failures had their suite present locally — in an unpushed commit, or untracked — so a working-tree check passes all five and changes nothing, a stale remote-tracking ref is the same mistake one layer down, and going by URL also closes the gap that `targetRepoPath` and `targetRepoRemote` are independent config keys nothing relates, which would otherwise let the gate answer confidently about a different repository. The **refspec is not optional**: a bare `git fetch <url>` sets `FETCH_HEAD` to the remote's HEAD and silently discards the resolved branch, so a project whose `defaultBranch` is not remote HEAD would be judged against the wrong branch. The branch is resolved **without a literal fallback** — `pipeline.config.json`, else `git ls-remote --symref`, else abort — deliberately *not* reusing `runner/workspace.js`'s `detectDefaultBranch`, whose chain ends at `'main'`: correct there, since it only runs against a fresh clone where `origin/HEAD` is always set, and catastrophic here, where guessing `main` for a `master` project empties `ls-tree` for every issue and refuses the whole queue with a confident wrong reason. A fetch that fails **or hangs** aborts the run in a channel of its own — bounded by a new `gitTimeoutMs` on the `repo-sls` precedent, and distinguished from the Beads failure by a cause field on the return value rather than by message wording, since the run's own log line lives behind `main()` where no Docker-free test can reach it. The refusal is **per issue, never per run**, and **lazy**: a queue with no candidates left after the type filter must not fetch and must not abort, or an empty run becomes an exit-1 failure. The issue is left **untouched in Beads**, not blocked and not failed. And the outcome's scrutiny rank is **inserted fractionally rather than renumbered**, because `scrutinyKey`'s fallback for an unknown outcome is the literal rank `failed` holds and re-homing every future unknown outcome is not this amendment's to do | two consecutive runs against one target dispatched fourteen tasks of which **eight could never have passed**, the second spending 3h11m to record eight `stuck`; seven of them had no suite reachable from the fork point at all. The verifier's first act is `<verifyCommand> tests/acceptance/<issue-id>/`, which against a missing directory exits 1 before any of the agent's work is consulted — so all three attempts are decided before the container starts, and the one move that looks like a rescue is worse, because §4.4's frozen set is read from `git status --porcelain`'s `??` lines as well as the fork-point diff and an agent that writes its own missing suite is recorded `tampered`. That half is correct and stays; a frozen test an agent can author is not frozen. What makes this a design amendment rather than a bug fix is that the repo **already had the concept** and never wired it in: `scripts/freeze-gate.js` proves a suite present and red at the fork point, and no file under `runner/` references it. The declaration's fresh-context read and its three-critic panel priced what nobody had. **Two existing Docker suites break wholesale** — `scripts/test-runner-queue.sh` creates four issues and no acceptance directories at all, `scripts/test-runner-workspace.sh` commits one directory named `x` rather than one per issue — so assertions about ordering, transitions and no-replay fail for reasons unrelated to what they test; three other suites already push a per-issue suite and survive untouched. That repair is **host-side work with a Docker sweep as its verification**, deliberately not a pipeline task: the suites pass before and after, so its only criteria would be assertions about source text and the freeze gate would rightly refuse it. **One shipped property is repealed**, which is the finding that mattered most: an unreachable remote was a *task* failure at exit 0, asserted as such, and is now a run abort — the better report, since every task would fail at clone seconds later, but a tested behaviour changing means rewriting the check that asserts it rather than deleting it, or a property that stops being true takes its own test with it. And the criteria were rewritten around what a plausible wrong implementation would pass: the fixture that discriminates this design from the one it replaces is a target working copy whose `origin` holds the suite while `targetRepoRemote` does not, which no fixture in the first draft could tell apart. The second finding is filed separately and deliberately not conflated: **the §3.7 concern channel worked perfectly and nothing consumed it** — seven task agents wrote precise, correct, evidenced diagnoses naming each other by issue id, and the run that followed repeated the mistake at greater scale. A channel whose readership is a per-task report footnote is a channel that reports to nobody after an unattended run, and surfacing repeat concerns of an identical shape is its own task (`docs/IDEAS.md`) |
