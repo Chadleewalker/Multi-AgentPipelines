@@ -16,6 +16,8 @@ Three setup documents exist and they answer different questions. Read them in th
 by its own test suites, pointed at nothing yet. Onboarding a project is the next document.
 
 Budget half a day for the first pass, most of it waiting on downloads and test suites.
+**Part 0 is not yours** — it is the short list of things somebody else has to hand you
+before any of the rest will work.
 
 ---
 
@@ -36,6 +38,39 @@ means. **You approve the *what*; the machinery owns the *how*.**
 Setting a project up in the first place (Part D) is interactive too — a few one-time
 sessions where Claude Code drives and you decide. After that, every feature is just the two
 moments above.
+
+---
+
+## Part 0 — What whoever is bringing you in has to supply
+
+Some of these cannot be self-served: they are a billing decision, an access grant, or a file
+that is git-ignored on purpose and therefore does not arrive with a clone. Chase them before
+you start, because each one fails *late* and two of them fail quietly.
+
+1. **Your own Claude Pro or Max subscription.** Not a shared login. Every task spends the
+   usage allowance of whoever's token is in `.env.pipeline`, so two people on one subscription
+   starve each other and both runs park (A7).
+2. **Which GitHub account to use, and write access on the repositories you will point it at.**
+   Ask explicitly which account — a machine with two GitHub logins is normal here, and the
+   failure is misleading: a private repository the active account cannot see reports
+   **"Repository not found"**, exactly as if you had typed the name wrong. `gh auth status`
+   names the active account and `gh auth switch` changes it.
+3. **The contents of `.sanitize-denylist`** — the client, project and host names that must never
+   appear in this public repository's tracked files. It is git-ignored, because committing the
+   list of things you must not mention would publish exactly what it protects, so it cannot
+   reach you through the clone. Get it out of band and copy it in at D3. Without it
+   `scripts/test-sanitize.sh` still runs its generic checks and prints a NOTE — so a missing
+   denylist looks very much like a pass.
+4. **Which projects are already onboarded, and which one is yours to start on.** Onboarding is
+   once per project *ever* (`ONBOARDING.md`), so repeating it is wasted work — and picking an
+   unsuitable old codebase for your first attempt is the most common way to end up with runs
+   nobody can interpret.
+5. **A recent green sweep summary from a machine known to be working.** Part C tells you to
+   compare your results against one; you cannot produce it yourself, and without it you have no
+   way to tell a suite that is red *everywhere* from one that is red on your machine.
+6. **A seat at one planning session and one PR review** run by somebody who has done them
+   before. Those are the two moments where your judgment is the whole product, and neither one
+   reads the way it plays.
 
 ---
 
@@ -283,7 +318,10 @@ This runs every suite in the repo, one at a time, and prints a summary table. It
 per-suite logs under `runs/sweeps/<timestamp>/`.
 
 **A healthy sweep is all green in roughly eight to twelve minutes** — the reference host's
-2026-08-03 sweep ran 32 suites green in 8:09. A sweep that takes an hour is not doing more
+2026-08-03 sweep ran 32 suites green in 8:09. There are 39 now — 38 `scripts/test-*.sh`
+plus `e2e.sh`, which the sweep appends last — so expect somewhat longer, and get a recent
+summary table from whoever set you up rather than treating that figure as the bar (Part 0).
+A sweep that takes an hour is not doing more
 work; it is suites *hanging* and being killed at the per-suite cap. Hence the two flags:
 `--timeout 300` turns a hang into a five-minute loss instead of fifteen (the slowest healthy
 suite on record is 1:32), and `--skip e2e` leaves out the one suite needing the fixture repo
@@ -395,8 +433,12 @@ automatically by the next one — never delete it by hand.
 
 - Run `/profile` if you have not (A8). Do it first, so everything you read about below gets
   explained to you at the right level from the start.
-- Open [`docs/pipeline-map.html`](docs/pipeline-map.html) in a browser. The whole system on
-  one page, written for a reader rather than a maintainer. Start here.
+- Open [`docs/pipeline-map.built.html`](docs/pipeline-map.built.html) in a browser. The whole
+  system on one page, written for a reader rather than a maintainer. Start here. **Open the
+  `.built.html` copy, not `docs/pipeline-map.html`** — that one is the source page and carries
+  its diagrams as un-drawn text, so opened from disk it shows ten empty frames. The built copy
+  has every diagram baked in and is the one to read, publish or hand to someone (change-log
+  row `map-prerender`).
 - Read `CLAUDE.md` (the rules), `PLANNING.md` (how a planning session goes), and
   `ONBOARDING.md`'s "Starting from nothing" section. In `DESIGN.md`, §4.11 (what outcomes a
   run can have) and §3.1 (how a task gets specified and frozen) carry the most weight per
@@ -412,8 +454,9 @@ Then the loop: plan → run → review in the morning → merge or send back.
    without disturbing it, `node scripts/dashboard.js` in a second terminal prints one
    address on `127.0.0.1` and serves what the run has written so far — a reader, so
    there is nothing you can click that changes a run (DESIGN.md §5, change-log row
-   `repo-kfg`). Its `GET /state` JSON is the finished part; the page it serves is a
-   placeholder until the view ships.
+   `repo-kfg`). The page shows the run header, each in-flight task at the node it has
+   reached, its code/verify/docs phase and which attempt it is on; idle projects collapse to
+   one line each, expandable (change-log row `live-dashboard-page`).
 3. **Review** (with you): each finished task arrives as a pull request carrying the spec,
    a summary of what changed, and the verification evidence. Failed work arrives as a
    pushed branch with its full attempt history. The run report orders them by how much
@@ -451,6 +494,12 @@ Onboarding a project happens once, ever. Everything after that is planning sessi
    beyond Anthropic — no package installs, no documentation lookups. If an agent keeps
    failing because it didn't know an API, the answer is to vendor those docs into the repo,
    never to open the network.
+7. **"Repository not found" usually means the wrong GitHub account is active,** not a typo. If
+   the machine has more than one login, `gh` uses whichever is current, and a private target
+   the current one cannot see is indistinguishable from one that does not exist. Check
+   `gh auth status` before a run against a private repository.
+8. **Read `docs/pipeline-map.built.html`, not `docs/pipeline-map.html`.** The second is the
+   source page and draws no diagrams by itself, so from disk it looks like an empty document.
 
 ---
 

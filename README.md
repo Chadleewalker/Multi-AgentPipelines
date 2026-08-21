@@ -35,8 +35,10 @@ Three phases joined by a task queue:
 The design's central bet: **an agent never judges its own work.** Verification is a
 deterministic script running tests that were frozen before the code was written.
 
-[`docs/pipeline-map.html`](docs/pipeline-map.html) and
-[`docs/pipeline-diagram.md`](docs/pipeline-diagram.md) show this visually.
+[`docs/pipeline-map.built.html`](docs/pipeline-map.built.html) and
+[`docs/pipeline-diagram.md`](docs/pipeline-diagram.md) show this visually. Read the map as the
+`.built.html` copy — `docs/pipeline-map.html` is the source page and draws none of its own
+diagrams (change-log row `map-prerender`).
 
 ## Quick start
 
@@ -68,8 +70,8 @@ node runner/run.js --config run.config.myproject.json
 
 A run is unattended, not opaque: `node scripts/dashboard.js` in a second terminal serves
 what the run has written so far on `127.0.0.1` — projects, the run each is showing, its
-queue and its tasks. It is a pure reader, so watching cannot disturb anything; the JSON
-contract at `GET /state` is built, the page it serves is still a placeholder.
+queue and its tasks. It is a pure reader, so watching cannot disturb anything: `GET /state`
+is the frozen JSON contract and `GET /` is the live view built against it.
 
 Adding a project of your own means giving it a `pipeline.config.json`, a thin Dockerfile
 on the shared base image, and `bd init` — [`PLANNING.md`](PLANNING.md) walks through it.

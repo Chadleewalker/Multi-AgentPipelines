@@ -1304,11 +1304,12 @@ the `/state` JSON is — the same outcomes-not-decisions line every frozen suite
 draws. Declared at planning time; the implementing tasks add their own rows when they
 ship (the `run-audit` pattern).
 
-**The reader half of that is built** (change-log row `repo-kfg`). `scripts/dashboard.js`
-serves the frozen `/state` contract and a placeholder page today; run it with
-`node scripts/dashboard.js` and open the address it announces. What the contract holds,
-and the derivation behind each field, is that row — the parts worth repeating here are the
-three that a later change could break without noticing. The run a project shows is picked
+**Both halves are built** — the reader in change-log row `repo-kfg`, the view in
+`live-dashboard-page`. `scripts/dashboard.js` serves the frozen `/state` contract and the
+live page against it; run it with `node scripts/dashboard.js` and open the address it
+announces. What the contract holds, and the derivation behind each field, is that row —
+the parts worth repeating here are the three that a later change could break without
+noticing. The run a project shows is picked
 by **the held lock's `runId`**, not by which directory is newest, because a live run is
 routinely not the newest directory on disk. A run directory with no `run.json` is a
 `no-manifest` run, never a skipped one — every run *in flight* is manifest-less, so the
