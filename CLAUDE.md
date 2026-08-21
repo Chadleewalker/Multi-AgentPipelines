@@ -134,8 +134,9 @@ node scripts/batch.js show         # the newest marker, launched or not, with a 
 node scripts/batch.js show <project>-<YYYY-MM-DD>   # one named marker
 
 # watching a run happen: a localhost-only pure reader over runs/ (§5, change-log row `repo-kfg`).
-# GET /state is the frozen JSON contract, re-read per request; GET / is a placeholder page
-# until the view ships. DASHBOARD_RUNS_DIR re-aims the root, DASHBOARD_PORT the port (0 = ephemeral).
+# GET /state is the frozen JSON contract, re-read per request; GET / is the live view built
+# against it (change-log rows `repo-kfg`, `live-dashboard-page`). DASHBOARD_RUNS_DIR re-aims
+# the root, DASHBOARD_PORT the port (0 = ephemeral).
 node scripts/dashboard.js          # prints one line: dashboard: http://127.0.0.1:4770/
 
 # the full sweep — every suite, one at a time, with a summary table
