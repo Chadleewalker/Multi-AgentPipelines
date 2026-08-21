@@ -57,6 +57,11 @@ stopped being an idea and wants a design doc.
 Optional extras, only when they're actually true:
 - `Blocked on:` — something that has to land first. Name the change-log row or issue id.
 - `Related:` — an existing design section this would touch.
+- `Thread:` — the identity file for this idea, once someone is actually working it:
+  `docs/threads/<slug>.md` (DESIGN.md §3.8, change-log row `thread-identity-files`). That
+  file carries the structure this one refuses to hold — current thinking, decisions and
+  who made them, open questions — which is what lets an entry here stay a paragraph even
+  while the idea is being designed. Most entries never get one.
 
 **Grouping:** this is one flat list on purpose. Add headings only when the flat list
 genuinely stops being skimmable — an inbox with a taxonomy is a filing system, and a
@@ -88,12 +93,152 @@ Two hard boundaries, both inherited:
   attempt of a run, and `docs/STATUS.md` ("What this does not prove") already records the
   cost of the primed seat: specs drafted by one context that also wrote and reviewed its own
   criteria, where "the panel's value came precisely from being unprimed". A test-writer
-  subagent is already spawned ad hoc, with no charter and no record — see the ledger entry
-  above. Against it: a fresh-context author cannot see the design discussion, and knows
-  least about the harness it is writing tests for — shadow-01's self-nesting `npm test` was
-  a harness-knowledge failure, not a priming one. Not §3.5 slot 2, which is a *domain*
-  specialist. 2026-08-21
+  subagent is already spawned ad hoc, with no charter and no record — the planning-session
+  ledger entry in this inbox records one. Against it: a fresh-context author cannot see the
+  design discussion, and knows least about the harness it is writing tests for — shadow-01's
+  self-nesting `npm test` was a harness-knowledge failure, not a priming one. Not §3.5
+  slot 2, which is a *domain* specialist. 2026-08-21
   Related: `PLANNING.md` steps 1b and 3; `DESIGN.md` §3.2 ("Below the panel", move 5).
+
+- **Give the sweep lock the liveness rule the run lock already has, and stop printing
+  `rm -rf` as the remedy.** When `scripts/test-all.sh` finds `runs/.test-all.lock` it prints
+  the holder's pid and the time, then suggests removing the directory "if that process is
+  gone" — leaving the reader to answer the one question the script could answer itself. On
+  this host the reader gets it *wrong*: the recorded pid is a Git Bash (MSYS) pid, which
+  Windows `tasklist` cannot see, so the obvious check reports a live sweep as dead with
+  complete confidence. Checking `docker ps` does not rescue it either — a sweep sits between
+  containers for seconds at a time, so an empty listing is not an idle sweep. Doing exactly
+  that on 2026-08-20 cleared a live sweep's lock, ran a second sweep on top of the first, and
+  produced **7 red suites out of 39** whose signatures were all infrastructure (exit 137 and
+  125, `network still up after run`, a reclaimed `pipeline-net`) rather than code — the
+  precise disease change-log row `sweep-trustworthy` exists to prevent, arrived at by
+  overriding the lock that row installed. A re-run on a quiet host was 39 green.
+  The machinery is already built and already exported for exactly this reason:
+  `runner/lock.js`'s `isHolderLive` was made an export rather than a second copy
+  (`sweep-trustworthy`), and the sweep already reclaims stale *run* locks with it. Its own
+  lock is the one place it does not use it. Worth having because a lock a human overrides by
+  hand is not a lock, and the failure it lets through is expensive twice: once in the wasted
+  ~10 minutes, and once in the far worse outcome where the reds get believed and someone
+  hunts a regression that does not exist. Related: `DESIGN.md` §4.12; change-log rows
+  `sweep-trustworthy` and `repo-zje`. 2026-08-20
+
+- **A transient upstream error is not a failed task — 529 falls straight through to
+  `failed` / blocked** — on 2026-08-19 an agent call came back `API Error 529 Overloaded`
+  with zero output tokens and no work attempted. The entrypoint's rate-limit branch greps
+  the agent log for `usage limit|rate.?limit` (`pipeline/entrypoint.sh`), which "Overloaded"
+  does not match, so the call falls through to `die30` — exit 30, which the §4.11 table maps
+  to report status `failed` and Beads `blocked`. `die30` exits on the spot, so the attempt
+  cap never engages either: one busy moment upstream ends the task on attempt 1 of 3.
+  That is honest at the level the entrypoint can see (the agent command failed) but it
+  conflates *this task is wrong* with *the API was busy for a second*, and the two have
+  opposite recoveries. Nothing about the spec, the frozen tests or the fork point was
+  involved; unblocking the issue and re-running is the entire fix. The cost is that a
+  blocked issue leaves `bd ready`, so an overnight run's other tasks are unaffected while
+  this one silently drops out of the *next* run's queue until a human touches it — the
+  quiet-hole failure mode this repo keeps rediscovering.
+  The run-level park (§7, change-log row `repo-i9y`) is the wrong instrument here and should
+  not simply be widened to catch 529. A usage limit is a property of the **subscription
+  window** — waited out on a reported reset time or a probe, minutes to hours, correctly
+  shared across every task in the run. A 529 is a property of the **upstream at that
+  instant** — seconds, per-call, retryable in place. Feeding one into the other would park a
+  whole run behind a shared wait sized for a rate-limit window because one call got unlucky.
+  Options worth weighing, none chosen: a bounded in-container retry with backoff before
+  `die30` (cheapest, no contract change, but invisible unless it logs what it swallowed —
+  and this repo has been bitten by silent swallowing more than once); a sibling exit code to
+  20 meaning *transient upstream*, which the runner relaunches after a short backoff with its
+  own small cap and which leaves the issue `in_progress` rather than blocked (reuses the
+  relaunch machinery and keeps the record honest, at the price of a new row in the §4.11
+  table and in everything downstream that reads it — `runner/queue.js`'s `OUTCOMES`,
+  `run.schema.json`, the report, the audit, the dashboard); or leaving classification alone
+  and only stopping exit 30 from blocking the issue (cheapest for the queue, worst for the
+  record, since a genuinely broken task would then return every run with nothing marking it).
+  Two things should settle it before anything is specced. First, whether the CLI already
+  retries 529 internally: if it does, a 529 that reaches the log is one that already survived
+  the CLI's own backoff, which argues against adding a second retry loop underneath it and
+  for the exit-code route. Second, **detection must not become a list of upstream error
+  strings** — that is precisely the pattern banned in `CLAUDE.md`'s log-scraping rule
+  (change-log row `repo-52m`); check whether the CLI's JSON envelope carries a structural
+  error or status field first, and only fall back to prose matching if it does not.
+  Related: §4.7, §7, §4.11. 2026-08-19
+
+- **Assert at publish time that no committed entry is a symlink escaping the workspace** — a
+  target project's container may legitimately create symlinks *inside* the workspace: baking
+  dependencies into the image and linking them into place on first use is the standard way to
+  satisfy the no-egress rule (hard rule 6), and a coding agent has no way to tell such a link
+  apart from project content. The host currently trusts the target repository's own ignore
+  rules to keep those links out of a commit, and a `.gitignore` rule written as `node_modules/`,
+  `dist/` or `__pycache__/` matches **directories only** — so a symlink of that name is not
+  ignored at all, shows as ordinary untracked content, and a `git add` takes it. On a host the
+  same path *is* a real directory, so `git check-ignore` reports it as ignored, which is why
+  every human who reads the rule reads it as correct. One target project shipped such an entry
+  in a task that verified on attempt 1 with zero concerns and passed a 31-file human review; a
+  mode `120000` addition renders as a one-line file in a diff view.
+  The damage is downstream and actively misdirecting. On a host that already has the real
+  directory, every checkout of the merged commit fails partway *and deletes part of the real
+  directory on the way down*, manufacturing the symptom it appears to be reporting — a day was
+  lost to a handoff that blamed a damaged dependency install for what the failed checkout had
+  caused. On a fresh clone with `core.symlinks=false` (the Windows default, and the reference
+  host's) it does not even fail: git writes a plain text file containing the target path, the
+  clone reports success, and the dependency install then fails for a reason that mentions
+  neither git nor symlinks.
+  Cheap and deterministic to check: scan the task branch's diff against the fork point for mode
+  `120000` blobs whose content is absolute or escapes the repository root. Host-side, in the
+  publish stage, before the push — where the design already puts authority, and where unlike a
+  container-side check the agent cannot edit it.
+  **What the host then does about it is the question to settle before this is specced**, and it
+  is not the gate-versus-evidence question. Both candidates are evidence: failing a task for a
+  link it was told to create is exactly the hazard hard rule 5 exists to prevent, and neither
+  option touches the outcome. But they do different amounts of work. *Surfacing* it in the run
+  report warns about a trap it leaves armed — the branch is still pushed, the PR still carries
+  the entry, and the damage lands at merge, which is precisely where review already missed it
+  once. *Stripping* it prevents the merge, but the host writing to a task branch is a new
+  capability: `runner/publish.js` pushes and opens a PR and creates no commits at all. The
+  variant that does not rewrite what the container authored is a separate host-authored hygiene
+  commit on top of the branch, visible in the PR and named in the report. Price that against
+  surfacing before either is chosen.
+  A configuration-only variant is worth considering *in addition* rather than instead: have
+  onboarding read a candidate project's ignore rules for trailing-slash patterns a container
+  symlink could slip past, at planning time, where a human is present. The two cheaper
+  alternatives are both weaker. Appending dependency-directory names to `.git/info/exclude`
+  alongside `.run/` reuses a path that already exists (`runner/workspace.js`), but the pipeline
+  cannot know those names for an arbitrary target — so it either hard-codes a list that goes
+  stale or reads one from `pipeline.config.json`, which is the same trust that failed here.
+  Telling the agent in its prompt not to commit symlinks costs nothing and catches nothing
+  reliably; a prompt is not scaffolding.
+  Reproducible without a run: in any repository whose `.gitignore` says `dir/`, create a symlink
+  named `dir` and run `git status` — it is untracked and stageable. Related: §4.4 (the
+  verifier's remit is `frozenPaths`, so the committed file *set* has no gate today, only its
+  content does), §4.10, hard rules 5 and 6. 2026-08-19
+
+- **Teach the corpus readers what in `runs/` is not reviewable work — the non-run
+  subdirectories and the e2e fixture runs.** Two shapes of one problem, parked separately
+  and merged because a reader that knows one and not the other still prints a corpus
+  nobody trusts.
+  *Not runs at all:* `scripts/audit-runs.js` buckets any direct child of the runs root that
+  has neither `run.json` nor `run.log` as `other`/`no-artifacts` and prints it by name in
+  its totals, so the batch markers at `runs/batches/` (`DESIGN.md` §3.9) will show up in the
+  audit report as a stray corpus entry. Cosmetic and honest today — it *is* an entry the
+  reader does not recognise — but the session-ledger idea would add `runs/sessions/` and the
+  same thing happens again, so the general answer is a named list of non-run subdirectories
+  rather than a special case per tool. `scripts/verdict.js` and `scripts/dashboard.js`
+  already skip them and need nothing.
+  *Runs, but synthetic:* the first full read of the pending list (2026-08-06) found 112
+  rows, of which 20 were PRs the e2e suite opens against its own fixture repo — test
+  artifacts nobody reviews, so no verdict is ever an honest answer for them. Recording one
+  anyway is fake data; leaving them means `verdict.js pending` never empties, and a list
+  that cannot reach zero trains the reader to skim past it — the same discount-the-signal
+  disease as a sweep that goes red for environmental reasons. These are distinguishable
+  mechanically too, by the `e2e-` prefix the harness assigns to the run id, so the shape is
+  a filter in `pending`, not a schema change.
+  Both halves want the same decision made once — **what counts as the corpus**, declared in
+  one place every reader consults, rather than a skip list per tool. The honest question the
+  e2e half still carries is whether the exclusion belongs in the readers at all or upstream,
+  in whether e2e runs should land under `runs/` in the first place; settle that first,
+  because it decides whether a non-run list is the whole answer or only half of it.
+  Deliberately excluded from the batch-marker tasks: fixing it there would have doubled that
+  PR's blast radius into a second reader with its own frozen suite.
+  Related: `DESIGN.md` §5, §3.9; change-log row `repo-1ie`. 2026-08-19 (merged from entries
+  parked 2026-08-06 and 2026-08-19)
 
 - **Capture all planning-session info going forward — a session ledger under `runs/`.**
   (User directive, 2026-08-18: "I need to capture all session info going forward.")
@@ -235,6 +380,44 @@ Two hard boundaries, both inherited:
   missing dependency turns the control red and the gate says "could not tell".
   Related: PLANNING.md step 4 (§3.2, move 1). 2026-08-09
 
+- **Lint a frozen test for guards that enumerate what later work may change** — a criterion
+  that pins a list of names, hashes a whole build, or diffs the branch against its own fork
+  point does not merely go stale: it goes red *precisely because* an unrelated later task did
+  its job correctly, and it keeps doing so forever. One target repo has now lost at least
+  eight frozen files across six suites this way — an eleven-name key list broken by a task
+  that legitimately added a twelfth, "exactly 30 flavour entries" broken by the task that grew
+  it to 61, and one that diffs its own branch over three source directories and will therefore
+  fail every code-touching task in that repository from now on. `scripts/freeze-gate.js` is the
+  only thing that reads a suite before it freezes, and it asks one question (is this red?) that
+  these files all answer correctly. A warning at freeze time costs nothing and is the only
+  moment anyone is looking. Not a runner bug and deliberately not folded into the dispatch
+  gate. Related: change-log row `dispatch-gate`, PLANNING.md step 4, DESIGN.md §3.2 move 1.
+  2026-08-21
+
+- **Surface a repeated spec concern louder than a report footnote** — §3.7's channel works:
+  across two runs against one target, seven task agents independently diagnosed the same
+  host-side dispatch fault, correctly, with evidence, naming each other by issue id. Nothing
+  consumed any of them, so the second run repeated the first run's mistake at eight times the
+  scale. A concern's readership today is a per-task section of one run report, which is the
+  wrong place after an unattended run — the signal that matters is not one concern but *the
+  same concern arriving n times*, and that fact exists only across tasks and across runs,
+  where no current artifact looks. Cheap shapes to consider: a run-report section that groups
+  concerns by similarity before the per-task list, or `scripts/audit-runs.js` reporting repeat
+  shapes across the corpus, which is already the tool that reads every run. Evidence only, never
+  a gate (hard rule 5). Related: DESIGN.md §3.7, §5, change-log row `dispatch-gate`. 2026-08-21
+
+- **Teach the batch reader that `ready` is no longer the same as `will dispatch`** — once the
+  dispatch gate lands (change-log row `dispatch-gate`), the runner has a second admission rule
+  and `scripts/batch.js show` knows only the first. It imports `EXCLUDED_TYPES`/`typeOf` from
+  `runner/queue.js` precisely so it *predicts what the runner will actually drain* — that
+  sentence is the export comment's own warrant — and after the gate an id can read `ready` in
+  the launch confirmation and then never dispatch. That is the exact false confidence the
+  marker exists to remove, arriving through the marker itself. The fix is probably the same
+  move again: import the dispatchability check rather than keeping a second copy, and report a
+  third token beside `ready` / `not-ready`. Deliberately out of scope for the gate task, whose
+  design says nothing about `batch.js`. Related: DESIGN.md §3.9, §4.12, change-log rows
+  `repo-8v0` and `dispatch-gate`. 2026-08-21
+
 ### Agent ideas
 
 The one heading this file allows itself, and here is the justification the grouping rule
@@ -360,18 +543,6 @@ declined, and the **run-corpus audit** row in Promoted is the one that graduated
 deterministic aggregation, not an agent. Read both before proposing a new agent.*
 
 ---
-
-- **Have `verdict.js pending` skip e2e-fixture runs, so the list can actually reach
-  zero** — the first full read of the pending list (2026-08-06) found 112 rows, of which
-  20 were PRs the e2e suite opens against its own fixture repo: test artifacts nobody
-  reviews, so no verdict is ever an honest answer for them. Recording one anyway is fake
-  data; leaving them means the list never empties, and a list that cannot reach zero
-  trains the reader to skim past it — the same discount-the-signal disease as a sweep
-  that goes red for environmental reasons. The runs are already distinguishable
-  mechanically (their run ids carry the `e2e-` prefix the harness assigns), so the shape
-  is a filter in `pending`, not a schema change — though the honest question to settle is
-  whether the exclusion belongs in the recorder or upstream, in whether e2e runs should
-  land in the corpus at all. Related: `DESIGN.md` §5; change-log row `repo-1ie`. 2026-08-06
 
 - **Find out why the container path degrades over a long sweep, before the sweep stops
   being believed** — two full sweeps on 2026-08-05 went red six times each, and every one
@@ -528,6 +699,27 @@ deterministic aggregation, not an agent. Read both before proposing a new agent.
   parked is the half no ref can see: a claim satisfied by merged work that never carried an
   issue id, which only reading the code detects.*
 
+- **Re-read the ready queue when a worker goes idle, so finishing a task can unblock the
+  next one** — `bd ready` is already blocker-aware, but `runner/run.js` reads it **once**,
+  before the pool starts, and drains that snapshot. So a dependency chain cannot run in one
+  batch: if B is blocked on A and A closes ten minutes in, B waits for a whole second run
+  even though the host knows it is ready and a worker is sitting idle. Worth having because
+  the queue this project actually accumulates is chain-shaped — `repo-sls` → `repo-teq` →
+  `repo-i9y` was three batches on three separate runs, and each handoff cost a human
+  starting the next one. It also compounds with the concurrency knob rather than duplicating
+  it: the measured 1.28× on a two-task batch was one worker idle for 1464s with nothing to
+  pick up, which is precisely the hole an unblocked task would have filled.
+  Care lives in the details, not the idea: never re-claim what is already in flight, do not
+  spin when the queue is genuinely dry, and bound the re-read so an unblock cascade cannot
+  loop forever. Legal under hard rule 1 as-is — the host is the only thing reading Beads,
+  and it already reads it exactly this way, just once.
+  **Not** the same as the two forms of cross-task waiting that already exist and are fine:
+  the pool has no barrier (a free worker takes the next queued item immediately), and the
+  seconds that `prepare()` / `publish()` / every `bd` call spend blocking the event loop are
+  a priced-in trade, load-bearing in the `bd` case — `spawnSync` is what stops two Beads
+  calls interleaving over one embedded Dolt database. Blocked on: nothing; `repo-teq` has
+  merged. Related: §4.12 (the runner drains the ready queue), §7. 2026-07-31
+
 - **Let a task report progress while it is still running, roughly every 10 minutes** — right now
   a container is opaque from the outside: nothing is visible until it exits and the run report is
   written. A task that has been going for an hour is indistinguishable from a task that is wedged,
@@ -577,115 +769,6 @@ deterministic aggregation, not an agent. Read both before proposing a new agent.
   and a panel pass rejecting it. §3.1 or §3.2 is the natural home. 2026-07-30
   *Found by the critic panel on the first real project, 2026-07-30.*
 
-- **Re-read the ready queue when a worker goes idle, so finishing a task can unblock the
-  next one** — `bd ready` is already blocker-aware, but `runner/run.js` reads it **once**,
-  before the pool starts, and drains that snapshot. So a dependency chain cannot run in one
-  batch: if B is blocked on A and A closes ten minutes in, B waits for a whole second run
-  even though the host knows it is ready and a worker is sitting idle. Worth having because
-  the queue this project actually accumulates is chain-shaped — `repo-sls` → `repo-teq` →
-  `repo-i9y` was three batches on three separate runs, and each handoff cost a human
-  starting the next one. It also compounds with the concurrency knob rather than duplicating
-  it: the measured 1.28× on a two-task batch was one worker idle for 1464s with nothing to
-  pick up, which is precisely the hole an unblocked task would have filled.
-  Care lives in the details, not the idea: never re-claim what is already in flight, do not
-  spin when the queue is genuinely dry, and bound the re-read so an unblock cascade cannot
-  loop forever. Legal under hard rule 1 as-is — the host is the only thing reading Beads,
-  and it already reads it exactly this way, just once.
-  **Not** the same as the two forms of cross-task waiting that already exist and are fine:
-  the pool has no barrier (a free worker takes the next queued item immediately), and the
-  seconds that `prepare()` / `publish()` / every `bd` call spend blocking the event loop are
-  a priced-in trade, load-bearing in the `bd` case — `spawnSync` is what stops two Beads
-  calls interleaving over one embedded Dolt database. Blocked on: nothing; `repo-teq` has
-  merged. Related: §4.12 (the runner drains the ready queue), §7. 2026-07-31
-
-- **A transient upstream error is not a failed task — 529 falls straight through to
-  `failed` / blocked** — on 2026-08-19 an agent call came back `API Error 529 Overloaded`
-  with zero output tokens and no work attempted. The entrypoint's rate-limit branch greps
-  the agent log for `usage limit|rate.?limit` (`pipeline/entrypoint.sh`), which "Overloaded"
-  does not match, so the call falls through to `die30` — exit 30, which the §4.11 table maps
-  to report status `failed` and Beads `blocked`. `die30` exits on the spot, so the attempt
-  cap never engages either: one busy moment upstream ends the task on attempt 1 of 3.
-  That is honest at the level the entrypoint can see (the agent command failed) but it
-  conflates *this task is wrong* with *the API was busy for a second*, and the two have
-  opposite recoveries. Nothing about the spec, the frozen tests or the fork point was
-  involved; unblocking the issue and re-running is the entire fix. The cost is that a
-  blocked issue leaves `bd ready`, so an overnight run's other tasks are unaffected while
-  this one silently drops out of the *next* run's queue until a human touches it — the
-  quiet-hole failure mode this repo keeps rediscovering.
-  The run-level park (§7, change-log row `repo-i9y`) is the wrong instrument here and should
-  not simply be widened to catch 529. A usage limit is a property of the **subscription
-  window** — waited out on a reported reset time or a probe, minutes to hours, correctly
-  shared across every task in the run. A 529 is a property of the **upstream at that
-  instant** — seconds, per-call, retryable in place. Feeding one into the other would park a
-  whole run behind a shared wait sized for a rate-limit window because one call got unlucky.
-  Options worth weighing, none chosen: a bounded in-container retry with backoff before
-  `die30` (cheapest, no contract change, but invisible unless it logs what it swallowed —
-  and this repo has been bitten by silent swallowing more than once); a sibling exit code to
-  20 meaning *transient upstream*, which the runner relaunches after a short backoff with its
-  own small cap and which leaves the issue `in_progress` rather than blocked (reuses the
-  relaunch machinery and keeps the record honest, at the price of a new row in the §4.11
-  table and in everything downstream that reads it — `runner/queue.js`'s `OUTCOMES`,
-  `run.schema.json`, the report, the audit, the dashboard); or leaving classification alone
-  and only stopping exit 30 from blocking the issue (cheapest for the queue, worst for the
-  record, since a genuinely broken task would then return every run with nothing marking it).
-  Two things should settle it before anything is specced. First, whether the CLI already
-  retries 529 internally: if it does, a 529 that reaches the log is one that already survived
-  the CLI's own backoff, which argues against adding a second retry loop underneath it and
-  for the exit-code route. Second, **detection must not become a list of upstream error
-  strings** — that is precisely the pattern banned in `CLAUDE.md`'s log-scraping rule
-  (change-log row `repo-52m`); check whether the CLI's JSON envelope carries a structural
-  error or status field first, and only fall back to prose matching if it does not.
-  Related: §4.7, §7, §4.11. 2026-08-19
-
-- **Assert at publish time that no committed entry is a symlink escaping the workspace** — a
-  target project's container may legitimately create symlinks *inside* the workspace: baking
-  dependencies into the image and linking them into place on first use is the standard way to
-  satisfy the no-egress rule (hard rule 6), and a coding agent has no way to tell such a link
-  apart from project content. The host currently trusts the target repository's own ignore
-  rules to keep those links out of a commit, and a `.gitignore` rule written as `node_modules/`,
-  `dist/` or `__pycache__/` matches **directories only** — so a symlink of that name is not
-  ignored at all, shows as ordinary untracked content, and a `git add` takes it. On a host the
-  same path *is* a real directory, so `git check-ignore` reports it as ignored, which is why
-  every human who reads the rule reads it as correct. One target project shipped such an entry
-  in a task that verified on attempt 1 with zero concerns and passed a 31-file human review; a
-  mode `120000` addition renders as a one-line file in a diff view.
-  The damage is downstream and actively misdirecting. On a host that already has the real
-  directory, every checkout of the merged commit fails partway *and deletes part of the real
-  directory on the way down*, manufacturing the symptom it appears to be reporting — a day was
-  lost to a handoff that blamed a damaged dependency install for what the failed checkout had
-  caused. On a fresh clone with `core.symlinks=false` (the Windows default, and the reference
-  host's) it does not even fail: git writes a plain text file containing the target path, the
-  clone reports success, and the dependency install then fails for a reason that mentions
-  neither git nor symlinks.
-  Cheap and deterministic to check: scan the task branch's diff against the fork point for mode
-  `120000` blobs whose content is absolute or escapes the repository root. Host-side, in the
-  publish stage, before the push — where the design already puts authority, and where unlike a
-  container-side check the agent cannot edit it.
-  **What the host then does about it is the question to settle before this is specced**, and it
-  is not the gate-versus-evidence question. Both candidates are evidence: failing a task for a
-  link it was told to create is exactly the hazard hard rule 5 exists to prevent, and neither
-  option touches the outcome. But they do different amounts of work. *Surfacing* it in the run
-  report warns about a trap it leaves armed — the branch is still pushed, the PR still carries
-  the entry, and the damage lands at merge, which is precisely where review already missed it
-  once. *Stripping* it prevents the merge, but the host writing to a task branch is a new
-  capability: `runner/publish.js` pushes and opens a PR and creates no commits at all. The
-  variant that does not rewrite what the container authored is a separate host-authored hygiene
-  commit on top of the branch, visible in the PR and named in the report. Price that against
-  surfacing before either is chosen.
-  A configuration-only variant is worth considering *in addition* rather than instead: have
-  onboarding read a candidate project's ignore rules for trailing-slash patterns a container
-  symlink could slip past, at planning time, where a human is present. The two cheaper
-  alternatives are both weaker. Appending dependency-directory names to `.git/info/exclude`
-  alongside `.run/` reuses a path that already exists (`runner/workspace.js`), but the pipeline
-  cannot know those names for an arbitrary target — so it either hard-codes a list that goes
-  stale or reads one from `pipeline.config.json`, which is the same trust that failed here.
-  Telling the agent in its prompt not to commit symlinks costs nothing and catches nothing
-  reliably; a prompt is not scaffolding.
-  Reproducible without a run: in any repository whose `.gitignore` says `dir/`, create a symlink
-  named `dir` and run `git status` — it is untracked and stageable. Related: §4.4 (the
-  verifier's remit is `frozenPaths`, so the committed file *set* has no gate today, only its
-  content does), §4.10, hard rules 5 and 6. 2026-08-19
-
 ---
 
 ## Promoted
@@ -693,16 +776,21 @@ deterministic aggregation, not an agent. Read both before proposing a new agent.
 Ideas that made it out, and what they became. Kept so the trail from a half-thought to a
 shipped thing survives — the same reason the `DESIGN.md` change log keeps its rationale.
 
+<!-- Newest at the top, same as the inbox. -->
+
 | Date | Idea | Became |
 |---|---|---|
-| 2026-08-04 | Audit the pipeline's own history across runs, not one run at a time — the corpus was on disk, structured, and had never been read as one. Parked 2026-08-02 with its own experiment attached: read the runs by hand once, and let that decide aggregation-versus-agent. The hand pass ran 2026-08-04 and aggregation won — every repeated pattern fell out of joining structured fields, none needed judgment | `DESIGN.md` §5 + change-log row `run-audit`: `scripts/audit-runs.js`, deterministic and host-only, joining `run.json`/`status.json`/`verify.json`/`verdict.json`; the LLM reader stays unbuilt, with the reason recorded in §5. Frozen as issue `repo-73k` with tests at `tests/acceptance/repo-73k/`; shipped with `scripts/test-audit-runs.sh` (change-log row `repo-73k`) |
-| 2026-08-04 | Capture the reviewer's verdict on every run — merged / sent back, and why — at the only moment it exists. Extracted from the two agent-shaped entries that both named it the most valuable field the pipeline does not own, and both concluded the shape is a cheap capture step, not a reviewing agent. Parked and promoted the same day | `DESIGN.md` §5 + change-log row `review-verdict`; frozen as issue `repo-1ie` with tests at `tests/acceptance/repo-1ie/` (freeze gate RED against a green control, 2026-08-04), then **shipped** as change-log row `repo-1ie`: `scripts/verdict.js` (`record` + `pending`, self-contained, chooses the run by `startedAt`) and the Docker-free suite `scripts/test-verdict.sh` / `tests/unit/verdict.test.js` |
-| 2026-08-04 | Record spec-to-code traceability at the moment it is created, instead of inferring it later — a ticked box carries the id of the issue that ticked it, so reconciliation is mechanical and nothing ever guesses an edge. The cheapest honest version of a knowledge graph; parked and promoted the same day because it collapses six drift entries into one convention | change-log row `trace-ledger`: the convention, `scripts/trace.js` (report + deterministic backfill via `git log -L`), the Docker-free suite `scripts/test-trace.sh` / `tests/unit/trace.test.js`, and the PLANNING.md step-0 drift read |
+| 2026-08-19 | A merge-order helper for the PR stack a run hands back — evidence, never a merge. Parked and promoted the same day. Two corrections came out of working it: the PRs are a **fan**, not a stack (every task clones fresh and branches off the integration branch, so they are siblings whose fork points can differ), and **ordering cannot reduce the conflict count** — a file touched by k PRs conflicts in k−1 merges whatever the order — so the value is landing the clean PRs first with zero judgment, clustering the rest, and naming staleness and expected-to-clear failures | `DESIGN.md` §5 + change-log row `merge-order`: `scripts/merge-order.js`, the fourth pure reader on the §5 model. It **computes** merges rather than predicting them from file overlap — `git merge-tree --write-tree` chained through `git commit-tree` simulates a whole order and names the real conflicted paths — and keeps the `repo-73k` pure-reader contract literally, by running both under a redirected `GIT_OBJECT_DIRECTORY` measured to write zero objects into the real repository. Input is a run id, dependency order is inferred from the run record rather than read from Beads, and the expected-to-clear regression join ships with its 2000-character-tail limit printed where it prints (all three, user, 2026-08-19). Never merges, pushes or touches a PR; never a gate. Thread: [`docs/threads/merge-order.md`](threads/merge-order.md) |
+| 2026-08-19 | A "batch ready" marker a planning session files when specs are frozen, so the launch step reads state instead of memory. Parked and promoted the same day. The handoff between freezing and launching was a spoken word: two different sessions, nothing on disk between them, so the launch could not confirm what it was launching and a batch frozen and not launched was invisible to the next session | `DESIGN.md` §3.9 + change-log row `batch-ready-marker`: `runs/batches/<project>-<YYYY-MM-DD>.json`, host-only and immutable (no `launched` flag — "still pending" is a join over the run corpus, `verdict.js pending`'s move), read by `scripts/batch.js` (`show`, `pending`). The reconciliation against `bd ready` is the point rather than the confirmation, and is bounded: built-ins only except a `BATCH_BD_CMD` seam that reads and never writes, and an absent `bd` labels the batch unreconciled rather than printing the marker as if the queue agreed. Never a queue item, never a gate, never the source of truth for what runs. Thread: [`docs/threads/batch-ready-marker.md`](threads/batch-ready-marker.md) |
+| 2026-08-19 | Give every idea thread a durable identity file from its first exchange, so the session working it is disposable. Borrowed from the persistent-identity / ephemeral-session split — the discipline, explicitly not the autonomy. Parked and promoted the same day: the thread's state (question, current thinking, decisions and whose they were, open questions) lived in one interactive session's context, so a session working an idea was expensive to kill and expensive to resume | `DESIGN.md` §3.8 + change-log row `thread-identity-files`: `docs/threads/<slug>.md`, tracked, undated, flat, with the slug doubling as the future change-log ref (`trace-ledger`'s identity-at-creation move, one layer earlier) and exactly one mutable section. `docs/threads/README.md` carries the convention and the template; `PLANNING.md` step 0 reads `ready` threads; this file gains the `Thread:` optional extra; `ONBOARDING.md` creates the directory for a new target. No reader tooling, deliberately. First live example, and the thread that produced it: [`docs/threads/thread-identity-files.md`](threads/thread-identity-files.md) |
 | 2026-08-12 | Make the sweep and a live run mutually exclusive — parked 2026-08-01 after a sweep `docker rm -f`'d a live run's task container and the run read as an OOM kill. Bundled into `docs/handoff-sweep-trustworthy.md` with its second-order point (loud `task-` reclamation) and the 300s-cap cheap half of the degradation entry | `DESIGN.md` §4.12 + change-log row `sweep-trustworthy`; specced in the 2026-08-12 planning session |
 | 2026-08-12 | Have the sweep reclaim stale run locks, not just containers and networks — parked 2026-08-05 after a killed suite's leftover lock failed an unrelated suite three hours later. Its honest catch (live lock vs stale lock look similar from outside) is why it ships after exclusivity, and its `isHolderLive`-not-name-match requirement became the exported-liveness decision | `DESIGN.md` §4.12 + change-log row `sweep-trustworthy`; specced in the 2026-08-12 planning session |
 | 2026-08-12 | Declare a `regressionCommand` for this repo, so frozen-suite blast radius stops being held by grep — parked 2026-08-04 after three tasks hand-wrote the same guard criterion | change-log row `self-regression`: `pipeline.config.json` gains the key, naming a Docker-free wrapper over the fast pure suites; specced in the 2026-08-12 planning session |
 | 2026-08-12 | Stop batch siblings failing each other's frozen suites — parked 2026-08-05; nine of the corpus's eleven partials were this shape. The design question it deferred was answered by Chad on 2026-08-12: no expected-red in the verifier, ever — the report labels instead | `DESIGN.md` §4 item 9 + change-log row `batch-sibling-partials`: the `sibling-batch` label, sorted after genuine partials within the partial band; specced in the 2026-08-12 planning session |
 | 2026-08-10 | A live dashboard that lights up the pipeline diagrams as tasks move through them — parked 2026-08-02 with its own three-way feasibility split (free today / one small deterministic change / not at any sane price), which held up under the planning session's read of the code. One correction from that read: the second deterministic change the entry contemplated finding a workspace was unnecessary — the runner's unconditional `workspace ready:` line already existed | `DESIGN.md` §5 + change-log row `live-dashboard`: the reader `scripts/dashboard.js` with a frozen `/state` contract (issue `repo-kfg`, tests at `tests/acceptance/repo-kfg/`), the `phase` field feed (issue `repo-bmd`, tests at `tests/acceptance/repo-bmd/`), and the page as interactive work against the frozen contract — the look deliberately unfrozen, so it is reviewed by looking at it. The reader **shipped** as change-log row `repo-kfg` (`scripts/dashboard.js`, the Docker-free suite `scripts/test-dashboard.sh` / `tests/unit/dashboard.test.js`); what is left of this entry is the `phase` feed and the page session |
+| 2026-08-04 | Audit the pipeline's own history across runs, not one run at a time — the corpus was on disk, structured, and had never been read as one. Parked 2026-08-02 with its own experiment attached: read the runs by hand once, and let that decide aggregation-versus-agent. The hand pass ran 2026-08-04 and aggregation won — every repeated pattern fell out of joining structured fields, none needed judgment | `DESIGN.md` §5 + change-log row `run-audit`: `scripts/audit-runs.js`, deterministic and host-only, joining `run.json`/`status.json`/`verify.json`/`verdict.json`; the LLM reader stays unbuilt, with the reason recorded in §5. Frozen as issue `repo-73k` with tests at `tests/acceptance/repo-73k/`; shipped with `scripts/test-audit-runs.sh` (change-log row `repo-73k`) |
+| 2026-08-04 | Capture the reviewer's verdict on every run — merged / sent back, and why — at the only moment it exists. Extracted from the two agent-shaped entries that both named it the most valuable field the pipeline does not own, and both concluded the shape is a cheap capture step, not a reviewing agent. Parked and promoted the same day | `DESIGN.md` §5 + change-log row `review-verdict`; frozen as issue `repo-1ie` with tests at `tests/acceptance/repo-1ie/` (freeze gate RED against a green control, 2026-08-04), then **shipped** as change-log row `repo-1ie`: `scripts/verdict.js` (`record` + `pending`, self-contained, chooses the run by `startedAt`) and the Docker-free suite `scripts/test-verdict.sh` / `tests/unit/verdict.test.js` |
+| 2026-08-04 | Record spec-to-code traceability at the moment it is created, instead of inferring it later — a ticked box carries the id of the issue that ticked it, so reconciliation is mechanical and nothing ever guesses an edge. The cheapest honest version of a knowledge graph; parked and promoted the same day because it collapses six drift entries into one convention | change-log row `trace-ledger`: the convention, `scripts/trace.js` (report + deterministic backfill via `git log -L`), the Docker-free suite `scripts/test-trace.sh` / `tests/unit/trace.test.js`, and the PLANNING.md step-0 drift read |
 
 ## Dropped
 

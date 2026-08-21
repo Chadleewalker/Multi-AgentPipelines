@@ -28,11 +28,29 @@ BD=(docker run --rm -v "$TGTW:/repo" -w /repo pipeline-base:local bd)
 bdq() { MSYS_NO_PATHCONV=1 "${BD[@]}" "$@" 2>/dev/null | tr -d '\r'; }
 bdq init >/dev/null
 
+# Every issue the runner may dispatch needs a frozen suite ON THE INTEGRATION BRANCH
+# (DESIGN.md 4.12, change-log row `dispatch-gate`): the ready queue refuses an issue whose
+# tests/acceptance/<id> is absent from the branch task containers fork from, and a refused
+# issue never reaches a container — so without this every check below would fail for a
+# reason unrelated to what it tests. PUSHED, not merely committed: freezing locally is not
+# freezing, and the gate reads the remote.
+freeze() {
+  mkdir -p "$TGT/tests/acceptance/$1"
+  echo "exit 0" > "$TGT/tests/acceptance/$1/t.sh"
+  git -C "$TGT" add -A >/dev/null 2>&1
+  git -C "$TGT" commit -qm "planning: freeze $1" >/dev/null 2>&1
+  git -C "$TGT" push -q origin main >/dev/null 2>&1
+}
+
 # Created out of priority order on purpose; B blocks C.
 A=$(bdq create "low prio task"  -d "third" --acceptance ok --design "design-ref: 4.1" -p 3 --silent)
+freeze "$A"
 B=$(bdq create "high prio task" -d "first"  --acceptance ok --design "design-ref: 4.2" -p 0 --silent)
+freeze "$B"
 C=$(bdq create "blocked task"   -d "gated"  --acceptance ok --design "design-ref: 4.3" -p 0 --deps "$B" --silent)
+freeze "$C"
 D=$(bdq create "mid prio task"  -d "second" --acceptance ok --design "design-ref: 4.4" -p 1 --silent)
+freeze "$D"
 cd "$ROOT"
 
 CFG="$TMP/run.config.json"
@@ -107,12 +125,14 @@ echo "$OUT2" | grep -q "ready queue: 1 task" && pass "unblocked dependent task n
 
 # 6. Partial: acceptance pass + regressions fail -> partial, still closed.
 E=$(bdq create "partial task" -d x --acceptance ok --design "design-ref: 4.4" -p 0 --silent)
+freeze "$E"
 OUT=$(runq "$TMP/stub-partial.sh" t12-partial)
 echo "$OUT" | grep -q "exit 0 -> partial" && pass "regressions fail -> partial (verify.json decides)" || fail "partial not derived"
 st "$E" | grep -q closed && pass "partial -> issue closed" || fail "partial transition wrong"
 
 # 7. Stuck: exit 10 -> blocked, and blocked never returns to the ready queue.
 F=$(bdq create "stuck task" -d x --acceptance ok --design "design-ref: 4.6" -p 0 --silent)
+freeze "$F"
 OUT=$(runq "$TMP/stub-stuck.sh" t12-stuck)
 echo "$OUT" | grep -q "exit 10 -> stuck" && pass "exit 10 -> stuck" || fail "stuck status wrong"
 st "$F" | grep -q blocked && pass "stuck -> issue blocked" || fail "stuck transition wrong: $(st "$F")"
@@ -123,6 +143,7 @@ echo "$OUT" | grep -o "ready queue: .*" | grep -q "$F" \
 
 # 8. Paused: exit 20 -> stays in_progress, not closed, not blocked.
 G=$(bdq create "paused task" -d x --acceptance ok --design "design-ref: 4.7" -p 0 --silent)
+freeze "$G"
 OUT=$(runq "$TMP/stub-paused.sh" t12-paused)
 echo "$OUT" | grep -q "exit 20 -> paused" && pass "exit 20 -> paused" || fail "paused status wrong"
 echo "$OUT" | grep -q "issue stays in_progress" && pass "paused issue left in_progress (runner parks it)" || fail "paused transition wrong"

@@ -28,6 +28,20 @@ if command -v cygpath >/dev/null 2>&1; then TGTW="$(cygpath -m "$TGT")"; REMOTEW
 BD=(docker run --rm -v "$TGTW:/repo" -w /repo pipeline-base:local bd)
 bdq() { MSYS_NO_PATHCONV=1 "${BD[@]}" "$@" 2>/dev/null | tr -d '\r'; }
 bdq init >/dev/null
+
+# Every issue the runner may dispatch needs a frozen suite ON THE INTEGRATION BRANCH
+# (DESIGN.md 4.12, change-log row `dispatch-gate`): the ready queue refuses an issue whose
+# tests/acceptance/<id> is absent from the branch task containers fork from, and a refused
+# issue never reaches a container — so without this every check below would fail for a
+# reason unrelated to what it tests. PUSHED, not merely committed: freezing locally is not
+# freezing, and the gate reads the remote.
+freeze() {
+  mkdir -p "$TGT/tests/acceptance/$1"
+  echo "exit 0" > "$TGT/tests/acceptance/$1/t.sh"
+  git -C "$TGT" add -A >/dev/null 2>&1
+  git -C "$TGT" commit -qm "planning: freeze $1" >/dev/null 2>&1
+  git -C "$TGT" push -q origin main >/dev/null 2>&1
+}
 cd "$ROOT"
 
 CFG="$TMP/run.config.json"
@@ -49,6 +63,7 @@ exit 30
 EOF
 
 I1=$(bdq create "first task" -d x --acceptance ok --design "design-ref: 4.2" -p 0 --silent)
+freeze "$I1"
 run() { PIPELINE_EXEC_STUB="$1" RUN_ID="$2" PIPELINE_KEEP_WORKSPACE=1 node runner/run.js --config "$CFG" 2>&1; }
 
 # 1. Fresh clone from the remote, branch task/<id> off canonical main.
@@ -87,6 +102,7 @@ echo "$OUT" | grep -q "exit 0 -> done" && pass "outcome derived from collected v
 
 # 8. No-commit task: nothing to push.
 I2=$(bdq create "no-work task" -d x --acceptance ok --design "design-ref: 4.6" -p 0 --silent)
+freeze "$I2"
 OUT=$(run "$TMP/stub-nowork.sh" t13-nowork)
 echo "$OUT" | grep -q "no commits (nothing to push)" && pass "empty branch reported as nothing to push" || fail "empty-branch detection failed"
 
@@ -108,6 +124,7 @@ WS1=$(echo "$OUT" | grep -o "workspace kept at .*" | head -1 | sed 's/workspace 
 BADCFG="$TMP/bad.json"
 printf '{"targetRepoPath":"%s","targetRepoRemote":"%s/nope.git","image":"pipeline-base:local"}\n' "$TGTW" "$REMOTEW" > "$BADCFG"
 I3=$(bdq create "unclonable" -d x --acceptance ok --design "design-ref: 4.2" -p 0 --silent)
+freeze "$I3"
 # tee to stderr streams the run live; stdout still captured, pipefail preserves RC.
 OUT=$(set -o pipefail; PIPELINE_EXEC_STUB="$TMP/stub-work.sh" RUN_ID=t13-badremote node runner/run.js --config "$BADCFG" 2>&1 | tee /dev/stderr); RC=$?
 echo "$OUT" | grep -q "workspace preparation failed" && pass "clone failure reported per task" || fail "clone failure not handled"

@@ -4,7 +4,7 @@ Where the build actually is. Update this when something changes — it is the fi
 session reads to pick up the thread, and unlike a machine-local memory folder it travels
 with the repo.
 
-_Last updated: 2026-08-11_
+_Last updated: 2026-08-20_
 
 ## Where things stand
 
@@ -1124,6 +1124,101 @@ reference host's real 34-project corpus, a synthetic multi-task live fixture (tw
 different phases, one queued, park absent), and a genuine live run in flight — the phase lamp,
 the container node and `attempt 1/3` all read correctly against a real container.
 
+## The batch marker has a reader (`repo-0b3`, 2026-08-20)
+
+`scripts/batch.js` ships — the first half of DESIGN.md §3.9's planning-to-launch handoff
+(change-log row `batch-ready-marker`, now `repo-0b3`). A planning session's last act writes
+`runs/batches/<project>-<YYYY-MM-DD>.json`; a later session reads it back with
+`node scripts/batch.js show` (the newest marker, **launched or not**, with `worked` /
+`not-worked` per id) or `node scripts/batch.js pending` (batches no run has worked since
+their freeze, newest freeze first). `BATCH_RUNS_DIR` re-aims the root. The marker shape is
+pinned here: `runConfig`, `frozenAt` and `issues[{id,title}]` required, `integrationBranch`,
+`freezeCommit`, `intent` and `approvedBy` optional and printed only when present.
+
+**The `bd ready` reconciliation was not wired in this half** — that is `repo-8v0`, below,
+split out by the panel because it adds a host dependency, a second join through a git-ignored
+run config, and a degraded vocabulary of its own. The split bought a property worth keeping:
+this half **spawns nothing at all**, so the suite proving it cannot pass vacuously on a host
+where `bd` was never installed — and `pending`, which is all of this half, still spawns
+nothing now that the other half has landed.
+
+**Two derivations, both of whose cheap answers are wrong.** A run's clock is `startedAt` from
+`run.json` *when there is one*, else the leading instant on the first line of `run.log` — 74
+of the reference host's 272 run directories have no manifest, and `verdict.js`'s rule of
+skipping such a directory (correct for its own purpose) would report an interrupted run's
+batch as never launched. And a run datable by neither **counts as having worked** the ids it
+names, labelled `run-time-unknown`: a false "pending" invites a double launch, a false
+"launched" only sends someone to look. The frozen fixture that pins this is one manifest-less
+run dated once before and once after the same freeze, which a `verdict.js`-shaped join gets
+wrong the same way in both halves.
+
+**The filename's date is naming only.** `frozenAt` is the clock; the stem is anchored at both
+ends with the project taken greedily, so `orbit-lab-2026-08-19` is the project `orbit-lab`
+rather than `orbit`, a file that is only a date is not a marker, and anything else under
+`batches/` — a `.txt`, truncated JSON, a JSON array — is skipped silently rather than crashed
+on, because a human writes into that directory too.
+
+**One known and accepted consequence:** `scripts/audit-runs.js` counts `batches/` under its
+Corpus **other entries**. That is expected — it is not a run directory and the audit says so
+correctly — and re-teaching the audit about a directory it has no other reason to know is
+parked in `docs/IDEAS.md`. The `repo-0b3` guard excludes exactly that accounting and pins
+everything else the audit prints as unchanged, along with byte-identical `verdict.js pending`
+output and a deep-equal dashboard `/state`.
+
+**Host obligation, one:** run `bash scripts/test-all.sh` on the reference host — the new
+suite is swept by glob and has never run there. Nothing else is outstanding; the reader needs
+no Docker, no network, no target repo and, in this half, no `bd`.
+
+## The marker is reconciled against the live queue (`repo-8v0`, 2026-08-20)
+
+The second half ships, closing change-log row `batch-ready-marker`. `node scripts/batch.js
+show` now answers the question the marker exists for: **does the queue this run will drain
+match what was frozen?** Per id, `ready` or `not-ready`; per queue entry the batch never
+named, one `stray` line. That check has no other detector — the runner has no picker (§4.12)
+and drains whatever it finds, so an issue nobody meant to include simply runs and a blocked
+one silently does not, and nothing else in the pipeline holds the *intent* to compare a queue
+against. `PLANNING.md` step 8's first bullet is now automated; the CLAUDE.md entry and the
+step 8 line that said otherwise are corrected.
+
+**One spawn, and only under `show`.** The marker's `run.config.<project>.json` is resolved
+from `BATCH_CONFIG_DIR` (else this repo's root, never the cwd) and read by plain `JSON.parse`
+for `targetRepoPath` alone — deliberately not `runner/config.js`'s loader, which validates a
+whole run and would turn an unrelated missing key into an unactionable `unreconciled`. Then
+one `-C <targetRepoPath> ready --json` through the **existing `PIPELINE_BD_CMD`** seam,
+bounded by that config's `bdTimeoutMs`, read-only (hard rule 1). `pending` still spawns
+nothing, which is what keeps this bounded rather than absorbed.
+
+**Two rules are imported, not copied**, and both were exported for this: `EXCLUDED_TYPES`
+with `typeOf` from `runner/queue.js`, so an epic parent — which `bd ready` returns by design —
+is never called a stray, and `hostBdSpec` from `runner/bd.js`, so npm's shim pair resolves
+the one way this host resolves it. The report's whole value is that it predicts what the
+runner will drain; a private second copy of either rule predicts a runner that no longer
+exists the day one of them changes (the call `sweep-trustworthy` made for `isHolderLive`).
+
+**Three gotchas worth carrying forward.**
+- A call killed at the bound is **`bd-unreadable`, not `bd-unavailable`** — `bd` was there
+  and did not answer, which sends a person somewhere different from `bd` not being installed.
+- `spawnSync` reports a **capture overflow and a timeout identically**: null status, the same
+  kill signal, and only `error.code` (`ENOBUFS` vs `ETIMEDOUT`) between them. The ceiling is
+  raised to 8 MiB — a real ready queue can exceed the 1 MiB default — and tested for *before*
+  the bound, or a query that answered at once is reported as one that never answered.
+- The vector handed to the seam **leads with a throwaway program slot** (`bd`), the slot the
+  Windows shim path fills with the resolved `bd.js`. Node's own parser owns `-C` as the short
+  form of `--conditions` and eats a leading `-C <path>` before a stubbed seam ever sees it —
+  which repo was consulted would stop being observable to the only suites that can prove it.
+
+**Both halves of the vocabulary are load-bearing together.** The degraded fixtures alone pass
+a tool that always says `unreconciled`; a reconciling fixture alone passes a tool that never
+notices `bd` is dead. `tests/unit/batch.test.js` grew section G for exactly this and now runs
+67 checks; it drives everything through the seam against a stand-in, so it still needs no
+`bd`, no network and no target repo.
+
+**Host obligations, two.** Run `bash scripts/test-all.sh` on the reference host — `runner/bd.js`
+and `runner/queue.js` gained exports, and `scripts/test-runner-queue.sh`, `test-bd-seams.sh`
+and `test-bd-shim.sh` all drive real Docker and could not run in the container. And this is
+the first `scripts/` reader that reaches into `runner/`, so the "node built-ins only" line in
+`README.md`'s layout table (if it still reads that way) wants a second look.
+
 ## What's next
 
 **The queue drained again on 2026-07-26**, after `repo-4l8` (the epic filter, planned and
@@ -1266,12 +1361,13 @@ design's central bet, and it is the first day it paid out repeatedly.
 
 ## Test suites
 
-All but fourteen drive real Docker and share one network, so they must never run concurrently
+All but seventeen drive real Docker and share one network, so they must never run concurrently
 (`test-runner-memory.sh`, `test-changelog.sh`, `test-sanitize.sh`,
 `test-agent-hooks.sh`, `test-network-names.sh`, `test-lock.sh`,
 `test-sweep-hygiene.sh`, `test-concurrency.sh`, `test-pause-gate.sh`,
-`test-sweep-assertions.sh`, `test-trace.sh`, `test-verdict.sh`, `test-audit-runs.sh`
-and `test-dashboard.sh` are the exceptions —
+`test-sweep-assertions.sh`, `test-trace.sh`, `test-verdict.sh`, `test-audit-runs.sh`,
+`test-dashboard.sh`, `test-verify-buffer.sh`, `test-pipeline-map.sh`
+and `test-batch.sh` are the exceptions —
 see below; they need neither).
 **`scripts/test-all.sh` is the sweep** — it holds a lock, runs every suite sequentially,
 kills one that hangs (`--timeout`, default 900s), **reclaims what each suite leaked after
@@ -1309,6 +1405,9 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-verdict.sh` | the review verdict recorder (change-log row `repo-1ie`) — which run a verdict lands in, what counts as PR-bearing, every refusal writing nothing, and the recorder staying self-contained |
 | `scripts/test-audit-runs.sh` | the run-history audit (change-log row `repo-73k`) — the three-bucket corpus taxonomy, `startedAt` joins, the `specConcerns` channel keys, nearest-rank quantiles, the per-model cross-tab (change-log row `model-crosstab`) whose two fixture models disagree on first-attempt rate, and the pure-reader contract checked by content hash |
 | `scripts/test-dashboard.sh` | the live run dashboard (change-log row `repo-kfg`) — the lock-to-run join, the run pick against its three wrong answers, the closed degraded vocabulary at each level, the loopback server contract, and the pure-reader contract checked by content hash |
+| `scripts/test-verify-buffer.sh` | the verifier's capture limit (change-log row `verify-nobuffer`) — a loud passing suite is a pass, a loud failing one is still a fail |
+| `scripts/test-pipeline-map.sh` | the reader's map drawn at build time (change-log row `map-prerender`) — a good SVG's stylesheet versus a real error card, neither check meaning anything alone |
+| `scripts/test-batch.sh` | the batch marker reader (change-log rows `repo-0b3`, `repo-8v0`) — the marker name anchored at both ends, the manifest-less run dated from `run.log`, the conservative `run-time-unknown` direction, the degraded labels, byte-identical repeat output, the pure-reader contract checked by sha1 snapshot and parsed `require` specifiers, and the live-queue reconciliation driven through the `PIPELINE_BD_CMD` seam: the runner's own epic filter, the `-C` slot, a queue past 1 MiB, and every degraded reason against the reconciled one |
 
 **`scripts/test-runner-memory.sh` is one of the fourteen suites that need no Docker**
 (repo-dhp): it

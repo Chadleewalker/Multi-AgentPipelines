@@ -28,7 +28,7 @@ redo:
 
 ## The Session, Step by Step
 
-### 0. Read the idea inbox
+### 0. Read the idea inbox and the open threads
 Open [`docs/IDEAS.md`](docs/IDEAS.md) — in *this* repo when the session is about the
 pipeline, in the target project's repo otherwise — and see whether anything parked there
 belongs in this session. It is where "that's probably a good idea" gets written down
@@ -42,6 +42,24 @@ row first, then step 1 below — because an idea implemented straight from the i
 design section, which is the definition of scope creep (§3.1). When one graduates, move it
 to the file's **Promoted** table; when the session concludes one is not wanted, move it to
 **Dropped** with the reason, so it doesn't come back every few months.
+
+Then open [`docs/threads/`](docs/threads/README.md) — same repo, same rule — and read any
+thread whose header says `status:   ready`. A thread is an idea *being worked*: one file
+holding its question, current thinking, the decisions already taken and by whom, and what
+is still open (DESIGN.md §3.8). A `ready` thread is a candidate that arrives with its
+design decisions already made and its open questions already named, which is strictly more
+than an inbox entry offers — and costs this session nothing to skip, since a thread is no
+more a commitment than an inbox entry is. `open` and `parked` threads are not this
+session's business unless the session is about to work one.
+
+```bash
+grep -l "^status:   ready" docs/threads/*.md      # run from the repo the session is about
+```
+
+When a thread graduates, its slug is already the change-log ref (§3.8), its status becomes
+`promoted`, and its `Outcome` names what it became; a thread the session concludes is not
+wanted becomes `dropped` with the reason. Either way the file stays — deleting it throws
+away the reason, which is the only thing that stops the idea coming back.
 
 Then run the drift report against the target (change-log row `trace-ledger`):
 
@@ -285,11 +303,33 @@ install anything at run time):
   typed `epic` out and names them in its `ready queue:` log line (§3.1, §4.12). Every
   other type (`bug`, `feature`, `chore`, `decision`) *does* run, so anything in the list
   that is not meant to run this batch must be blocked or closed, not merely retyped.
+  The *membership* half of this bullet is automated by the marker's own reader — see the
+  last act below — which leaves you the half it cannot check: the **priority order**.
 - Frozen tests are on the integration branch (`defaultBranch`) and pushed;
   `pipeline.config.json` is current.
 - The per-project image exists; Docker Desktop is running.
 - Anything the task needs to *know* (API details, conventions) is in the repo or attached
   to the issue — the container has no internet beyond the Anthropic endpoints (§4.8).
+- **Last act: write the batch marker** (§3.9) — one JSON object at
+  `runs/batches/<project>-<YYYY-MM-DD>.json` **in this repo** (git-ignored; never in the
+  target's tree, since it names a project and its issue ids). Required keys: `runConfig`
+  (the `run.config.<project>.json` the launch will type), `frozenAt` (an **instant**, e.g.
+  `2026-08-19T21:40:00Z` — a bare date cannot be compared with a run's UTC `startedAt`),
+  and `issues` as `[{id, title}]` in the intended priority order. Optional and printed when
+  present: `integrationBranch`, `freezeCommit`, `intent` (one line in the user's words) and
+  `approvedBy` (hard rule 4's split). Write it here, in this session, while you still know
+  the answers — the launch only ever reads. The marker is **immutable and never a queue
+  item**: nothing stamps it launched, and nothing in `runner/` or `pipeline/` reads it.
+  Confirm it with `node scripts/batch.js show`, which prints the marker and, per id,
+  `worked` or `not-worked` against the run corpus **and** `ready` or `not-ready` against the
+  live queue — plus one `stray` line for anything the queue offers that this batch never
+  named. That is the first bullet of this checklist, automated: it reads the
+  `run.config.<project>.json` the marker points at for its `targetRepoPath`, asks that
+  working copy, and applies the runner's own `epic` filter, so a parent in the list is not
+  reported as a stray. It is **evidence, never a gate** — it exits 0 on findings and changes
+  nothing. Where a link of that join cannot be made it prints `unreconciled` with the reason
+  (`run-config-absent`, `bd-unavailable` or `bd-unreadable`) and says nothing at all about
+  the queue; in that case, do the first bullet by eye.
 
 Then start the runner. From here the implementation phase is autonomous; the next human
 touchpoint is the run report (§5).
