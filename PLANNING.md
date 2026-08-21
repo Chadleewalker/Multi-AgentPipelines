@@ -276,6 +276,13 @@ On approval, in the target repo:
    integration branch at run time, tests must be on it before the run; the verifier
    diffs **all of `tests/acceptance/`** plus the config's `frozenPaths` against the
    fork point and treats any difference as tampering (§4.4).
+   **The push is now enforced, not merely expected** (§4.12's second admission rule,
+   change-log rows `dispatch-gate` and `repo-5yu`): before claiming anything the runner
+   fetches the integration branch from `targetRepoRemote` and refuses any candidate whose
+   `tests/acceptance/<issue-id>/` is not a directory there. Committed locally and unpushed
+   is the same as absent. A refused issue is never dispatched, never touched in Beads and
+   stays `open` — it appears in the report as `undispatchable` with the remedy, rather than
+   burning three attempts and a container on a verifier that could only ever exit 1.
 2. Create the issue with all five fields via the wrapper (refuses a missing design-ref):
    `scripts/new-issue.sh -t "<title>" -d "<description>" -c "<constraints>"
    -a "<acceptance>" -r "<design-ref>" [-p 0-4] [-D dep-id,dep-id] -C <target-repo>`
@@ -301,12 +308,21 @@ install anything at run time):
   in the intended priority order. An **epic** may appear in that list and is expected to —
   `bd ready` returns the parent alongside its children — but the runner filters entries
   typed `epic` out and names them in its `ready queue:` log line (§3.1, §4.12). Every
-  other type (`bug`, `feature`, `chore`, `decision`) *does* run, so anything in the list
+  other type (`bug`, `feature`, `chore`, `decision`) is *eligible* to run — subject to the
+  next bullet, which is the queue's second admission rule — so anything in the list
   that is not meant to run this batch must be blocked or closed, not merely retyped.
   The *membership* half of this bullet is automated by the marker's own reader — see the
   last act below — which leaves you the half it cannot check: the **priority order**.
-- Frozen tests are on the integration branch (`defaultBranch`) and pushed;
-  `pipeline.config.json` is current.
+- Frozen tests are on the integration branch (`defaultBranch`) **and pushed**;
+  `pipeline.config.json` is current. The runner checks the pushed half itself now and
+  refuses what it cannot find (§4.12, change-log row `repo-5yu`), which turns the old
+  silent three-attempt failure into an `undispatchable` row naming the remedy — but it
+  refuses *per issue*, so an unpushed freeze still costs you that task's slot in the batch.
+  Two things the gate does *not* soften. An unreachable `targetRepoRemote`, or a default
+  branch it cannot resolve, **aborts the whole run before anything is claimed** rather
+  than failing one task. And `node scripts/batch.js show`'s `ready` verdict, below, is
+  still Beads-only: it does not yet know this rule, so an id can read `ready` there and
+  be refused at dispatch (a follow-up task; §4.12 records the gap).
 - The per-project image exists; Docker Desktop is running.
 - Anything the task needs to *know* (API details, conventions) is in the repo or attached
   to the issue — the container has no internet beyond the Anthropic endpoints (§4.8).
