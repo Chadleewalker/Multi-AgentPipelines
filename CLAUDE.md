@@ -14,6 +14,7 @@ approves intent before a run and reviews results after; nothing in between is in
 | `docs/IDEAS.md` | The idea inbox — parked "this should probably become a design someday" notes. Costs nothing to add to, commits to nothing, and is where a planning session looks for candidates. Not a backlog: an entry here is not work. |
 | `docs/pipeline-diagram.md` | The same design as diagrams — compact mermaid, for someone about to change the code. **Task docs phases keep it current**, so amend it in the same PR that changes the shape it draws. |
 | `docs/pipeline-map.html` | The whole system explained for a reader rather than a maintainer: one page, ten diagrams, pan/zoom. Hand-maintained and **not** updated by task docs phases — check it against `DESIGN.md` when you touch it, because nothing else will. **This is the source page; it draws no diagrams itself.** After editing it run `node scripts/build-pipeline-map.js`, which writes the committed `docs/pipeline-map.built.html` — the copy to open, publish or hand to a reader (change-log row `map-prerender`). |
+| `docs/DESIGN-GUIDE.md` | How to write a design document that stays authoritative: the sections a doc-first project needs, why each one exists, and the process that produces it. Read it when starting a new project or a major new area — it is not needed to maintain this one. |
 
 `DESIGN.md` is long. Section 4.11 (the outcome table) and section 3.1 (the three levels:
 design doc → Beads issue → frozen tests) carry the most weight per line.
