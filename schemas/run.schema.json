@@ -30,8 +30,8 @@
           "issueId": { "type": "string" },
           "title": { "type": "string" },
           "outcome": {
-            "description": "Report status from the 4.11 table.",
-            "enum": ["done", "partial", "stuck", "tampered", "failed", "paused"]
+            "description": "Report status from the 4.11 table. 'undispatchable' is the one value that touches Beads not at all: the ready queue refused the issue before claim() because its frozen acceptance suite is absent from the branch its container would fork from (4.12), so it stays open.",
+            "enum": ["done", "partial", "stuck", "tampered", "failed", "paused", "undispatchable"]
           },
           "exitCode": {
             "description": "Container exit code, or 'killed' for a host wall-clock kill (which produces no code).",

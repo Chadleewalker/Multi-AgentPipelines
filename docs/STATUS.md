@@ -1219,6 +1219,76 @@ and `test-bd-shim.sh` all drive real Docker and could not run in the container. 
 the first `scripts/` reader that reaches into `runner/`, so the "node built-ins only" line in
 `README.md`'s layout table (if it still reads that way) wants a second look.
 
+## The ready queue refuses an unfrozen task (`repo-5yu`, 2026-08-21)
+
+**Built.** The dispatchability gate ships, closing the declaration in change-log row
+`dispatch-gate` (DESIGN.md §4.12's second admission rule, §4.11's `undispatchable` row,
+change-log row `repo-5yu`). Until now the type filter was the ready queue's *only* admission
+rule, so a run's answer to "should this go out?" was "`bd ready` returned it and it is not an
+epic" — and Beads tracks issues, not freezes. Two consecutive runs against one target
+dispatched fourteen tasks of which eight could never have passed, the second spending 3h11m
+to record eight `stuck`.
+
+`readyQueue()` now returns a third population beside `skipped`, keyed `undispatchable`. After
+the type filter, and only when candidates remain, one `git fetch <targetRepoRemote> <branch>`
+into a throwaway repository under the OS temp dir, then one
+`git ls-tree -d --name-only FETCH_HEAD -- tests/acceptance/<issue-id>` per candidate. Empty
+output, not dispatchable: the issue is dropped from `issues` before `claim()`, named in the
+queue-summary line with the remedy, and manufactured by the exported pure
+`undispatchableRow()` into a `run.json` row. Beads is untouched — no note, no status change,
+no attempt-log line — so a refused issue stays `open` for a freeze session to pick straight
+up.
+
+**The two fixtures that carry the result**, both in `tests/unit/dispatch-gate.test.js` as well
+as the frozen directory, and both chosen so a plausible wrong implementation *fails* rather
+than merely being exercised:
+
+- **A target working copy whose `origin` holds the suite while `targetRepoRemote` does not,
+  plus its exact mirror.** Every other fixture in either suite is refused by a working-tree
+  check too, so only that pair discriminates the shipped design from the one it replaces.
+  `targetRepoPath` and `targetRepoRemote` are independent config keys `runner/config.js` never
+  relates, and five of the seven observed failures had their suite present *locally* — in an
+  unpushed commit, or untracked. Freezing locally is not freezing.
+- **A `master` project carrying no `pipeline.config.json`.** The only fixture that catches a
+  branch chain ending at the literal `'main'` — which is `runner/workspace.js`'s
+  `detectDefaultBranch`, correct there (it only runs against a fresh clone where `origin/HEAD`
+  is always set) and catastrophic here, where guessing `main` empties `ls-tree` for *every*
+  issue and refuses the whole queue with a confident wrong reason. The chain here is
+  `pipeline.config.json`, else `git ls-remote --symref`, else abort. No literal last resort.
+
+Both were proven in both directions before shipping, and so was everything else load-bearing:
+mutating the source to drop the `-d`, to spawn without the options builder, to skip cleanup on
+the abort path, to fetch without a refspec, to read the working copy instead of `FETCH_HEAD`,
+or to end the branch chain at `main` turns the suite red in each case.
+
+**The bound and the channel.** Every `git` spawn in `runner/queue.js` is built from the
+exported `gitSpawnOptions(cfg)`, whose `timeout` is a new `gitTimeoutMs` (default 60000,
+validated by `loadConfig` exactly as `bdTimeoutMs` is, present in `run.config.example.json`) —
+an exported builder some spawn ignores is scaffolding, and that is checked structurally as
+well as behaviourally. `readyQueue()` reports failure as `{ ok: false, cause: 'git' | 'bd',
+error }` and `run.js` branches on the **field**, never the wording: a fetch failure logged as
+"cannot read the Beads ready queue" sends a person to the wrong system, and the run's own log
+line lives behind `main()` where no Docker-free test can reach it.
+
+**One shipped property was repealed, and its test rewritten rather than deleted.** An
+unreachable `targetRepoRemote` used to be a *task* failure at exit 0 — the clone failed inside
+`prepare()`, the task was reported, the run carried on — asserted as such by
+`scripts/test-runner-workspace.sh`'s check 11. The gate reaches that remote first, so it is
+now a run abort before anything is claimed. That check now asserts the abort, that it names
+the remote, that it is not reported in the Beads channel, that no task launched, and that the
+issue is still `open`. A tested property that stops being true and takes its own test with it
+is indistinguishable from one that was never tested.
+
+**Host obligations, two.** Run `bash scripts/test-all.sh` on the reference host:
+`scripts/test-runner-workspace.sh` and `scripts/test-runner-queue.sh` both need Docker and
+could not be run from the container, and check 11 above was edited blind — it is the one part
+of this task no frozen test could verify. And `docs/pipeline-map.html` is exempt from task
+docs phases and nothing else updates it (CLAUDE.md), so its runner panels still draw the type
+filter as the only thing keeping an entry out of the loop; `docs/pipeline-diagram.md` was
+amended here and the map was not. Editing it means re-running
+`node scripts/build-pipeline-map.js`, which needs `tools/mapbuild/node_modules` and therefore
+a host.
+
 ## What's next
 
 **The queue drained again on 2026-07-26**, after `repo-4l8` (the epic filter, planned and
@@ -1361,13 +1431,13 @@ design's central bet, and it is the first day it paid out repeatedly.
 
 ## Test suites
 
-All but seventeen drive real Docker and share one network, so they must never run concurrently
+All but eighteen drive real Docker and share one network, so they must never run concurrently
 (`test-runner-memory.sh`, `test-changelog.sh`, `test-sanitize.sh`,
 `test-agent-hooks.sh`, `test-network-names.sh`, `test-lock.sh`,
 `test-sweep-hygiene.sh`, `test-concurrency.sh`, `test-pause-gate.sh`,
 `test-sweep-assertions.sh`, `test-trace.sh`, `test-verdict.sh`, `test-audit-runs.sh`,
 `test-dashboard.sh`, `test-verify-buffer.sh`, `test-pipeline-map.sh`
-and `test-batch.sh` are the exceptions —
+`test-batch.sh` and `test-dispatch-gate.sh` are the exceptions —
 see below; they need neither).
 **`scripts/test-all.sh` is the sweep** — it holds a lock, runs every suite sequentially,
 kills one that hangs (`--timeout`, default 900s), **reclaims what each suite leaked after
@@ -1408,8 +1478,9 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-verify-buffer.sh` | the verifier's capture limit (change-log row `verify-nobuffer`) — a loud passing suite is a pass, a loud failing one is still a fail |
 | `scripts/test-pipeline-map.sh` | the reader's map drawn at build time (change-log row `map-prerender`) — a good SVG's stylesheet versus a real error card, neither check meaning anything alone |
 | `scripts/test-batch.sh` | the batch marker reader (change-log rows `repo-0b3`, `repo-8v0`) — the marker name anchored at both ends, the manifest-less run dated from `run.log`, the conservative `run-time-unknown` direction, the degraded labels, byte-identical repeat output, the pure-reader contract checked by sha1 snapshot and parsed `require` specifiers, and the live-queue reconciliation driven through the `PIPELINE_BD_CMD` seam: the runner's own epic filter, the `-C` slot, a queue past 1 MiB, and every degraded reason against the reconciled one |
+| `scripts/test-dispatch-gate.sh` | the ready queue's second admission rule (change-log rows `dispatch-gate`, `repo-5yu`) — the origin-versus-`targetRepoRemote` pair that discriminates this design from a working-tree check, the `ls-remote --symref` link of the branch chain against a `master` project, an unresolvable branch aborting rather than guessing, a sibling id that merely extends another, the `-d`, the throwaway repository removed on the abort path too, `gitTimeoutMs` at the spawn and at config load, and every `spawnSync` in `runner/queue.js` built from one exported builder |
 
-**`scripts/test-runner-memory.sh` is one of the fourteen suites that need no Docker**
+**`scripts/test-runner-memory.sh` is one of the eighteen suites that need no Docker**
 (repo-dhp): it
 drives both §3.6 memory channels plus the `shouldFileMemory` outcome gate through the
 `PIPELINE_BD_CMD` seam, so it runs anywhere — including inside a task container, where

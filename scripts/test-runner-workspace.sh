@@ -120,15 +120,38 @@ git -C "$REMOTE" rev-parse "task/$I2" >/dev/null 2>&1 && pass "earlier remote br
 WS1=$(echo "$OUT" | grep -o "workspace kept at .*" | head -1 | sed 's/workspace kept at //')
 [ ! -f "$WS1/new-file.txt.bak" ] && [ -f "$WS1/file.txt" ] && pass "each task gets a clean checkout" || fail "workspace contamination"
 
-# 11. Clone failure is a task failure, not a run failure.
+# 11. An unreachable remote is a RUN abort, not a per-task failure.
+#
+# THIS CHECK WAS REWRITTEN, NOT ADDED (DESIGN.md §4.12, change-log row `dispatch-gate`).
+# It used to assert the opposite: the clone failed inside prepare(), the task was reported
+# "workspace preparation failed", and the run carried on at exit 0. The dispatch gate
+# reaches that same remote FIRST — before anything is claimed — so an unreachable remote now
+# ends the run, which is the better report: every task would have failed at clone seconds
+# later, and eight task-level clone failures are a worse artifact than one abort naming the
+# remote. A tested property that stops being true and takes its own test with it is
+# indistinguishable from one that was never tested, so the check asserts the new behaviour
+# rather than being deleted.
 BADCFG="$TMP/bad.json"
 printf '{"targetRepoPath":"%s","targetRepoRemote":"%s/nope.git","image":"pipeline-base:local"}\n' "$TGTW" "$REMOTEW" > "$BADCFG"
 I3=$(bdq create "unclonable" -d x --acceptance ok --design "design-ref: 4.2" -p 0 --silent)
 freeze "$I3"
 # tee to stderr streams the run live; stdout still captured, pipefail preserves RC.
 OUT=$(set -o pipefail; PIPELINE_EXEC_STUB="$TMP/stub-work.sh" RUN_ID=t13-badremote node runner/run.js --config "$BADCFG" 2>&1 | tee /dev/stderr); RC=$?
-echo "$OUT" | grep -q "workspace preparation failed" && pass "clone failure reported per task" || fail "clone failure not handled"
-[ "$RC" = 0 ] && pass "run continues after a task-level clone failure" || fail "run aborted on task failure (rc=$RC)"
+[ "$RC" = 1 ] && pass "unreachable remote aborts the run" || fail "unreachable remote did not abort (rc=$RC)"
+echo "$OUT" | grep -q "nope.git" && pass "the abort names the remote it could not reach" \
+  || fail "the abort does not name the remote"
+# Its own channel: reporting a git failure as a Beads failure sends a person to the wrong
+# system, and that is the whole reason readyQueue() returns a cause field.
+echo "$OUT" | grep -q "cannot read the Beads ready queue" \
+  && fail "a git failure was reported as a Beads failure" \
+  || pass "the abort is reported in its own channel, not as a Beads failure"
+# Nothing was launched, and nothing was claimed: the gate runs before claim().
+echo "$OUT" | grep -q "workspace preparation failed" \
+  && fail "a task was launched after the gate should have aborted the run" \
+  || pass "no task was launched"
+bdq show "$I3" 2>/dev/null | grep -qi "in_progress" \
+  && fail "an aborted run left an issue in_progress" \
+  || pass "Beads untouched: the issue is still open for the next run"
 
 if [[ $FAIL -eq 0 ]]; then echo "== ALL T13 CHECKS PASSED =="; else echo "== T13 CHECKS FAILED =="; fi
 exit $FAIL

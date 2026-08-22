@@ -6,6 +6,10 @@
 // unblocked, dependencies satisfied), ranked by priority (0 = highest), FIFO within
 // the same priority. Terminal transitions come from the §4.11 outcome table.
 'use strict';
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { spawnSync } = require('child_process');
 const { bd, bdJson } = require('./bd');
 
 // §4.11 outcome table: exit code -> {report status, Beads status}. 'killed' is the
@@ -44,22 +48,185 @@ function typeOf(issue) {
   return typeof t === 'string' ? t.trim().toLowerCase() : '';
 }
 
-// Ready work: bd's own blocker-aware semantics (verified in T2), then our ordering.
-// Returns the survivors plus the entries filtered out by type, so the caller can name
-// them in the queue-summary line — a skip nobody can see is the silent-failure family
-// this design has already paid for.
+// ---- the dispatchability gate (§4.12's SECOND admission rule) -------------------------
+// A task whose frozen acceptance suite is not on the branch its container will fork from
+// can never pass: the verifier's first act is `<verifyCommand> tests/acceptance/<id>/`,
+// which exits 1 against a missing directory before any of the agent's work is consulted,
+// three times, once per attempt. Dispatching it spends a container to record `stuck`.
+//
+// The bound, on the `runner/bd.js` `spawnOptions(cfg)` precedent — and the value of that
+// precedent is that EVERY spawn in the module is built from it, so an exported builder that
+// some spawn ignores is scaffolding. `git fetch` against an unreachable host parks
+// indefinitely in exactly the way an unbounded `bd` once parked whole runs.
+const DEFAULT_GIT_TIMEOUT_MS = 60000;
+
+function gitSpawnOptions(cfg, extra = {}) {
+  const want = cfg && cfg.gitTimeoutMs;
+  const timeout = Number.isInteger(want) && want > 0 ? want : DEFAULT_GIT_TIMEOUT_MS;
+  // SIGKILL for the same reason bd.js uses it: a bound a wedged process can decline to
+  // honour is not a bound. A timed-out spawnSync reports status null and signal SIGKILL,
+  // which every call site below already reads as "not zero" — an abort, never an answer.
+  return { encoding: 'utf8', timeout, killSignal: 'SIGKILL', ...extra };
+}
+
+const git = (cfg, args, extra) => spawnSync('git', args, gitSpawnOptions(cfg, extra));
+
+// WITHOUT A LITERAL FALLBACK, and failing to resolve aborts. Deliberately not
+// `runner/workspace.js`'s `detectDefaultBranch`, whose chain ends at the literal 'main':
+// correct there, because it only ever runs against a fresh clone where `origin/HEAD` is
+// always set, and catastrophic here, where guessing `main` for a `master` project empties
+// `ls-tree` for EVERY issue and refuses the whole queue with a confident wrong reason.
+function resolveBranch(cfg) {
+  try {
+    const parsed = JSON.parse(
+      fs.readFileSync(path.join(cfg.targetRepoPath, 'pipeline.config.json'), 'utf8'));
+    const named = parsed && parsed.defaultBranch;
+    if (typeof named === 'string' && named.trim()) return { ok: true, branch: named.trim() };
+  } catch { /* no config, unreadable, or not valid JSON: ask the remote instead */ }
+  // The remote itself, by URL — not `origin/HEAD` in a checkout that may point elsewhere.
+  const r = git(cfg, ['ls-remote', '--symref', cfg.targetRepoRemote, 'HEAD']);
+  // `\s*$` inside the pattern, not a trim of the whole output: the working copy on the
+  // reference host is CRLF and the container is LF (CLAUDE.md's line-ending rule).
+  const m = /^ref:\s+refs\/heads\/(\S+)\s+HEAD\s*$/m.exec(r.stdout || '');
+  if (r.status === 0 && m) return { ok: true, branch: m[1] };
+  return {
+    ok: false,
+    error: `cannot resolve the integration branch of ${cfg.targetRepoRemote}: `
+      + `pipeline.config.json in ${cfg.targetRepoPath} names no defaultBranch, and `
+      + `\`git ls-remote --symref\` returned no HEAD symref`
+      + `${(r.stderr || '').trim() ? ` — ${(r.stderr || '').trim()}` : ''}`,
+  };
+}
+
+// One fetch per run, BY URL and with an EXPLICIT REFSPEC, into a throwaway repository.
+//   by URL     — `targetRepoPath` and `targetRepoRemote` are independent config keys
+//                `runner/config.js` never relates, so a working copy whose `origin` points
+//                elsewhere would answer confidently about a different repository;
+//   refspec    — a bare `git fetch <url>` sets FETCH_HEAD to the remote's HEAD and silently
+//                discards the resolved branch;
+//   throwaway  — FETCH_HEAD is per-repository state, and writing it into the working copy
+//                an operator is using is a side effect §5's readers are forbidden to have.
+// Returns a probe that answers one candidate at a time, plus its own cleanup.
+function fetchBranch(cfg, branch) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pipeline-dispatch-gate-'));
+  const cleanup = () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* temp */ } };
+  // No `--initial-branch`: the throwaway's own branch name is never read (FETCH_HEAD is),
+  // and pinning it would make the gate — which runs before every dispatch — require a git
+  // newer than 2.28 for no benefit at all.
+  const init = git(cfg, ['init', '-q', dir]);
+  if (init.status !== 0) {
+    cleanup();
+    return { ok: false, error: `cannot prepare a throwaway repository for the dispatch check: ${(init.stderr || '').trim() || `git init exited ${init.status}`}` };
+  }
+  const fetched = git(cfg, ['fetch', '--quiet', cfg.targetRepoRemote, branch], { cwd: dir });
+  if (fetched.status !== 0) {
+    cleanup();
+    return {
+      ok: false,
+      error: `cannot read branch '${branch}' of ${cfg.targetRepoRemote} to check which tasks are frozen: `
+        + `${(fetched.stderr || '').trim() || `git fetch exited ${fetched.status}`}`,
+    };
+  }
+  return { ok: true, dir, cleanup };
+}
+
+// `-d` is not leniency to be tidied away later: a suite committed as a single FILE answers
+// empty here and is refused, which matches the verifier, whose trailing-slash invocation
+// would fail on a file too.
+function suitePath(issueId) { return `tests/acceptance/${issueId}`; }
+
+function hasSuite(cfg, probe, issueId) {
+  const r = git(cfg, ['ls-tree', '-d', '--name-only', 'FETCH_HEAD', '--', suitePath(issueId)],
+    { cwd: probe.dir });
+  if (r.status !== 0) {
+    return { ok: false, error: `cannot read FETCH_HEAD while checking ${suitePath(issueId)}: ${(r.stderr || '').trim() || `git ls-tree exited ${r.status}`}` };
+  }
+  return { ok: true, present: !!(r.stdout || '').trim() };
+}
+
+// Split the candidates into what may be dispatched and what may not. LAZY at the caller:
+// a queue with no candidates never reaches here, so it neither fetches nor aborts — an
+// eager gate turns a legitimately empty run into an exit-1 failure.
+function partitionByFreeze(cfg, candidates) {
+  const resolved = resolveBranch(cfg);
+  if (!resolved.ok) return { ok: false, error: resolved.error };
+  const branch = resolved.branch;
+  const probe = fetchBranch(cfg, branch);
+  if (!probe.ok) return { ok: false, error: probe.error };
+  try {
+    const issues = [];
+    const undispatchable = [];
+    for (const issue of candidates) {
+      const answer = hasSuite(cfg, probe, issue.id);
+      // An unreadable tree is the discriminator being unavailable (§3.2): it aborts rather
+      // than quietly refusing the whole queue with a confident wrong reason.
+      if (!answer.ok) return { ok: false, error: answer.error };
+      if (answer.present) issues.push(issue);
+      else {
+        undispatchable.push({
+          issue,
+          reason: `no frozen acceptance suite at ${suitePath(issue.id)}/ on ${branch} of ${cfg.targetRepoRemote}`,
+        });
+      }
+    }
+    return { ok: true, issues, undispatchable, branch };
+  } finally {
+    probe.cleanup();
+  }
+}
+
+// Ready work: bd's own blocker-aware semantics (verified in T2), then our ordering, then
+// §4.12's second admission rule. Returns the survivors, the entries filtered out by type,
+// and the entries refused for want of a frozen suite, so the caller can name both
+// populations in the queue-summary line — a skip nobody can see is the silent-failure
+// family this design has already paid for.
+//
+// The two failure channels are told apart by a FIELD, never by message wording: `run.js`
+// logs a `bd` cause as "cannot read the Beads ready queue", and reporting a fetch failure
+// under that cause sends a person to the wrong system. The wording cannot be the contract,
+// because the run's log line lives behind `main()` where no Docker-free test can reach it.
 function readyQueue(cfg) {
   const res = bdJson(cfg, ['ready']);
-  if (!res.ok) return { ok: false, error: res.error };
+  if (!res.ok) return { ok: false, cause: 'bd', error: res.error };
   const entries = Array.isArray(res.data) ? res.data : [];
   const skipped = entries.filter((i) => EXCLUDED_TYPES.has(typeOf(i)));
-  const issues = entries.filter((i) => !EXCLUDED_TYPES.has(typeOf(i))).sort((a, b) => {
+  const candidates = entries.filter((i) => !EXCLUDED_TYPES.has(typeOf(i))).sort((a, b) => {
     const pa = a.priority ?? 2;
     const pb = b.priority ?? 2;
     if (pa !== pb) return pa - pb;                                   // 0 = highest first
     return String(a.created_at || '').localeCompare(String(b.created_at || '')); // FIFO
   });
-  return { ok: true, issues, skipped };
+  // LAZY (§4.12): nothing to dispatch means nothing to check. Fetching here would turn an
+  // empty queue — the normal state of a drained project — into a run abort.
+  if (!candidates.length) return { ok: true, issues: [], skipped, undispatchable: [] };
+
+  const gate = partitionByFreeze(cfg, candidates);
+  // Never a partial or fallback answer: the gate could not tell frozen from unfrozen, so
+  // the run has no basis for dispatching anything at all.
+  if (!gate.ok) return { ok: false, cause: 'git', error: gate.error };
+  return { ok: true, issues: gate.issues, skipped, undispatchable: gate.undispatchable };
+}
+
+// The manufactured manifest row for a refused issue — a PURE EXPORTED FUNCTION, not inline
+// code in `main()`, which sits behind the token load and the Docker preflight and is
+// therefore unreachable to every Docker-free test (the reason `queueSummary` was lifted out
+// of it in the first place). A refused task never enters `drainQueue`, so unlike the
+// rate-limit refusal there is no row for `.filter(Boolean)` to preserve: this is the only
+// place that information still exists.
+//
+// It carries more than the outcome word because the report renders a row's BODY from these
+// fields, and a minimal row produces a section reading "no change summary produced" that
+// tells the reader nothing to do — the outcome this whole gate exists to prevent.
+function undispatchableRow(issue, reason, runId) {
+  const id = (issue && issue.id) || '';
+  const remedy = `freeze the suite at ${suitePath(id)}/ on the integration branch and push it`;
+  return {
+    issueId: id,
+    title: (issue && issue.title) || '',
+    outcome: 'undispatchable',
+    changeSummary: `Nothing ran: ${reason}. To dispatch it, ${remedy}. Beads was never touched — the issue is still \`open\` and the next run picks it up unchanged.`,
+    attemptNotes: [`run ${runId}: not dispatched — ${reason}\n  remedy: ${remedy}; the issue is untouched in Beads and stays open`],
+  };
 }
 
 const describe = (i) => `${i.id} (${typeOf(i) || 'untyped'})`;
@@ -69,9 +236,10 @@ const describe = (i) => `${i.id} (${typeOf(i) || 'untyped'})`;
 // no Docker-free test can execute (same move repo-dhp made with shouldFileMemory).
 // The historic prefix is load-bearing — scripts/test-runner-queue.sh greps it at six
 // sites — so both clauses are APPENDED, never woven into it.
-function queueSummary(issues, skipped) {
+function queueSummary(issues, skipped, undispatchable) {
   const list = Array.isArray(issues) ? issues : [];
   const out = Array.isArray(skipped) ? skipped : [];
+  const refused = Array.isArray(undispatchable) ? undispatchable : [];
   let line = `ready queue: ${list.length} task(s) — ${list.map((i) => i.id).join(', ') || '(empty)'}`;
   if (out.length) {
     line += `; skipped ${out.length} by type: ${out.map(describe).join(', ')}`;
@@ -81,6 +249,16 @@ function queueSummary(issues, skipped) {
   const nonTask = list.filter((i) => typeOf(i) && typeOf(i) !== 'task');
   if (nonTask.length) {
     line += `; running ${nonTask.length} non-task: ${nonTask.map(describe).join(', ')}`;
+  }
+  // §4.12's second admission rule, LAST — after both historic clauses, so neither moves.
+  // Named with the remedy, because this skip is worse than most: until the gate shipped the
+  // tasks did appear in the report, as three-attempt failures indexed under the agent's
+  // name rather than under the missing freeze.
+  if (refused.length) {
+    const ids = refused.map((u) => (u && u.issue && u.issue.id) || String(u && u.id || '')).join(', ');
+    line += `; NOT DISPATCHABLE ${refused.length}: ${ids}`
+      + ' — no frozen suite at tests/acceptance/<issue-id>/ on the integration branch;'
+      + ' freeze and push it, then re-run (the issues stay open, untouched)';
   }
   return line;
 }
@@ -155,7 +333,13 @@ function attemptNotes(runId, outcome, status, memoryIn) {
 // design and a reader that reported them would raise the false alarm every time. A second
 // copy of the rule would drift from the runner's, and the whole value of the reconciliation
 // is that it predicts what the runner will actually drain.
+//
+// `gitSpawnOptions` and `undispatchableRow` are exported for the reason every other pure
+// helper in this file is: `main()` sits behind the token load and the Docker preflight, so
+// a bound applied there, or a row manufactured there, is unreachable to every Docker-free
+// test — and a gate that refuses correctly while manufacturing nothing would pass a suite
+// that never looked.
 module.exports = {
   readyQueue, queueSummary, claim, exportIssue, finish, outcomeFor, attemptNotes, OUTCOMES,
-  EXCLUDED_TYPES, typeOf,
+  EXCLUDED_TYPES, typeOf, gitSpawnOptions, undispatchableRow, DEFAULT_GIT_TIMEOUT_MS,
 };

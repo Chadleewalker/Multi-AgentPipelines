@@ -153,7 +153,7 @@ bash scripts/test-runner-container.sh
 # Host-only: needs `cd tools/mapbuild && npm install` once, and never runs in a container.
 node scripts/build-pipeline-map.js   # writes docs/pipeline-map.built.html + a per-diagram node count
 
-# the seventeen suites that need no Docker — seconds, safe to run anywhere, even in a container
+# the eighteen suites that need no Docker — seconds, safe to run anywhere, even in a container
 bash scripts/test-runner-memory.sh
 bash scripts/test-changelog.sh     # DESIGN.md §12 row identity (CHANGELOG_FILE re-aims it)
 bash scripts/test-sanitize.sh      # publication hygiene (SANITIZE_FIXTURE_DIR re-aims it)
@@ -171,6 +171,7 @@ bash scripts/test-dashboard.sh     # the live dashboard's /state joins, its degr
 bash scripts/test-verify-buffer.sh # the verifier's capture limit — a loud PASS is a pass, a loud FAIL is still a fail (change-log row `verify-nobuffer`)
 bash scripts/test-pipeline-map.sh  # the reader's map is drawn at build time — an error card is not a diagram (change-log row `map-prerender`)
 bash scripts/test-batch.sh         # the batch marker reader — the marker shape, the corpus join, the live-queue reconciliation and both degraded vocabularies (change-log rows `repo-0b3`, `repo-8v0`)
+bash scripts/test-dispatch-gate.sh # the ready queue's SECOND admission rule — a task whose frozen suite is not on the fork branch is never dispatched (change-log rows `dispatch-gate`, `repo-5yu`)
 ```
 
 Reading the corpus itself is `node scripts/audit-runs.js` — a pure reader that prints one
@@ -450,6 +451,22 @@ the pipeline working on the pipeline's own code. The rules:
   a stubbed seam saw which repo was consulted), and a queue larger than 1 MiB still
   reconciles (a capture overflow and a timeout kill the child identically, so an unraised
   ceiling reports a query that answered at once as one that never answered).
+  And `sh scripts/test-dispatch-gate.sh` (`tests/unit/dispatch-gate.test.js`), which needs
+  git and node only and builds throwaway bare remotes and working copies under the OS temp
+  dir: run it if you touch `runner/queue.js`, and equally if you touch anything the gate is
+  DOWNSTREAM of — the outcome enum in `schemas/run.schema.json`, the scrutiny table or the
+  label map in `runner/report.js`, the summary line `scripts/dashboard.js` parses ids out
+  of, or `runner/config.js`'s validation of `gitTimeoutMs`. What it decides is whether a
+  batch goes out at all, and both ways it fails are silent: refuse the whole queue on a
+  confident wrong branch, or dispatch an unfrozen task that can only spend three attempts
+  and a container to record `stuck`. Its load-bearing fixture is a PAIR that has to be read
+  together — a target working copy whose `origin` holds the suite while `targetRepoRemote`
+  does not, and its exact mirror. Every other fixture in the file is answered the same way
+  by a check against the working tree, which is the implementation this design exists to
+  replace; only that pair tells them apart. Its second is a `master` project with no
+  `pipeline.config.json`, which is the only fixture that catches a branch chain ending at
+  the literal `'main'` — the chain `runner/workspace.js`'s `detectDefaultBranch` has, which
+  is correct there and would refuse this whole queue with a confident wrong reason.
   Any new Docker-free suite belongs beside them in
   `tests/unit/`, and its seam stub must be a `.js` file invoked through
   `process.execPath`, never a `#!/bin/sh` script: `spawnSync` without a shell fails such a

@@ -20,6 +20,7 @@ const { preflight, networkDown } = require('./preflight');
 const { release: releaseLock } = require('./lock');
 const {
   readyQueue, queueSummary, claim, exportIssue, finish, outcomeFor, attemptNotes,
+  undispatchableRow,
 } = require('./queue');
 const { prepare, hasCommits, collectArtifacts, discard } = require('./workspace');
 const { runTask } = require('./container');
@@ -348,11 +349,30 @@ async function main() {
   // ---- the task loop (§4.12): drain the ready queue, one container per task ----
   const q = readyQueue(cfg);
   if (!q.ok) {
-    log.error(t, `cannot read the Beads ready queue: ${q.error}`);
+    // Two systems, two channels (§4.12). The discriminator is the `cause` FIELD, never the
+    // wording: a fetch failure logged as "cannot read the Beads ready queue" sends a person
+    // to the wrong system entirely, and the queue is unreadable for want of git, not bd.
+    if (q.cause === 'git') {
+      log.error(t, 'cannot check which tasks are frozen, so none can be dispatched: ' +
+        `${q.error}`);
+    } else {
+      log.error(t, `cannot read the Beads ready queue: ${q.error}`);
+    }
     networkDown(REPO_ROOT, cfg);
     process.exit(1);
   }
-  log.info(t, queueSummary(q.issues, q.skipped));
+  log.info(t, queueSummary(q.issues, q.skipped, q.undispatchable));
+
+  // §4.12's second admission rule refused these before `claim()`, so Beads is untouched and
+  // they stay `open` for a freeze session. They never enter drainQueue — the rows are
+  // MANUFACTURED here, from the only place that information still exists, because a refused
+  // task that produced no row is indistinguishable, after exactly the unattended run where
+  // nobody watched it happen, from a task nobody queued.
+  const refusedRows = (q.undispatchable || [])
+    .map((u) => undispatchableRow(u.issue, u.reason, log.runId));
+  for (const u of q.undispatchable || []) {
+    log.error(log.trace(u.issue.id), `not dispatched: ${u.reason} — Beads untouched, the issue stays open`);
+  }
 
   // Every task is the same body; `concurrency` (default 1) decides how many of them are
   // in flight at once, and the drain hands back one row per queued issue in READY-QUEUE
@@ -370,7 +390,10 @@ async function main() {
     log.info(t, `run-level rate-limit park: ${gate.waits} shared wait(s), ${gate.cycles} cycle(s) spent` +
       `${gate.exhausted ? ' — the run-level pause cap fired; refused tasks stay open for the next run' : ''}`);
   }
-  log.info(t, `queue drained: ${results.map((r) => `${r.issueId}=${r.outcome}`).join(', ') || '(nothing ran)'}`);
+  // The refusals are named here too. "queue drained: (nothing ran)" against a queue that was
+  // wholly refused is true and reads like an empty queue — the closing line is where an
+  // operator skimming the log stops.
+  log.info(t, `queue drained: ${[...results, ...refusedRows].map((r) => `${r.issueId}=${r.outcome}`).join(', ') || '(nothing ran)'}`);
 
   // ---- manifest + report (§4.9, §4.12) ----
   const { manifest } = writeManifest(log.dir, {
@@ -381,7 +404,7 @@ async function main() {
     // The CONFIGURED (or defaulted) setting, not the observed peak in flight: what the run
     // was allowed to do is the thing a later reader needs to interpret its wall clock.
     concurrency: cfg.concurrency,
-    tasks: results,
+    tasks: [...results, ...refusedRows],
   });
   const reportFile = writeReport(log.dir, manifest);
   log.info(t, `run report: ${reportFile}`);

@@ -24,7 +24,9 @@ flowchart TB
   F -->|"approved"| G["Freeze — tests committed<br/>to the integration branch"]
   G --> H[("Beads issue = the task spec")]
   G -.-> BM["Batch marker, written at freeze — runs/batches/&lt;project&gt;-&lt;date&gt;.json<br/>read back with node scripts/batch.js show · pending · never a queue item"]
-  H --> I["Runner drains the ready queue<br/>epics skipped · priority, then FIFO"]
+  H --> I["Runner drains the ready queue<br/>epics skipped · unfrozen refused · priority, then FIFO"]
+  I -.-> UD["Refused before claim — no suite on the fork branch<br/>one git fetch of targetRepoRemote per run · ls-tree -d per candidate<br/>run.json row, outcome undispatchable · Beads untouched, issue stays open"]
+  UD -.-> G
   I --> J["One fresh container per task<br/>1 at a time by default · up to 3 with the knob"]
   J --> K["Run report + pull requests<br/>ordered by scrutiny needed"]
   K --> L{"Merge, or send back"}
@@ -186,6 +188,7 @@ stateDiagram-v2
   in_progress --> blocked: stuck · tampered · failed
   in_progress --> in_progress: rate limit — parked, then resumed
   open --> open: refused — the run-level pause cap had already fired
+  open --> open: not dispatched — no frozen suite on the fork branch
   blocked --> open: you fix the spec and unblock it
   closed --> [*]
 ```
@@ -193,14 +196,35 @@ stateDiagram-v2
 `blocked` is doing quiet but critical work: it removes failed work from the ready queue.
 Without it a task that cannot pass would be picked up again on every run, forever.
 
-The `open → open` self-loop is the run-level park's refused population: the gate is
-consulted before the claim, so a task the fired cap turns away never enters the diagram's
-`in_progress` half at all and the next run picks it up untouched.
+Both `open → open` self-loops are populations that never enter the diagram's `in_progress`
+half, because both gates are consulted **before the claim**. The first is the run-level
+park's refusal: the pause cap had already fired, so nothing launched. The second is the
+ready queue's dispatchability gate (§4.12, change-log row `dispatch-gate`) — the issue's
+frozen acceptance suite is not on the branch its container would fork from, so the verifier
+could only ever have exited 1 three times over. Neither is blocked and neither is failed;
+one is waiting for a usage window and the other for a freeze session, and both are picked
+up untouched by the next run.
 
 An **epic** never enters this diagram at all. `bd ready` returns it alongside its children
 and never closes it when they close, so the runner filters ready entries typed `epic` out
 before the loop and names them in its queue-summary line — skipped, but never silently
 (§3.1, §4.12).
+
+The type filter is no longer the only thing that keeps a ready entry out of the loop. The
+**dispatchability gate** is the second admission rule, and it asks a question Beads cannot
+answer, because Beads tracks issues and not freezes: *is this task's frozen acceptance suite
+on the branch its container will fork from?* Once per run, `git fetch <targetRepoRemote>
+<branch>` into a throwaway repository under the OS temp dir; then, per candidate,
+`git ls-tree -d --name-only FETCH_HEAD -- tests/acceptance/<issue-id>`. Empty output, not
+dispatchable. The gate goes to the **remote by URL and reads `FETCH_HEAD`** — never
+`origin/…`, never the working tree, never a local branch — because freezing locally is not
+freezing, and because `targetRepoPath` and `targetRepoRemote` are independent config keys
+nothing relates. It is **lazy** (a queue with no candidates neither fetches nor aborts), it
+is **per issue** (three frozen tasks and one unfrozen one runs the three), and a fetch that
+fails, hangs past `gitTimeoutMs`, or resolves no branch **aborts the run in its own channel**
+rather than dispatching blind. Like the type skip, refusals are named in the queue-summary
+line — with the remedy, because until this shipped they appeared in the report as
+three-attempt failures indexed under the agent's name rather than under the missing freeze.
 
 ## Where the walls are
 
@@ -264,6 +288,18 @@ place the closed-network policy would have to be revisited deliberately.
 | Usage limit hit | 20 | paused | stays in progress | not yet | not yet |
 | Internal error | 30 | failed | blocked | if commits exist | no |
 | Wall-clock kill | — | failed | blocked | if commits exist | no |
+| Not dispatched: no frozen suite on the fork branch | — never launched | undispatchable | untouched, stays `open` | no | no |
+
+`undispatchable` is the one row here that touches Beads **not at all** (§4.11, §4.12,
+change-log row `dispatch-gate`). The ready queue's second admission rule refuses the issue
+before `claim()`, so it is never in progress, never blocked, and the next run picks it up
+unchanged the moment its suite is pushed. It is a row in the manifest and not a hole — a
+refused task that produced no row is, after the unattended run where nobody watched it
+happen, indistinguishable from a task nobody queued — and it ranks second in scrutiny order
+behind `tampered`, because a batch that could not run is the first thing a person opening
+the report needs to see. Unlike the park's refusal below, it is a distinct outcome rather
+than a reuse of an existing one: parking is scheduling, and this is a statement about the
+work itself.
 
 The table is unchanged by the run-level park, deliberately — parking is *scheduling*, never
 *judgment*. A task the fired pause cap refused adds no outcome: it reports the existing
