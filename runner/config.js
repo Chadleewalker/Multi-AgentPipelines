@@ -26,8 +26,11 @@ const DEFAULTS = {
   model: 'opus',
 };
 const REQUIRED = ['targetRepoPath', 'targetRepoRemote', 'image'];
-// The ceiling on §7's concurrency knob. See loadConfig for why it is a literal.
-const MAX_CONCURRENCY = 3;
+// §7's concurrency knob has NO ceiling (change-log row `concurrency-uncapped`). The literal 3
+// that used to live here was a hedge against the shared subscription window, and the run-level
+// park (§4.7) already answers that at any N. Kept as a named export so the suites that pin the
+// validation contract have one place to read it from; null means "no upper bound".
+const MAX_CONCURRENCY = null;
 
 // ---- per-project network + proxy names (§4.8, §4.12) -------------------------------
 // The task network and the proxy sidecar are per project, not per pipeline: two runner
@@ -120,13 +123,12 @@ function loadConfig(file) {
     throw new Error(`run.config.json: 'gitTimeoutMs' must be a positive whole number`);
   }
   // §7's concurrency knob: how many task containers ONE runner process holds at once.
-  // Default 1 — strictly sequential, exactly as before the knob existed. The ceiling is a
-  // literal here because §7 states only a hedged range; a run is bounded by the slowest
-  // task in the batch, not by how many it holds, so more depth buys progressively less
-  // while multiplying the load on one subscription window.
+  // Default 1 — strictly sequential, exactly as before the knob existed. Any whole number
+  // from 1 up is accepted: the operator owns the trade (a run is bounded by its slowest task,
+  // and every container shares one subscription window, which the run-level park guards).
   if (raw.concurrency !== undefined
-      && !(Number.isInteger(raw.concurrency) && raw.concurrency >= 1 && raw.concurrency <= MAX_CONCURRENCY)) {
-    throw new Error(`run.config.json: 'concurrency' must be a whole number from 1 to ${MAX_CONCURRENCY}`);
+      && !(Number.isInteger(raw.concurrency) && raw.concurrency >= 1)) {
+    throw new Error(`run.config.json: 'concurrency' must be a whole number of 1 or more`);
   }
   for (const k of ['network', 'proxyName']) {
     if (raw[k] !== undefined && (typeof raw[k] !== 'string' || !raw[k].trim())) {

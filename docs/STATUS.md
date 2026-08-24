@@ -1415,7 +1415,8 @@ design's central bet, and it is the first day it paid out repeatedly.
   sequential loop. Since `repo-jur` several runner processes, one per project, can be in
   flight at once (each over its own queue), and since `repo-os9` a second run against the
   *same* project is refused rather than trusted not to happen; since `repo-teq` one runner
-  works up to `concurrency` tasks of one project at once (default 1, ceiling 3); and since
+  works up to `concurrency` tasks of one project at once (default 1; the ceiling of 3 was
+  lifted by change-log row `concurrency-uncapped`); and since
   `repo-i9y` a usage limit parks the whole run rather than each task separately. §7 is
   built. Note that none of it multiplies subscription capacity: N containers exhaust the
   same usage window N times faster, then the run parks as a whole — concurrency buys
