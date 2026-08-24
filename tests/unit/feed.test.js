@@ -309,11 +309,15 @@ async function drain(source, concurrency, body = async () => {}) {
   {
     const c = clock();
     let polls = 0;
+    // The wait step is capped at 1000, so an idle pool takes ~20 passes to spend this grace
+    // window. With the floor honoured that is ~4 re-reads; without it, one per pass per
+    // worker. The gap between those two numbers is the whole check, which is why the floor
+    // is set well above the wait step rather than equal to it.
     const source = createFeedSource([], {
       poll: () => { polls += 1; return ready(); },
       concurrency: 4,
-      idleGraceMs: 4000,
-      pollMs: 1000,            // and the wait step is capped at 1000, so ~4 polls fit
+      idleGraceMs: 20000,
+      pollMs: 5000,
       now: c.now,
       wait: c.wait,
     });
@@ -321,6 +325,27 @@ async function drain(source, concurrency, body = async () => {}) {
     check('four idle workers do not each re-read the queue on every pass',
       polls > 0 && polls <= 8);
     check('polls() reports what actually happened', source.polls() === polls);
+  }
+
+  // The floor is a CEILING ON FREQUENCY, not a delay before the first read. A pool that has
+  // just gone idle re-reads immediately — it is idle precisely because the user may have
+  // queued something a moment ago, and making them wait out a poll interval to find out is
+  // the difference between a feed that feels live and one that feels broken.
+  {
+    const c = clock();
+    let polls = 0;
+    const source = createFeedSource([], {
+      poll: () => { polls += 1; return polls === 1 ? ready('m-1') : ready(); },
+      concurrency: 1,
+      idleGraceMs: 5000,
+      pollMs: 600000,          // ten minutes: nothing may wait for this
+      now: c.now,
+      wait: c.wait,
+    });
+    const { dispatched } = await drain(source, 1);
+    check('an idle pool re-reads AT ONCE, it does not sit out a poll interval first',
+      dispatched.includes('m-1@0'));
+    check('and then honours the floor', polls === 1);
   }
 
   // ===================================================================================

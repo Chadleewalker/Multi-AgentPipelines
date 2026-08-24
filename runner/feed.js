@@ -117,7 +117,12 @@ function createFeedSource(initial, opts = {}) {
   let index = 0;
   let idle = 0;            // workers currently parked in next()
   let idleSince = null;    // when the WHOLE pool went idle; null while anyone is working
-  let lastPoll = 0;
+  // NEGATIVE INFINITY, not 0. The floor is "not more often than pollMs", not "not for the
+  // first pollMs": a pool that goes idle must re-read at once, because the whole reason it is
+  // idle is that the user may have just queued something. Seeding this to 0 works by accident
+  // against a real `Date.now()` — any wall clock is already past the floor — and silently
+  // costs a fed run its first poll interval anywhere the clock starts near zero.
+  let lastPoll = -Infinity;
   let polling = false;     // one poll at a time; the others read what it left behind
   let polls = 0;
   let ending = null;
