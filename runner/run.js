@@ -25,6 +25,7 @@ const {
 const { prepare, hasCommits, collectArtifacts, discard } = require('./workspace');
 const { runTask } = require('./container');
 const { createPauseGate } = require('./pause');
+const { createFeedSource, fixedSource, ENDINGS } = require('./feed');
 const { fileMemoryNotes, shouldFileMemory } = require('./memory');
 const { publish } = require('./publish');
 const { writeManifest, writeReport } = require('./report');
@@ -96,30 +97,42 @@ async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClo
 // inside a single process. Several runners, one per project, are a different thing and
 // already shipped (change-log row `repo-jur`).
 //
-// `issues` is the ready queue in ready-queue order; `taskFn(issue)` is the runner's own
-// per-task body; at most `concurrency` of those calls are in flight at once. The resolved
-// array is INDEX-ALIGNED WITH `issues` — ready-queue order, never completion order — so a
-// task that finishes first does not overtake its neighbours in the manifest.
+// `source` is either the ready queue as a plain ARRAY — the historic contract, and still
+// what every existing caller passes — or a live source from `runner/feed.js` that re-reads
+// the queue while the run is in flight (§4.12, change-log row `live-queue-feed`).
+// `taskFn(issue)` is the runner's own per-task body; at most `concurrency` of those calls
+// are in flight at once. The resolved array is INDEX-ALIGNED WITH DISPATCH ORDER, so a task
+// that finishes first does not overtake its neighbours in the manifest. For an array those
+// are the same thing — the cursor hands items out in ready-queue order — which is why
+// wrapping an array in `fixedSource` changes no existing behaviour and no existing result.
 //
-// N fixed workers pulling from a shared cursor, rather than a promise-set watched with
-// Promise.race: nothing here needs to know which task finished, only that a slot opened,
-// and the cursor is what keeps starts in ready-queue order at any depth.
-async function drainQueue(issues, taskFn, concurrency) {
-  const queue = Array.from(issues || []);
+// N fixed workers pulling from a shared source, rather than a promise-set watched with
+// Promise.race: nothing here needs to know which task finished, only that a slot opened.
+// A worker asking for work IS the free-slot signal a live source polls on, so the shape
+// chosen for ordering turns out to be the shape feeding needs.
+async function drainQueue(source, taskFn, concurrency) {
+  const live = source && !Array.isArray(source) && typeof source.next === 'function';
+  const src = live ? source : fixedSource(source);
   const n = Number.isInteger(concurrency) && concurrency > 0 ? concurrency : 1;
-  const results = new Array(queue.length);
-  let cursor = 0;
+  const results = [];
   const worker = async () => {
     for (;;) {
-      const i = cursor++;
-      if (i >= queue.length) return;
-      results[i] = await taskFn(queue[i], i);
+      const item = await src.next();
+      if (!item) return;
+      results[item.index] = await taskFn(item.issue, item.index);
     }
   };
+  // A live source has no length to bound the pool by — the whole point is that more work
+  // may arrive — so the pool is `concurrency` wide and the source decides when to stop
+  // feeding it. A fixed source still starts no more workers than it has items.
+  const width = live ? n : Math.min(n, Array.isArray(source) ? source.length : 0);
   const workers = [];
-  for (let i = 0; i < Math.min(n, queue.length); i++) workers.push(worker());
+  for (let i = 0; i < width; i++) workers.push(worker());
   await Promise.all(workers);
-  return results;
+  // Dispatch indices are dense — the source hands them out sequentially — but a worker whose
+  // body resolved `undefined` leaves a hole that `Array.from` normalises away, so callers see
+  // a real list at every index rather than a sparse array they have to know about.
+  return Array.from(results);
 }
 
 // One task, start to finish: claim, export, workspace, container (with pause/resume),
@@ -363,32 +376,64 @@ async function main() {
   }
   log.info(t, queueSummary(q.issues, q.skipped, q.undispatchable));
 
-  // §4.12's second admission rule refused these before `claim()`, so Beads is untouched and
-  // they stay `open` for a freeze session. They never enter drainQueue — the rows are
-  // MANUFACTURED here, from the only place that information still exists, because a refused
-  // task that produced no row is indistinguishable, after exactly the unattended run where
-  // nobody watched it happen, from a task nobody queued.
-  const refusedRows = (q.undispatchable || [])
-    .map((u) => undispatchableRow(u.issue, u.reason, log.runId));
-  for (const u of q.undispatchable || []) {
-    log.error(log.trace(u.issue.id), `not dispatched: ${u.reason} — Beads untouched, the issue stays open`);
-  }
-
   // Every task is the same body; `concurrency` (default 1) decides how many of them are
-  // in flight at once, and the drain hands back one row per queued issue in READY-QUEUE
-  // ORDER — so the manifest reads the same at any depth. A row is null only where the
-  // issue could not be claimed and nothing ran.
+  // in flight at once, and the drain hands back one row per DISPATCHED issue in dispatch
+  // order — so the manifest reads the same at any depth. A row is null only where the issue
+  // could not be claimed and nothing ran.
   //
   // ONE park for the whole run (§7). A usage limit belongs to the subscription window, not
   // to a task, so the gate holds the single shared wait and the single run-level cycle cap
   // that every task in this drain reports into and waits behind.
   const gate = createPauseGate(cfg, log, { token });
-  const drained = await drainQueue(q.issues, (issue) => runOneTask(cfg, issue, log, token, gate), cfg.concurrency);
+
+  // The source the pool pulls from (§4.12, change-log row `live-queue-feed`). With
+  // `feedIdleGraceMinutes` at its default of 0 this is a fixed roster and the run behaves
+  // exactly as it did before feeding existed: read once, drain, close out.
+  const source = createFeedSource(q.issues, {
+    poll: () => readyQueue(cfg),
+    concurrency: cfg.concurrency,
+    idleGraceMs: cfg.feedIdleGraceMinutes * 60000,
+    pollMs: cfg.feedPollSeconds * 1000,
+    // The sentinel is per RUN and lives beside that run's artifacts, so stopping a fed run
+    // is `touch runs/<runId>/stop` from anywhere — no signal, no pid, and no killing a
+    // process that is holding containers. Workers finish what they hold; nothing new starts.
+    stopFile: path.join(log.dir, 'stop'),
+    // Once the §7 run-level cap has fired, every further task is refused before it launches
+    // and stays `open`. A fed run that kept polling would sit idle handing out work nothing
+    // can start, so the fired cap closes the feed instead.
+    shouldStop: () => gate.exhausted,
+    log,
+  });
+  if (source.fed) {
+    log.info(t, `live queue feed: ON — re-reading the ready queue while the run is in flight; `
+      + `closing after ${cfg.feedIdleGraceMinutes} idle minute(s), or when ${path.join(log.dir, 'stop')} appears`);
+  }
+
+  const drained = await drainQueue(source, (issue) => runOneTask(cfg, issue, log, token, gate), cfg.concurrency);
   const results = drained.filter(Boolean);
+
+  // §4.12's second admission rule refused these before `claim()`, so Beads is untouched and
+  // they stay `open` for a freeze session. They never enter drainQueue — the rows are
+  // MANUFACTURED here, from the only place that information still exists, because a refused
+  // task that produced no row is indistinguishable, after exactly the unattended run where
+  // nobody watched it happen, from a task nobody queued.
+  //
+  // Read from the SOURCE and after the drain, never from the startup read: under feeding a
+  // refusal is a wait, not a verdict, so a task refused at 14:05 whose suite was pushed at
+  // 14:20 ran and has a PR. Reporting it as undispatchable would be a lie about a task the
+  // reviewer can see succeeded.
+  const stillRefused = source.undispatchable();
+  const refusedRows = stillRefused.map((u) => undispatchableRow(u.issue, u.reason, log.runId));
+  for (const u of stillRefused) {
+    log.error(log.trace(u.issue.id), `not dispatched: ${u.reason} — Beads untouched, the issue stays open`);
+  }
 
   if (gate.waits) {
     log.info(t, `run-level rate-limit park: ${gate.waits} shared wait(s), ${gate.cycles} cycle(s) spent` +
       `${gate.exhausted ? ' — the run-level pause cap fired; refused tasks stay open for the next run' : ''}`);
+  }
+  if (source.fed) {
+    log.info(t, `live queue feed: ${source.polls()} re-read(s) of the ready queue; run ended: ${source.ending()}`);
   }
   // The refusals are named here too. "queue drained: (nothing ran)" against a queue that was
   // wholly refused is true and reads like an empty queue — the closing line is where an
@@ -404,6 +449,17 @@ async function main() {
     // The CONFIGURED (or defaulted) setting, not the observed peak in flight: what the run
     // was allowed to do is the thing a later reader needs to interpret its wall clock.
     concurrency: cfg.concurrency,
+    // Recorded whether or not it was on, so a later reader can tell "this run did not feed"
+    // from "this manifest predates feeding" — the same reason `concurrency` is written even
+    // when it is 1. `ending` is the fact the log line alone would lose: a run that stopped
+    // because someone touched the sentinel and one that ran out of work look identical in
+    // the outcome table.
+    feed: {
+      enabled: !!source.fed,
+      idleGraceMinutes: cfg.feedIdleGraceMinutes,
+      polls: source.polls(),
+      ending: source.ending() || ENDINGS.DRAINED,
+    },
     tasks: [...results, ...refusedRows],
   });
   const reportFile = writeReport(log.dir, manifest);
