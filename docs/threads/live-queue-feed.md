@@ -2,7 +2,7 @@
 
 ```
 slug:     live-queue-feed
-status:   open
+status:   open   (spec 1 shipped; spec 2 — the downstream readers — is the remaining work)
 opened:   2026-08-24
 origin:   user directive
 related:  DESIGN.md §4.12 (the task loop, the run lock, the dispatch gate), §7 (concurrency,
@@ -167,6 +167,18 @@ Two specs, in this order, and the first is useful alone:
 
 ## Decisions
 
+- 2026-08-24 — Ship the idle grace window plus a `runs/<runId>/stop` sentinel as the way a
+  fed run closes, and let a newly-fed high-priority issue be dispatched ahead of
+  not-yet-started lower-priority ones. Both were the drafter's proposals in Open questions
+  and were built on the standing assumption rather than blocking on an answer; either is
+  cheap to change, and the grace window at its default of 0 makes the whole feature inert
+  until a config asks for it (drafter, on the user's "start building it").
+- 2026-08-24 — Do NOT measure the Dolt collision rate first. Concurrent host `bd` access is
+  already routine under the operator/working session split, so a bad result would be a
+  finding about today's pipeline rather than about this change, and should not gate it
+  (drafter).
+
+
 - 2026-08-24 — Build it: an issue made ready during a run should be picked up by that run's
   next free slot, rather than waiting for the next run (user).
 - 2026-08-24 — The run lock and one-runner-per-project are not in scope and do not change;
@@ -190,6 +202,19 @@ Two specs, in this order, and the first is useful alone:
   a bad answer would be a fact about *today's* pipeline too, not about this change.
 
 ## Log
+
+- 2026-08-24 — **Spec 1 built** on branch `live-queue-feed`, in a separate git worktree so the
+  primary working copy stayed on `main` and runnable throughout. New `runner/feed.js`;
+  `drainQueue` takes a source or an array; two config knobs defaulting to off; the manifest
+  gains a `feed` block; new suite `scripts/test-feed.sh` (57 checks). DESIGN.md §4.12 amended
+  and change-log row `live-queue-feed` added. All 18 Docker-free suites green. **Nine
+  mutations of the implementation were run against the suite and all nine were caught** —
+  and one of them found a real bug rather than confirming a check: `lastPoll` seeded at 0
+  made the poll floor a delay before the FIRST read, which works by accident against a real
+  `Date.now()` and would have cost a fed run its first poll interval on any clock starting
+  near zero. Not run: the Docker suites, because the user was running the pipeline against
+  other projects at the time.
+
 
 - 2026-08-24 — Risk pass. Reframed the Dolt-collision concern: concurrent host `bd` access is
   already routine under the operator/working session split, and feeding adds reads rather than
