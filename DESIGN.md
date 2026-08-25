@@ -425,8 +425,10 @@ reopened deliberately, rather than a run rewriting its own definition of done.
 runner, and `status.schema.json` — §10's dividing line — and it is declared before either
 half is built, so no container has to invent it. The container-side half (the schema
 field, the writer, the prompt text) and the host-side half (surfacing) are separate
-tasks, sequenced: the host side cannot run in the same batch, since the runner reads the
-ready queue once before the task loop. Both halves have now shipped — the container side
+tasks, sequenced: the host side could not run in the same batch, since the runner read the
+ready queue once before the task loop — which the live queue feed has since changed
+(change-log row `live-queue-feed`), though the sequencing argument stands without it. Both
+halves have now shipped — the container side
 as `repo-1cy`, the host side as change-log row `spec-concern-surfacing`, which the first
 real concern prompted by reaching the status file and going no further.
 
