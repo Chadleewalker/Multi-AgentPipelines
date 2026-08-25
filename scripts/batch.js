@@ -54,6 +54,18 @@
 //     directories in the real corpus have no `run.json` at all, so a join copied from
 //     `verdict.js` — which skips a directory without a manifest, correctly, for its own
 //     purpose — would report an interrupted run's batch as never launched.
+//   * A FED RUN IS BOUNDED BY ITS END, NOT ITS START (§4.12, change-log row
+//     `live-queue-feed`). The clock above answers "could this run have worked this id after
+//     the freeze?", and for a classic run — roster fixed at startup — `startedAt` answers it
+//     exactly. A run with the live queue feed on re-reads the ready queue while it is in
+//     flight, so it can work an id frozen at 14:00 having started at 13:00, and
+//     `startedAt >= frozenAt` then reports a LAUNCHED batch as pending. That is the error
+//     that gets a batch launched twice, which is what this whole reader exists to prevent.
+//     So a manifest whose `feed.enabled` is true is bounded by `finishedAt`, and a fed run
+//     with no readable finish — still in flight, or killed — counts against every freeze,
+//     labelled `run-fed-open`. Conservative in the same direction as `run-time-unknown` and
+//     for the same reason: a false "launched" sends someone to look, a false "pending"
+//     starts containers.
 //   * A run unreadable by BOTH counts as having worked the ids it names, labelled
 //     `run-time-unknown`. That is the conservative direction: a false "pending" invites a
 //     double launch, where a false "launched" merely sends someone to look.
@@ -328,12 +340,32 @@ function readRuns(root) {
     }
     if (startedMs === null) startedMs = leadingInstant(log);
 
+    // Was the live queue feed ON for this run (§4.12)? Read STRICTLY — `feed.enabled === true`
+    // and nothing looser — because every manifest written before the feed shipped has no
+    // `feed` key at all, and a truthiness test over a missing block would answer for the whole
+    // historic corpus. A run that fed is bounded by when it STOPPED taking work, not by when
+    // it started.
+    const feed = manifest && manifest.feed;
+    const fed = !!(feed && typeof feed === 'object' && !Array.isArray(feed) && feed.enabled === true);
+    let finishedMs = null;
+    if (manifest) {
+      const parsed = Date.parse(nonEmptyString(manifest.finishedAt) || '');
+      if (!Number.isNaN(parsed)) finishedMs = parsed;
+    }
+
     runs.push({
       runId: (manifest && nonEmptyString(manifest.runId)) || entry.name,
       dirName: entry.name,
       dir,
       startedMs,
       timeKnown: startedMs !== null,
+      fed,
+      finishedMs,
+      // The instant the run STOPPED being able to take new work. For a classic run that is
+      // the moment its roster was read; for a fed run it is the moment it closed the feed.
+      // Null for a fed run still in flight (or killed before writing a manifest), which the
+      // join reads as "could have worked anything".
+      openUntilMs: fed ? finishedMs : startedMs,
       ids: runIds(manifest, log, taskDirs),
     });
   }
@@ -341,18 +373,38 @@ function readRuns(root) {
 }
 
 // ---- the join -------------------------------------------------------------------------
-// A run counts against a freeze when it started at or after it — or when its clock cannot
-// be read at all, which counts CONSERVATIVELY as having worked the ids it names. A dated
-// run is preferred as the witness so `run-time-unknown` is reported only when it is the
-// only thing that can be said.
+// A run counts against a freeze when it was still able to TAKE work at or after it — or when
+// that cannot be read at all, which counts CONSERVATIVELY as having worked the ids it names.
+// A dated run is preferred as the witness so `run-time-unknown` is reported only when it is
+// the only thing that can be said.
+//
+// `openUntilMs` is what makes this correct for both kinds of run: `startedAt` for a classic
+// run, whose roster is fixed at that instant, and `finishedAt` for a fed one, which kept
+// re-reading the queue until it closed (§4.12, change-log row `live-queue-feed`). Comparing a
+// fed run's START would report a batch it demonstrably worked as pending, and a false pending
+// is what gets a batch launched twice.
+// 2 = a definite witness (clock readable, and not a fed run left open); 1 = a fed run with no
+// readable finish; 0 = no clock at all. Only used to choose BETWEEN witnesses for one id —
+// every run that counts still counts, whatever it ranks.
+function witnessRank(run) {
+  if (!run.timeKnown) return 0;
+  if (run.fed && run.finishedMs === null) return 1;
+  return 2;
+}
+
 function workedSince(runs, frozenMs) {
   const worked = new Map();
   for (const run of runs) {
-    const counts = !run.timeKnown || frozenMs === null || run.startedMs >= frozenMs;
+    const openUnknown = run.openUntilMs === null || run.openUntilMs === undefined;
+    const counts = !run.timeKnown || openUnknown || frozenMs === null || run.openUntilMs >= frozenMs;
     if (!counts) continue;
     for (const id of run.ids) {
       const seen = worked.get(id);
-      if (!seen || (!seen.timeKnown && run.timeKnown)) worked.set(id, run);
+      // Prefer the witness that says the most. A run whose clock is readable beats one whose
+      // is not, and a run that has FINISHED beats a fed run still open — both of the weaker
+      // kinds counted on a "could have" rather than on an observation, and reporting the
+      // weaker one when a definite witness exists makes a certain answer look provisional.
+      if (!seen || witnessRank(run) > witnessRank(seen)) worked.set(id, run);
     }
   }
   return worked;
@@ -624,6 +676,12 @@ function show(argv, out, err) {
       witness ? 'worked' : 'not-worked',
       ...(witness ? [`by ${witness.runId}`] : []),
       ...(witness && !witness.timeKnown ? ['run-time-unknown'] : []),
+      // A fed run with no readable finish counted against this freeze because it could have
+      // taken the work at any point up to whenever it ended, not because anything was
+      // observed. Saying so is the difference between a witness and a guess — and it is the
+      // one case where "worked" may point at a run that is STILL GOING, which changes what a
+      // person does next (wait and re-read, rather than assume the batch is done).
+      ...(witness && witness.fed && witness.finishedMs === null ? ['run-fed-open'] : []),
       // The queue state rides on the id's own line, and only when a queue was actually
       // read. One token per id: a line saying both would be a line saying neither.
       ...(rec.ok ? [rec.ready.has(issue.id) ? READY : NOT_READY] : []),

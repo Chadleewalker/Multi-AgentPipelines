@@ -91,6 +91,13 @@ const P = {
   runFinished: 'run finished; artifacts in ',
   refused: 'refused: the run-level rate-limit pause cap',
   relaunching: 'relaunching in a fresh container',
+  // The live queue feed (§4.12, change-log row `live-queue-feed`). `feedOn` is written once,
+  // at the top of the task loop, and is the ONLY in-flight evidence that a run is still
+  // willing to take new work — the manifest's `feed` block is not written until the run is
+  // over, which is exactly when a watcher no longer needs it.
+  feedOn: 'live queue feed: ON',
+  feedPickedUp: 'feed: picked up ',
+  feedClosed: 'live queue feed: ',
 };
 
 // The runner's pinned log line: `<ISO> LEVEL [runId/issueId] msg` (runner/log.js).
@@ -345,6 +352,12 @@ function readRunDir(dir, runId) {
 // they split on `, `. Em dashes elsewhere in the line are payload, not structure.
 const QUEUE_SPLIT = ' — ';
 
+// Trace ids that name the RUN rather than a task. `preflight` was the only one until the
+// live queue feed added `feed`; both write under `<runId>/<name>`, and a name not listed
+// here becomes a task row — a phantom task called `feed`, queued forever, in a tool whose
+// whole job is to say what is running.
+const PSEUDO_TASKS = new Set(['preflight', 'feed']);
+
 function readyQueueIds(events) {
   let ids = [];
   for (const ev of events) {
@@ -377,6 +390,42 @@ function readPark(events) {
     }
   }
   return park;
+}
+
+// The live queue feed is a RUN-level fact (§4.12), assembled the way `park` is. The manifest
+// carries it authoritatively but only once the run is OVER, so this reads the log while the
+// run is in flight and lets the manifest win afterwards.
+//
+// What this exists to prevent: a fed run that has finished every task it has looks, from
+// outside, exactly like a run that is about to exit — same empty queue, same all-finished
+// table. It is actually idling inside its grace window and will take anything you freeze.
+// Without a signal here, a watcher concludes the run is over and starts a second one, which
+// the project lock then refuses (change-log row `repo-os9`) — the confusing failure rather
+// than the dangerous one, but confusing failures are what this tool exists to remove.
+function readFeed(events, manifest) {
+  const feed = { enabled: false, pickedUp: 0, ending: null };
+  for (const ev of events) {
+    if (ev.msg.startsWith(P.feedOn)) feed.enabled = true;
+    else if (ev.msg.startsWith(P.feedPickedUp)) {
+      const m = /^feed: picked up (\d+) /.exec(ev.msg);
+      if (m) feed.pickedUp += Number(m[1]);
+    } else if (ev.msg.startsWith(P.feedClosed)) {
+      // `\s*$` inside the pattern rather than a trim of the line: the working copy on the
+      // reference host is CRLF and every container is LF (CLAUDE.md's line-ending rule).
+      const m = /run ended: ([a-z]+)\s*$/.exec(ev.msg);
+      if (m) feed.ending = m[1];
+    }
+  }
+  // The manifest is authoritative where it exists and parses: it is what the runner decided,
+  // where the log lines are what it announced. Read STRICTLY — `enabled === true` — because
+  // every manifest written before the feed shipped has no `feed` key at all.
+  const m = manifest && manifest.feed;
+  if (m && typeof m === 'object' && !Array.isArray(m)) {
+    if (m.enabled === true) feed.enabled = true;
+    if (typeof m.ending === 'string' && m.ending) feed.ending = m.ending;
+    if (Number.isFinite(m.polls)) feed.polls = m.polls;
+  }
+  return feed;
 }
 
 // `workspace ready: <dir> on <branch> (fork point <sha>)`. A temp workspace path can contain
@@ -535,12 +584,12 @@ function buildRun(run, lock, degraded) {
   }
   const perTask = new Map();
   for (const ev of events) {
-    if (!ev.issueId || ev.issueId === 'preflight') continue;
+    if (!ev.issueId || PSEUDO_TASKS.has(ev.issueId)) continue;
     if (!perTask.has(ev.issueId)) perTask.set(ev.issueId, []);
     perTask.get(ev.issueId).push(ev);
   }
   const ids = new Set([...rows.keys(), ...perTask.keys(), ...queueIds]);
-  ids.delete('preflight');
+  for (const name of PSEUDO_TASKS) ids.delete(name);
 
   const tasks = [...ids].sort(cmp)
     .map((id) => buildTask(id, { events: perTask.get(id), row: rows.get(id), run }));
@@ -558,6 +607,9 @@ function buildRun(run, lock, degraded) {
     finishedAt: m && typeof m.finishedAt === 'string' ? m.finishedAt : null,
     concurrency: m && Number.isFinite(m.concurrency) ? m.concurrency : null,
     park: readPark(events),
+    // `open` is the fact a watcher needs and neither half carries alone: the feed was on and
+    // the run has not yet said how it ended, so it is still willing to take work.
+    feed: (function () { const f = readFeed(events, m); return { ...f, open: f.enabled && !f.ending }; })(),
     queued,
     degraded,
     tasks,
@@ -1051,8 +1103,26 @@ function renderProject(p, now) {
   if (p.live) add('elapsed', dur(since(run.startedAt, now)));
   else if (run.finishedAt) add('finished', clock(run.finishedAt));
   add('concurrency', run.concurrency === null || run.concurrency === undefined ? 'unstated' : run.concurrency);
+  // Only when it was on: a "feed off" cell on every card would be noise on every run in the
+  // estate, since off is the default. NO BACKTICKS anywhere below this point - this whole
+  // function is source inside a template literal, and one would end the string.
+  var feed = run.feed || {};
+  if (feed.enabled) {
+    add('feed', feed.open ? 'live' + (feed.pickedUp ? ' (+' + feed.pickedUp + ')' : '')
+      : 'closed' + (feed.ending ? ' (' + feed.ending + ')' : ''));
+  }
   add('state', run.state || 'unknown');
   card.appendChild(bar);
+
+  // The banner a watcher of a fed run actually needs. An idling fed run looks exactly like a
+  // finished one from outside — empty queue, every task done — and the difference decides
+  // whether you freeze one more thing or start a second run the project lock will refuse.
+  if (feed.open) {
+    card.appendChild(el('p', 'park', 'Live queue feed is OPEN - this run is still re-reading '
+      + 'the ready queue and will pick up anything frozen and pushed now. '
+      + (feed.pickedUp ? feed.pickedUp + ' task(s) picked up mid-run so far. ' : '')
+      + 'It closes on its idle grace window, or when runs/' + (run.runId || '<runId>') + '/stop appears.'));
+  }
 
   var park = run.park || {};
   if (park.open) {
@@ -1215,6 +1285,6 @@ function main() {
 if (require.main === module) main();
 
 module.exports = {
-  buildState, canonicalTarget, isHolderLive, readLog, readyQueueIds, readPark,
+  buildState, canonicalTarget, isHolderLive, readLog, readyQueueIds, readPark, readFeed,
   resolveRoot, resolvePort, displayName, PAGE,
 };
