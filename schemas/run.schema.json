@@ -16,6 +16,29 @@
       "type": "integer",
       "minimum": 1
     },
+    "feed": {
+      "description": "The live queue feed (DESIGN.md 4.12, change-log row `live-queue-feed`). Present on every manifest written since the feed shipped, whether or not it was enabled; absent means a manifest written before it existed. When enabled is false the run read its roster once at startup - the pre-feed behaviour, and the default. When true the run re-read the ready queue while in flight, so 'tasks' is in DISPATCH order and its length is not knowable from the startup queue-summary line.",
+      "type": "object",
+      "required": ["enabled"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "idleGraceMinutes": {
+          "description": "How long the run stays up with nothing to do before closing out. 0 means the feed is off.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "polls": {
+          "description": "How many times the ready queue was re-read. A run whose workers were never idle re-reads zero times.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "ending": {
+          "description": "Why the run stopped taking work. 'drained' = the roster was spent, which is always the answer when the feed is off; 'idle' = the grace window expired with nothing new; 'stopped' = the runs/<run-id>/stop sentinel appeared; 'halted' = the run-level rate-limit cap fired, so nothing further could be launched.",
+          "enum": ["drained", "idle", "stopped", "halted"]
+        }
+      }
+    },
     "abortedReason": {
       "description": "Present when the run ended before draining the queue (preflight failure, operator stop).",
       "type": "string"

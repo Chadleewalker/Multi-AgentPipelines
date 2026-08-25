@@ -18,6 +18,17 @@ const DEFAULTS = {
   bdTimeoutMs: 60000,           // §4.1 bound on every runner `bd` call (runner/bd.js)
   gitTimeoutMs: 60000,          // §4.12 bound on the dispatch gate's git calls (runner/queue.js)
   concurrency: 1,               // §7 how many task containers ONE runner works at once
+  // §4.12's live queue feed (change-log row `live-queue-feed`). 0 is OFF and is the default:
+  // the run reads the ready queue once, drains it and closes out — the behaviour that shipped
+  // before feeding existed, unchanged. Any positive value keeps the run up that many minutes
+  // with nothing to do, re-reading the queue, so an issue frozen mid-run is picked up by the
+  // next free worker instead of waiting for the next run.
+  feedIdleGraceMinutes: 0,
+  // The floor between two re-reads. NOT a timer: a re-read happens when a worker asks for
+  // work and finds none, so a busy run never polls at all. The floor is what stops N idle
+  // workers producing N `bd` calls — each is synchronous and blocks every other worker's
+  // container I/O for as long as `bd` and `git fetch` take.
+  feedPollSeconds: 30,
   // "opus" is an alias the CLI resolves to the CURRENT latest Opus, so the pipeline
   // follows model releases without edits here. The entrypoint records the RESOLVED
   // id (e.g. claude-opus-5) in the status file, so provenance stays exact even
@@ -129,6 +140,21 @@ function loadConfig(file) {
   if (raw.concurrency !== undefined
       && !(Number.isInteger(raw.concurrency) && raw.concurrency >= 1)) {
     throw new Error(`run.config.json: 'concurrency' must be a whole number of 1 or more`);
+  }
+  // The live queue feed (§4.12). ZERO IS LEGAL AND IS THE DEFAULT — it means "off" — which is
+  // why this is `>= 0` where every other numeric field here is `> 0`. Validating it like its
+  // neighbours would reject the one value that expresses today's behaviour, and the config
+  // that most wants to say it explicitly is the one being switched back after a bad night.
+  if (raw.feedIdleGraceMinutes !== undefined
+      && !(Number.isInteger(raw.feedIdleGraceMinutes) && raw.feedIdleGraceMinutes >= 0)) {
+    throw new Error(`run.config.json: 'feedIdleGraceMinutes' must be a whole number of 0 or more (0 = the feed is off)`);
+  }
+  // The poll floor, on the other hand, must be positive: zero would let every idle worker
+  // re-read the queue on every pass of its wait loop, which is a synchronous `bd` and
+  // `git fetch` per pass — a busy-wait against a database and a git remote.
+  if (raw.feedPollSeconds !== undefined
+      && !(Number.isInteger(raw.feedPollSeconds) && raw.feedPollSeconds > 0)) {
+    throw new Error(`run.config.json: 'feedPollSeconds' must be a positive whole number`);
   }
   for (const k of ['network', 'proxyName']) {
     if (raw[k] !== undefined && (typeof raw[k] !== 'string' || !raw[k].trim())) {

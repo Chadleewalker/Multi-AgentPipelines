@@ -8,6 +8,8 @@
   "bdTimeoutMs": 60000,
   "gitTimeoutMs": 60000,
   "concurrency": 1,
+  "feedIdleGraceMinutes": 0,
+  "feedPollSeconds": 30,
   "agentCommand": null,
   "model": "opus"
 }

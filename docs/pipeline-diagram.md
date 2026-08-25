@@ -27,7 +27,10 @@ flowchart TB
   H --> I["Runner drains the ready queue<br/>epics skipped · unfrozen refused · priority, then FIFO"]
   I -.-> UD["Refused before claim — no suite on the fork branch<br/>one git fetch of targetRepoRemote per run · ls-tree -d per candidate<br/>run.json row, outcome undispatchable · Beads untouched, issue stays open"]
   UD -.-> G
-  I --> J["One fresh container per task<br/>1 at a time by default · up to 3 with the knob"]
+  I -->|"a worker is free and the queue is empty"| FEED["Live queue feed — re-read the ready queue<br/>OFF unless feedIdleGraceMinutes &gt; 0 · a failed re-poll is never fatal<br/>ends: drained · idle · stopped (runs/&lt;runId&gt;/stop) · halted"]
+  FEED -->|"new work, or a refusal that has cleared"| I
+  G -.->|"frozen mid-run, suite pushed"| FEED
+  I --> J["One fresh container per task<br/>1 at a time by default · N with the concurrency knob"]
   J --> K["Run report + pull requests<br/>ordered by scrutiny needed"]
   K --> L{"Merge, or send back"}
   L -->|"send back as a new task"| B

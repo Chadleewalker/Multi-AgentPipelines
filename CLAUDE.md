@@ -113,6 +113,14 @@ code actually encodes, so a port should read them as the list of things to re-ch
 # anything starts, and a lock left by a killed run is taken over automatically (§4.12).
 node runner/run.js --config run.config.<project>.json
 
+# feeding a live run (§4.12, change-log row `live-queue-feed`). OFF unless the config asks:
+# set "feedIdleGraceMinutes" above 0 and the run re-reads the ready queue whenever a worker
+# is free, so an issue frozen while the run is going is picked up by the next free slot
+# instead of waiting for the next run. Feeding is just `bd` in a working session — there is
+# no submit command. Freeze the suite and PUSH it: an unpushed suite is refused by the
+# dispatch gate, and under feeding that refusal is a wait, so pushing it later is enough.
+touch runs/<runId>/stop   # stop a fed run without killing it: workers finish what they hold
+
 # reviewing what a run produced: one line per PR, at the moment the call is made (§5).
 # Evidence, never a gate — it edits no existing artifact and exits 0 on findings.
 node scripts/verdict.js record <issue-id> <merged|rejected> "<why>"  # [--run <runId>] to override recency
@@ -153,7 +161,7 @@ bash scripts/test-runner-container.sh
 # Host-only: needs `cd tools/mapbuild && npm install` once, and never runs in a container.
 node scripts/build-pipeline-map.js   # writes docs/pipeline-map.built.html + a per-diagram node count
 
-# the eighteen suites that need no Docker — seconds, safe to run anywhere, even in a container
+# the nineteen suites that need no Docker — seconds, safe to run anywhere, even in a container
 bash scripts/test-runner-memory.sh
 bash scripts/test-changelog.sh     # DESIGN.md §12 row identity (CHANGELOG_FILE re-aims it)
 bash scripts/test-sanitize.sh      # publication hygiene (SANITIZE_FIXTURE_DIR re-aims it)
@@ -172,6 +180,7 @@ bash scripts/test-verify-buffer.sh # the verifier's capture limit — a loud PAS
 bash scripts/test-pipeline-map.sh  # the reader's map is drawn at build time — an error card is not a diagram (change-log row `map-prerender`)
 bash scripts/test-batch.sh         # the batch marker reader — the marker shape, the corpus join, the live-queue reconciliation and both degraded vocabularies (change-log rows `repo-0b3`, `repo-8v0`)
 bash scripts/test-dispatch-gate.sh # the ready queue's SECOND admission rule — a task whose frozen suite is not on the fork branch is never dispatched (change-log rows `dispatch-gate`, `repo-5yu`)
+bash scripts/test-feed.sh       # the live queue feed — work frozen mid-run is picked up by the next free worker (change-log row `live-queue-feed`)
 ```
 
 Reading the corpus itself is `node scripts/audit-runs.js` — a pure reader that prints one
@@ -467,6 +476,20 @@ the pipeline working on the pipeline's own code. The rules:
   `pipeline.config.json`, which is the only fixture that catches a branch chain ending at
   the literal `'main'` — the chain `runner/workspace.js`'s `detectDefaultBranch` has, which
   is correct there and would refuse this whole queue with a confident wrong reason.
+  And `sh scripts/test-feed.sh` (`tests/unit/feed.test.js`), which needs node only and
+  injects its own clock: run it if you touch `runner/feed.js`, `runner/run.js`'s
+  `drainQueue` or task loop, `runner/config.js`'s feed knobs, or `schemas/run.schema.json`
+  — the manifest's `feed` block is written by one file and validated by another, and the
+  suite is what keeps the two ending vocabularies in step. Its load-bearing fixtures are
+  the ones a plausible implementation fails rather than merely exercises: a poll that keeps
+  returning an issue **already dispatched**, which is what `bd ready` really does between a
+  read and the claim that follows, and the only check that catches one issue reaching two
+  workers; one worker idle beside a working one at concurrency 2, the only check that tells
+  a grace clock started on the POOL from one started on the first free worker; and a poll
+  that throws beside a poll that returns `ok:false`, because a throw reaching the worker
+  loop takes the run down exactly as an exit does and only one of the two shapes is
+  obvious. Nothing in it turns on wall clock — a grace window is a thing that SLEEPS, so
+  `now` and `wait` are injected and time is a number the suite advances.
   Any new Docker-free suite belongs beside them in
   `tests/unit/`, and its seam stub must be a `.js` file invoked through
   `process.execPath`, never a `#!/bin/sh` script: `spawnSync` without a shell fails such a
