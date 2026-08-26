@@ -411,6 +411,15 @@ so identity moved to a value the host already assigns uniquely. Cite a row by th
 phrase change-log row plus the slug in backticks, and run `bash scripts/test-changelog.sh`
 after editing the log (Docker-free, seconds).
 
+**Rows go in `docs/change-log.md`, not in `DESIGN.md`.** §12 holds the convention; the table
+is its own file because it is append-only and marked `merge=union` in the repo-root
+`.gitattributes`, so a batch of N task branches each appending a row merges without anyone
+hand-resolving N-1 conflicts to the same answer. Two consequences for a planning session.
+Append at the bottom and never edit a row you did not write: union merge keeps *both* sides
+silently, so two branches rewriting one row both survive — which surfaces as a duplicate
+slug, and `scripts/test-changelog.sh` fails on that. And a design amendment is now two edits
+in one PR: the prose in `DESIGN.md`, and the row in `docs/change-log.md`.
+
 ## What "Done" Is (and Isn't)
 
 This playbook's own acceptance bar is structural — the checks in

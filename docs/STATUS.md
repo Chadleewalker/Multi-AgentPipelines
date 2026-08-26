@@ -1614,7 +1614,7 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-report.sh` | manifest schema, scrutiny ordering, idempotency |
 | `scripts/test-isolation.sh` | no push, read-only scaffolding, no egress, one credential |
 | `scripts/test-fixture.sh` | the fixture repo is a valid pipeline target |
-| `scripts/test-changelog.sh` | `DESIGN.md` §12 row identity — slug refs, uniqueness, citations |
+| `scripts/test-changelog.sh` | `docs/change-log.md` row identity — slug refs, uniqueness, citations (the convention itself is `DESIGN.md` §12) |
 | `scripts/test-sanitize.sh` | publication hygiene — no machine paths, emails, credentials or denylisted names in the tracked tree |
 | `scripts/test-agent-hooks.sh` | container hygiene — no tracked file configures an agent hook |
 | `scripts/test-network-names.sh` | per-project network and proxy names — derivation, and that they reach the scripts |
@@ -1649,7 +1649,12 @@ and red in the host sweep. The stub is preloaded into node with
 works because node runs preloads before it resolves the main module.
 
 **`scripts/test-changelog.sh` is the second** (repo-006): it reads markdown and nothing
-else, so it needs no Docker, no network and no target repo. It checks §12's table shape
+else, so it needs no Docker, no network and no target repo. The table it reads now lives in
+`docs/change-log.md` rather than in `DESIGN.md` §12, and its section anchor accepts both
+that file's `# Change Log` and the older `## 12. Change Log` — the frozen repo-006
+acceptance suite writes its negative-case fixtures with the old heading and drives the
+checker over them through `CHANGELOG_FILE`, so narrowing the anchor would redden a frozen
+sibling nobody may edit. It checks the table's shape
 (four cells per row, counted *after* masking backtick spans — one row carries
 `done|partial|failed|stuck` in a code span and so has three pipes that are not cell
 boundaries), that every ref is a unique kebab-case slug and never a bare date, that no

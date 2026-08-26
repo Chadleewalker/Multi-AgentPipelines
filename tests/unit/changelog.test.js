@@ -10,9 +10,16 @@
 // this is what stops the convention drifting back.
 //
 // Docker-free and network-free: it reads markdown and nothing else. The file under test is
-// `CHANGELOG_FILE` when set, otherwise <repo>/DESIGN.md — that seam is how the negative
-// cases (a duplicate ref, a version-numbered row) are exercised against fixtures, without
-// which "exits 0 on the good file" would be satisfied by a checker that checks nothing.
+// `CHANGELOG_FILE` when set, otherwise <repo>/docs/change-log.md — that seam is how the
+// negative cases (a duplicate ref, a version-numbered row) are exercised against fixtures,
+// without which "exits 0 on the good file" would be satisfied by a checker that checks
+// nothing.
+//
+// The rows moved out of DESIGN.md §12 into their own append-only file, so the section
+// anchor accepts BOTH headings: the new file's `# Change Log` and the old
+// `## 12. Change Log`. The old form is not legacy tolerance —
+// the frozen tests/acceptance/repo-006 suite writes its negative-case fixtures with it and
+// drives this checker over them through CHANGELOG_FILE, and that suite may not be edited.
 //
 // The cross-document citation checks only run against the real DESIGN.md: a fixture has no
 // living documents pointing at it, so running them there would be red for the wrong reason.
@@ -23,7 +30,7 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..', '..');
-const DEFAULT_FILE = path.join(ROOT, 'DESIGN.md');
+const DEFAULT_FILE = path.join(ROOT, 'docs', 'change-log.md');
 const FILE = process.env.CHANGELOG_FILE ? path.resolve(process.env.CHANGELOG_FILE) : DEFAULT_FILE;
 const IS_REAL_DESIGN = path.resolve(FILE) === path.resolve(DEFAULT_FILE);
 
@@ -71,8 +78,11 @@ if (text === null) {
 console.log(`== repo-006 checks: change-log identity convention (${path.relative(ROOT, FILE) || FILE}) ==`);
 
 const lines = text.split('\n');
-const start = lines.findIndex((l) => /^##\s*12\.\s*Change Log/.test(l));
-if (!check('the §12 change log section exists', start >= 0)) process.exit(1);
+// Both headings: `# Change Log` (docs/change-log.md) and `## 12. Change Log` (the old home,
+// and what repo-006's frozen fixtures still write). `\s*$` rather than `$` because the
+// working copy on the reference host is CRLF while every container sees LF.
+const start = lines.findIndex((l) => /^#{1,2}\s*(?:12\.\s*)?Change Log\s*$/.test(l));
+if (!check('the change log section exists', start >= 0)) process.exit(1);
 
 const header = lines.slice(start).find((l) => /^\|\s*Date\s*\|/.test(l));
 check('the table header names a Ref column: | Date | Ref | What changed | Why |',

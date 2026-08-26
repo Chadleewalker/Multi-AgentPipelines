@@ -8,7 +8,8 @@ approves intent before a run and reviews results after; nothing in between is in
 
 | File | What it is |
 |---|---|
-| `DESIGN.md` | **Authoritative.** Every architectural decision and why, the outcome contract, the change log. When reality disagrees with it, amend it — never silently ignore it. |
+| `DESIGN.md` | **Authoritative.** Every architectural decision and why, the outcome contract, and §12's rules for the change log. When reality disagrees with it, amend it — never silently ignore it. |
+| `docs/change-log.md` | The change log itself — one row per amendment to `DESIGN.md`, chronological ascending. Append-only, and marked `merge=union` in the repo-root `.gitattributes` so N task branches can each add a row without conflicting. `DESIGN.md` §12 says what a row *is*; this file holds them. |
 | `docs/STATUS.md` | Where the build actually is, what's proven, known gotchas, what's next. Start here to pick up the thread. |
 | `PLANNING.md` | The playbook for a planning session: how a task spec and its frozen tests get written and approved. |
 | `docs/IDEAS.md` | The idea inbox — parked "this should probably become a design someday" notes. Costs nothing to add to, commits to nothing, and is where a planning session looks for candidates. Not a backlog: an entry here is not work. |
@@ -208,7 +209,7 @@ node scripts/build-pipeline-map.js   # writes docs/pipeline-map.built.html + a p
 
 # the twenty suites that need no Docker — seconds, safe to run anywhere, even in a container
 bash scripts/test-runner-memory.sh
-bash scripts/test-changelog.sh     # DESIGN.md §12 row identity (CHANGELOG_FILE re-aims it)
+bash scripts/test-changelog.sh     # docs/change-log.md row identity (CHANGELOG_FILE re-aims it)
 bash scripts/test-sanitize.sh      # publication hygiene (SANITIZE_FIXTURE_DIR re-aims it)
 bash scripts/test-agent-hooks.sh   # no tracked agent hooks (AGENT_HOOKS_FIXTURE_DIR re-aims it)
 bash scripts/test-network-names.sh # per-project network + proxy names (§4.8) reach the scripts
@@ -362,11 +363,19 @@ note keys are cited so the trail back to the run survives.
 
 ## Changing the design
 
-If something here turns out to be wrong, amend `DESIGN.md` and add a row to its change
-log saying what changed and why. Four amendments came out of the first real runs; that
-trail is how a later session knows a decision was deliberate rather than accidental.
-Change-log rows are **chronological ascending** — append a new row at the bottom of the
-§12 table, after the newest existing one (`repo-4gp-note-3`).
+If something here turns out to be wrong, amend `DESIGN.md` and add a row to the change log
+saying what changed and why. Four amendments came out of the first real runs; that trail is
+how a later session knows a decision was deliberate rather than accidental.
+
+**The rows live in `docs/change-log.md`, not in `DESIGN.md`.** §12 kept the convention —
+what a row is, how it is identified, how it is cited — and the table moved to its own file
+so that N task branches can each append a row without a merge conflict: `docs/change-log.md`
+is marked `merge=union` in the repo-root `.gitattributes`, which keeps both sides instead of
+conflicting. That is safe only because the table is append-only, which is why the attribute
+names that one path and must never be pointed at `DESIGN.md` — prose is amended in place, and
+union merge would silently duplicate an amended paragraph rather than flag it. Change-log
+rows are **chronological ascending**: append a new row at the bottom of `docs/change-log.md`,
+after the newest existing one (`repo-4gp-note-3`).
 
 **A row is identified by a slug in the `Ref` column, never by a version number.** If the
 row comes from a pipeline task, the ref *is* that task's issue id (`repo-dhp`) — the host
@@ -377,9 +386,9 @@ numbers already inside a row's prose are history and stay there.
 
 **Cite a row in the pinned form**: the literal phrase change-log row followed by the slug
 in backticks — change-log row `repo-52m`. Anything looser is indistinguishable from
-ordinary hyphenated prose or from a Beads memory key. `scripts/test-changelog.sh` checks
-the table's shape, the slug syntax, uniqueness and every citation in the living docs; run
-it after any change-log edit.
+ordinary hyphenated prose or from a Beads memory key. `scripts/test-changelog.sh` reads
+`docs/change-log.md` and checks the table's shape, the slug syntax, uniqueness and every
+citation in the living docs; run it after any change-log edit.
 
 ## Working inside the pipeline container (read this when you are the coding agent in a run)
 
@@ -404,8 +413,8 @@ the pipeline working on the pipeline's own code. The rules:
   `sh scripts/test-runner-memory.sh` (`tests/unit/memory.test.js`), which stubs the whole
   `bd` layer through `PIPELINE_BD_CMD` and needs no Docker — run it if you touch
   `runner/memory.js` — `sh scripts/test-changelog.sh`
-  (`tests/unit/changelog.test.js`), which reads markdown only: run it if you add a
-  `DESIGN.md` change-log row — `sh scripts/test-sanitize.sh`
+  (`tests/unit/changelog.test.js`), which reads markdown only: run it if you append a row to
+  `docs/change-log.md` — `sh scripts/test-sanitize.sh`
   (`tests/unit/sanitize.test.js`), which reads the tracked tree only: run it if you add a
   path, an address or an example naming anything outside this repo —
   `sh scripts/test-agent-hooks.sh` (`tests/unit/agent-hooks.test.js`), also tracked-tree

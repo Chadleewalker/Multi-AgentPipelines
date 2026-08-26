@@ -32,7 +32,10 @@ Four stages, in order. Each is interactive, each happens once except the last:
    bounded interview, critics, dry-run decomposition as the readiness test). Identify
    each change-log row by a kebab-case slug — the issue id for a row a task produced, a
    short descriptive name for a row a planning session produced — never by a version
-   number, which parallel agents cannot assign uniquely (§12). Small
+   number, which parallel agents cannot assign uniquely (§12). Keep the rows in their own
+   file (this repo's is `docs/change-log.md`) rather than inside the design doc, so the
+   table can be marked `merge=union` in the next step: N task branches each appending a row
+   then merge without anyone hand-resolving N-1 conflicts to the same answer. Small
    projects can live on the scaffold's `SPEC.md` alone and enter planning per-task —
    the doc layer is for work big enough to decompose.
 3. **Onboard** — the checklist below: GitHub remote, integration branch recorded,
@@ -113,6 +116,12 @@ coverage that matters is of the area about to be tasked out, not of the whole sy
 - [ ] The repo has a `.gitattributes` containing at least `*.sh text eol=lf`
       (shell scripts run inside Linux containers; a CRLF checkout on Windows breaks
       them and can read as tampering).
+- [ ] The same `.gitattributes` marks the change-log file — and nothing else — `merge=union`,
+      with a comment saying why it is safe: rows are appended and never edited in place, so
+      keeping both sides of a hunk is the answer a person would give anyway. Never point it
+      at a prose file; an amended paragraph would be silently duplicated instead of flagged.
+      The one failure mode left — two branches rewriting the same row — arrives as a
+      duplicate slug, which the change-log checker fails on.
 
 ### 2. The frozen-test home, the idea inbox and the thread directory
 - [ ] Create `tests/acceptance/` with a short README stating the freeze rules: tests

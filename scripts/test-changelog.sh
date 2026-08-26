@@ -2,15 +2,16 @@
 # Copyright 2026 Chad Walker
 # SPDX-License-Identifier: Apache-2.0
 
-# repo-006 acceptance checks — the re-runnable suite for the DESIGN.md §12 change-log
-# identity convention (slug refs, unique by construction — §12, §3.1).
+# repo-006 acceptance checks — the re-runnable suite for the change-log identity convention
+# (slug refs, unique by construction — DESIGN.md §12, §3.1). The rows themselves live in
+# docs/change-log.md; §12 still owns the convention that says what a row is.
 #
 # Docker-free and network-free: it reads markdown only, so unlike most suites here it needs
 # no base image, no pipeline network and no target repo. The sweep discovers it by glob
 # (scripts/test-*.sh) and it is safe to run anywhere, including inside a task container.
 #
-# Set CHANGELOG_FILE to point the checker at a fixture instead of <repo>/DESIGN.md; that is
-# the seam the negative cases (duplicate ref, version-numbered row) run through.
+# Set CHANGELOG_FILE to point the checker at a fixture instead of <repo>/docs/change-log.md;
+# that is the seam the negative cases (duplicate ref, version-numbered row) run through.
 #
 # Run from Git Bash:  bash scripts/test-changelog.sh
 # POSIX sh only in the body: the frozen acceptance test invokes it as `sh <path>`, which is
@@ -27,7 +28,7 @@ fail() { echo "FAIL  $1"; FAIL=1; }
 LC_ALL=C
 export LC_ALL
 
-echo "== repo-006 checks: DESIGN.md change-log identity convention =="
+echo "== repo-006 checks: change-log identity convention (docs/change-log.md) =="
 
 OUT="$(node "$ROOT/tests/unit/changelog.test.js" 2>&1)"; RC=$?
 echo "$OUT"

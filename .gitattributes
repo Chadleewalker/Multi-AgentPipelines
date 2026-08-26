@@ -1,2 +1,12 @@
 # Shell scripts run inside Linux containers; never commit or check out CRLF blobs.
 *.sh text eol=lf
+
+# The change log is an append-only table: rows are added at the bottom and, by the rule in
+# DESIGN.md section 12, never renumbered or edited in place by anyone but their author. That
+# is the ONLY reason union merge is safe here — it keeps both sides of a conflicting hunk
+# instead of raising a conflict, so N task branches each appending a row merge cleanly.
+# Never point this at DESIGN.md or any other prose file: a paragraph amended on two branches
+# would be silently duplicated rather than flagged. The one failure mode that survives — two
+# branches editing the SAME row — lands as a duplicate slug, which tests/unit/changelog.test.js
+# already fails on.
+docs/change-log.md merge=union
