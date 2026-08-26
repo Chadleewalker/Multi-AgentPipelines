@@ -69,6 +69,29 @@ function renderReport(manifest) {
   L.push(`**${manifest.tasks.length} task(s)**: ` +
     (Object.keys(counts).sort().map((k) => `${counts[k]} ${k}`).join(' · ') || 'none'));
   L.push('');
+
+  // §3.7 (the readership amendment), at RUN level and UNCONDITIONAL. The per-task block
+  // further down is right for one concern and wrong for seven: what a reader needs is not a
+  // concern but the same concern arriving n times, and that fact exists only across tasks —
+  // where, until this line, no artifact looked. So the count prints for every manifest,
+  // including a clean one where the news is the zero, rather than behind the per-task
+  // truthiness guard, which would go silent on exactly the runs a reader can stop reading.
+  //
+  // It is a count and nothing else. A concern is evidence, never a gate (hard rule 5,
+  // §3.5): nothing here consults an outcome and nothing here can change one. A malformed
+  // `specConcerns` counts as zero — the manifest is not schema-validated at render time,
+  // and `(t.specConcerns || []).length` would score the string 'nope' as four.
+  //
+  // Bold, never `## `: scripts/test-report.sh reads task order with
+  // `grep -o '^## [a-z0-9-]*'`, so a run-level `## ` heading injects a phantom task there.
+  const concernCount = (t) => (Array.isArray(t.specConcerns) ? t.specConcerns.length : 0);
+  const raisers = manifest.tasks.filter((t) => concernCount(t) > 0);
+  const concernTotal = raisers.reduce((n, t) => n + concernCount(t), 0);
+  L.push(`**Spec concerns: ${concernTotal} raised by ${raisers.length} of ` +
+    `${manifest.tasks.length} tasks.** Evidence only — none of them changed an outcome `
+    + 'above (DESIGN.md §3.7); a spec may be changed in a planning session and nowhere else.');
+  L.push('');
+
   L.push('Ordered by how much scrutiny each item needs.');
   L.push('');
 

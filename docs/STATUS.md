@@ -455,6 +455,34 @@ property, which the target language cannot do from one class, and the agent meas
 the method-only reading hung the engine when the value was iterated rather than erroring.
 That spec would have timed the runner out instead of reporting red.
 
+**And then the channel failed one level up** (change-log row `concern-repeat-surfacing`).
+Across two consecutive runs against one target, seven task agents independently diagnosed
+the same host-side fault — correctly, with evidence, naming each other by issue id — and
+nothing consumed any of them; the second run repeated the first's mistake at eight times
+the scale and spent 3h11m recording eight `stuck`. Every one of those concerns was
+surfaced exactly as the paragraph above describes, as a section of the task that raised
+it, which is right for one concern and wrong for seven.
+
+**The run-level headline shipped** (change-log row `repo-uig`). `runner/report.js` now
+prints one line between the outcome counts and the first task heading, for every manifest:
+`Spec concerns: <total> raised by <k> of <n> tasks`. Three things about it are load-bearing
+and each is pinned by `tests/acceptance/repo-uig/`. It is **unconditional** — a clean run
+reads `0 raised by 0 of 6`, and the wrong build everyone reaches for first is the per-task
+guard `if (t.specConcerns && t.specConcerns.length)` hoisted to run level, which prints
+nothing on a clean run and passes every fixture that has concerns. A malformed
+`specConcerns` counts as **zero**, via `Array.isArray` — `(x || []).length` scores the
+string `'nope'` as four raised by one, which is non-empty, well-formed and false
+(`repo-iok`'s case one level up). And the heading is **bold, never `## `**, because
+`scripts/test-report.sh` reads task order with `grep -o '^## [a-z0-9-]*'` and a run-level
+`## ` would inject a phantom task into that assertion.
+
+Gap worth knowing: this is the first half only. The grouping-by-shape half — cluster a
+run's concerns, and count how many prior runs against the same target carry each shape —
+is not built, and nothing in this half reads `runs/`, deliberately: the frozen suite
+renders the same manifest from an empty cwd and from one holding a populated `runs/` and
+requires the two to be byte-identical, so the reproducibility claim in `runner/report.js`'s
+footer stays as strong as it was.
+
 ## Change-log rows are identified by a slug (`repo-006`, 2026-07-26)
 
 **The collision that forced it.** Merging PRs #10, #11 and #13 in one sitting, two of the
