@@ -382,7 +382,9 @@ Two hard boundaries, both inherited:
 
 - **Put the concern speed bump at the launch gate, not only in the report** — the run-level
   concern section (change-log row `concern-repeat-surfacing`) puts the signal where a person
-  reads *after* a run. The moment it would have bitten hardest is the one *before* the next
+  reads *after* a run — and its headline half has now shipped (change-log row `repo-uig`), so
+  the count exists and the only question left is who else reads it. The moment it would have
+  bitten hardest is the one *before* the next
   one: `PLANNING.md` step 8 makes `node scripts/batch.js show` the last act before launching,
   and that reader already opens every run's `run.json`, where `specConcerns` now lives. One
   line there — *the newest run for this project raised n concerns across m tasks; read its

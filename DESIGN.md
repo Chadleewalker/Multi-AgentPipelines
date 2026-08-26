@@ -876,7 +876,11 @@ source of truth.
    autonomous one.
 9. **The run report is a first-class deliverable.** Generated at the end of every run from
    the run manifest + Beads + git (see 4.12) into the run's log folder, as markdown,
-   regeneration-idempotent, never hand-edited. Per task: report status (see the 4.11 table), branch, what changed,
+   regeneration-idempotent, never hand-edited. Run-level, above the per-task list: the
+   outcome counts, and an **unconditional spec-concern headline** — how many concerns,
+   raised by how many of how many tasks — printed for every run including one that raised
+   none, and evidence only, exactly as 3.7 requires (change-log row `repo-uig`). Per task:
+   report status (see the 4.11 table), branch, what changed,
    verification evidence, attempt notes. Ordered by scrutiny needed:
    **tampered > stuck > partial > failed > done-with-retries > done-first-try**, ties
    broken by attempt count then diff size. Within the partial band, a partial whose
