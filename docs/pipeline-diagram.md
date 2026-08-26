@@ -19,7 +19,10 @@ flowchart TB
   C --> D["Write acceptance tests<br/>before any code exists"]
   SP2["SLOT 2 — domain test author<br/>writes the domain's own checks<br/>energy conserved · contrast ratio"] -.-> D
   D --> E["Coverage check<br/>every criterion has a test"]
-  E --> F{"You approve intent"}
+  E --> FG["Freeze gate — the tests must FAIL at the fork point<br/>red 0 · green 1 · indeterminate 2 · deterministic, never an LLM"]
+  FG -.-> BL["Brittleness lint — the same run reads the suite's TEXT<br/>literal-name-list · literal-count · literal-digest · branch-self-diff<br/>count printed even at zero · skips named · never the exit code"]
+  BL -.-> F
+  FG --> F{"You approve intent"}
   F -->|"needs changes"| B
   F -->|"approved"| G["Freeze — tests committed<br/>to the integration branch"]
   G --> H[("Beads issue = the task spec")]
@@ -54,6 +57,15 @@ serves it as `/state` on loopback. Both arrows are dotted for the same reason an
 leaves either node — a watcher that could reach a run would be a route around hard rule 1,
 and one that could gate would violate hard rule 5. The dashboard's own page is not built
 yet; the frozen JSON contract it serves is.
+
+The dotted branch off the freeze gate is its second, textual pass (§3.2 "below the panel",
+moves 1 and 6; change-log rows `freeze-gate-red` and `repo-uw6`). The solid path is the
+verdict — red, green or indeterminate — and it is the only thing that reaches the exit code.
+The lint hangs off it dotted because it decides nothing: a red test can still be the wrong
+test, so the same run names the assertions whose *expected side is a literal the author
+typed*, and each finding takes a disposition in the planning draft the way a critic's does.
+It arrives at the approval pass as evidence, never as a gate — findings cannot fail a
+freeze, and a clean pass cannot rescue a green verdict.
 
 The dotted branch off the freeze is the handoff between the two halves of the process (§3.9,
 change-log rows `batch-ready-marker`, `repo-0b3` and `repo-8v0`). A planning session's last act

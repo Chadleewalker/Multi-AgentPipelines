@@ -22,6 +22,7 @@ const os = require('os');
 const path = require('path');
 const {
   verdictFor, guardCount, withEmptyControlDir, resolveControl, CONTROL_DIR, main,
+  brittleFindings, lintSuite,
 } = require('../../scripts/freeze-gate.js');
 
 let failed = 0;
@@ -102,6 +103,172 @@ check('guards report their line number', g[0] && g[0].line === 3);
 check('an unmarked criterion is not a guard', !g.some((x) => /clamps/.test(x.text)));
 check('a spec with no guards reports zero, not an error', guardCount('1. does a thing').length === 0);
 check('guard counting survives CRLF', guardCount(SPEC.split('\n').join('\r\n')).length === 2);
+
+// --- the brittleness lint (DESIGN.md §3.2, "below the panel", move 6) -------------------------
+//
+// The frozen suite `tests/acceptance/repo-uw6/` gated this once and never runs again, so this
+// is the coverage that survives. The pairs below are copied here FIRST, ahead of anything
+// merely exercising the code, because they are the only checks that separate a useful lint
+// from one that flags everything: for each shape, one line that must fire and one that must
+// not, differing in exactly the feature the rule turns on. Two of the four are VERBATIM house
+// patterns from this repo's own frozen suites — six of them compare two computed digests as
+// the "writes nothing" guard, and `repo-1cy` runs git against a ref it created itself — so a
+// detector keyed on `createHash` or on `git diff` fails here while scoring full marks on
+// every "does the shape fire" check in the file.
+
+const shapesAt = (text, file) => brittleFindings(text, file || 'f.js').map((f) => f.shape);
+const fires = (shape, text, opts) =>
+  brittleFindings(String(text), 'f.js', opts).some((f) => f.shape === shape);
+
+// literal-name-list — a hand-typed list of names on the EXPECTED side of an equality assertion.
+check('literal-name-list fires on a three-name array compared by deepStrictEqual',
+  fires('literal-name-list', "assert.deepStrictEqual(keys, ['alpha', 'beta', 'gamma']);"));
+check('literal-name-list fires with double quotes and no spacing',
+  fires('literal-name-list', 'assert.deepStrictEqual(names, ["one","two"]);'));
+check('literal-name-list fires on a two-name list, the smallest catalogue',
+  fires('literal-name-list', "assert.deepStrictEqual(order, ['first', 'second']);"));
+// The near-miss: the same literal, used as an INPUT rather than as the expected value.
+check('literal-name-list does NOT fire on a literal list passed to path.join',
+  !fires('literal-name-list', "const p = path.join('tests', 'acceptance', 'demo');"));
+check('literal-name-list does NOT fire on a plain assignment of a name list',
+  !fires('literal-name-list', "const FIXTURE_FILES = ['a.js', 'b.js'];"));
+check('literal-name-list does NOT fire on two computed lists compared to each other',
+  !fires('literal-name-list', 'assert.deepStrictEqual(Object.keys(got), Object.keys(want));'));
+
+// literal-count — a population pinned at an exact size.
+check('literal-count fires on strictEqual(x.length, N)',
+  fires('literal-count', 'assert.strictEqual(rows.length, 30);'));
+check('literal-count fires on an === comparison against an integer',
+  fires('literal-count', 'assert(out.length === 7);'));
+check('literal-count fires on GDScript `.size()` inside assert_eq',
+  fires('literal-count', 'assert_eq(entries.size(), 61)'));
+check('literal-count fires on a Python len() pinned by an assertion',
+  fires('literal-count', 'assert len(rows) == 12'));
+// The near-misses: describing a population without pinning it, and the two counts that are
+// almost never a catalogue.
+check('literal-count does NOT fire on > 0', !fires('literal-count', 'assert(lines.length > 0);'));
+check('literal-count does NOT fire on === 0',
+  !fires('literal-count', 'assert.strictEqual(errors.length, 0);'));
+check('literal-count does NOT fire on === 1',
+  !fires('literal-count', 'assert.strictEqual(matches.length, 1);'));
+check('literal-count does NOT fire on a non-count field compared to an integer',
+  !fires('literal-count', 'assert.strictEqual(r.status, 0);'));
+
+// literal-digest — a hash compared against a literal somebody typed.
+check('literal-digest fires on a digest compared to a hex string literal',
+  fires('literal-digest', "assert.strictEqual(sha1(tree), 'd41d8cd98f00b204e9800998ecf8427e');"));
+check('literal-digest fires through createHash().digest() as well',
+  fires('literal-digest',
+    "assert.equal(crypto.createHash('sha1').update(b).digest('hex'), '0123456789abcdef0123456789abcdef');"));
+// THE HOUSE PATTERN. Six of this repo's frozen suites hash a walked tree before and after and
+// compare the two. Nothing later work does can change a before/after snapshot, so this must
+// never fire — and a detector keyed on `createHash` flags all six.
+check('literal-digest does NOT fire on two COMPUTED digests compared to each other',
+  !fires('literal-digest', 'assert.strictEqual(digestBefore, digestAfter);'));
+check('literal-digest does NOT fire on the house snapshot guard as this repo writes it',
+  !fires('literal-digest', "check('the gate writes nothing', digestOf(root) === after);"));
+
+// branch-self-diff — the shape that INVERTS, going red because a later task did its job.
+check('branch-self-diff fires on a diff against origin/main',
+  fires('branch-self-diff', "spawnSync('git', ['diff', '--name-only', 'origin/main', 'HEAD']);"));
+check('branch-self-diff fires on a merge-base against origin/master in a shell string',
+  fires('branch-self-diff', "run('git merge-base origin/master HEAD');"));
+check('branch-self-diff fires on a bare integration-branch name from pipeline.config.json',
+  fires('branch-self-diff', "spawnSync('git', ['diff', 'release', 'HEAD']);",
+    { defaultBranch: 'release' }));
+// THE OTHER HOUSE PATTERN, verbatim from `repo-1cy`: git against a ref the test built itself
+// in a throwaway repository, which CLAUDE.md cites as the CORRECT way to do this.
+check('branch-self-diff does NOT fire on git against a ref the test created itself',
+  !fires('branch-self-diff',
+    "spawnSync('git', ['diff', '--name-only', base, 'HEAD'], { cwd: throwaway });"));
+check('branch-self-diff does NOT fire on a git call that is not diff or merge-base',
+  !fires('branch-self-diff', "spawnSync('git', ['status', '--porcelain'], { cwd: tmp });"));
+
+// --- the record: line, file, text, question ----------------------------------------------------
+
+const MULTILINE = [
+  '// a fixture',
+  "const list = ['x'];",
+  'assert.deepStrictEqual(list,',
+  "  ['x', 'y', 'z']);",
+].join('\n');
+const ml = brittleFindings(MULTILINE, 'multi.js');
+check('a finding is 1-indexed against the source line', ml.length > 0 && ml[0].line === 3,
+  ml.map((f) => f.line).join(','));
+check('an assertion split across lines is reported where it STARTS',
+  ml.some((f) => f.shape === 'literal-name-list' && f.line === 3));
+check('the continuation line is not reported a second time on its own',
+  !ml.some((f) => f.line === 4));
+check('`text` is the trimmed source line the finding sits on',
+  ml.every((f) => f.text === MULTILINE.split('\n')[f.line - 1].trim()));
+check('`file` is echoed back exactly as it was handed in',
+  ml.every((f) => f.file === 'multi.js'));
+
+// This working copy is CRLF and every container is LF (CLAUDE.md, the line-endings rule), so
+// the line number has to survive both. A naive counter is off by nothing on LF and wrong
+// everywhere on CRLF, which is the environment a planning session actually runs in.
+check('line numbers survive CRLF input',
+  brittleFindings(MULTILINE.split('\n').join('\r\n'), 'multi.js')
+    .some((f) => f.shape === 'literal-name-list' && f.line === 3));
+
+// Per line, per shape — a precedence rule would hide the second reason a line is brittle.
+const BOTH = "assert.deepStrictEqual(names, ['a', 'b']); assert.strictEqual(names.length, 2);";
+check('one line matching two shapes yields TWO findings, one each, with no precedence',
+  shapesAt(BOTH).filter((s) => s === 'literal-name-list').length === 1
+  && shapesAt(BOTH).filter((s) => s === 'literal-count').length === 1,
+  shapesAt(BOTH).join(','));
+
+// Comments and string literals are linted deliberately: a commented-out brittle assertion is
+// a brittle assertion someone will uncomment.
+check('a commented-out brittle assertion is still reported',
+  fires('literal-count', '// assert.strictEqual(rows.length, 30);'));
+// ...but prose ABOUT a shape is not an instance of it.
+check('prose describing the shape is not itself a finding',
+  brittleFindings('// this used to pin the catalogue at exactly thirty entries', 'p.js').length === 0);
+check('empty input is zero findings rather than a throw', brittleFindings('', 'e.js').length === 0);
+
+const questions = ['literal-name-list', 'literal-count', 'literal-digest', 'branch-self-diff']
+  .map((shape) => {
+    const t = {
+      'literal-name-list': "assert.deepStrictEqual(k, ['a', 'b']);",
+      'literal-count': 'assert.strictEqual(k.length, 9);',
+      'literal-digest': "assert.strictEqual(sha1(t), 'd41d8cd98f00b204e9800998ecf8427e');",
+      'branch-self-diff': "spawnSync('git', ['merge-base', 'origin/main', 'HEAD']);",
+    }[shape];
+    const f = brittleFindings(t, 'q.js').find((x) => x.shape === shape);
+    return [shape, f ? String(f.question) : ''];
+  });
+check('every shape carries a question', questions.every(([, q]) => q.length > 0));
+check('the four questions are pairwise distinct, not one generic string',
+  new Set(questions.map(([, q]) => q)).size === 4);
+check('each question names its own shape', questions.every(([s, q]) => q.includes(s)));
+
+// --- lintSuite: what is read, and what is NAMED as skipped -------------------------------------
+
+const lintRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-lint-'));
+fs.writeFileSync(path.join(lintRoot, 'good.js'), "assert.deepStrictEqual(k, ['a', 'b']);\n");
+// `fs.readFileSync(p, 'utf8')` DOES NOT THROW on binary input — it returns replacement
+// characters — so without a sniff a naive implementation lints this file and reports whatever
+// the mojibake happens to look like.
+fs.writeFileSync(path.join(lintRoot, 'bin.js'), Buffer.from([0x41, 0x00, 0x42]));
+fs.writeFileSync(path.join(lintRoot, 'image.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+fs.mkdirSync(path.join(lintRoot, 'nested'), { recursive: true });
+fs.writeFileSync(path.join(lintRoot, 'nested', 'deep.gd'), 'assert_eq(rows.size(), 30)\n');
+const suite = lintSuite(lintRoot);
+const skipReason = (n) => (suite.skipped.find((s) => s.path.endsWith(n)) || {}).reason;
+check('a NUL-byte file is skipped with the pinned reason `binary`', skipReason('bin.js') === 'binary',
+  skipReason('bin.js'));
+check('a file outside the read allowlist is skipped with the pinned reason `extension`',
+  skipReason('image.png') === 'extension', skipReason('image.png'));
+// The assertion that separates the two silent failures — swallowing the file, and aborting
+// the whole pass — which are otherwise indistinguishable from "clean suite".
+check('THE READABLE SIBLING IS STILL LINTED beside the skipped ones',
+  suite.findings.some((f) => f.file === 'good.js'));
+check('lintSuite recurses, and reports paths suite-relative with forward slashes',
+  suite.findings.some((f) => f.file === 'nested/deep.gd'), suite.findings.map((f) => f.file).join(','));
+check('a clean suite returns an empty findings array rather than nothing',
+  Array.isArray(lintSuite(path.join(lintRoot, 'nested', 'deep.gd')).findings));
+fs.rmSync(lintRoot, { recursive: true, force: true });
 
 // --- choosing the control ---------------------------------------------------------------------
 
@@ -222,6 +389,85 @@ check('CLI still exits 0 with --spec supplied', runMain([...ARGS, '--spec', spec
 check('no control directory survives the run',
   fs.readdirSync(tmpRepo).every((e) => !e.startsWith('.freeze-gate-control')),
   fs.readdirSync(tmpRepo).join(', '));
+
+// --- the lint through the CLI: it reports, and it never touches the verdict -------------------
+
+const capture = (args) => {
+  const o = console.log; const e = console.error;
+  let buf = '';
+  console.log = (...a) => { buf += `${a.join(' ')}\n`; };
+  console.error = (...a) => { buf += `${a.join(' ')}\n`; };
+  try { return { code: main(args), out: buf }; } finally { console.log = o; console.error = e; }
+};
+const COUNT_LINE = /brittleness findings:\s*(\d+)/;
+
+// A clean suite must still print the count. A discriminator silent when it finds nothing
+// cannot be told from one that never ran — the `guards declared:` precedent.
+const clean = capture(ARGS);
+check('the count line prints even when the suite is clean',
+  /brittleness findings:\s*0\b/.test(clean.out), clean.out.split('\n').slice(-3).join(' | '));
+check('a clean suite does not change the verdict', clean.code === 0);
+
+// The obvious wrong placement is inside `if (spec)`, beside `guards declared:` — where the
+// lint vanishes for every invocation that omits `--spec`, which is most of them.
+check('the count line prints WITHOUT --spec', COUNT_LINE.test(capture(ARGS).out));
+check('the count line prints WITH --spec', COUNT_LINE.test(capture([...ARGS, '--spec', specPath]).out));
+
+fs.writeFileSync(path.join(testDir, 'brittle.js'), [
+  "assert.deepStrictEqual(keys, ['alpha', 'beta', 'gamma']);",
+  'assert.strictEqual(rows.length, 30);',
+  "assert.strictEqual(sha1(tree), 'd41d8cd98f00b204e9800998ecf8427e');",
+  "spawnSync('git', ['merge-base', 'origin/main', 'HEAD']);",
+].join('\n'));
+fs.writeFileSync(path.join(testDir, 'logo.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+// The exit code is a verdict about red, green and indeterminate that PLANNING.md step 4
+// branches on. A lint that can fail a freeze is a gate on spec AUTHORING, whose only defeat is
+// rewording until it passes (hard rule 5) — so it is checked in all three arms, with findings
+// present in every one. The green and indeterminate arms are the ones that catch an
+// `if (findings.length) return 1`: red already exits 0, so there it is invisible.
+const arms = [[null, 0], ['always-green', 1], ['always-red', 2]];
+let armsHeld = true; let armsFired = true;
+for (const [mode, expected] of arms) {
+  if (mode) process.env.STUB_MODE = mode; else delete process.env.STUB_MODE;
+  const r = capture(ARGS);
+  const m = r.out.match(COUNT_LINE);
+  if (r.code !== expected) armsHeld = false;
+  if (!m || Number(m[1]) < 4) armsFired = false;
+}
+delete process.env.STUB_MODE;
+check('findings never move the exit code, in any of the three verdicts', armsHeld);
+check('and the lint is proven to have FIRED in each of those same runs', armsFired);
+
+const loud = capture(ARGS);
+check('each finding is reported as <file>:<line>  [<shape>]',
+  /brittle\.js:1\s+\[literal-name-list\]/.test(loud.out));
+check('all four shapes reach stdout',
+  ['literal-name-list', 'literal-count', 'literal-digest', 'branch-self-diff']
+    .every((s) => loud.out.includes(`[${s}]`)));
+check('a skipped path is named on stdout with its reason',
+  /skipped:\s*logo\.png\s+\(extension\)/.test(loud.out), loud.out);
+check('the finding line carries the question the human is being asked',
+  /is later work licensed/.test(loud.out));
+
+// If the pass itself fails it must say so, keep the verdict, and NEVER print a `0` — a silent
+// false clean is the exact failure the "name what is skipped" rule exists to prevent. There is
+// no portable unreadable file (chmod-000 is unreadable in a container and readable on the
+// Windows host), so the throw is injected at the seam instead and restored immediately.
+const realStatSync = fs.statSync;
+let broken;
+try {
+  fs.statSync = (p, ...rest) => {
+    if (String(p).replace(/\\/g, '/').includes('tests/acceptance/demo')) throw new Error('injected read failure');
+    return realStatSync(p, ...rest);
+  };
+  broken = capture(ARGS);
+} finally { fs.statSync = realStatSync; }
+check('a lint that throws still leaves the verdict at its own exit code', broken.code === 0);
+check('a lint that throws prints `unavailable` and names the reason',
+  /brittleness findings: unavailable - .*injected read failure/.test(broken.out), broken.out);
+check('a lint that throws NEVER prints a count of 0 — a silent false clean',
+  !/brittleness findings:\s*0\b/.test(broken.out));
 
 fs.rmSync(tmpRepo, { recursive: true, force: true });
 process.exit(failed);

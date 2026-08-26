@@ -2,7 +2,7 @@
 
 ```
 slug:     live-queue-feed
-status:   open   (spec 1 shipped; spec 2 — the downstream readers — is the remaining work)
+status:   promoted
 opened:   2026-08-24
 origin:   user directive
 related:  DESIGN.md §4.12 (the task loop, the run lock, the dispatch gate), §7 (concurrency,
@@ -203,6 +203,16 @@ Two specs, in this order, and the first is useful alone:
 
 ## Log
 
+- 2026-08-25 — **Spec 2 built** on branch `feed-readers`: `batch.js`'s pending join now bounds
+  a fed run by its END (`openUntilMs`), with `run-fed-open` for one still in flight and a
+  witness preference so a finished run beats an open one; `dashboard.js` gains `PSEUDO_TASKS`
+  and a run-level `feed` block with an open-feed banner. A defect from spec 1 was found while
+  reading rather than by a test: the feed logs under trace `<runId>/feed`, which the dashboard
+  would have rendered as a phantom task called `feed`. Both suites extended in place; five
+  mutations run, all five caught. DESIGN.md §4.12 updated and change-log row `feed-readers`
+  added. The thread's question is answered and both halves have shipped, so this closes.
+
+
 - 2026-08-24 — **Spec 1 built** on branch `live-queue-feed`, in a separate git worktree so the
   primary working copy stayed on `main` and runnable throughout. New `runner/feed.js`;
   `drainQueue` takes a source or an array; two config knobs defaulting to off; the manifest
@@ -229,4 +239,15 @@ Two specs, in this order, and the first is useful alone:
 
 ## Outcome
 
-*(empty until the thread closes)*
+**Promoted.** DESIGN.md §4.12 gained the live queue feed, in two shipped halves:
+change-log row `live-queue-feed` (the runner: `runner/feed.js`, the source `drainQueue` pulls
+from, the two config knobs, the manifest `feed` block, `scripts/test-feed.sh`) and change-log
+row `feed-readers` (the two downstream readers it was named as breaking).
+
+What the thread got wrong, recorded because it is the reusable part: the opening risk pass
+over-weighted the Dolt-collision worry and under-weighted the scheduling detail. Concurrent
+host `bd` access turned out to be pre-existing and routine, while the two defects that would
+actually have shipped — a poll floor that was really a first-read delay, and a run-level trace
+rendering as a phantom task — were both invisible from the design and were caught by mutating
+the implementation and by reading the consumer. The measurement the thread proposed first
+would have found neither.
