@@ -465,6 +465,88 @@ const taskOf = (p, id) => p.run.tasks.find((t) => t.issueId === id);
     eq(D.buildState(path.join(tmp, 'no-such-root')).projects, []));
 }
 
+// ---- 7b. the live queue feed (§4.12, change-log row `live-queue-feed`) -------------------
+// Two things this reader has to get right about a fed run, and both fail SILENTLY — a
+// well-formed picture that is wrong, which is this tool's whole failure mode.
+//
+//   * The feed logs under the trace `<runId>/feed`, a RUN-level pseudo-task exactly as
+//     `preflight` is. A reader that does not know that renders a phantom task called `feed`,
+//     permanently `queued`, in a tool whose entire job is to say what is running.
+//   * A fed run that has finished every task it holds looks, from outside, identical to one
+//     about to exit: empty queue, every row finished. It is actually idling in its grace
+//     window and will take anything frozen now. Without a signal the watcher concludes the
+//     run is over and starts a second one, which the project lock then refuses.
+{
+  const root = path.join(tmp, 'feed', 'runs');
+  const tgt = path.join(targets, 'fed-proj');
+  fs.mkdirSync(tgt, { recursive: true });
+  fs.mkdirSync(path.join(root, 'locks'), { recursive: true });
+  const lines = [
+    `${isoAt(NOW - 600000)} INFO [run-f-001/preflight] target: ${tgt} -> https://example.invalid/f.git`,
+    `${isoAt(NOW - 599000)} INFO [run-f-001/preflight] ready queue: 1 task(s) — f-1`,
+    `${isoAt(NOW - 598000)} INFO [run-f-001/preflight] live queue feed: ON — re-reading the ready queue while the run is in flight; closing after 30 idle minute(s)`,
+    `${isoAt(NOW - 597000)} INFO [run-f-001/f-1] starting task (priority 2): First`,
+    `${isoAt(NOW - 500000)} INFO [run-f-001/feed] feed: picked up 2 new task(s) — f-2, f-3`,
+    `${isoAt(NOW - 400000)} INFO [run-f-001/feed] feed: picked up 1 new task(s) — f-4`,
+    `${isoAt(NOW - 399000)} INFO [run-f-001/f-2] starting task (priority 2): Fed in`,
+    '',
+  ];
+  write(path.join(root, 'run-f-001', 'run.log'), lines.join('\n'));
+  const key = D.canonicalTarget(tgt);
+  const one = () => byKey(D.buildState(root), key);
+
+  const ids = one().run.tasks.map((t) => t.issueId);
+  check('the feed trace is a RUN pseudo-task, never a task row',
+    !ids.includes('feed') && !ids.includes('preflight'));
+  check('and the tasks it fed in ARE rows', ids.includes('f-1') && ids.includes('f-2'));
+  check('an in-flight fed run reports its feed as enabled, from the log alone',
+    one().run.feed.enabled === true);
+  check('OPEN is the fact a watcher needs: on, and not yet ended',
+    one().run.feed.open === true && one().run.feed.ending === null);
+  check('picked-up counts ACCUMULATE across polls rather than taking the last',
+    one().run.feed.pickedUp === 3);
+
+  // The closing line's prefix is a PREFIX of the ON line's, so a reader that matched it
+  // first would call every fed run closed the moment it opened.
+  write(path.join(root, 'run-f-001', 'run.log'), lines.slice(0, -1).concat([
+    `${isoAt(NOW - 60000)} INFO [run-f-001/preflight] live queue feed: 9 re-read(s) of the ready queue; run ended: idle`,
+    '',
+  ]).join('\n'));
+  check('the closing line ends the feed and names how the run ended',
+    one().run.feed.open === false && one().run.feed.ending === 'idle');
+
+  // The manifest is authoritative once it exists, and STRICTLY read: every manifest written
+  // before the feed shipped has no `feed` key, so a truthy test would re-answer the corpus.
+  writeJson(path.join(root, 'run-f-002', 'run.json'), {
+    runId: 'run-f-002', startedAt: isoAt(NOW - 900000), finishedAt: isoAt(NOW - 800000),
+    targetRepo: 'https://example.invalid/f2.git', concurrency: 1,
+    feed: { enabled: true, idleGraceMinutes: 30, polls: 4, ending: 'stopped' },
+    tasks: [{ issueId: 'g-1', outcome: 'done' }],
+  });
+  const f2 = byKey(D.buildState(root), 'https://example.invalid/f2.git');
+  check('a finished run reads its feed from the manifest',
+    !!f2 && f2.run.feed.enabled === true && f2.run.feed.ending === 'stopped' && f2.run.feed.polls === 4);
+  check('and a finished feed is not open', !!f2 && f2.run.feed.open === false);
+
+  writeJson(path.join(root, 'run-f-003', 'run.json'), {
+    runId: 'run-f-003', startedAt: isoAt(NOW - 900000), finishedAt: isoAt(NOW - 800000),
+    targetRepo: 'https://example.invalid/f3.git', concurrency: 1,
+    tasks: [{ issueId: 'h-1', outcome: 'done' }],
+  });
+  const f3 = byKey(D.buildState(root), 'https://example.invalid/f3.git');
+  check('a manifest with NO feed block reads as off, never as unknown or open',
+    !!f3 && f3.run.feed.enabled === false && f3.run.feed.open === false);
+
+  writeJson(path.join(root, 'run-f-004', 'run.json'), {
+    runId: 'run-f-004', startedAt: isoAt(NOW - 900000), finishedAt: isoAt(NOW - 800000),
+    targetRepo: 'https://example.invalid/f4.git', concurrency: 1,
+    feed: 'yes', tasks: [{ issueId: 'i-1', outcome: 'done' }],
+  });
+  const f4 = byKey(D.buildState(root), 'https://example.invalid/f4.git');
+  check('a feed block of the wrong shape is off, not a throw',
+    !!f4 && f4.run.feed.enabled === false);
+}
+
 // ---- 8. the server ---------------------------------------------------------------------
 function childEnv(extra) {
   const env = {};

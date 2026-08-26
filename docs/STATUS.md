@@ -1402,6 +1402,18 @@ freeze gate at all — one move behind before this task and two behind after it.
 
 ## What's next
 
+**The live queue feed shipped on 2026-08-25** — a run re-reads the ready queue while it is
+in flight, so an issue frozen mid-run is picked up by the next free worker (change-log rows
+`live-queue-feed`, `feed-readers`; §4.12). OFF by default: `feedIdleGraceMinutes` is 0 unless
+a config asks otherwise, and at 0 the queue is read once exactly as before. **Two things a
+task could not do for itself follow the merge**, and both are open as of this writing:
+merge PR #47 (until it is in, `scripts/batch.js pending` reports a fed run's batch as
+un-launched, and the cost of that wrong answer is a batch launched twice — so do not enable
+the feed for any project first), and **run `bash scripts/test-all.sh`**, because two PRs
+changed `runner/run.js`'s task loop and two readers with no Docker suite run against either.
+The full picture, including how to use the feed and the two defects the work turned up, is in
+`docs/handoff-2026-08-25-live-queue-feed.md`.
+
 **The queue drained again on 2026-07-26**, after `repo-4l8` (the epic filter, planned and
 frozen in the fifth planning session that day) ran and passed on attempt 1.
 The only open issue left is `repo-iok` (the §3.7 host side), deliberately **blocked and
