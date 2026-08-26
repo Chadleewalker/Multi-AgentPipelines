@@ -292,6 +292,78 @@ function record(r) { outputs.push(both(r)); return r; }
 
   // batches/, locks/ and sweeps/ are not runs. If batches/ were read as one, every marker
   // would count as having worked every id it names.
+  //
+  // ---- the live queue feed's effect on this join (§4.12, change-log row `live-queue-feed`)
+  // A FED run re-reads the ready queue while it is in flight, so it can work an id frozen
+  // after it started. Bounding it by `startedAt` — correct for every classic run, and what
+  // this tool did before the feed shipped — reports a batch it demonstrably worked as
+  // pending, and a false pending is what gets a batch launched twice.
+  //
+  // The fixture that discriminates is a PAIR: the same run, same clock, same ids, differing
+  // only in whether `feed.enabled` is true. Every other fixture in this file is answered
+  // identically by the old implementation and the new one; only the pair tells them apart.
+  const fedRun = (root, id, startedAt, finishedAt, issueIds, feed) => {
+    writeJson(path.join(root, id, 'run.json'), {
+      schema: 1,
+      runId: id,
+      startedAt,
+      ...(finishedAt === undefined ? {} : { finishedAt }),
+      targetRepo: 'https://example.invalid/fixture/repo.git',
+      ...(feed === undefined ? {} : { feed }),
+      tasks: issueIds.map((i) => ({ issueId: i, outcome: 'done', prUrl: null })),
+    });
+    fs.writeFileSync(path.join(root, id, 'run.log'), `${startedAt} INFO [${id}/preflight] run start\n`);
+  };
+  const BEFORE = '2026-08-10T11:00:00.000Z';   // an hour before the freeze
+  const AFTER = '2026-08-10T13:00:00.000Z';    // an hour after it
+  const feedRoot = (feed, finishedAt) => {
+    const t = mktemp('fed');
+    marker(t, 'fed-2026-08-10', mkMarker('fed', T, ['fed-1']));
+    fedRun(t, 'r-fed', BEFORE, finishedAt, ['fed-1'], feed);
+    return (record(cli(t, ['pending'])).stdout || '');
+  };
+
+  check('C10 a CLASSIC run that started before the freeze still leaves the batch pending',
+    feedRoot({ enabled: false, ending: 'drained' }, AFTER).includes('fed-2026-08-10'));
+  check('C11 a FED run that started before the freeze and ended after it has WORKED the batch',
+    !feedRoot({ enabled: true, ending: 'idle' }, AFTER).includes('fed-2026-08-10'));
+  check('C12 a fed run that also ENDED before the freeze leaves the batch pending',
+    feedRoot({ enabled: true, ending: 'idle' }, '2026-08-10T11:30:00.000Z')
+      .includes('fed-2026-08-10'));
+  check('C13 a manifest with no feed block at all is read as classic, not as fed',
+    feedRoot(undefined, AFTER).includes('fed-2026-08-10'));
+  // Strictly `=== true`. A truthy test over a missing or oddly-shaped block would re-answer
+  // the entire historic corpus, every manifest of which predates the feed.
+  check('C14 a feed block that is not an object, or whose enabled is not true, is classic',
+    feedRoot({ enabled: 'yes' }, AFTER).includes('fed-2026-08-10')
+    && feedRoot([], AFTER).includes('fed-2026-08-10'));
+
+  // A fed run still in flight has no finishedAt. It could have taken the work at any point,
+  // so it counts — the conservative direction, and it says why rather than looking certain.
+  {
+    const t = mktemp('fedopen');
+    marker(t, 'open-2026-08-10', mkMarker('open', T, ['o-1']));
+    fedRun(t, 'r-open', BEFORE, undefined, ['o-1'], { enabled: true });
+    const op = record(cli(t, ['pending']));
+    check('C15 a fed run with no readable finish counts against every freeze',
+      op.status === 0 && !(op.stdout || '').includes('open-2026-08-10'));
+    const oShow = record(cli(t, ['show', 'open-2026-08-10']));
+    const oLine = (oShow.stdout || '').split(/\r?\n/).find((l) => l.includes('o-1')) || '';
+    check('C16 and it is labelled run-fed-open — the witness may still be RUNNING',
+      /\bworked\b/.test(oLine) && !/\bnot-worked\b/.test(oLine) && oLine.includes('run-fed-open'));
+  }
+  // A definite witness must beat a provisional one, or a certain answer reads as provisional.
+  {
+    const t = mktemp('fedwitness');
+    marker(t, 'wit-2026-08-10', mkMarker('wit', T, ['w-1']));
+    fedRun(t, 'r-a-open', BEFORE, undefined, ['w-1'], { enabled: true });
+    fedRun(t, 'r-b-done', AFTER, AFTER, ['w-1'], { enabled: false });
+    const wShow = record(cli(t, ['show', 'wit-2026-08-10']));
+    const wLine = (wShow.stdout || '').split(/\r?\n/).find((l) => l.includes('w-1')) || '';
+    check('C17 a finished witness is preferred over a fed run still open',
+      wLine.includes('r-b-done') && !wLine.includes('run-fed-open'));
+  }
+
   const n = mktemp('notruns');
   marker(n, 'safe-2026-08-10', mkMarker('safe', T, ['s-1']));
   writeJson(path.join(n, 'locks', 'tasks', 's-1', 'status.json'), { issueId: 's-1' });
