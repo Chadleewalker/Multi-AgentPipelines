@@ -559,8 +559,9 @@ produce several rows or none; the slug is the default ref, never a promise of on
 date, origin, related refs), the question the thread has to answer, **Current thinking**,
 Decisions, Open questions, a Log, and an Outcome. Only *Current thinking* is rewritten in
 place — it is the revival payload. Decisions, the Log and the Outcome append, which is
-what the §12 change log, the `docs/IDEAS.md` Promoted/Dropped tables and the §3.1 attempt
-log all already do and is why none of them can quietly lose a fact. **Decisions carries
+what the change log (§12's convention, `docs/change-log.md`'s rows), the `docs/IDEAS.md`
+Promoted/Dropped tables and the §3.1 attempt log all already do and is why none of them
+can quietly lose a fact. **Decisions carries
 the most weight**, for PLANNING.md's disposition reason: a decision silently absorbed into
 prose is indistinguishable from one never made, so each is dated and marked whose call it
 was — hard rule 4 splits that ownership, and which half decided a thing is the fact most
@@ -575,11 +576,12 @@ decision-shaped answer waiting for a planning session), `promoted`, `dropped`.
 the inbox entry stays a paragraph and the thread file carries the structure the inbox
 refuses to hold. Threads are opened for entries being *worked*, never for all of them.
 PLANNING.md step 0 reads `docs/threads/` for `ready` threads alongside the inbox and the
-drift report. At promotion the slug is already right: the §12 row takes it, the inbox row
-moves to **Promoted** citing the thread, and the thread's status and Outcome record what
-it became. **A closed thread file stays** — what stops an idea being re-raised every few
-months is the recorded reason, and the reason lives in the thread rather than in a
-one-line table cell (§12's *Why* column exists for the same reason).
+drift report. At promotion the slug is already right: the change-log row takes it (§12's
+convention, appended to `docs/change-log.md`), the inbox row moves to **Promoted** citing
+the thread, and the thread's status and Outcome record what it became. **A closed thread
+file stays** — what stops an idea being re-raised every few months is the recorded reason,
+and the reason lives in the thread rather than in a one-line table cell (the change log's
+*Why* column exists for the same reason).
 
 **Two boundaries.** A thread is **never a queue item** — `docs/IDEAS.md`'s own rule, that
 an inbox which can start a container is not an inbox; threads live in `docs/`, nothing in

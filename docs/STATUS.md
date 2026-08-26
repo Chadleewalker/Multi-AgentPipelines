@@ -1562,6 +1562,17 @@ design's central bet, and it is the first day it paid out repeatedly.
   starts, so two tasks touching the same file produce a conflict once the first merges
   (seen with PRs #2 and #3). Options: fork from latest, or partition concurrency by
   declared path ownership. Needed before any large wave.
+  **Partly closed 2026-08-26: the worst offender was the change log.** Every task amends
+  `DESIGN.md`, so every task appended a row to the same table at the same place — four of
+  four PRs merged on 2026-08-25/26 needed a person, and three of the four were resolved
+  identically (*keep both rows*). The rows now live in `docs/change-log.md`, which the
+  repo-root `.gitattributes` marks `merge=union`: both sides are kept and nothing conflicts.
+  That is safe on an append-only table and on nothing else — union merge on a prose file
+  would silently keep both copies of an amended paragraph, which is why the attribute names
+  that one path and must never be pointed at `DESIGN.md`. Its one blind spot, two branches
+  rewriting the same row, lands as a duplicate `Ref` and `scripts/test-changelog.sh` fails
+  on it. Files that are genuinely edited in place still collide, so the options above are
+  still open — there is just one less collision per task.
 - **Concurrency *within* a run is opt-in and small** — the runner defaults to the
   sequential loop. Since `repo-jur` several runner processes, one per project, can be in
   flight at once (each over its own queue), and since `repo-os9` a second run against the
