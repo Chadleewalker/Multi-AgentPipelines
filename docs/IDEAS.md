@@ -380,31 +380,19 @@ Two hard boundaries, both inherited:
   missing dependency turns the control red and the gate says "could not tell".
   Related: PLANNING.md step 4 (§3.2, move 1). 2026-08-09
 
-- **Lint a frozen test for guards that enumerate what later work may change** — a criterion
-  that pins a list of names, hashes a whole build, or diffs the branch against its own fork
-  point does not merely go stale: it goes red *precisely because* an unrelated later task did
-  its job correctly, and it keeps doing so forever. One target repo has now lost at least
-  eight frozen files across six suites this way — an eleven-name key list broken by a task
-  that legitimately added a twelfth, "exactly 30 flavour entries" broken by the task that grew
-  it to 61, and one that diffs its own branch over three source directories and will therefore
-  fail every code-touching task in that repository from now on. `scripts/freeze-gate.js` is the
-  only thing that reads a suite before it freezes, and it asks one question (is this red?) that
-  these files all answer correctly. A warning at freeze time costs nothing and is the only
-  moment anyone is looking. Not a runner bug and deliberately not folded into the dispatch
-  gate. Related: change-log row `dispatch-gate`, PLANNING.md step 4, DESIGN.md §3.2 move 1.
-  2026-08-21
-
-- **Surface a repeated spec concern louder than a report footnote** — §3.7's channel works:
-  across two runs against one target, seven task agents independently diagnosed the same
-  host-side dispatch fault, correctly, with evidence, naming each other by issue id. Nothing
-  consumed any of them, so the second run repeated the first run's mistake at eight times the
-  scale. A concern's readership today is a per-task section of one run report, which is the
-  wrong place after an unattended run — the signal that matters is not one concern but *the
-  same concern arriving n times*, and that fact exists only across tasks and across runs,
-  where no current artifact looks. Cheap shapes to consider: a run-report section that groups
-  concerns by similarity before the per-task list, or `scripts/audit-runs.js` reporting repeat
-  shapes across the corpus, which is already the tool that reads every run. Evidence only, never
-  a gate (hard rule 5). Related: DESIGN.md §3.7, §5, change-log row `dispatch-gate`. 2026-08-21
+- **Put the concern speed bump at the launch gate, not only in the report** — the run-level
+  concern section (change-log row `concern-repeat-surfacing`) puts the signal where a person
+  reads *after* a run. The moment it would have bitten hardest is the one *before* the next
+  one: `PLANNING.md` step 8 makes `node scripts/batch.js show` the last act before launching,
+  and that reader already opens every run's `run.json`, where `specConcerns` now lives. One
+  line there — *the newest run for this project raised n concerns across m tasks; read its
+  report before launching* — is a pure pointer with no resolution state to invent, and it
+  lands at the exact instant the second run was launched into a fault seven agents had
+  already named. Not built with the first half deliberately: it would be a second reader of
+  one fact, and `batch.js` cannot import a shared rule without amending the require contract
+  its own suite pins (check F1, node built-ins plus exactly two runner rules), which is a
+  decision worth making once the shape has proven itself rather than blind. Related:
+  DESIGN.md §3.7, §3.9, change-log row `concern-repeat-surfacing`. 2026-08-25
 
 - **Teach the batch reader that `ready` is no longer the same as `will dispatch`** — once the
   dispatch gate lands (change-log row `dispatch-gate`), the runner has a second admission rule
@@ -780,6 +768,8 @@ shipped thing survives — the same reason the `DESIGN.md` change log keeps its 
 
 | Date | Idea | Became |
 |---|---|---|
+| 2026-08-25 | Lint a frozen test for guards that enumerate what later work may change — parked 2026-08-21 after one target repo lost at least eight frozen files across six suites to the shape, including one that diffs its own branch and will fail every code-touching task in that repository from now on | `DESIGN.md` §3.2 "below the panel, move 6" + change-log row `freeze-brittleness-lint`; drafted for freeze in `docs/planning-draft-2026-08-25-concern-and-freeze-lint.md` |
+| 2026-08-25 | Surface a repeated spec concern louder than a report footnote — parked 2026-08-21 after seven task agents across two runs diagnosed one host-side fault correctly and nothing consumed any of them | `DESIGN.md` §3.7 (the readership amendment) + change-log row `concern-repeat-surfacing`; drafted for freeze in `docs/planning-draft-2026-08-25-concern-and-freeze-lint.md`. The launch-gate half stayed in the inbox rather than being folded in |
 | 2026-08-19 | A merge-order helper for the PR stack a run hands back — evidence, never a merge. Parked and promoted the same day. Two corrections came out of working it: the PRs are a **fan**, not a stack (every task clones fresh and branches off the integration branch, so they are siblings whose fork points can differ), and **ordering cannot reduce the conflict count** — a file touched by k PRs conflicts in k−1 merges whatever the order — so the value is landing the clean PRs first with zero judgment, clustering the rest, and naming staleness and expected-to-clear failures | `DESIGN.md` §5 + change-log row `merge-order`: `scripts/merge-order.js`, the fourth pure reader on the §5 model. It **computes** merges rather than predicting them from file overlap — `git merge-tree --write-tree` chained through `git commit-tree` simulates a whole order and names the real conflicted paths — and keeps the `repo-73k` pure-reader contract literally, by running both under a redirected `GIT_OBJECT_DIRECTORY` measured to write zero objects into the real repository. Input is a run id, dependency order is inferred from the run record rather than read from Beads, and the expected-to-clear regression join ships with its 2000-character-tail limit printed where it prints (all three, user, 2026-08-19). Never merges, pushes or touches a PR; never a gate. Thread: [`docs/threads/merge-order.md`](threads/merge-order.md) |
 | 2026-08-19 | A "batch ready" marker a planning session files when specs are frozen, so the launch step reads state instead of memory. Parked and promoted the same day. The handoff between freezing and launching was a spoken word: two different sessions, nothing on disk between them, so the launch could not confirm what it was launching and a batch frozen and not launched was invisible to the next session | `DESIGN.md` §3.9 + change-log row `batch-ready-marker`: `runs/batches/<project>-<YYYY-MM-DD>.json`, host-only and immutable (no `launched` flag — "still pending" is a join over the run corpus, `verdict.js pending`'s move), read by `scripts/batch.js` (`show`, `pending`). The reconciliation against `bd ready` is the point rather than the confirmation, and is bounded: built-ins only except a `BATCH_BD_CMD` seam that reads and never writes, and an absent `bd` labels the batch unreconciled rather than printing the marker as if the queue agreed. Never a queue item, never a gate, never the source of truth for what runs. Thread: [`docs/threads/batch-ready-marker.md`](threads/batch-ready-marker.md) |
 | 2026-08-19 | Give every idea thread a durable identity file from its first exchange, so the session working it is disposable. Borrowed from the persistent-identity / ephemeral-session split — the discipline, explicitly not the autonomy. Parked and promoted the same day: the thread's state (question, current thinking, decisions and whose they were, open questions) lived in one interactive session's context, so a session working an idea was expensive to kill and expensive to resume | `DESIGN.md` §3.8 + change-log row `thread-identity-files`: `docs/threads/<slug>.md`, tracked, undated, flat, with the slug doubling as the future change-log ref (`trace-ledger`'s identity-at-creation move, one layer earlier) and exactly one mutable section. `docs/threads/README.md` carries the convention and the template; `PLANNING.md` step 0 reads `ready` threads; this file gains the `Thread:` optional extra; `ONBOARDING.md` creates the directory for a new target. No reader tooling, deliberately. First live example, and the thread that produced it: [`docs/threads/thread-identity-files.md`](threads/thread-identity-files.md) |
