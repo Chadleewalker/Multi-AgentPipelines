@@ -208,6 +208,222 @@ function verdictFor(real, control, controlKind = 'conventional') {
   };
 }
 
+// --- the brittleness lint (DESIGN.md §3.2, "below the panel", move 6) -----------------------
+//
+// The exit-code gate above answers one question — are these tests red at the fork point? — and
+// an entire class of bad frozen test answers it correctly and then goes red again for every
+// later task that legitimately grows the thing it enumerated. One target repo has lost at
+// least eight frozen files across six suites to that shape, and the worst of them INVERTS: it
+// goes red precisely because an unrelated later task did its job correctly.
+//
+// THE RULE THE FOUR SHAPES ARE INSTANCES OF. Hashing and enumerating are not what makes a
+// guard brittle — this repo's own frozen suites do both, correctly. Six of them hash a walked
+// tree as the house "writes nothing" guard, and `repo-1cy` diffs against a merge-base in the
+// way CLAUDE.md cites as CORRECT. What those seven have in common is what makes them safe:
+// they compare two values COMPUTED IN THE SAME RUN, and nothing later work does can change a
+// before/after snapshot. So:
+//
+//   A guard is brittle when the EXPECTED SIDE of the assertion is a literal the author typed,
+//   and the population it describes is one later work is licensed to grow.
+//
+// A tool can check the first half exactly. It cannot check the second half at all — that is
+// the human's question, and it is why every finding below is phrased as one. The pass DECIDES
+// NOTHING: it never touches the exit code (0/1/2 are a verdict `PLANNING.md` step 4 branches
+// on, and a lint that can fail a freeze is a gate on spec *authoring*, whose only defeat is
+// rewording until it passes — hard rule 5), and each finding takes a disposition in the
+// planning draft the way a critic's does.
+//
+// LANGUAGE SCOPE IS STATED, NOT ASSUMED. The patterns are line-oriented and written against
+// JavaScript, GDScript, Python and shell syntax. Anything else is best-effort.
+//
+// COMMENTS AND STRING LITERALS ARE LINTED, deliberately: a commented-out brittle assertion is
+// a brittle assertion someone will uncomment.
+
+// Read allowlist and the binary sniff. A file outside the allowlist is SKIPPED BY NAME rather
+// than read, and so is one carrying a NUL byte — `fs.readFileSync(p, 'utf8')` does not throw
+// on binary input, it returns replacement characters, so linting it would produce confident
+// nonsense instead of an honest skip.
+const LINT_EXTENSIONS = new Set([
+  '.js', '.cjs', '.mjs', '.ts', '.gd', '.py', '.sh', '.bash',
+]);
+const BINARY_SNIFF_BYTES = 8192;
+
+// The questions. These ARE the deliverable — the tool surfaces candidates and the human
+// answers — so each names its own shape and asks the one thing no tool can settle.
+const QUESTIONS = {
+  'literal-name-list':
+    'literal-name-list: the expected side is a list of names typed by hand — is later work '
+    + 'licensed to add one, and would this test then go red for doing its job?',
+  'literal-count':
+    'literal-count: this pins a population at an exact size — is later work licensed to grow '
+    + 'it, and is the count the thing the criterion is really about?',
+  'literal-digest':
+    'literal-digest: a digest is compared against a literal typed into the test — is every '
+    + 'byte under that hash frozen for good, or would a legitimate later change move it?',
+  'branch-self-diff':
+    'branch-self-diff: this diffs against the integration branch, so it sees every later '
+    + "task's work — is that intended, or will it go red for changes this task never made?",
+};
+
+// Continuation joining. A brittle assertion split across lines must still be found, and it is
+// reported at the line the assertion STARTS on. Only `(` and `[` are counted: a trailing `{`
+// is an ordinary block opener and joining on it would swallow the next line of every function.
+// Quoted spans are blanked first so a bracket inside a string cannot unbalance a line.
+const MAX_CONTINUATION_LINES = 3;
+const blankStrings = (s) => String(s).replace(/'[^'\n]*'|"[^"\n]*"|`[^`\n]*`/g, '""');
+function opensMoreThanItCloses(line) {
+  const s = blankStrings(line);
+  let depth = 0;
+  for (const ch of s) {
+    if (ch === '(' || ch === '[') depth++;
+    else if (ch === ')' || ch === ']') depth--;
+  }
+  return depth > 0;
+}
+function windowAt(lines, i) {
+  let text = lines[i];
+  let j = i;
+  let taken = 0;
+  while (taken < MAX_CONTINUATION_LINES && j + 1 < lines.length && opensMoreThanItCloses(text)) {
+    j += 1; taken += 1;
+    text = `${text} ${String(lines[j]).trim()}`;
+  }
+  return text;
+}
+
+// An assertion of ANY kind, and an assertion of EQUALITY specifically. `require` is
+// deliberately absent: `require('fs')` is on the first line of nearly every file here, and a
+// token that common turns the assertion test into no test at all.
+// The second alternative is Python's and shell's statement form, `assert len(rows) == 12`,
+// which has no parentheses to key on. It is anchored at the start of the line (optionally
+// behind a comment marker) so that prose merely CONTAINING the word — "this used to assert
+// deepStrictEqual against a whole list of names" — is not read as an assertion.
+const ASSERT_ANY =
+  /(?:\b(?:assert\w*|expect\w*|check\w*|should\w*|verif\w*)\s*[.(])|(?:^\s*(?:\/\/|#|--)?\s*assert\s+\S)/im;
+const ASSERT_EQ =
+  /\b(assert_eq\w*|assert_equals?|assertEquals?|strictEqual|deepStrictEqual|deepEqual|equals?|toEqual|toBe|toStrictEqual|is_equal)\s*\(/i;
+const EQUALITY_OP = /===|!==|==(?!=)|!=/;
+const isEqualityAssertion = (t) => ASSERT_EQ.test(t) || (ASSERT_ANY.test(t) && EQUALITY_OP.test(t));
+
+// literal-name-list — an array (or object-key) literal of two or more STRING elements on the
+// expected side of an equality assertion. The assertion is what separates it from a literal
+// list used as an INPUT: `path.join('tests', 'acceptance', 'demo')` enumerates nothing anyone
+// will grow, and neither does `const FIXTURE_FILES = ['a.js', 'b.js']`.
+const STRING_ARRAY = /\[\s*(?:['"][^'"\n]*['"]\s*,\s*)+['"][^'"\n]*['"]\s*,?\s*\]/;
+const STRING_KEY_OBJECT = /\{\s*(?:['"][^'"\n]*['"]\s*:\s*[^,{}\n]*,\s*)+['"][^'"\n]*['"]\s*:/;
+
+// literal-count — a `.length` / `.size()` / `len()` / `count` compared by STRICT EQUALITY to
+// an integer literal >= 2. `> 0`, `>= 1` and `!== 0` describe a population without pinning it,
+// and `=== 0` / `=== 1` are almost never a catalogue.
+const COUNTER = '(?:\\.length\\b|\\.size\\s*\\(\\s*\\)|\\.size\\b|\\blen\\s*\\([^()]*\\)|\\.count\\b|\\bcount\\s*\\(\\s*\\))';
+const COUNT_AS_ARGUMENT = new RegExp(`${COUNTER}\\s*,\\s*(\\d+)\\b`, 'g');
+const COUNT_BY_OPERATOR = new RegExp(`${COUNTER}\\s*(?:===|==)\\s*(\\d+)\\b`, 'g');
+const COUNT_BY_OPERATOR_REVERSED = new RegExp(`\\b(\\d+)\\s*(?:===|==)\\s*[A-Za-z_$][\\w$.]*${COUNTER}`, 'g');
+function anyCatalogueCount(re, text) {
+  re.lastIndex = 0;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    if (Number(m[1]) >= 2) return true;
+  }
+  return false;
+}
+
+// literal-digest — a hash compared against a STRING LITERAL. Two computed digests compared to
+// each other are the house snapshot guard in six of this repo's own frozen suites and must
+// never fire, which is exactly what requiring the literal buys.
+const DIGEST_TOKEN = /(sha1|sha256|sha512|md5|hash|digest|checksum|crc32|fingerprint)/i;
+const HEX_STRING_LITERAL = /(['"])[0-9a-fA-F]{8,}\1/;
+
+// branch-self-diff — a `git diff` / `git merge-base` naming the INTEGRATION branch. Git
+// against refs the test created itself in a throwaway repository is `repo-1cy`, and correct.
+const GIT_INVOCATION = /\bgit\b/;
+const GIT_HISTORY_VERB = /\b(diff|merge-base|merge_base)\b/;
+const REMOTE_REF = /\b(?:origin|upstream)\//;
+const DEFAULT_INTEGRATION_BRANCHES = ['main', 'master', 'develop', 'trunk'];
+const escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function namesIntegrationBranch(text, opts) {
+  if (REMOTE_REF.test(text)) return true;
+  const names = DEFAULT_INTEGRATION_BRANCHES.slice();
+  if (opts && opts.defaultBranch) names.push(String(opts.defaultBranch));
+  return names.some((b) => new RegExp(`(^|['"\\s])${escapeRe(b)}(['"\\s.]|$)`).test(text));
+}
+
+// The registry. Order here is presentation only: a line matching two shapes yields two
+// findings, one each, because a precedence rule would hide the second reason it is brittle.
+const SHAPE_RULES = [
+  ['literal-name-list', (t) => isEqualityAssertion(t)
+    && (STRING_ARRAY.test(t) || STRING_KEY_OBJECT.test(t))],
+  ['literal-count', (t) =>
+    (ASSERT_EQ.test(t) && anyCatalogueCount(COUNT_AS_ARGUMENT, t))
+    || (ASSERT_ANY.test(t) && (anyCatalogueCount(COUNT_BY_OPERATOR, t)
+      || anyCatalogueCount(COUNT_BY_OPERATOR_REVERSED, t)))],
+  ['literal-digest', (t) => ASSERT_ANY.test(t)
+    && DIGEST_TOKEN.test(t) && HEX_STRING_LITERAL.test(t)],
+  ['branch-self-diff', (t, opts) => GIT_INVOCATION.test(t)
+    && GIT_HISTORY_VERB.test(t) && namesIntegrationBranch(t, opts)],
+];
+
+// Pure over text, so every shape is testable without touching a filesystem. `file` is echoed
+// back verbatim — the caller decides how a path is spelled, and the CLI spells it
+// suite-relative, matching how `guards declared:` prints the spec path it was handed.
+function brittleFindings(text, file, opts) {
+  const lines = String(text == null ? '' : text).split(/\r?\n/);
+  const findings = [];
+  for (let i = 0; i < lines.length; i++) {
+    const window = windowAt(lines, i);
+    for (const [shape, fires] of SHAPE_RULES) {
+      if (fires(window, opts)) {
+        findings.push({
+          file,
+          line: i + 1,
+          shape,
+          text: String(lines[i]).trim(),
+          question: QUESTIONS[shape],
+        });
+      }
+    }
+  }
+  return findings;
+}
+
+// Walk the suite. Every path that is not linted is NAMED with a reason from a pinned
+// vocabulary — `binary`, `extension`, `unreadable` — because an unavailable discriminator that
+// stays quiet is indistinguishable from a clean one.
+function lintSuite(dirOrFile, opts) {
+  const root = path.resolve(dirOrFile);
+  const rootIsDir = fs.statSync(root).isDirectory();
+  const base = rootIsDir ? root : path.dirname(root);
+  const rel = (abs) => path.relative(base, abs).split(path.sep).join('/') || path.basename(abs);
+
+  const findings = [];
+  const skipped = [];
+  (function visit(abs) {
+    let st;
+    try { st = fs.statSync(abs); } catch { skipped.push({ path: rel(abs), reason: 'unreadable' }); return; }
+    if (st.isDirectory()) {
+      let entries;
+      try { entries = fs.readdirSync(abs).sort(); }
+      catch { skipped.push({ path: rel(abs), reason: 'unreadable' }); return; }
+      for (const e of entries) visit(path.join(abs, e));
+      return;
+    }
+    if (!LINT_EXTENSIONS.has(path.extname(abs).toLowerCase())) {
+      skipped.push({ path: rel(abs), reason: 'extension' });
+      return;
+    }
+    let buf;
+    try { buf = fs.readFileSync(abs); }
+    catch { skipped.push({ path: rel(abs), reason: 'unreadable' }); return; }
+    if (buf.slice(0, BINARY_SNIFF_BYTES).includes(0)) {
+      skipped.push({ path: rel(abs), reason: 'binary' });
+      return;
+    }
+    findings.push(...brittleFindings(buf.toString('utf8'), rel(abs), opts));
+  }(root));
+
+  return { findings, skipped };
+}
+
 // --- guards ---------------------------------------------------------------------------------
 
 // Counted from the spec text rather than inferred: an exemption the tool works out for itself
@@ -240,9 +456,11 @@ function main(argv) {
 
   const repoRoot = path.resolve(repo);
   let verifyCommand;
+  let defaultBranch = null;
   try {
     const cfg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'pipeline.config.json'), 'utf8'));
     verifyCommand = cfg.verifyCommand;
+    defaultBranch = cfg.defaultBranch || null;
     if (!verifyCommand && !process.env.FREEZE_GATE_CMD) {
       console.error('freeze-gate: verifyCommand missing from pipeline.config.json');
       return 2;
@@ -286,6 +504,29 @@ function main(argv) {
     console.log(`guards declared: ${guards.length}`);
     for (const g of guards) console.log(`  ${spec}:${g.line}  ${g.text}`);
   }
+  // The brittleness lint. Printed for every verdict and with or without `--spec` — a
+  // discriminator silent on a clean suite cannot be told from one that never ran — and outside
+  // the `if (spec)` block above, which is the placement that would hide it from the majority
+  // of invocations. It reads only the `--tests` path, never the control directory, which for
+  // the conventional control is live repo content rather than anything under review.
+  //
+  // It CANNOT move the exit code, in either direction: a clean pass does not rescue a green
+  // verdict, findings do not fail a red one, and a pass that throws says `unavailable` and
+  // names the reason rather than propagating a stack trace over the verdict or printing a `0`
+  // that would read as a silent all-clear.
+  console.log('');
+  try {
+    const lint = lintSuite(testPath, { defaultBranch });
+    console.log(`brittleness findings: ${lint.findings.length}`);
+    for (const f of lint.findings) {
+      console.log(`  ${f.file}:${f.line}  [${f.shape}]  ${f.question}`);
+      console.log(`      ${f.text}`);
+    }
+    for (const s of lint.skipped) console.log(`  skipped: ${s.path}  (${s.reason})`);
+  } catch (e) {
+    console.log(`brittleness findings: unavailable - ${(e && e.message) || String(e)}`);
+  }
+
   if (v.verdict !== 'red' && (real.stderr || '').trim()) {
     console.log('');
     console.log('last stderr from the real run:');
@@ -306,6 +547,7 @@ function usage() {
 
 module.exports = {
   verdictFor, guardCount, runVerify, withEmptyControlDir, resolveControl, CONTROL_DIR, main,
+  brittleFindings, lintSuite, LINT_EXTENSIONS, QUESTIONS,
 };
 
 if (require.main === module) process.exit(main(process.argv.slice(2)));
