@@ -9,7 +9,7 @@ This is the working guide. The design record is `DESIGN.md` §6.2; the tool is
 
 ## 1. Why this exists
 
-If you open three agent sessions and point all three at `C:\Code\Projects\MyProject`, they
+If you open three agent sessions and point all three at the same `MyProject` folder, they
 are not three workspaces. They are three agents typing into **one** set of files with
 **one** staging area between them.
 
@@ -35,10 +35,10 @@ folder on its own branch. Each folder has its own files and its own staging area
 share commits, branches and tags.
 
 ```
-C:\Code\Projects\
-    MyProject\                  <- the main checkout. Shared history lives here.
-    MyProject-flight-tuning\    <- session A. Branch: flight-tuning
-    MyProject-save-format\      <- session B. Branch: save-format
+<wherever you keep projects>/
+    MyProject/                  <- the main checkout. Shared history lives here.
+    MyProject-flight-tuning/    <- session A. Branch: flight-tuning
+    MyProject-save-format/      <- session B. Branch: save-format
 ```
 
 Session A cannot see, stage, commit or delete session B's files, because they are not in
