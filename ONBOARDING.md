@@ -32,7 +32,12 @@ Four stages, in order. Each is interactive, each happens once except the last:
    bounded interview, critics, dry-run decomposition as the readiness test). Identify
    each change-log row by a kebab-case slug — the issue id for a row a task produced, a
    short descriptive name for a row a planning session produced — never by a version
-   number, which parallel agents cannot assign uniquely (§12). Small
+   number, which parallel agents cannot assign uniquely (§12). Keep those rows in their
+   own file rather than inside the design doc, as this repo does with `docs/change-log.md`:
+   an append-only table can be marked `merge=union` in the repo-root `.gitattributes`, and
+   then N task branches each appending a row all merge without a person hand-resolving the
+   same conflict N-1 times. Never point that attribute at the design doc itself — prose is
+   amended in place, and union merge would keep both copies of an amended paragraph. Small
    projects can live on the scaffold's `SPEC.md` alone and enter planning per-task —
    the doc layer is for work big enough to decompose.
 3. **Onboard** — the checklist below: GitHub remote, integration branch recorded,

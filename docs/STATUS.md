@@ -1562,6 +1562,17 @@ design's central bet, and it is the first day it paid out repeatedly.
   starts, so two tasks touching the same file produce a conflict once the first merges
   (seen with PRs #2 and #3). Options: fork from latest, or partition concurrency by
   declared path ownership. Needed before any large wave.
+  **Partly closed 2026-08-26: the worst offender was the change log.** Every task amends
+  `DESIGN.md`, so every task appended a row to the same table at the same place — four of
+  four PRs merged on 2026-08-25/26 needed a person, and three of the four were resolved
+  identically (*keep both rows*). The rows now live in `docs/change-log.md`, which the
+  repo-root `.gitattributes` marks `merge=union`: both sides are kept and nothing conflicts.
+  That is safe on an append-only table and on nothing else — union merge on a prose file
+  would silently keep both copies of an amended paragraph, which is why the attribute names
+  that one path and must never be pointed at `DESIGN.md`. Its one blind spot, two branches
+  rewriting the same row, lands as a duplicate `Ref` and `scripts/test-changelog.sh` fails
+  on it. Files that are genuinely edited in place still collide, so the options above are
+  still open — there is just one less collision per task.
 - **Concurrency *within* a run is opt-in and small** — the runner defaults to the
   sequential loop. Since `repo-jur` several runner processes, one per project, can be in
   flight at once (each over its own queue), and since `repo-os9` a second run against the
@@ -1614,7 +1625,7 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-report.sh` | manifest schema, scrutiny ordering, idempotency |
 | `scripts/test-isolation.sh` | no push, read-only scaffolding, no egress, one credential |
 | `scripts/test-fixture.sh` | the fixture repo is a valid pipeline target |
-| `scripts/test-changelog.sh` | `DESIGN.md` §12 row identity — slug refs, uniqueness, citations |
+| `scripts/test-changelog.sh` | `docs/change-log.md` row identity — slug refs, uniqueness, citations (the convention they obey is `DESIGN.md` §12) |
 | `scripts/test-sanitize.sh` | publication hygiene — no machine paths, emails, credentials or denylisted names in the tracked tree |
 | `scripts/test-agent-hooks.sh` | container hygiene — no tracked file configures an agent hook |
 | `scripts/test-network-names.sh` | per-project network and proxy names — derivation, and that they reach the scripts |
@@ -1649,7 +1660,12 @@ and red in the host sweep. The stub is preloaded into node with
 works because node runs preloads before it resolves the main module.
 
 **`scripts/test-changelog.sh` is the second** (repo-006): it reads markdown and nothing
-else, so it needs no Docker, no network and no target repo. It checks §12's table shape
+else, so it needs no Docker, no network and no target repo. The table it reads now lives in
+`docs/change-log.md` rather than in DESIGN.md §12, and the checker's section anchor accepts
+both headings deliberately — the frozen `tests/acceptance/repo-006` suite writes its
+negative-case fixtures with `## 12. Change Log` and drives the checker over them through
+`CHANGELOG_FILE`, so narrowing the anchor to the new form alone would turn a frozen sibling
+suite red. It checks that table's shape
 (four cells per row, counted *after* masking backtick spans — one row carries
 `done|partial|failed|stuck` in a code span and so has three pipes that are not cell
 boundaries), that every ref is a unique kebab-case slug and never a bare date, that no

@@ -100,6 +100,15 @@ gh pr create                         # or open it in the browser
 you see what the session actually did before it becomes part of the project. That rule
 predates worktrees and worktrees do not relax it.
 
+**One file will not conflict, by construction.** If your session amends `DESIGN.md` it also
+appends a change-log row — and those rows live in `docs/change-log.md`, which the repo-root
+`.gitattributes` marks `merge=union`. N sessions each appending a row all merge clean and
+keep every row, instead of the first merging free and the rest waiting for a person to give
+the answer that was always *keep both*. Append at the bottom and never edit an existing row:
+that rule is the whole reason the attribute is safe there, and two branches rewriting one row
+would keep both copies silently (caught afterwards as a duplicate `Ref` by
+`scripts/test-changelog.sh`, but not at merge time).
+
 For this repo specifically, there is a second reason to merge promptly: a task's frozen
 acceptance tests must be on the branch the pipeline's containers fork from, or the dispatch
 gate refuses to dispatch that task (`DESIGN.md` §4.12). A spec frozen on an unmerged

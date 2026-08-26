@@ -403,6 +403,13 @@ wrong" during a run is a first-class result that lands in review — never a rea
 anything to edit specs or tests mid-run. If the cause is architectural, amend the design
 doc (change-log row) so the doc never silently drifts from reality.
 
+The rows live in **`docs/change-log.md`**, not in `DESIGN.md`; section 12 of the design doc
+holds the convention and points at the file. Append at the bottom. That file — and only that
+file — is marked `merge=union` in the repo-root `.gitattributes`, which is what lets the
+task branches of one batch each append a row and merge without a person hand-resolving the
+same conflict N-1 times. It is safe there because rows are appended and never edited, so
+never extend the attribute to `DESIGN.md` or another prose file.
+
 A change-log row is identified by a **slug** in its `Ref` column, never a version number:
 a row a pipeline task produced takes that task's issue id, and a row a planning session
 produced takes a short descriptive kebab-case name. Versions could not survive parallel
