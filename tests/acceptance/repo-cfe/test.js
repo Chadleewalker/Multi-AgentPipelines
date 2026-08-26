@@ -183,47 +183,74 @@ check('C2 the .gitattributes rule says WHY union is safe here',
 // ---- C3: the thing the task exists for -------------------------------------------------
 // Two branches each append a row; the merge must not conflict and must keep both.
 
+// `-c` is a git WRAPPER option and must precede the subcommand: `git init -c foo=bar .`
+// exits 129 "unknown switch c" and creates no repository. git() already places its own -c
+// flags in the wrapper position; this one has to go there too.
+//
+// Getting that wrong is what made the first freeze of this suite unpassable by any
+// implementation. It also made the two checks below pass VACUOUSLY, which is the part worth
+// remembering: the appends land whether or not git works, and the control "conflicts"
+// because git errored rather than because a conflict occurred. So the fixture is now
+// asserted to have been BUILT before anything is concluded from it — a fixture that failed
+// to construct must fail loudly, never quietly agree with whatever it was asked.
 function fixtureRepo(withAttributes) {
   const dir = fs.mkdtempSync(path.join(tmpRoot, 'merge-'));
-  git(['init', '-q', '-c', 'init.defaultBranch=main', '.'], dir);
+  const init = git(['-c', 'init.defaultBranch=main', 'init', '-q', '.'], dir);
+  if (!init.ok) return null;
   fs.mkdirSync(path.join(dir, 'docs'), { recursive: true });
   fs.copyFileSync(CHANGELOG, path.join(dir, 'docs', 'change-log.md'));
   if (withAttributes) fs.copyFileSync(path.join(ROOT, '.gitattributes'), path.join(dir, '.gitattributes'));
-  git(['add', '-A'], dir); git(['commit', '-q', '-m', 'base'], dir);
+  git(['add', '-A'], dir);
+  if (!git(['commit', '-q', '-m', 'base'], dir).ok) return null;
+  // Prove the repository exists and holds the file, or the rest of C3 means nothing.
+  if (!git(['rev-parse', '--git-dir'], dir).ok) return null;
   return dir;
 }
 function appendRowOn(dir, branch, ref) {
-  git(['checkout', '-q', '-b', branch, 'main'], dir);
+  if (!git(['checkout', '-q', '-b', branch, 'main'], dir).ok) return false;
   fs.appendFileSync(path.join(dir, 'docs', 'change-log.md'),
     `| 2026-08-26 | ${ref} | appended by ${branch} | fixture |\n`);
   git(['add', 'docs/change-log.md'], dir);
-  git(['commit', '-q', '-m', branch], dir);
+  return git(['commit', '-q', '-m', branch], dir).ok;
+}
+
+function mergeCase(withAttributes, refA, refB) {
+  const dir = fixtureRepo(withAttributes);
+  if (!dir) return { built: false };
+  if (!appendRowOn(dir, 'branch-a', refA) || !appendRowOn(dir, 'branch-b', refB)) return { built: false };
+  if (!git(['checkout', '-q', 'branch-a'], dir).ok) return { built: false };
+  const merged = git(['merge', 'branch-b', '-m', 'merged'], dir);
+  return { built: true, merged, text: read(path.join(dir, 'docs', 'change-log.md')) || '' };
 }
 
 if (clText !== null) {
-  const dir = fixtureRepo(true);
-  appendRowOn(dir, 'branch-a', 'fixture-aaa');
-  appendRowOn(dir, 'branch-b', 'fixture-bbb');
-  git(['checkout', '-q', 'branch-a'], dir);
-  const merged = git(['merge', 'branch-b', '-m', 'merged'], dir);
-  const result = read(path.join(dir, 'docs', 'change-log.md')) || '';
+  const withAttr = mergeCase(true, 'fixture-aaa', 'fixture-bbb');
+  // The fixture is asserted first and separately. Without this, a fixture that never built
+  // makes the control "pass" for the wrong reason and the whole criterion says nothing.
+  check('C3 the merge fixture was actually built (a fixture that failed to construct proves nothing)',
+    withAttr.built);
   check('C3 two branches each appending a row merge with git merge exiting 0',
-    merged.ok, (merged.err || merged.out).split('\n').slice(0, 3).join(' / '));
+    withAttr.built && withAttr.merged.ok,
+    withAttr.built ? (withAttr.merged.err || withAttr.merged.out).split('\n').slice(0, 3).join(' / ') : 'fixture not built');
   check('C3 both appended rows survive the merge',
-    result.includes('fixture-aaa') && result.includes('fixture-bbb'));
+    withAttr.built && withAttr.text.includes('fixture-aaa') && withAttr.text.includes('fixture-bbb'));
+  check('C3 the merged file carries no conflict markers',
+    withAttr.built && !/^<{7}|^={7}$|^>{7}/m.test(withAttr.text));
 
-  // The negative half: without the attribute the same case conflicts. This is what proves
-  // C3 is measuring the attribute and not something incidental about the fixture.
-  const bare = fixtureRepo(false);
-  appendRowOn(bare, 'branch-a', 'fixture-ccc');
-  appendRowOn(bare, 'branch-b', 'fixture-ddd');
-  git(['checkout', '-q', 'branch-a'], bare);
-  const conflicted = git(['merge', 'branch-b', '-m', 'merged'], bare);
+  // The negative half: the SAME case without the attribute must conflict. This is what
+  // proves C3 measures the attribute and not something incidental about the fixture — and
+  // it is only meaningful once the fixture is known to have been built.
+  const noAttr = mergeCase(false, 'fixture-ccc', 'fixture-ddd');
+  check('C3 [control] the control fixture was actually built', noAttr.built);
   check('C3 [control] the SAME case without the attribute does conflict',
-    !conflicted.ok, 'if this passes, C3 proves nothing about merge=union');
+    noAttr.built && !noAttr.merged.ok,
+    'if this passes for any other reason, C3 proves nothing about merge=union');
 } else {
-  check('C3 two branches each appending a row merge with git merge exiting 0', false, 'no docs/change-log.md');
-  check('C3 both appended rows survive the merge', false, 'no docs/change-log.md');
+  for (const n of ['the merge fixture was actually built (a fixture that failed to construct proves nothing)',
+    'two branches each appending a row merge with git merge exiting 0',
+    'both appended rows survive the merge',
+    'the merged file carries no conflict markers']) check(`C3 ${n}`, false, 'no docs/change-log.md');
+  check('C3 [control] the control fixture was actually built', false, 'no docs/change-log.md');
   check('C3 [control] the SAME case without the attribute does conflict', false, 'no docs/change-log.md');
 }
 
