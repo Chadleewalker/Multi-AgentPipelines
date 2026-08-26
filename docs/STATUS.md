@@ -1289,6 +1289,51 @@ amended here and the map was not. Editing it means re-running
 `node scripts/build-pipeline-map.js`, which needs `tools/mapbuild/node_modules` and therefore
 a host.
 
+## One folder per agent session (`parallel-sessions`, 2026-08-25)
+
+**Proven.** `scripts/worktree.js` + `docs/parallel-sessions.md` + a "Commit hygiene" section
+in CLAUDE.md. Interactive-session practice only; no run executes differently.
+
+The problem was several agent sessions pointed at one checkout. That is not several
+workspaces — it is several agents typing into one set of files with one staging area, and
+git cannot tell their work apart. Two failures, both being the correct behaviour of the
+command involved: a `git add -A` swept four files belonging to another session into an
+unrelated commit (nothing lost, history wrong — the worse half, since later sessions read
+it as fact), and a `git checkout -- <path>` was run against a file another session was
+editing, where only timing prevented permanent loss. Rules against both are now written and
+are also the layer that fails at the fourth session at 11pm; the worktree is what makes the
+collision impossible rather than discouraged.
+
+**What the investigation actually found**, since three of the four answers were not the
+expected ones:
+
+- **Beads needs nothing done to it.** It resolves its database through git's *common
+  directory*, so every worktree reads and writes the ONE database in the main checkout —
+  `bd count` agrees across folders, and running `bd` in a worktree creates no second
+  database there. So N sessions do not mean N queues and hard rule 1 survives untouched.
+  This was the question that could have sunk the design: a forked queue is precisely what
+  that rule exists to prevent. `bd worktree info` reports what a folder resolved to.
+- **`runs/` is the one thing that must never be duplicated.** `runs/locks/` is what makes
+  "one run per project" true (§4.12), so a copy is a second lock and two runners can drain
+  one queue. It is also where every manifest and report lands, so a run launched from a
+  worktree would *work* and write its history where `verdict.js`, `batch.js`,
+  `audit-runs.js` and the dashboard never look — invisible, not broken, which is worse.
+  Hence: launch runs from the main checkout only. The tool refuses that carry entry by name.
+- **Seven host-only paths are present in the main checkout and absent from a fresh
+  worktree** — `.env.pipeline`, `.sanitize-denylist`, `run.config.*.json`, `runs/`,
+  `tools/mapbuild/node_modules`, `.claude/settings.local.json`, `.beads/embeddeddolt`. One
+  is 388 MB, which is why `.worktree-carry` is a declared list and not a blanket copy. The
+  one that matters is `.sanitize-denylist`: absent, `test-sanitize.sh` silently skips its
+  project-specific checks and passes a tree it should have failed.
+- **Environment variables are a non-issue** — they belong to the shell, not the folder.
+
+**The mutation pass paid for itself twice.** The suite was green on its first run, which is
+when to be suspicious. Measuring dirtiness with `git diff` (tracked files only) and dropping
+the main checkout from `remove`'s candidate filter BOTH left it green — because `git worktree
+remove` has guards of its own, so an exit-code-only assertion is satisfied by a broken
+implementation that git happened to catch. Two checks now pin *this tool's* refusal message
+rather than the exit code. Six mutations, six kills after the fix.
+
 ## What's next
 
 **The queue drained again on 2026-07-26**, after `repo-4l8` (the epic filter, planned and
@@ -1432,14 +1477,14 @@ design's central bet, and it is the first day it paid out repeatedly.
 
 ## Test suites
 
-All but eighteen drive real Docker and share one network, so they must never run concurrently
+All but twenty drive real Docker and share one network, so they must never run concurrently
 (`test-runner-memory.sh`, `test-changelog.sh`, `test-sanitize.sh`,
 `test-agent-hooks.sh`, `test-network-names.sh`, `test-lock.sh`,
 `test-sweep-hygiene.sh`, `test-concurrency.sh`, `test-pause-gate.sh`,
 `test-sweep-assertions.sh`, `test-trace.sh`, `test-verdict.sh`, `test-audit-runs.sh`,
-`test-dashboard.sh`, `test-verify-buffer.sh`, `test-pipeline-map.sh`
-`test-batch.sh` and `test-dispatch-gate.sh` are the exceptions —
-see below; they need neither).
+`test-dashboard.sh`, `test-verify-buffer.sh`, `test-pipeline-map.sh`,
+`test-batch.sh`, `test-dispatch-gate.sh`, `test-feed.sh` and `test-worktree.sh` are the
+exceptions — see below; they need neither).
 **`scripts/test-all.sh` is the sweep** — it holds a lock, runs every suite sequentially,
 kills one that hangs (`--timeout`, default 900s), **reclaims what each suite leaked after
 every suite** (change-log row `repo-zje`), and writes per-suite logs plus a summary table
