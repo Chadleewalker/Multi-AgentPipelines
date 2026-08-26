@@ -129,6 +129,19 @@ coverage that matters is of the area about to be tasked out, not of the whole sy
       not a control. An empty directory cannot do the job: a good runner is *supposed* to fail
       on "no test files found", so the gate would be unable to discriminate on exactly the
       projects it works best for.
+
+      The same run also prints a **brittleness lint** over the tests being frozen — never over
+      `_control/`, which is live repo content rather than anything under review (§3.2, move 6;
+      change-log row `repo-uw6`). It names assertions whose *expected side is a literal the
+      author typed* and asks whether later work is licensed to grow what they enumerate; the
+      count prints even when it is zero, and a finding can never fail a freeze. **Its language
+      scope is worth knowing before you onboard.** It reads `.js`, `.cjs`, `.mjs`, `.ts`,
+      `.gd`, `.py`, `.sh` and `.bash`, the patterns are written against JavaScript, GDScript,
+      Python and shell, and anything else is best-effort. Whatever it does not read it *names*
+      — `extension`, `binary`, `unreadable`, one line per path — so a project whose tests are
+      in another language sees its suite listed as skipped rather than silently blessed. That
+      is the honest answer, not a fault to fix: the exit-code half of the gate is unaffected
+      and works on any language.
 - [ ] Create `docs/IDEAS.md` — the project's own idea inbox. Copy the structure from
       this pipeline repo's `docs/IDEAS.md`: a flat list of parked "this should probably
       become a design someday" notes, plus **Promoted** and **Dropped** tables. It costs
