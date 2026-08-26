@@ -1,0 +1,31 @@
+# Host-only files a new worktree needs (docs/parallel-sessions.md §7).
+#
+# A worktree checks out TRACKED files only, so everything git-ignored is absent from a new
+# one — every local config, every secret, every build cache. This file names the ones a
+# session actually needs, and `node scripts/worktree.js new` copies them in and reports what
+# it carried, what was missing, and what it refused.
+#
+# Copy this to `.worktree-carry` at the repo root and edit. Absent, nothing is carried and
+# the tool says so rather than leaving you to find out.
+#
+# One repo-relative path per line. Directories are copied recursively. A `#` starts a
+# comment. A missing entry is reported, not fatal.
+
+# The publication denylist. Without it scripts/test-sanitize.sh skips its project-specific
+# checks and passes a tree it should have failed — a silent weakening, so carry it.
+.sanitize-denylist
+
+# --- deliberately NOT carried, and why ------------------------------------------------
+#
+# runs/                        REFUSED by the tool, by name. It holds the per-project run
+#                              lock (DESIGN.md §4.12); a second copy is a second lock and
+#                              "one run per project" stops being true. Launch runs from the
+#                              main checkout only.
+#
+# .env.pipeline                the subscription token. Only a session that launches runs
+# run.config.*.json            needs these, and those belong in the main checkout.
+#
+# tools/mapbuild/node_modules  388 MB. Redraw the reader's map from the main checkout.
+#
+# .claude/settings.local.json  per-folder tool approvals. Let a new worktree earn its own
+#                              rather than inheriting approvals granted for other work.

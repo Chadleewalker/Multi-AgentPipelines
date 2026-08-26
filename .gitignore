@@ -32,3 +32,8 @@ docs/user-profile.md
 .claude/hooks/
 .codex/hooks/
 .claude/settings.local.json
+
+# Which git-ignored host-only files a new worktree should be given
+# (docs/parallel-sessions.md §7). It names local paths, so it is host-only itself; copy
+# .worktree-carry.example to make your own.
+.worktree-carry
