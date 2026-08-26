@@ -25,8 +25,8 @@ one (§3.8: an inbox that can start a container is not an inbox).
 | | |
 |---|---|
 | Branch | `feed-readers`, on top of merged `main` |
-| Worktree | `C:\Code\Projects\MAP-livefeed` — a **git worktree**, not a clone |
-| Primary tree | `C:\Code\Projects\Multi-AgentPipelines`, untouched, on `main` |
+| Worktree | `MAP-livefeed` — a **git worktree**, not a clone |
+| Primary tree | `Multi-AgentPipelines`, untouched, on `main` |
 | PRs | #46 (merged), #47 (open) |
 | Thread | `docs/threads/live-queue-feed.md`, status `promoted` |
 | Change-log rows | `live-queue-feed` (the runner), `feed-readers` (the two readers) |
@@ -37,7 +37,7 @@ launched as `node runner/run.js` from whatever directory you are in, editing the
 would have put half-finished code into the next real run. When this work is done:
 
 ```bash
-git -C C:/Code/Projects/Multi-AgentPipelines worktree remove ../MAP-livefeed
+node scripts/worktree.js remove MAP-livefeed
 ```
 
 It refuses if there are uncommitted changes, which is the behaviour you want.

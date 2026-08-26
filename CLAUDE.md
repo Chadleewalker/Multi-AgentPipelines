@@ -63,6 +63,40 @@ pipeline unable to be trusted unattended.
 7. **No LLM in the runner, the verifier, or the report generator.** Control flow,
    timeouts, and outcomes are deterministic. Agents do fuzzy work only.
 
+## Commit hygiene — you are not the only session in this repository
+
+Several agent sessions run against this project at once. Assume at least one other is
+working right now, in a folder you cannot see, with uncommitted work on disk.
+
+**Each session gets its own git worktree — its own folder, its own branch, one shared
+history** (`docs/parallel-sessions.md`, DESIGN.md §6.2). Make one with
+`node scripts/worktree.js new <idea-name>` and open the session there;
+`node scripts/worktree.js list` shows what is already open.
+
+These four rules hold **inside** a worktree too. Isolation shrinks the blast radius of
+breaking them from someone else's work to your own; it does not make them optional.
+
+1. **Stage named paths, always.** `git add path/one path/two`. **Never** `git add -A`,
+   `git add .`, or `git commit -a`. Those stage *the folder*, not *your work* — which is
+   how four files belonging to another session once landed in an unrelated commit under a
+   message describing something else. Nothing was lost and the history was still wrong.
+2. **Never run a command that discards work you did not write.** Not `git checkout --`,
+   `git restore`, `git stash`, `git reset --hard`, `git clean`. Uncommitted work has no
+   copy anywhere, so there is nothing to recover it from. If you need a clean tree to test
+   a hypothesis, make a worktree and test it there.
+3. **If `git status` shows changes you did not make, stop and report.** Do not commit
+   them, revert them, stash them or move them. Say what you found and let the user decide.
+   Modification times are evidence: a file touched minutes ago is someone working, not
+   something stale.
+4. **Launch pipeline runs from the main checkout only.** `runs/` is git-ignored, so a
+   worktree gets its own — and `runs/locks/` is where the per-project run lock lives
+   (§4.12). A second copy is a second lock, and two runners can then drain one queue at
+   once. The run's reports would also land where `verdict.js`, `batch.js`,
+   `audit-runs.js` and the dashboard will never look.
+
+The one place none of this applies is inside a task container, which has its workspace to
+itself by construction.
+
 ## Standing authorizations
 
 Some sessions start with a default of "don't spawn subagents unless the user asks". That
@@ -147,6 +181,17 @@ node scripts/batch.js show <project>-<YYYY-MM-DD>   # one named marker
 # the root, DASHBOARD_PORT the port (0 = ephemeral).
 node scripts/dashboard.js          # prints one line: dashboard: http://127.0.0.1:4770/
 
+# one folder per agent session (§6.2, change-log row `parallel-sessions`, docs/parallel-sessions.md).
+# N sessions in ONE checkout share one staging area, so `git add -A` in one commits another's
+# half-finished work and `git checkout --` destroys it; both have happened. A worktree is its own
+# folder and branch over one shared history, which makes that impossible rather than discouraged.
+# `new` also copies in the git-ignored host-only files named in `.worktree-carry` — and REFUSES
+# `runs/`, which holds the per-project run lock (§4.12): launch runs from the main checkout only.
+# `remove` refuses while the folder still holds uncommitted, untracked or unpushed work.
+node scripts/worktree.js new <idea-name>   # folder + branch off the default branch
+node scripts/worktree.js list              # every worktree, and what still holds work
+node scripts/worktree.js remove <idea-name>
+
 # the full sweep — every suite, one at a time, with a summary table
 bash scripts/test-all.sh
 
@@ -161,7 +206,7 @@ bash scripts/test-runner-container.sh
 # Host-only: needs `cd tools/mapbuild && npm install` once, and never runs in a container.
 node scripts/build-pipeline-map.js   # writes docs/pipeline-map.built.html + a per-diagram node count
 
-# the nineteen suites that need no Docker — seconds, safe to run anywhere, even in a container
+# the twenty suites that need no Docker — seconds, safe to run anywhere, even in a container
 bash scripts/test-runner-memory.sh
 bash scripts/test-changelog.sh     # DESIGN.md §12 row identity (CHANGELOG_FILE re-aims it)
 bash scripts/test-sanitize.sh      # publication hygiene (SANITIZE_FIXTURE_DIR re-aims it)
@@ -181,6 +226,7 @@ bash scripts/test-pipeline-map.sh  # the reader's map is drawn at build time —
 bash scripts/test-batch.sh         # the batch marker reader — the marker shape, the corpus join, the live-queue reconciliation and both degraded vocabularies (change-log rows `repo-0b3`, `repo-8v0`)
 bash scripts/test-dispatch-gate.sh # the ready queue's SECOND admission rule — a task whose frozen suite is not on the fork branch is never dispatched (change-log rows `dispatch-gate`, `repo-5yu`)
 bash scripts/test-feed.sh       # the live queue feed — work frozen mid-run is picked up by the next free worker (change-log row `live-queue-feed`)
+bash scripts/test-worktree.sh   # one folder per agent session — what a worktree carries, what it refuses to carry, and what it refuses to delete (change-log row `parallel-sessions`)
 ```
 
 Reading the corpus itself is `node scripts/audit-runs.js` — a pure reader that prints one
@@ -490,6 +536,24 @@ the pipeline working on the pipeline's own code. The rules:
   loop takes the run down exactly as an exit does and only one of the two shapes is
   obvious. Nothing in it turns on wall clock — a grace window is a thing that SLEEPS, so
   `now` and `wait` are injected and time is a number the suite advances.
+  And `sh scripts/test-worktree.sh` (`tests/unit/worktree.test.js`), which needs git and
+  node only and builds throwaway repositories — including their own bare remotes — under
+  the OS temp dir: run it if you touch `scripts/worktree.js`, because what that tool
+  decides is whether one interactive session can destroy another's uncommitted work, and
+  every way it fails is silent — a folder is gone and the reason it was safe to delete was
+  wrong. Its fixtures are pairs that a plausible wrong implementation fails rather than
+  merely being exercised by: a worktree dirty with **only an untracked file** beside one
+  dirty with a tracked modification (the obvious `git diff --quiet` check passes the second
+  and deletes the first, and an uncommitted new test file is exactly the work the incident
+  swept up); a worktree that is **clean** but holds a commit on no remote, which every
+  dirtiness check in the world calls safe to delete; and `new` invoked **from inside a
+  worktree**, the only fixture separating `--git-common-dir` from `--show-toplevel`, which
+  are identical from the main checkout and differ everywhere else. Two of its assertions
+  pin **this tool's** refusal message rather than the exit code, because `git worktree
+  remove` has a dirtiness guard of its own and an exit-code-only check is satisfied by a
+  broken implementation that git happened to catch — the mutation pass found both. It also
+  inherits `repo-5yu`'s lesson in a `master` fixture with no resolvable `origin/HEAD`: the
+  default branch is resolved or the tool aborts, never guessed as the literal `main`.
   Any new Docker-free suite belongs beside them in
   `tests/unit/`, and its seam stub must be a `.js` file invoked through
   `process.execPath`, never a `#!/bin/sh` script: `spawnSync` without a shell fails such a

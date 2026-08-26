@@ -212,6 +212,38 @@ publication boundary (change-log row `publish-sanitize`) — this repo is public
 documents the machinery, never the work done with it, so a target project's ideas cannot
 be filed here at all.
 
+**Below the panel, move 6: a red test can still be the wrong test.** The freeze gate asks
+one question — do these tests fail against the fork point? — and an entire class of bad
+frozen test answers it correctly. A criterion that pins a list of names, asserts an exact
+count, hashes a whole build, or diffs the branch against its own fork point is red at
+freeze and discriminating at freeze, and then goes red again for every later task that
+legitimately grows the thing it enumerated. It does not merely go stale: one target repo
+has lost at least eight frozen files across six suites this way — an eleven-name key list
+broken by the task that added a twelfth, "exactly 30 flavour entries" broken by the task
+that grew it to 61, and one that diffs its own branch over three source directories and
+will therefore fail every code-touching task in that repository from now on. That last
+shape **inverts**: it goes red precisely *because* an unrelated later task did its job
+correctly, which is the opposite of what a frozen test is for.
+
+Nothing else in this pipeline reads a suite before it freezes, and freeze time is the only
+moment anyone is looking at that file with the authority to change it. So the gate gains a
+second, **textual** pass over the suite it is about to bless: it names each occurrence of
+those shapes with its file, its line and the question a human should answer — *is later
+work licensed to change this?* — and it prints the count **even when it is zero**, on the
+`guards declared:` precedent, because a discriminator that stays silent when it finds
+nothing is indistinguishable from one that never ran.
+
+**The pass cannot change the exit code, and that is the design rather than a limitation.**
+The gate's exit codes are a verdict about red, green and indeterminate which `PLANNING.md`
+step 4 branches on; overloading them would break that contract and turn a lint into a gate
+on spec *authoring* — the shape hard rule 5 refuses, since the way past a gate that can
+fail you is to reword until it passes. Nor can the tool decide these cases: it cannot tell
+a catalogue later work will grow from an enumeration of the task's own output, and the
+second is exactly what a discriminating test *should* assert. It surfaces candidates; each
+finding takes a **disposition** in the planning draft the way a critic's does (step 2), so
+"the lint raised four and all four were considered" is a claim anyone can check later
+instead of taking on trust (change-log row `freeze-brittleness-lint`).
+
 **V1 deliverable.** In V1 the planning session is a written playbook — `PLANNING.md` in
 this repo — that the user and Claude follow interactively: draft spec + tests, approve
 intent, commit/freeze tests, create the issue, declare dependencies, rebuild the image if
@@ -431,6 +463,39 @@ ready queue once before the task loop — which the live queue feed has since ch
 halves have now shipped — the container side
 as `repo-1cy`, the host side as change-log row `spec-concern-surfacing`, which the first
 real concern prompted by reaching the status file and going no further.
+
+
+**The channel had no readership, and a channel nobody reads reports to nobody.** Both
+halves above shipped, and then the failure they exist to prevent happened anyway, one
+level up. Across two consecutive runs against one target, **seven** task agents
+independently diagnosed the same host-side fault — correctly, with evidence, naming each
+other by issue id — and nothing consumed any of them, so the second run repeated the
+first's mistake at eight times the scale and spent 3h11m recording eight `stuck`. Every
+one of those concerns was surfaced exactly as specified above: in the attempt log, the
+manifest, the report and the PR body, as a section of the task that raised it.
+
+That placement is right for one concern and wrong for seven. The signal that matters is
+not a concern but **the same concern arriving n times**, and that fact exists only *across*
+tasks and *across* runs, where no artifact looked. So the run report gains a run-level
+concern section, above the per-task list:
+
+- an **unconditional headline** — how many concerns, raised by how many of how many tasks.
+  It needs no interpretation, cannot fail, and is on its own enough: *"7 of 8 tasks raised
+  a spec concern"* at the top of the first run's report is the sentence that stops the
+  second run being launched.
+- **grouping by shape** within the run, and, for each group, how many prior runs against
+  the same target carry that shape. Deterministic and with no LLM (hard rule 7) —
+  normalise, compare token sets, group above a declared threshold, and pin that threshold
+  against the real corpus rather than choosing a number that sounds right.
+
+A concern remains **evidence and never a gate** (§3.5): a repeat is louder, not
+authoritative, and no count of them may change an outcome, an exit code, a Beads
+transition, or whether a branch is published. What changes is only where a human meets it.
+The report also stays reproducible — the run corpus becomes one of its declared inputs and
+the report names the runs it compared against, so "regeneration from the same inputs is
+byte-identical" remains a checkable claim rather than a weaker one (change-log row
+`concern-repeat-surfacing`).
+
 
 ### 3.8 Idea threads (state that outlives a session)
 
@@ -1695,6 +1760,80 @@ work on the same footing as the dashboard's page (change-log row `live-dashboard
 frozen test can pin that a page is self-contained but not that it is legible, so the writing
 half is interactive work and the presence half is the only part a pipeline task can own.
 
+### 6.2 Parallel working sessions (one worktree each)
+
+The other half of the same host input: the person runs several interactive agent sessions at
+once, one per idea, and until now every one of them pointed at the same checkout. Three
+sessions in one folder are not three workspaces — they are three agents typing into one set
+of files with one staging area between them, and git has no concept that could tell their
+work apart. **Each interactive session gets its own git worktree**: its own folder, its own
+branch, one shared history. `scripts/worktree.js` creates, lists and removes them;
+`docs/parallel-sessions.md` is the working guide.
+
+This is host-side working practice, not pipeline machinery, and it is stated here for the
+reason §6.1 is: something the person supplies on their own machine, that no clone carries,
+and where getting it wrong corrupts the record the rest of this document depends on. It is
+also strictly an *interactive*-session concern. A task container already has its workspace to
+itself by construction (§4.3) and the runner already clones per task, so nothing below
+changes anything about how a run executes.
+
+**Why isolation and not discipline.** The failure is neither hypothetical nor exotic. A
+session ran `git add -A` and committed; git stages the *folder*, so four files belonging to
+another session went into that commit under a message about something else. Nothing was lost
+and the history was still wrong, which is the worse half — a corrupted record is read by
+every later session, agents included, as fact. Separately a session ran `git checkout --
+<path>` to test a hypothesis against a file another session was editing; uncommitted work has
+no copy anywhere, so the only thing between that and permanent loss was timing. Both are the
+*correct* behaviour of the commands involved. Rules against them are worth writing (CLAUDE.md,
+"Commit hygiene") and they are also the layer that fails at the fourth session at 11pm,
+because they ask an agent working at speed to reason about folders it cannot see. A worktree
+removes the shared object rather than guarding it: `git add -A` in one folder cannot reach
+another's files, because they are not there.
+
+**What is shared and what is not, verified rather than reasoned.** A worktree checks out
+*tracked* files only, so every git-ignored path — local config, secrets, build caches — is
+absent from a new one. Three consequences settle the design:
+
+* **The Beads database is shared, and that is the load-bearing result.** Beads resolves its
+  database through git's *common directory*, so every worktree reads and writes the one
+  database in the main checkout: `bd count` agrees across folders, and running `bd` in a
+  worktree creates no second database there. Hard rule 1 therefore survives worktrees
+  unchanged — the host is still the only writer to *one* queue, and N sessions do not mean N
+  queues. Had it gone the other way the queue would fork along the same seam the code does,
+  which is precisely what hard rule 1 exists to prevent, and this section would have had to
+  mandate a shared database explicitly. It does not, because Beads already does it. The
+  concurrent-writer question that follows is not new: it is the one change-log row
+  `live-queue-feed` sized and dismissed on evidence, the operator/working split having
+  already put two host processes on `bd`.
+* **`runs/` must never be duplicated, and the tool refuses it by name.** `runs/locks/` holds
+  the per-project run lock (§4.12) that makes "one run per project" true; a second copy is a
+  second lock, and two runners can then drain one queue. It is also where every manifest and
+  report lands, so a run launched from a worktree writes its history where `verdict.js`,
+  `batch.js`, `audit-runs.js` and the dashboard will never look — it would work, and its
+  results would be invisible. Hence the rule: **runs are launched from the main checkout
+  only**, which is what the operator/working session split already does in practice.
+* **Everything else host-only is declared, not remembered.** `.worktree-carry` at the repo
+  root names the git-ignored paths a new worktree should be given, and `new` reports what it
+  carried, what was missing and what it refused. The alternative — a session discovering a
+  missing `.sanitize-denylist` as a suite that quietly skips its project-specific checks — is
+  a silent weakening of a gate, which §4.4's reasoning rules out anywhere it can be ruled out
+  cheaply.
+
+**What the tool refuses.** `remove` will not delete a worktree holding uncommitted changes,
+*untracked files*, or commits on no remote, and it names what it found. Untracked is not a
+detail: an uncommitted new test file is exactly the work the incident swept up, and the
+obvious dirtiness check (`git diff`) cannot see it. The branch outlives the folder
+deliberately — deleting a branch is a second irreversible act belonging to whoever merged the
+PR, and a tidy-up tool that also deletes branches is the original hazard in a new hat.
+`--force` exists, does what it says, and is the only path that destroys work.
+
+**Where this meets the dispatch gate.** A spec frozen on a worktree branch is not on the
+branch containers fork from, so §4.12's second admission rule refuses that task until the
+branch is merged and pushed — correctly, and now more often, since parallel sessions leave
+more unmerged freeze branches outstanding at any moment. The remedy is the one already in the
+outcome table (freeze, PR, merge, run), plus feeding for a run already in flight. No gate
+changes.
+
 ## 7. Phasing
 
 **V1 — the implementation loop** (this project's first autonomous run):
@@ -1942,4 +2081,7 @@ version (`Status: READY v1.0`). The *document* still has a version; its *rows* n
 | 2026-08-21 | repo-5yu | the dispatchability gate **ships**, closing the declaration in change-log row `dispatch-gate`. `readyQueue()` returns a third population beside `skipped`, keyed `undispatchable`: after the type filter and only when candidates remain, one `git fetch <targetRepoRemote> <branch>` into a throwaway repository under the OS temp dir, then one `git ls-tree -d --name-only FETCH_HEAD -- tests/acceptance/<issue-id>` per candidate. The branch is resolved `pipeline.config.json`, else `git ls-remote --symref`, else abort — no literal last resort. Refused issues are dropped from `issues` before `claim()`, named in the queue-summary line with the remedy (appended after both historic clauses, never rewoven), and manufactured by the exported pure `undispatchableRow()` into rows the manifest carries; `undispatchable` enters `schemas/run.schema.json`'s enum and `runner/report.js`'s scrutiny table at the **fractional** rank between `tampered` and `stuck`, so the unknown-outcome fallback sitting at `failed`'s rank is not re-homed. Every git spawn is built from the exported `gitSpawnOptions(cfg)`, whose `timeout` is a new `gitTimeoutMs` (default 60000, validated exactly as `bdTimeoutMs` is), and `readyQueue()` now reports its failures as `ok: false` plus a `cause` field so `run.js` can log a fetch failure without sending a person to Beads. Re-runnable coverage lands as the eighteenth Docker-free suite, `scripts/test-dispatch-gate.sh`; `scripts/test-runner-workspace.sh`'s clone-failure check is **rewritten** to assert the run-level abort the gate now produces rather than the per-task failure it repealed | the declaration priced the design; this row records what building it settled. Two fixtures carry the whole result, and each is chosen so that a plausible wrong implementation FAILS it rather than merely being exercised by it. The first is a target working copy whose `origin` holds the suite while `targetRepoRemote` does not, plus its exact mirror: every other fixture in either suite is refused by a working-tree check too, so only that pair discriminates the shipped design from the one it replaces. The second is a `master` project carrying no `pipeline.config.json`, the only fixture that catches a branch chain ending at the literal `main` — the chain `runner/workspace.js`'s `detectDefaultBranch` has, correct there and here catastrophic, since it would empty `ls-tree` for every issue and refuse the whole queue with a confident wrong reason. Both were proven in both directions before shipping, and so was the bound: mutating the source to drop the `-d`, to spawn without the builder, to skip cleanup on the abort path, to fetch without a refspec, to read the working copy instead of `FETCH_HEAD`, or to end the branch chain at `main` turns the suite red in each case. The gate also judges nothing it did not create and leaves nothing behind: the fetch never touches `targetRepoPath`, whose refs, tree and `.git` contents are snapshot-compared across a call, and the throwaway repository is removed on the abort path as well as the happy one |
 | 2026-08-23 | concurrency-uncapped | **§7's `concurrency` knob loses its ceiling.** `runner/config.js` accepted 1–3 through a literal `MAX_CONCURRENCY = 3`, chosen (change-log row `repo-teq`) because §7 named only a hedged range and the shared subscription window argued for a small N. | Neither reason was a machine limit, and the window is already guarded at any depth by the run-level park (4.7, change-log row `repo-i9y`), so the cap was protecting the operator from a choice that is theirs to make. Now any whole number ≥ 1 loads; the default stays **1** and the error shape is unchanged (a bad value is still refused at load time, by name). `MAX_CONCURRENCY` stays exported as `null` so the suites that pin the validation contract have one place to read it. What does NOT change: a run is still bounded by its slowest task, N containers still spend one window N times faster and then park together, and overlapping-file tasks still collide at merge — §7's planning-time cautions apply harder, not softer, at high N. `tests/unit/concurrency.test.js` now loads 4, 16 and 100 and no longer expects a refusal above 3; its pool checks keep a fixed width because what they prove is the bound, not the number. |
 | 2026-08-24 | live-queue-feed | **§4.12: a run re-reads the ready queue while it is in flight, so an issue frozen mid-run is picked up by the next free worker instead of waiting for the next run.** New `runner/feed.js` exports `createFeedSource(initial, opts)` and `fixedSource(issues)`; `runner/run.js`'s `drainQueue(source, taskFn, concurrency)` now takes either a source or a plain ARRAY (wrapped in `fixedSource`), so every existing caller and suite keeps its contract and results stay index-aligned with dispatch order — the same thing as ready-queue order for an array. Two knobs in `run.config.json`, both in `run.config.example.json`: `feedIdleGraceMinutes` (default **0 = off**, validated `>= 0` where its neighbours demand `> 0`, because zero is how a config says off out loud) and `feedPollSeconds` (default 30, validated `> 0` — zero would busy-wait against `bd` and `git`). The manifest gains a `feed` block — `enabled`, `idleGraceMinutes`, `polls`, `ending` — admitted by `schemas/run.schema.json` and written whether or not the feed was on, so "this run did not feed" is distinguishable from "this manifest predates feeding", the call `concurrency` already made. Four endings: `drained`, `idle`, `stopped` (a `runs/<run-id>/stop` sentinel, which is what stops a fed run without killing a process holding containers), `halted` (§7's run-level cap fired). Nineteenth Docker-free suite, `scripts/test-feed.sh` over `tests/unit/feed.test.js`, clock-free — `now` and `wait` are injected, so a grace window in minutes is exercised in milliseconds. Follow-up task sequenced immediately after and depending on it: `scripts/batch.js`'s pending join and the dashboard's roster fraction, both named in §4.12 rather than left to be found | the roster was fixed at launch, and the way work actually arrives is that a working session freezes specs while a run is already draining — so the pipeline's answer to "I just froze one more" was "next run", and a batch that took three hours could not absorb a task frozen in its second minute. Five of the design's decisions are the kind that only look arbitrary until they cost a run. **A failed re-poll is never fatal**: the startup read answers an unreadable queue with `process.exit(1)`, correct *there* because nothing has started, and identical mid-run it kills every live container and strands its issue `in_progress` — a throw is caught for the same reason an `ok:false` is, since a throw reaching the worker loop takes the run down exactly as an exit does. **An issue is dispatched once**: `bd ready` keeps reporting an issue until the runner claims it, so a naive merge of each poll's results hands one issue to two workers, which both claim and both branch — the failure change-log row `repo-os9`'s lock exists to prevent, reintroduced inside one process, and the only fixture in the suite that catches it is a poll that keeps returning what was already dispatched. **The grace window is the POOL's**: one idle worker beside a busy one is not an idle run, and every other timing fixture is answered the same way by an implementation that starts the clock on the first free worker — which would close a fed run the moment its first task finished. **A refusal becomes a wait**: §4.12's second admission rule refuses a task whose suite is not yet pushed, which is exactly what a task frozen mid-run looks like for a few minutes, so refusals are re-evaluated per poll and only what is still refused at close is reported. And the poll floor is **a ceiling on frequency, not a delay before the first read** — seeding `lastPoll` to 0 works by accident against a real `Date.now()` and costs a fed run its first poll interval anywhere the clock starts near zero; the mutation pass found it, which is the argument for the pass. The Dolt-collision worry that opened the thread was **sized and dismissed on the evidence**: concurrent host `bd` access is already routine under the operator/working session split, and feeding adds idempotent READS while the writes that hurt on timeout (`claim`, `finish`) scale with tasks dispatched, which is unchanged. Thread: `docs/threads/live-queue-feed.md` |
+| 2026-08-25 | freeze-brittleness-lint | **§3.2 gains a sixth move below the panel: the freeze gate reads what a suite SAYS, not only how it exits**, declared here at planning time; the implementing task adds its own row when it ships. `scripts/freeze-gate.js` gains a textual pass over the suite it is about to bless, naming four shapes that are red-and-discriminating at freeze and then go red forever afterwards — an enumerated list of names, an exact-count assertion, a digest over a whole build, and a test that diffs the branch against its own fork point. Each finding carries its file, its line and the question a human is being asked to answer (*is later work licensed to change this?*), and the count prints **even when it is zero**, on the `guards declared:` precedent, because a discriminator silent on a clean suite cannot be told from one that never ran. Three rules are pinned here rather than left to an implementer. The pass **cannot touch the exit code**: 0 / 1 / 2 are a verdict about red, green and indeterminate that `PLANNING.md` step 4 branches on, and a lint that can fail a freeze is a gate on spec *authoring*, whose only defeat is rewording until it passes (hard rule 5). It **decides nothing** — no tool can separate a catalogue later work will grow from an enumeration of the task's own output, and the second is precisely what a discriminating criterion is supposed to assert — so findings are candidates and each takes a **disposition** in the planning draft the way a critic's does (step 2). And it reads text only, **naming** whatever it skips, since an unavailable discriminator that stays quiet is the failure mode this repo already has a rule about | one target repo has now lost at least eight frozen files across six suites to this one shape: an eleven-name key list broken by the task that legitimately added a twelfth, an exclusion table pinned to its exact membership and broken by that table's first real use, a hash over every shader parameter broken by the catalogue growing, "exactly 30 flavour entries" broken by the task that grew it to 61, and one that diffs its own branch over three source directories and will therefore fail every code-touching task in that repository from now on. The last **inverts** — it goes red precisely *because* an unrelated later task did its job correctly — which is the opposite of what a frozen test exists to do, and no amount of red at freeze can detect it, because at freeze it is genuinely red for the right reason. What makes this the freeze gate's job rather than anyone else's is that nothing else in the pipeline reads a suite before it freezes, and freeze time is the only moment a person is looking at that file with the authority to change it: after the freeze the same finding is a §3.7 concern, which by design cannot change anything about the run that raised it. Deliberately **not** folded into the dispatch gate (change-log row `dispatch-gate`), which answers a different question — that suite was present and pushed and still could not pass, and conflating the two would put a text heuristic on the path that decides whether a batch goes out at all |
+| 2026-08-25 | concern-repeat-surfacing | **§3.7 gains a readership: the run report grows a run-level concern section above the per-task list**, declared here at planning time; the implementing task adds its own row when it ships. Two things, and the first carries the weight. An **unconditional headline** — how many concerns, raised by how many of how many tasks — printed with the run's outcome counts where a person opening the report cannot miss it; it needs no interpretation, has no threshold, and cannot fail. Then **grouping by shape** within the run, plus, per group, how many prior runs against the same target carry that shape. The grouping is deterministic and carries no LLM (hard rule 7): normalise, compare token sets, group above a declared threshold — and the threshold is **measured against the real corpus on disk**, not chosen because it sounds right (the repo's own rule about a number wearing a feel target's clothes). Two properties are pinned rather than left to the reading. A concern stays **evidence and never a gate** (§3.5): a repeat is louder, never authoritative, and no count of them may move an outcome, an exit code, a Beads transition or whether a branch is published — an agent must not be able to escape a task by declaring the spec broken n times. And the run corpus becomes a **declared input** to the report, named in the report itself, so `runner/report.js`'s standing claim that regeneration from the same inputs is byte-identical stays checkable rather than quietly weakening | both halves of §3.7 shipped and then the failure they exist to prevent happened anyway, one level up. Across two consecutive runs against one target, **seven** task agents independently diagnosed the same host-side dispatch fault — correctly, with evidence, naming each other by issue id — and nothing consumed any of them; the second run repeated the first's mistake at eight times the scale and spent 3h11m to record eight `stuck`. Every one of those concerns was surfaced exactly as §3.7 specifies, in the attempt log, the manifest, the report and the PR body, as a section of the task that raised it. That placement is right for one concern and wrong for seven: the signal is not a concern but **the same concern arriving n times**, and that fact exists only across tasks and across runs, where no artifact looked. Which is why the headline is specified as unconditional and separate from the clustering rather than as its summary line — it is the half that would actually have stopped the second run, it is a count over data the report already holds, and it survives a panel that decides the fuzzy half needs splitting off or is not yet worth its threshold. The alternative homes were weighed and rejected for now: `scripts/audit-runs.js` already reads every run but nobody runs it before a launch, and `scripts/batch.js show` — which `PLANNING.md` step 8 does make the last act before launching — would be a second reader of the same fact and cannot import a shared rule without breaking its own frozen require contract, so it is filed in `docs/IDEAS.md` as a follow-up rather than built blind |
+| 2026-08-25 | parallel-sessions | **§6.2: every interactive agent session gets its own git worktree — its own folder, its own branch, one shared history.** New `scripts/worktree.js` (`new` / `list` / `remove`), the twentieth Docker-free suite `scripts/test-worktree.sh` over `tests/unit/worktree.test.js`, the working guide `docs/parallel-sessions.md`, a `.worktree-carry.example` naming the git-ignored host-only paths a new worktree should be given, and a "Commit hygiene" section in CLAUDE.md that binds every future session: stage named paths and never `git add -A`/`git add .`/`git commit -a`; never run `git checkout --`, `git restore`, `git stash`, `git reset --hard` or `git clean`; if `git status` shows changes you did not make, stop and report; launch runs from the main checkout only. Strictly an *interactive*-session amendment — a task container already owns its workspace (§4.3) and the runner already clones per task, so no run executes differently | N sessions pointed at ONE checkout are not N workspaces: they are N agents typing into one set of files with one staging area, and git has no concept that could tell their work apart. Two failures, both the *correct* behaviour of the commands involved. A session ran `git add -A` and committed, which stages the FOLDER — four files belonging to another session went into that commit under a message about something else; nothing was lost and the history was still wrong, which is the worse half, since a corrupted record is read by every later session, agents included, as fact. And a session ran `git checkout -- <path>` against a file another was editing; uncommitted work has no copy anywhere, so only timing stood between that and permanent loss. Rules against both are written and are also the layer that fails at the fourth session at 11pm, because they ask an agent working at speed to reason about folders it cannot see; a worktree removes the shared object rather than guarding it. **The load-bearing finding is that Beads needs nothing done to it**: it resolves its database through git's *common directory*, so every worktree reads and writes the ONE database in the main checkout — `bd count` agrees across folders and running `bd` in a worktree creates no second database — which is why hard rule 1 survives unchanged and N sessions do not mean N queues. Had it gone the other way the queue would fork along the same seam the code does, which is exactly what that rule exists to prevent. **`runs/` is the one path that must never be duplicated** and the tool refuses it by name: `runs/locks/` is what makes "one run per project" true (§4.12), and it is also where every manifest and report lands, so a run launched from a worktree would work and write its history where `verdict.js`, `batch.js`, `audit-runs.js` and the dashboard never look — invisible rather than broken, which is worse. The verified inventory is seven host-only paths present in the main checkout and absent from a fresh worktree, one of them `tools/mapbuild/node_modules` at 388 MB, which is what makes `.worktree-carry` a declared list rather than a blanket copy. `remove` refuses while a folder holds uncommitted changes, **untracked files**, or commits on no remote, and the branch outlives the folder — deleting a branch is a second irreversible act belonging to whoever merged the PR. The suite was proven both ways before shipping and the mutation pass paid for itself twice: measuring dirtiness with `git diff` (tracked only) and dropping the main checkout from `remove`'s candidate filter BOTH left the suite green, because `git worktree remove` has guards of its own and an exit-code-only assertion is satisfied by a broken implementation that git happened to catch — two checks now pin this tool's own refusal message. Six mutations, six kills: untracked work invisible, unpushed commits ignored, the `runs/` refusal removed, `--show-toplevel` mistaken for `--git-common-dir` (identical from the main checkout, wrong from everywhere else), the default branch falling back to the literal `main` on a `master` project (`repo-5yu`'s lesson, inherited), and the main checkout becoming removable |
 | 2026-08-25 | feed-readers | **the two readers downstream of the live queue feed are corrected**, closing the follow-up change-log row `live-queue-feed` named in §4.12 rather than filed as an inbox note. `scripts/batch.js` gains `openUntilMs` — the instant a run stopped being able to TAKE work, which is `startedAt` for a classic run and `finishedAt` for a fed one — and the pending join compares the marker's `frozenAt` against that rather than against `startedAt` unconditionally; a fed run with no readable finish counts against every freeze and its per-id line in `show` is labelled `run-fed-open`, and a new `witnessRank` prefers a finished witness over a still-open one so a certain answer never reads as provisional. `feed.enabled` is read **strictly `=== true`**. `scripts/dashboard.js` gains `PSEUDO_TASKS` (`preflight`, `feed`) in place of the two inline `'preflight'` comparisons, and a `readFeed(events, manifest)` beside `readPark` whose result rides on each run as `feed` — `enabled`, `open`, `pickedUp`, `ending`, `polls` — read from `run.log` while a run is in flight and from the manifest once it is over, with an OPEN feed rendered as a banner and a `feed` cell added to the run bar only when it was on. Both suites extended in place (`tests/unit/batch.test.js` C10–C17, `tests/unit/dashboard.test.js` §7b); no new suite, because what changed is the answer two existing readers give | change-log row `live-queue-feed` shipped the runner half and named these two in §4.12 as the price of doing so. The `batch.js` half was the expensive one: `pending` exists to stop a batch being launched twice, and against a fed run it gave exactly the wrong answer — the batch had demonstrably run and the tool said pending. The discriminating fixture is a PAIR differing only in `feed.enabled`, because every other fixture in that file is answered identically by the join this replaces. The `dashboard.js` half is two silent failures rather than one: a phantom task called `feed`, permanently queued, in the tool whose job is to say what is running; and an idling fed run being indistinguishable from a finished one, which sends a watcher to start a second run the project lock then refuses. Its own discriminating pair is the closing log line, whose prefix `live queue feed: ` is a PREFIX of the opening line's `live queue feed: ON` — a reader that matched it first would call every fed run closed the moment it opened, and only ordering the checks tells them apart. Five mutations of the two readers were run against the extended suites and all five were caught. Not run: the Docker suites, for the reason the previous row also names — the sweep's ownership diff reclaims a live run's `task-*` containers, and the user was running the pipeline against other projects | 
