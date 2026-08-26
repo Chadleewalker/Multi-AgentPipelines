@@ -4,7 +4,7 @@ Where the build actually is. Update this when something changes — it is the fi
 session reads to pick up the thread, and unlike a machine-local memory folder it travels
 with the repo.
 
-_Last updated: 2026-08-20_
+_Last updated: 2026-08-26_
 
 ## Where things stand
 
@@ -1334,6 +1334,72 @@ remove` has guards of its own, so an exit-code-only assertion is satisfied by a 
 implementation that git happened to catch. Two checks now pin *this tool's* refusal message
 rather than the exit code. Six mutations, six kills after the fix.
 
+## The freeze gate reads the suite's text (`repo-uw6`, 2026-08-26)
+
+**Proven.** `scripts/freeze-gate.js` grows `brittleFindings(text, file)` and
+`lintSuite(dirOrFile)`; the report gains a `brittleness findings: <n>` block below the
+verdict, in every verdict and with or without `--spec`. `PLANNING.md` step 4 gains the
+disposition instruction, step 5's disposition paragraph now names the lint beside the panel,
+and the coverage is re-runnable: `tests/unit/freeze-gate.test.js` 46 → 100 checks,
+`scripts/test-freeze-gate.sh`'s floor 40 → 90. §3.2's move 6, built.
+
+The gate answered one question — are these tests red at the fork point? — and **an entire
+class of bad frozen test answers it correctly.** A criterion that pins a list of names,
+asserts an exact count, hashes a whole build or diffs the branch against its own fork point
+is red *and* discriminating at freeze, and then goes red again for every later task that
+legitimately grows the thing it enumerated. One target repo has lost at least eight frozen
+files across six suites to it. The worst shape **inverts** — it goes red precisely because
+an unrelated later task did its job correctly — and no amount of red at freeze can detect
+that, because at freeze it is genuinely red for the right reason.
+
+**The panel renamed the rule, and that is the whole design.** The shapes were first named
+after hashing and enumerating, which this repo's own frozen suites do — correctly. Six of
+them hash a walked tree as the "writes nothing" guard and `repo-1cy` diffs against a
+merge-base in the way CLAUDE.md cites as *correct*. What those seven share is that they
+compare two values **computed in the same run**, and nothing later work does can move a
+before/after snapshot. So the rule became:
+
+> A guard is brittle when the **expected side of the assertion is a literal the author
+> typed**, and the population it describes is one **later work is licensed to grow**.
+
+A tool can check the first half exactly and the second half not at all — which is why every
+finding is a question, and why the lint cannot touch the exit code in either direction. A
+lint that can fail a freeze is a gate on spec *authoring*, and the way past a gate that can
+fail you is to reword until it passes (hard rule 5).
+
+**Why the near-miss pairs are the coverage and the positive cases are not.** A detector
+keyed on `createHash` or on `git diff` fires on all seven house patterns — and scores full
+marks on every "does the shape fire" check that exists. So the re-runnable suite leads with
+the pairs, verbatim from this repo's own suites, before anything that merely exercises the
+code. Run against the real `tests/acceptance/` tree the shipped lint returns 59 candidates
+and leaves all six digest-snapshot guards and `repo-1cy`'s merge-base clean.
+
+**Nine mutations, nine kills** — dropping the binary sniff, letting findings `return 1`,
+keying the digest shape on the digest alone, keying the branch shape on `git diff` alone,
+pinning every finding to line 1, disabling continuation joining, admitting counts of 0 and
+1, dropping the assertion requirement from the name-list shape, and printing `0` where
+`unavailable` belongs. **The last is caught only by the re-runnable suite**, because the
+frozen criterion accepts either form — which is the concrete argument for why "extend
+`tests/unit/`" was a deliverable of this task and not a nicety.
+
+**Gap worth knowing, found while doing this and deliberately not fixed here.**
+`scripts/test-freeze-gate.sh` is missing from the "All but twenty drive real Docker"
+exception list below *and* from the suite table, and so are `scripts/test-spec-lint.sh` and
+`scripts/test-planning-playbook.sh` — all three were run Docker-free inside a task container
+during this task (46/28/42 checks, all green), so the real count is at least twenty-three.
+Fixing the number needs the whole list re-derived rather than three names appended, which is
+a different piece of work; the count sentence is left alone rather than made confidently
+wrong. `test-planning-playbook.sh` additionally needs `bash`, not `sh` — under dash it dies
+on `[[` at line 98 and prints `CHECKS FAILED`, a broken harness that reads as a real
+regression.
+
+**Host obligation.** `docs/pipeline-diagram.md` gained the freeze-gate node and its dotted
+lint branch in this PR. `docs/pipeline-map.html` is exempt from task docs phases (CLAUDE.md)
+and nothing else updates it, so its planning panel still shows the approval pass with no
+freeze gate at all — one move behind before this task and two behind after it. Redraw with
+`node scripts/build-pipeline-map.js` after editing; the builder needs
+`tools/mapbuild/node_modules` and cannot run in a container.
+
 ## What's next
 
 **The queue drained again on 2026-07-26**, after `repo-4l8` (the epic filter, planned and
@@ -1524,6 +1590,7 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-verify-buffer.sh` | the verifier's capture limit (change-log row `verify-nobuffer`) — a loud passing suite is a pass, a loud failing one is still a fail |
 | `scripts/test-pipeline-map.sh` | the reader's map drawn at build time (change-log row `map-prerender`) — a good SVG's stylesheet versus a real error card, neither check meaning anything alone |
 | `scripts/test-batch.sh` | the batch marker reader (change-log rows `repo-0b3`, `repo-8v0`) — the marker name anchored at both ends, the manifest-less run dated from `run.log`, the conservative `run-time-unknown` direction, the degraded labels, byte-identical repeat output, the pure-reader contract checked by sha1 snapshot and parsed `require` specifiers, and the live-queue reconciliation driven through the `PIPELINE_BD_CMD` seam: the runner's own epic filter, the `-C` slot, a queue past 1 MiB, and every degraded reason against the reconciled one |
+| `scripts/test-freeze-gate.sh` | the fork-point red gate and its brittleness lint (change-log rows `freeze-gate-red`, `repo-uw6`) — the nine-row decision table from every side, the control convention, the empty-probe fallback cleaned up even on a throw, and for the lint the **near-miss pairs first**: two computed digests and git against a self-created ref (the house patterns a `createHash`- or `git diff`-keyed detector flags), `> 0` / `=== 0` / `=== 1` against `=== N`, an input list against an expected one, plus line numbers over CRLF, a split assertion reported where it starts, the three skip reasons, and a lint that throws printing `unavailable` rather than a `0` |
 | `scripts/test-dispatch-gate.sh` | the ready queue's second admission rule (change-log rows `dispatch-gate`, `repo-5yu`) — the origin-versus-`targetRepoRemote` pair that discriminates this design from a working-tree check, the `ls-remote --symref` link of the branch chain against a `master` project, an unresolvable branch aborting rather than guessing, a sibling id that merely extends another, the `-d`, the throwaway repository removed on the abort path too, `gitTimeoutMs` at the spawn and at config load, and every `spawnSync` in `runner/queue.js` built from one exported builder |
 
 **`scripts/test-runner-memory.sh` is one of the eighteen suites that need no Docker**

@@ -26,9 +26,14 @@ echo "== freeze-gate checks: tests must be red at the fork point =="
 OUT="$(node "$ROOT/tests/unit/freeze-gate.test.js" 2>&1)"; RC=$?
 echo "$OUT"
 if [ "$RC" -eq 0 ]; then pass "freeze-gate checker exits 0"; else fail "freeze-gate checker exited $RC"; fi
+# A FLOOR, never an equality — and deliberately so, because an exact count here would be an
+# instance of the very shape the brittleness lint below warns about: later work is licensed to
+# add checks to that file, and `-eq` would go red for exactly that. The floor moves up when a
+# batch of coverage lands (40 -> 90 with change-log row `freeze-brittleness-lint`), which is
+# the only way a number like this stays worth asserting.
 CHECKS="$(echo "$OUT" | grep -c '^PASS  ')"
-if [ "$CHECKS" -ge 40 ]; then pass "checker ran $CHECKS checks"
-else fail "checker ran only $CHECKS checks (expected at least 40)"; fi
+if [ "$CHECKS" -ge 90 ]; then pass "checker ran $CHECKS checks"
+else fail "checker ran only $CHECKS checks (expected at least 90)"; fi
 
 # The three verdicts are reachable from a real command line, not only through the module.
 # A stub `.js` run through node — never a `#!/bin/sh` script, which spawnSync cannot execute
@@ -64,6 +69,34 @@ REPORT="$(node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ --spec 
 echo "$REPORT" | grep -q "RED:" && pass "report names the verdict" || fail "report does not name the verdict"
 echo "$REPORT" | grep -q "control run" && pass "report shows the control run" || fail "report hides the control run"
 echo "$REPORT" | grep -q "guards declared: 1" && pass "report counts declared guards" || fail "report does not count guards"
+
+# --- the brittleness lint, through a real command line (§3.2, "below the panel", move 6) ---
+# The count prints even at zero: a discriminator silent on a clean suite cannot be told from
+# one that never ran. `demo/` holds one comment and nothing else.
+echo "$REPORT" | grep -q "brittleness findings: 0" \
+  && pass "the brittleness count prints even when it is zero" \
+  || fail "the brittleness count is silent on a clean suite"
+
+cat > "$TMP/repo/tests/acceptance/demo/brittle.js" <<'BRITTLE'
+assert.deepStrictEqual(keys, ['alpha', 'beta', 'gamma']);
+assert.strictEqual(rows.length, 30);
+assert.strictEqual(sha1(tree), 'd41d8cd98f00b204e9800998ecf8427e');
+spawnSync('git', ['merge-base', 'origin/main', 'HEAD']);
+BRITTLE
+printf '\211PNG' > "$TMP/repo/tests/acceptance/demo/logo.png"
+LINT="$(node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ 2>&1)"; LINT_RC=$?
+# The exit code is a verdict about red, green and indeterminate. A lint that can fail a freeze
+# is a gate on spec AUTHORING, and the way past a gate that can fail you is to reword until it
+# passes (hard rule 5) — so four findings must leave a red run reading exactly 0.
+if [ "$LINT_RC" -eq 0 ]; then pass "findings do not move the exit code"
+else fail "findings moved the exit code to $LINT_RC"; fi
+echo "$LINT" | grep -q "brittleness findings: 4" \
+  && pass "all four shapes are counted" || fail "the lint did not report four findings"
+echo "$LINT" | grep -q "brittle.js:1  \[literal-name-list\]" \
+  && pass "a finding names its file, line and shape" || fail "a finding is not file:line [shape]"
+echo "$LINT" | grep -q "skipped: logo.png  (extension)" \
+  && pass "a skipped path is named with its pinned reason" || fail "a skipped path is not named"
+rm -f "$TMP/repo/tests/acceptance/demo/brittle.js" "$TMP/repo/tests/acceptance/demo/logo.png"
 
 GREEN_REPORT="$(STUB_MODE=always-green node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ 2>&1)"
 echo "$GREEN_REPORT" | grep -qi "guard" && pass "the green verdict names the guard escape" || fail "green verdict does not mention guards"

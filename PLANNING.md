@@ -236,6 +236,41 @@ would pass a correct submission, a broken one, and no submission at all.
   probing with an empty directory, which proves very little: a good runner is *supposed* to
   fail when it finds no tests. Add the fixture rather than reading anything into that.
 
+**Then read what the gate says, not only how it exited.** Below the verdict the same run
+prints a second, textual pass over the suite it is about to bless (§3.2, move 6; change-log
+row `freeze-brittleness-lint`):
+
+```
+brittleness findings: 2
+  test.js:118  [literal-name-list]  literal-name-list: the expected side is a list of names
+      assert.deepStrictEqual(Object.keys(cfg), ['alpha', 'beta', 'gamma']);
+  skipped: logo.png  (extension)
+```
+
+A red test can still be the wrong test. A criterion that pins a list of names, asserts an
+exact count, hashes a whole build, or diffs the branch against its own fork point is red at
+freeze *and discriminating at freeze*, and then goes red again for every later task that
+legitimately grows the thing it enumerated — the last shape **inverts**, going red precisely
+*because* an unrelated later task did its job correctly. No amount of red can detect that,
+which is why the gate reads the text as well.
+
+- **The count prints even when it is zero**, so a clean suite can be told from a pass that
+  never ran. `unavailable - <reason>` means the pass itself failed; that is not a zero.
+- **The lint cannot change the exit code**, in either direction. Findings never fail a
+  freeze — a gate on spec *authoring* is one you get past by rewording until it passes
+  (hard rule 5) — and a clean pass never rescues a green verdict.
+- **Every finding takes a disposition, the way a critic's does.** Write each one into the
+  planning draft with what was done about it — accepted and the test rewritten, or rejected
+  with the reason it is correct here — so "the lint raised four and all four were
+  considered" is a claim anyone can check later instead of taking on trust. It decides
+  nothing: no tool can tell a catalogue later work will grow from an enumeration of *this
+  task's own output*, and the second is exactly what a discriminating criterion should
+  assert. **Rejecting a finding is the common answer and needs no apology; leaving one
+  unmentioned is the failure.**
+- **Skips are findings too.** Each skipped path is named with a reason — `binary`,
+  `extension`, `unreadable`. A suite whose real assertions all sit in a file the pass could
+  not read has been blessed by a discriminator that never looked at it.
+
 A pure refactor's only honest criteria are guards, which is why they are labelled rather
 than forbidden — and a spec that is *nothing but* guards is the sign that the task has no
 behavioural signature at all (see `docs/IDEAS.md`). That is a spec bug of a different kind:
@@ -254,11 +289,13 @@ difficulty label — and says whether it matches what they want. Adjust until ye
 backlog decomposed from a design doc, this is a single list pass checking the slicing,
 not a re-litigation of intent (§3.3).
 
-**The draft carries the panel's dispositions.** Every critic finding from step 2 appears in
-this file with what was done about it — accepted, rejected with a reason, or deferred. The
-user is approving intent, not auditing reviews, so this is not something they have to read;
-it is there so that "the panel raised nine things and all nine were handled" is a claim
-anyone can check later instead of taking on trust.
+**The draft carries the panel's dispositions — and the freeze gate's.** Every critic finding
+from step 2 appears in this file with what was done about it — accepted, rejected with a reason, or deferred —
+and so does every brittleness finding the freeze gate printed in step 4, on the same terms.
+The user is approving intent, not auditing reviews, so this is not
+something they have to read; it is there so that "the panel raised nine things and the lint
+raised four, and all thirteen were handled" is a claim anyone can check later instead of
+taking on trust.
 
 **Developers may go deeper (§3.3):** the plain-English criteria are the required gate,
 but the actual test files from step 3 are open for inspection — a developer who wants
