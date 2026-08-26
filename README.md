@@ -82,7 +82,8 @@ on the shared base image, and `bd init` — [`PLANNING.md`](PLANNING.md) walks t
 
 | Path | What's in it |
 |---|---|
-| `DESIGN.md` | the authoritative design — decisions, contracts, change log |
+| `DESIGN.md` | the authoritative design — decisions, contracts, and the change-log convention (§12) |
+| `docs/change-log.md` | the change log itself — one appended row per design amendment, kept apart from `DESIGN.md` so it can be merged with `merge=union` |
 | `SETUP.md` | once per person: getting a new machine running the pipeline |
 | `ONBOARDING.md` | once per project: making a repo a valid pipeline target |
 | `PLANNING.md` | how a spec and its frozen tests get written and approved |
