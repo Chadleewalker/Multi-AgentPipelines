@@ -19,7 +19,7 @@ flowchart TB
   C --> D["Write acceptance tests<br/>before any code exists"]
   SP2["SLOT 2 — domain test author<br/>writes the domain's own checks<br/>energy conserved · contrast ratio"] -.-> D
   D --> E["Coverage check<br/>every criterion has a test"]
-  E --> FG["Freeze gate — the tests must FAIL at the fork point<br/>red 0 · green 1 · indeterminate 2 · deterministic, never an LLM"]
+  E --> FG["Freeze gate — the tests must FAIL at the fork point and PASS in a probe<br/>red 0 · green 1 · indeterminate 2 · unreachable 3 · half-proven 4 · deterministic, never an LLM"]
   FG -.-> BL["Brittleness lint — the same run reads the suite's TEXT<br/>literal-name-list · literal-count · literal-digest · branch-self-diff<br/>count printed even at zero · skips named · never the exit code"]
   BL -.-> F
   FG --> F{"You approve intent"}
@@ -60,7 +60,14 @@ yet; the frozen JSON contract it serves is.
 
 The dotted branch off the freeze gate is its second, textual pass (§3.2 "below the panel",
 moves 1 and 6; change-log rows `freeze-gate-red` and `repo-uw6`). The solid path is the
-verdict — red, green or indeterminate — and it is the only thing that reaches the exit code.
+verdict — `red` 0, `green` 1, `indeterminate` 2, `unreachable` 3, `half-proven` 4 — and it is
+the only thing that reaches the exit code. The last two arrive with `--green <probe-dir>`
+(change-log row `repo-inj`): the same suite is run a second time in a throwaway tree where the
+criteria are already satisfied, because a suite that discriminates and a suite whose own
+fixture is broken are the same observation from the fork point alone. `unreachable` is red
+there too and is never a pass; `half-proven` is red with no probe supplied, which is legal and
+proceeds, carried into the approval pass beside the guard count. A **broken** probe is
+`indeterminate`, never `unreachable` — exit 3 is reachable only behind a green probe control.
 The lint hangs off it dotted because it decides nothing: a red test can still be the wrong
 test, so the same run names the assertions whose *expected side is a literal the author
 typed*, and each finding takes a disposition in the planning draft the way a critic's does.

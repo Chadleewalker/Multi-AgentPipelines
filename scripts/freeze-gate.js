@@ -49,25 +49,66 @@
 // because an unavailable discriminator must announce itself rather than quietly weaken the
 // verdict.
 //
+// RED IS ONLY HALF THE PROOF, and this is the half `--green` adds. A suite that is red at the
+// fork point and a suite whose own fixture is broken are THE SAME OBSERVATION — non-zero — so
+// everything above can be satisfied by a suite no implementation can ever turn green. That has
+// cost two tasks three attempts each: one froze with 11 of 29 checks unreachable because a
+// preload stub killed the child process before its first line, and one froze with the criterion
+// the task existed for calling `git init -q -c …`, where `-c` must precede the subcommand, so no
+// repository was ever created and two neighbouring checks passed VACUOUSLY. Both were diagnosed
+// by the task agent through the spec-concern channel; neither was visible to this gate.
+//
+// So the gate takes a THIRD and FOURTH observation when it is given a probe:
+//
+//   --green <dir>  a repo-shaped tree in which the criteria are ALREADY SATISFIED, by any means
+//                  however crude. A throwaway probe, never an implementation.
+//
+//   real RED, control GREEN, probe GREEN, probe control GREEN -> red.          exit 0
+//   real RED, control GREEN, probe RED,   probe control GREEN -> unreachable.  exit 3
+//   real RED, control GREEN, probe control NOT green          -> indeterminate.exit 2
+//   real RED, control GREEN, no probe                         -> half-proven.  exit 4
+//
+// `half-proven` PROCEEDS — a freeze with no probe stays legal, and the state is carried into the
+// approval pass the way the guard count is. `unreachable` does not: it is the finding the probe
+// exists to produce. A BROKEN probe is never `unreachable`; exit 3 is reachable only when the
+// probe's own control comes back green, because otherwise the probe's red says nothing about the
+// criteria, exactly as the fork-point control says nothing when it fails.
+//
+// WHAT A PROBE IS. A repo-shaped TREE, not a handful of files: every frozen suite resolves its
+// own root as `path.resolve(__dirname, '..', '..', '..')` — the tree it SITS IN, never the
+// working directory — and `verifyCommand` is a path relative to cwd. So a probe carries the
+// project's acceptance-test runner at the same relative path, `tests/acceptance/<id>/`, and
+// `tests/acceptance/_control/` if the project has one. A directory holding only the criteria's
+// artifacts yields "no test files" and a FALSE `unreachable`.
+//
 // GUARDS. A criterion may legitimately be green at the fork point when it asserts that
 // existing behaviour still holds. Those are legal, must be labelled `[guard]` in the spec,
 // and their count is reported so a spec that is all guards is visible rather than silent
 // (the approval pass, PLANNING.md step 5). A pure refactor's only honest criteria are
 // guards, which is why they are labelled rather than banned.
 //
-// NO LLM, no judgment, no network: it runs one command twice and compares two exit codes.
+// NO LLM, no judgment, no network: it runs one command two or four times and compares exit codes.
 //
 // Usage:
 //   node scripts/freeze-gate.js --repo <target-repo> --tests tests/acceptance/<issue-id>/ \
-//        [--spec <draft-spec-file>]
+//        [--green <probe-dir>] [--spec <draft-spec-file>]
 //
-// Exit codes: 0 gate passed (red and discriminating), 1 gate failed (green — a spec bug),
-//             2 could not run, or ran and could not discriminate.
+// Exit codes: 0 gate passed (red at the fork point, green in the probe), 1 gate failed (green —
+//             a spec bug), 2 could not run, or ran and could not discriminate, 3 the criteria
+//             were red in the probe too — they may be unreachable, 4 red but half-proven: no
+//             probe was supplied, so the green side has never been seen.
 'use strict';
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
+
+// The capture ceiling, IMPORTED rather than retyped. `runVerify` had none, so Node's 1 MiB
+// default applied and `spawnSync` KILLED the child on overflow — and a passing probe is verbose
+// by definition, so change-log row `verify-nobuffer` was recurring inside the gate that judges
+// the freeze. One value, one file: two copies of a limit drift silently and unattended.
+const { MAX_BUFFER } = require('../pipeline/verify-classify.js');
 
 // The guard marker. Case-insensitive so a draft is not failed on capitalisation; explicit
 // either way, because the whole point of the exemption is that it is visible.
@@ -87,6 +128,10 @@ function runVerify(repoRoot, verifyCommand, testDir, timeoutMs) {
     cwd: repoRoot,
     encoding: 'utf8',
     timeout: timeoutMs,
+    // The verifier's own ceiling, imported from the module that owns it. Without it Node's
+    // 1 MiB default applies and a suite is killed for being LOUD — which reads as a red run
+    // that never happened, and a green probe is the loudest run this tool ever takes.
+    maxBuffer: MAX_BUFFER,
     // The verifier gives the suite a plain environment; inheriting this process's is the
     // closest available approximation and keeps GODOT_BIN-style host variables reachable.
     env: process.env,
@@ -108,9 +153,12 @@ const CONTROL_DIR = 'tests/acceptance/_control/';
 
 // Pick the control to run against, in preference order, and say which was chosen — the
 // verdict means different things depending on the answer, so the choice is never silent.
-function resolveControl(repoRoot, explicit) {
+// `root` is a parameter rather than "the target repo" because a probe is a repo-shaped tree
+// with a control of its own, resolved by exactly this rule against exactly that tree: a probe
+// judged by the target's control would be judged by a harness it does not use.
+function resolveControl(root, explicit) {
   if (explicit) return { kind: 'explicit', dir: explicit.replace(/\\/g, '/') };
-  const conventional = path.join(repoRoot, CONTROL_DIR);
+  const conventional = path.join(root, CONTROL_DIR);
   if (fs.existsSync(conventional) && fs.readdirSync(conventional).length > 0) {
     return { kind: 'conventional', dir: CONTROL_DIR };
   }
@@ -122,27 +170,102 @@ function resolveControl(repoRoot, explicit) {
 // the project (Godot's resource paths, a JS runner's rootDir), and a control that failed for
 // THAT reason would report every project as indeterminate. Removed in a finally, and named so
 // an interrupted run leaves something obviously disposable behind.
-function withEmptyControlDir(repoRoot, fn) {
-  const dir = path.join(repoRoot, `.freeze-gate-control-${process.pid}`);
+// The name carries a per-call counter as well as the pid. Keyed on the pid alone it was a
+// single name per process, and the gate now makes this call twice — once per tree. When the
+// two trees are the same tree (a probe built in place, or a suite that points both at one
+// fixture) the second call's `finally` deletes the first call's directory out from under it,
+// and the fork-point control silently probes a path that no longer exists.
+let controlDirSeq = 0;
+function withEmptyControlDir(root, fn) {
+  controlDirSeq += 1;
+  const dir = path.join(root, `.freeze-gate-control-${process.pid}-${controlDirSeq}`);
   fs.mkdirSync(dir, { recursive: true });
   try {
-    return fn(path.relative(repoRoot, dir).split(path.sep).join('/') + '/');
+    return fn(path.relative(root, dir).split(path.sep).join('/') + '/');
   } finally {
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
   }
 }
 
+// One side of the gate: the suite and its control, in ONE tree. Called once for the fork point
+// and once for the probe, with the SAME repo-relative `tests` string both times — never an
+// absolute path into the probe. The comment on `withEmptyControlDir` above records why: engine
+// runners routinely refuse a path outside the project, which is why the empty-directory
+// fallback is built inside the tree rather than in the temp area, and a probe handed an
+// absolute path would be running a suite that sits outside the project it is being judged in.
+function runSide(root, verifyCommand, tests, timeoutMs, controlArg) {
+  const suite = runVerify(root, verifyCommand, tests, timeoutMs);
+  const chosen = resolveControl(root, controlArg);
+  const control = chosen.dir
+    ? runVerify(root, verifyCommand, chosen.dir, timeoutMs)
+    : withEmptyControlDir(root, (dir) => runVerify(root, verifyCommand, dir, timeoutMs));
+  return { suite, control, chosen };
+}
+
+// --- the probe's copy of the suite ------------------------------------------------------------
+//
+// The probe runs `<probe>/tests/acceptance/<id>/`, which is a copy of the very suite being
+// frozen — so a probe author can make the criteria "pass" by editing the TEST rather than the
+// tree, and the gate would bless the freeze it exists to prevent. Every file under the suite
+// directory is hashed, byte for byte, in name order, and the two trees are compared BEFORE any
+// probe run.
+function digestSuite(dir) {
+  let st;
+  try { st = fs.statSync(dir); } catch { return null; }
+  if (!st.isDirectory()) return null;
+  const files = new Map();
+  (function visit(abs) {
+    let entries;
+    try { entries = fs.readdirSync(abs).sort(); } catch { return; }
+    for (const e of entries) {
+      const p = path.join(abs, e);
+      let s;
+      try { s = fs.statSync(p); } catch { continue; }
+      if (s.isDirectory()) { visit(p); continue; }
+      const rel = path.relative(dir, p).split(path.sep).join('/');
+      let sha;
+      try { sha = crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex'); }
+      catch { sha = 'unreadable'; }
+      files.set(rel, sha);
+    }
+  }(dir));
+  return files;
+}
+
+// Returns the difference in the probe's favour-free form: what the fork point has that the probe
+// does not, and what both have but spelled differently.
+function compareSuites(forkDir, probeDir) {
+  const fork = digestSuite(forkDir);
+  const probe = digestSuite(probeDir);
+  if (!probe) return { probeMissing: true, absent: [], differing: [], extra: [] };
+  const absent = [];
+  const differing = [];
+  for (const [rel, sha] of (fork || new Map())) {
+    if (!probe.has(rel)) absent.push(rel);
+    else if (probe.get(rel) !== sha) differing.push(rel);
+  }
+  const extra = [...probe.keys()].filter((rel) => !(fork || new Map()).has(rel)).sort();
+  return { probeMissing: false, absent: absent.sort(), differing: differing.sort(), extra };
+}
+
 // --- the verdict --------------------------------------------------------------------------
 
 // Pure, so the whole decision table is testable without executing anything. `real` and
-// `control` are the two run results; everything else is presentation.
-function verdictFor(real, control, controlKind = 'conventional') {
-  if (real.error || real.signal || real.status === null) {
+// `control` are the fork point's two run results, `probe` and `probeControl` the probe's —
+// `probe === null` means no `--green` was given. Everything else is presentation.
+//
+// A run that was KILLED, or never started, is not evidence of anything on either side.
+const brokenRun = (r) => !r || r.error || r.signal || r.status === null || typeof r.status !== 'number';
+const whyBroken = (r) => (!r ? 'no result at all'
+  : r.error || (r.signal ? `killed by ${r.signal}` : 'no exit status'));
+
+function verdictFor(real, control, controlKind = 'conventional', probe = null, probeControl = null) {
+  if (brokenRun(real)) {
     return {
       verdict: 'indeterminate',
       exit: 2,
-      headline: 'the verify command could not be run against the tests',
-      detail: real.error || (real.signal ? `killed by ${real.signal}` : 'no exit status'),
+      headline: 'the verify command could not be run against the tests at the fork point',
+      detail: whyBroken(real),
     };
   }
   if (real.status === 0) {
@@ -168,11 +291,11 @@ function verdictFor(real, control, controlKind = 'conventional') {
   // indeterminate on a runner that uses 2 for ordinary failure; that direction is the safe one,
   // because it refuses to bless rather than refusing to notice.
   // Exit 1: a genuine test failure. Only the control can say whether the harness was working.
-  if (control.error || control.signal || control.status === null || control.status !== 0) {
+  if (brokenRun(control) || control.status !== 0) {
     return {
       verdict: 'indeterminate',
       exit: 2,
-      headline: 'cannot tell a red test from a broken harness',
+      headline: 'cannot tell a red test from a broken harness at the fork point',
       detail: controlKind === 'empty-probe'
         // Much the likeliest cause, and it is not a defect in the project: a runner SHOULD
         // fail on "no test files found", because silently passing on zero tests is the
@@ -191,7 +314,7 @@ function verdictFor(real, control, controlKind = 'conventional') {
     return {
       verdict: 'indeterminate',
       exit: 2,
-      headline: `the tests exited ${real.status}, which is "could not run", not "failed"`,
+      headline: `the tests exited ${real.status} at the fork point, which is "could not run", not "failed"`,
       detail:
         'A runner exits 1 when tests fail and 2 or more when it could not run them — a parse '
         + 'error, a missing import, no tests collected. The control is green, so the harness '
@@ -200,11 +323,82 @@ function verdictFor(real, control, controlKind = 'conventional') {
         + 'ordinary test failure, the gate needs to be told so.)',
     };
   }
+
+  // Red at the fork point, on a harness proven to work there. That is half the proof, and
+  // everything below is the other half.
+  if (probe === null) {
+    return {
+      verdict: 'half-proven',
+      exit: 4,
+      headline: 'the tests FAIL at the fork point — but nothing here has ever seen them PASS',
+      detail:
+        'Red alone cannot tell a discriminating suite from one whose own fixture is broken: '
+        + 'both are non-zero. Two tasks have burned three attempts each on suites that were red '
+        + 'for the wrong reason and could never have gone green. Re-run with --green <probe-dir> '
+        + 'against a repo-shaped tree in which the criteria are already satisfied, by any means '
+        + 'however crude. This is not a refusal: a freeze with no probe is legal and PROCEEDS. '
+        + 'Carry the half-proven state into the approval pass the way the guard count is carried, '
+        + 'so it is visible rather than assumed.',
+    };
+  }
+  // The probe's control first, for the same reason the fork point's comes first: a probe whose
+  // harness cannot report success at all says nothing about the criteria. A BROKEN PROBE IS
+  // NEVER `unreachable` — exit 3 is reachable only from here on.
+  if (brokenRun(probeControl) || probeControl.status !== 0) {
+    return {
+      verdict: 'indeterminate',
+      exit: 2,
+      headline: 'cannot judge the probe: the verify command fails against the PROBE\'S control',
+      detail:
+        'The broken side is the probe, not the tests and not the fork point. Its control is a '
+        + 'test known to pass, so a probe that fails it is malformed — most often it is not '
+        + 'repo-shaped: a probe must carry the project\'s test runner at the same relative path '
+        + 'and a control directory of its own, not only the criteria\'s artifacts. Until that is '
+        + 'fixed the probe\'s red carries no information, and calling it unreachable would blame '
+        + 'the spec for the probe\'s bug.',
+    };
+  }
+  if (brokenRun(probe)) {
+    return {
+      verdict: 'indeterminate',
+      exit: 2,
+      headline: 'cannot judge the probe: the verify command could not be run against the probe\'s suite',
+      detail: `The broken side is the probe. ${whyBroken(probe)}`,
+    };
+  }
+  if (probe.status > 1) {
+    return {
+      verdict: 'indeterminate',
+      exit: 2,
+      headline: `the probe's suite exited ${probe.status}, which is "could not run", not "failed"`,
+      detail:
+        'The broken side is the probe. Its control is green, so the probe\'s harness works — it '
+        + 'is the suite\'s copy inside the probe that did not execute, which is a fact about the '
+        + 'probe tree and not about the criteria. Fix the probe and re-run.',
+    };
+  }
+  if (probe.status !== 0) {
+    return {
+      verdict: 'unreachable',
+      exit: 3,
+      headline: 'the tests fail in the PROBE too — one or more criteria may be unreachable',
+      detail:
+        'The probe\'s control is green, so the probe\'s harness works; the criteria simply did '
+        + 'not pass in a tree where they are supposed to be satisfied already. Either the probe '
+        + 'does not really satisfy them, or the suite contains checks no implementation can ever '
+        + 'reach — 11 of 29 in one frozen suite, and in another the criterion the task existed '
+        + 'for, whose fixture called `git init -q -c …` and never created a repository at all. '
+        + 'This is not a pass. Fix whichever it is before freezing.',
+    };
+  }
   return {
     verdict: 'red',
     exit: 0,
-    headline: 'the tests FAIL against the fork point, and the harness reports green on the control',
-    detail: 'The tests discriminate: they can detect the thing they exist to catch.',
+    headline:
+      'the tests FAIL against the fork point and PASS in the probe, on controls green in both trees',
+    detail:
+      'The tests discriminate in both directions: they can detect the thing they exist to catch, '
+      + 'and something exists that turns every one of them green.',
   };
 }
 
@@ -442,6 +636,7 @@ function guardCount(specText) {
 
 function main(argv) {
   let repo = null; let tests = null; let spec = null; let controlArg = null; let timeoutMs = 600000;
+  let green = null;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--repo') repo = argv[++i];
@@ -449,10 +644,41 @@ function main(argv) {
     else if (a === '--spec') spec = argv[++i];
     else if (a === '--control') controlArg = argv[++i];
     else if (a === '--timeout') timeoutMs = Number(argv[++i]) * 1000;
-    else if (a === '-h' || a === '--help') { usage(); return 0; }
+    else if (a === '--green') {
+      // A flag with no value and a flag with an EMPTY value are different mistakes and get
+      // different sentences: the first is a truncated command line, the second is usually a
+      // shell variable that expanded to nothing, which is the one that looks fine on screen.
+      if (i + 1 >= argv.length) {
+        console.error('freeze-gate: --green was given no value (arguments) — pass the probe directory: --green <probe-dir>');
+        return 2;
+      }
+      green = argv[++i];
+    } else if (a === '-h' || a === '--help') { usage(); return 0; }
     else { console.error(`freeze-gate: unexpected argument ${a}`); return 2; }
   }
   if (!repo || !tests) { usage(); return 2; }
+
+  // The probe path is checked before anything is run, and every refusal NAMES IT. An
+  // exit-code-only refusal is indistinguishable from the `unexpected argument` this flag used
+  // to hit — same code, no information — so the path is what the message is about.
+  let probeRoot = null;
+  if (green !== null) {
+    if (String(green).trim() === '') {
+      console.error('freeze-gate: --green was given an empty value (arguments) — a probe directory is required, or omit the flag');
+      return 2;
+    }
+    probeRoot = path.resolve(green);
+    let st = null;
+    try { st = fs.statSync(probeRoot); } catch { st = null; }
+    if (!st) {
+      console.error(`freeze-gate: --green probe directory does not exist: ${green}`);
+      return 2;
+    }
+    if (!st.isDirectory()) {
+      console.error(`freeze-gate: --green probe path is not a directory: ${green}`);
+      return 2;
+    }
+  }
 
   const repoRoot = path.resolve(repo);
   let verifyCommand;
@@ -473,6 +699,28 @@ function main(argv) {
     return 2;
   }
 
+  // The probe's copy of the suite, compared BEFORE any probe run — so this refusal WINS over
+  // the broken-probe verdict when both would apply, which is the point: a probe that edited the
+  // tests is not a probe that failed, it is a probe that changed the question.
+  let suiteDiff = null;
+  if (probeRoot) {
+    suiteDiff = compareSuites(testPath, path.join(probeRoot, tests));
+    if (suiteDiff.probeMissing) {
+      console.error(`freeze-gate: the probe does not carry the suite at ${tests} (probe) — ${probeRoot}`);
+      console.error('freeze-gate: a probe is a REPO-SHAPED TREE: the project\'s test runner at the same');
+      console.error('freeze-gate: relative path, tests/acceptance/<id>/, and its own control directory.');
+      console.error('freeze-gate: a directory holding only the criteria\'s artifacts yields "no test files".');
+      return 2;
+    }
+    if (suiteDiff.absent.length) {
+      console.error(`freeze-gate: the probe's copy of the suite is MISSING files the fork point has (probe):`);
+      for (const f of suiteDiff.absent) console.error(`freeze-gate:   ${f}`);
+      console.error('freeze-gate: a probe satisfies the criteria by changing the TREE, never by removing');
+      console.error('freeze-gate: or editing a check — a probe that edits its judge blesses the freeze this gate exists to prevent.');
+      return 2;
+    }
+  }
+
   // Guards first: they are reported whatever the run does, because the count belongs in the
   // approval pass either way.
   let guards = [];
@@ -481,21 +729,47 @@ function main(argv) {
     catch (e) { console.error(`freeze-gate: ${e.message}`); return 2; }
   }
 
-  const real = runVerify(repoRoot, verifyCommand, tests, timeoutMs);
-  const chosen = resolveControl(repoRoot, controlArg);
-  const control = chosen.dir
-    ? runVerify(repoRoot, verifyCommand, chosen.dir, timeoutMs)
-    : withEmptyControlDir(repoRoot, (dir) => runVerify(repoRoot, verifyCommand, dir, timeoutMs));
-  const v = verdictFor(real, control, chosen.kind);
+  const fork = runSide(repoRoot, verifyCommand, tests, timeoutMs, controlArg);
+  const real = fork.suite;
+  const control = fork.control;
+  const chosen = fork.chosen;
+  // The SAME repo-relative `tests` string, in the probe's own tree. Never an absolute path into
+  // the probe: a frozen suite resolves its own root from `__dirname`, and the runner is given a
+  // path relative to cwd, so an absolute path would run the fork point's copy from inside the
+  // probe and prove nothing about either.
+  const probe = probeRoot ? runSide(probeRoot, verifyCommand, tests, timeoutMs, controlArg) : null;
+  const v = verdictFor(real, control, chosen.kind,
+    probe ? probe.suite : null, probe ? probe.control : null);
 
   const CONTROL_LABEL = {
     conventional: `${CONTROL_DIR} — one passing test`,
     explicit: `${chosen.dir} — supplied with --control`,
     'empty-probe': 'empty directory — NO control fixture, this discriminator is weak',
   };
+  const probeLabel = (kind) => ({
+    conventional: `${CONTROL_DIR} in the probe — one passing test`,
+    explicit: `${chosen.dir} in the probe — supplied with --control`,
+    'empty-probe': 'empty directory in the probe — NO control fixture, this discriminator is weak',
+  }[kind]);
   console.log(`freeze-gate: ${tests}`);
-  console.log(`  real run     exit ${fmtStatus(real)}`);
-  console.log(`  control run  exit ${fmtStatus(control)}   (${CONTROL_LABEL[chosen.kind]})`);
+  console.log(`  real run       exit ${fmtStatus(real)}`);
+  console.log(`  control run    exit ${fmtStatus(control)}   (${CONTROL_LABEL[chosen.kind]})`);
+  if (probe) {
+    console.log(`  probe run      exit ${fmtStatus(probe.suite)}   (--green ${probeRoot})`);
+    console.log(`  probe control  exit ${fmtStatus(probe.control)}   (${probeLabel(probe.chosen.kind)})`);
+  }
+  // What the two copies of the suite disagree about. Named, never silent: the probe runs its
+  // OWN copy, so a difference is the one thing that can make a green probe mean nothing.
+  if (suiteDiff && (suiteDiff.differing.length || suiteDiff.extra.length)) {
+    console.log('');
+    console.log(`probe suite differs: ${suiteDiff.differing.length} edited, ${suiteDiff.extra.length} added`);
+    for (const f of suiteDiff.differing) console.log(`  edited in the probe: ${f}`);
+    for (const f of suiteDiff.extra) console.log(`  present only in the probe: ${f}`);
+    console.log(wrap('A probe is supposed to satisfy the criteria by changing the TREE. Where its copy '
+      + 'of a test differs from the fork point\'s, the probe run judged a different suite from the '
+      + 'one being frozen, and a green probe says only that the EDITED test passes. Read every line '
+      + 'above before trusting the verdict.'));
+  }
   console.log('');
   console.log(`${v.verdict.toUpperCase()}: ${v.headline}`);
   console.log(wrap(v.detail));
@@ -542,12 +816,18 @@ const wrap = (s) => String(s).replace(/(.{1,86})(\s|$)/g, '$1\n').trimEnd();
 
 function usage() {
   console.log('usage: node scripts/freeze-gate.js --repo <target-repo> \\');
-  console.log('         --tests tests/acceptance/<issue-id>/ [--spec <draft>] [--timeout <s>]');
+  console.log('         --tests tests/acceptance/<issue-id>/ [--green <probe-dir>] \\');
+  console.log('         [--spec <draft>] [--control <dir>] [--timeout <s>]');
+  console.log('  --green <probe-dir>  a repo-shaped tree in which the criteria are ALREADY');
+  console.log('                       satisfied, however crudely. The same suite is run there');
+  console.log('                       and must come out GREEN. Exit 3 = red there too');
+  console.log('                       (unreachable); omitted = exit 4 (half-proven, proceeds).');
 }
 
 module.exports = {
   verdictFor, guardCount, runVerify, withEmptyControlDir, resolveControl, CONTROL_DIR, main,
   brittleFindings, lintSuite, LINT_EXTENSIONS, QUESTIONS,
+  runSide, digestSuite, compareSuites, MAX_BUFFER,
 };
 
 if (require.main === module) process.exit(main(process.argv.slice(2)));

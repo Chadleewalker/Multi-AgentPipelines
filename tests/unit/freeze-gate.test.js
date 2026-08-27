@@ -22,8 +22,9 @@ const os = require('os');
 const path = require('path');
 const {
   verdictFor, guardCount, withEmptyControlDir, resolveControl, CONTROL_DIR, main,
-  brittleFindings, lintSuite,
+  brittleFindings, lintSuite, runVerify, compareSuites, digestSuite, MAX_BUFFER,
 } = require('../../scripts/freeze-gate.js');
+const { MAX_BUFFER: VERIFIER_MAX_BUFFER } = require('../../pipeline/verify-classify.js');
 
 let failed = 0;
 const pass = (n) => console.log(`PASS  ${n}`);
@@ -34,11 +35,12 @@ const ok = (status) => ({ status, signal: null, stdout: '', stderr: '', error: n
 
 // --- the decision table -------------------------------------------------------------------
 
-// The verdict that lets a freeze proceed. Note it needs BOTH observations: red alone is not
-// enough, which is the whole point of the control run.
-let v = verdictFor(ok(1), ok(0));
-check('real red + control green = red (gate passes)', v.verdict === 'red' && v.exit === 0,
-  `${v.verdict}/${v.exit}`);
+// The verdict that lets a freeze proceed. Note it needs FOUR observations, not two: red alone
+// is not enough (that is what the control run buys), and red at the fork point is not enough
+// either (that is what the probe buys — change-log row `repo-inj`).
+let v = verdictFor(ok(1), ok(0), 'conventional', ok(0), ok(0));
+check('real red + control green + probe green = red (gate passes)',
+  v.verdict === 'red' && v.exit === 0, `${v.verdict}/${v.exit}`);
 
 // The finding the gate exists to produce. Several criteria in the first real panel run were
 // satisfied by an empty diff; this is the state that catches them.
@@ -85,7 +87,69 @@ v = verdictFor(ok(2), ok(0));
 check('exit 2 with a green control is indeterminate, not red', v.verdict === 'indeterminate' && v.exit === 2);
 check('the message says could-not-run rather than failed', /could not run|did not execute/i.test(v.headline + v.detail));
 check('exit 5 is indeterminate too', verdictFor(ok(5), ok(0)).verdict === 'indeterminate');
-check('exit 1 with a green control is still red', verdictFor(ok(1), ok(0)).verdict === 'red');
+check('exit 1 with a green control and a green probe is still red',
+  verdictFor(ok(1), ok(0), 'conventional', ok(0), ok(0)).verdict === 'red');
+
+// --- the green side: --green, and the two verdicts it adds (change-log row `repo-inj`) --------
+//
+// Red at the fork point and a suite whose own fixture is broken are THE SAME OBSERVATION, so
+// everything above is satisfied by a suite no implementation could ever turn green. Two tasks
+// have burned three attempts each on exactly that. These rows are the other half of the proof,
+// and the argument ORDER is load-bearing: `verdictFor(real, control, controlKind, probe,
+// probeControl)`. The two rows that separate a correct table from one that reads the last two
+// arguments the other way round are `(1,0,probe red,control green) -> unreachable` and
+// `(1,0,probe green,control red) -> indeterminate`; every other row answers the same either way.
+const row = (real, control, probe, probeControl) => verdictFor(ok(real), ok(control), 'conventional',
+  probe === null ? null : ok(probe), probeControl === null ? null : ok(probeControl));
+
+v = row(1, 0, 1, 0);
+check('red at the fork point and red in the probe = unreachable, exit 3',
+  v.verdict === 'unreachable' && v.exit === 3, `${v.verdict}/${v.exit}`);
+check('the unreachable verdict says it is NOT a pass', /not a pass/i.test(v.detail));
+check('the unreachable verdict names the probe as the tree the criteria should already satisfy',
+  /probe/i.test(v.detail));
+
+v = row(1, 0, null, null);
+check('red with NO probe = half-proven, exit 4', v.verdict === 'half-proven' && v.exit === 4,
+  `${v.verdict}/${v.exit}`);
+check('the half-proven verdict says a freeze without a probe PROCEEDS', /proceeds/i.test(v.detail));
+check('the half-proven verdict names the flag that completes the proof', /--green/.test(v.detail));
+check('the half-proven verdict sends the state to the approval pass',
+  /approval pass/i.test(v.detail));
+
+// A BROKEN PROBE IS NEVER `unreachable`. This is the pair a naive implementation fails: it
+// answers 3 for both, and only running both tells them apart.
+check('a probe whose CONTROL is not green is indeterminate/2, not unreachable',
+  row(1, 0, 1, 1).verdict === 'indeterminate' && row(1, 0, 1, 1).exit === 2,
+  JSON.stringify(row(1, 0, 1, 1)));
+check('...and so is a GREEN probe suite behind a red probe control',
+  row(1, 0, 0, 1).exit === 2, JSON.stringify(row(1, 0, 0, 1)));
+check('that detail names the PROBE as the broken side, not the spec',
+  /probe/i.test(row(1, 0, 1, 1).detail) && /probe/i.test(row(1, 0, 1, 1).headline));
+check('a probe control that could not START is indeterminate, never unreachable',
+  verdictFor(ok(1), ok(0), 'conventional', ok(1), { ...ok(null), error: 'ENOENT' }).exit === 2);
+check('a probe suite killed by a signal is indeterminate, never unreachable',
+  verdictFor(ok(1), ok(0), 'conventional', { ...ok(null), signal: 'SIGTERM' }, ok(0)).exit === 2);
+check('a probe suite that exited 2 is "could not run", not unreachable',
+  row(1, 0, 2, 0).verdict === 'indeterminate' && row(1, 0, 2, 0).exit === 2,
+  JSON.stringify(row(1, 0, 2, 0)));
+check('exit 3 is reachable ONLY behind a green probe control',
+  [[0, 1], [1, 1], [2, 1], [null, 1]].every(([p, pc]) =>
+    verdictFor(ok(1), ok(0), 'conventional', ok(p), ok(pc)).exit !== 3));
+
+// The two verdicts above the probe rows are decided before the probe is consulted at all: a
+// suite that passes at the fork point cannot be rescued by a probe, and a broken fork-point
+// harness cannot be repaired by one.
+check('a green real run stays green/1 whatever the probe says',
+  row(0, 0, 1, 1).verdict === 'green' && row(0, 0, 1, 1).exit === 1);
+check('a not-green control stays indeterminate/2 whatever the probe says',
+  row(1, 1, 0, 0).verdict === 'indeterminate' && row(1, 1, 0, 0).exit === 2);
+check('the fork point exiting 2 stays indeterminate even with a green probe',
+  row(2, 0, 0, 0).exit === 2);
+// `scripts/test-freeze-gate.sh` greps the report for "RED:". Renaming the token to something
+// truer like `discriminating` silently stops that grep matching, and the suite goes on passing.
+check('the existing `red` token is kept for exit 0 rather than renamed',
+  row(1, 0, 0, 0).verdict === 'red');
 
 // --- guards ---------------------------------------------------------------------------------
 
@@ -331,16 +395,133 @@ check('the control directory is cleaned up even when the callback throws', (() =
   return d && !fs.existsSync(path.join(tmpRepo, d));
 })());
 
+// TWO CALLS IN ONE TREE. The gate now makes this call once per tree, and the two trees can be
+// the same tree — a probe built in place, or both flags aimed at one fixture. Keyed on the pid
+// alone the name was a single name per process, so the inner call's `finally` deleted the outer
+// call's directory and the fork-point control silently probed a path that no longer existed.
+check('two calls in ONE tree get different directories, and the outer survives the inner', (() => {
+  let outerDir = null; let innerDir = null; let outerAliveAfterInner = false;
+  withEmptyControlDir(tmpRepo, (a) => {
+    outerDir = a;
+    withEmptyControlDir(tmpRepo, (b) => { innerDir = b; });
+    outerAliveAfterInner = fs.existsSync(path.join(tmpRepo, a));
+  });
+  return outerDir && innerDir && outerDir !== innerDir && outerAliveAfterInner;
+})());
+check('both nested control directories are removed afterwards',
+  fs.readdirSync(tmpRepo).every((e) => !e.startsWith('.freeze-gate-control')),
+  fs.readdirSync(tmpRepo).join(', '));
+
+// The root is a PARAMETER, not "the target repo": a probe is a repo-shaped tree with a control
+// of its own, and resolving the probe's control against the target would judge the probe by a
+// harness it does not use.
+const probeCtl = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-probe-ctl-'));
+fs.mkdirSync(path.join(probeCtl, 'tests', 'acceptance', '_control'), { recursive: true });
+fs.writeFileSync(path.join(probeCtl, 'tests', 'acceptance', '_control', 'c.js'), 'process.exit(0);');
+check('resolveControl answers about the root it is HANDED, not a fixed one',
+  resolveControl(probeCtl, null).kind === 'conventional'
+  && resolveControl(tmpRepo, null).kind === 'empty-probe');
+check('withEmptyControlDir builds inside the root it is handed',
+  withEmptyControlDir(probeCtl, (dir) => fs.existsSync(path.join(probeCtl, dir))));
+fs.rmSync(probeCtl, { recursive: true, force: true });
+
+// --- the probe's copy of the suite ----------------------------------------------------------
+//
+// The probe runs its OWN copy of the suite, so a probe author can satisfy the criteria by
+// editing the test rather than the tree — and the gate would then bless the freeze it exists to
+// prevent. Hashed byte for byte, in name order, before any probe run.
+const cmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-cmp-'));
+const mk = (name, files) => {
+  const d = path.join(cmpRoot, name);
+  fs.mkdirSync(path.join(d, 'nested'), { recursive: true });
+  for (const [f, body] of Object.entries(files)) fs.writeFileSync(path.join(d, f), body);
+  return d;
+};
+const forkSuite = mk('fork', { 'test.js': 'A\n', 'helper.js': 'B\n', 'nested/deep.js': 'C\n' });
+const sameSuite = mk('same', { 'test.js': 'A\n', 'helper.js': 'B\n', 'nested/deep.js': 'C\n' });
+const editSuite = mk('edited', { 'test.js': 'A\n', 'helper.js': 'B!\n', 'nested/deep.js': 'C\n' });
+const goneSuite = mk('gone', { 'test.js': 'A\n', 'nested/deep.js': 'C\n' });
+const plusSuite = mk('plus', { 'test.js': 'A\n', 'helper.js': 'B\n', 'nested/deep.js': 'C\n', 'extra.js': 'D\n' });
+const cmp = compareSuites(forkSuite, sameSuite);
+check('two identical suite copies compare equal', !cmp.probeMissing && cmp.absent.length === 0
+  && cmp.differing.length === 0 && cmp.extra.length === 0, JSON.stringify(cmp));
+check('the comparison recurses into subdirectories',
+  digestSuite(forkSuite).has('nested/deep.js'), [...digestSuite(forkSuite).keys()].join(','));
+check('a file whose BYTES differ is named as edited',
+  compareSuites(forkSuite, editSuite).differing.join(',') === 'helper.js',
+  JSON.stringify(compareSuites(forkSuite, editSuite)));
+check('a file the probe DELETED is named as absent',
+  compareSuites(forkSuite, goneSuite).absent.join(',') === 'helper.js');
+check('a file present only in the probe is named as extra',
+  compareSuites(forkSuite, plusSuite).extra.join(',') === 'extra.js');
+check('a probe with no suite directory at all reports probeMissing',
+  compareSuites(forkSuite, path.join(cmpRoot, 'nope')).probeMissing === true);
+check('a probe whose suite path is a FILE is probeMissing, not a crash',
+  (() => { const f = path.join(cmpRoot, 'a-file'); fs.writeFileSync(f, 'x');
+    return compareSuites(forkSuite, f).probeMissing === true; })());
+check('digestSuite hashes content, so whitespace alone is a difference',
+  compareSuites(forkSuite, mk('ws', { 'test.js': 'A \n', 'helper.js': 'B\n', 'nested/deep.js': 'C\n' }))
+    .differing.join(',') === 'test.js');
+fs.rmSync(cmpRoot, { recursive: true, force: true });
+
+// --- the capture ceiling, proven against the REAL 1 MiB limit ---------------------------------
+//
+// `runVerify` had no maxBuffer, so Node's 1 MiB default applied and spawnSync KILLED the child
+// on overflow — and a probe that passes is verbose by definition. Change-log row
+// `verify-nobuffer` recurring inside the gate that judges the freeze.
+check('the gate\'s ceiling IS the verifier\'s, not a second copy of the number',
+  MAX_BUFFER === VERIFIER_MAX_BUFFER && typeof MAX_BUFFER === 'number', String(MAX_BUFFER));
+// Value equality is only half of it: a retyped literal has the right value too, and the two
+// copies then drift silently and unattended (the `runner/pause.js` precedent). So the source
+// must IMPORT it and must not carry a maxBuffer of its own.
+const gateSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'scripts', 'freeze-gate.js'), 'utf8');
+check('the ceiling is imported from pipeline/verify-classify.js by name',
+  /MAX_BUFFER\s*}\s*=\s*require\(['"]\.\.\/pipeline\/verify-classify(\.js)?['"]\)/.test(gateSrc));
+check('and no line assigns maxBuffer a literal of its own',
+  !gateSrc.split(/\r?\n/).some((l) => /maxBuffer\s*:\s*[\d(]/.test(l)),
+  gateSrc.split(/\r?\n/).filter((l) => /maxBuffer\s*:/.test(l)).join(' | '));
+// Behavioural, against the limit itself. fs.writeSync, never process.stdout.write followed by
+// process.exit: that write is async and the exit truncates it, so nothing overflows and the
+// check passes against the very implementation it exists to catch.
+const loudRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-loud-'));
+const loudStub = path.join(loudRoot, 'loud.js');
+fs.writeFileSync(loudStub, "const fs = require('fs');\nfs.writeSync(1, 'x'.repeat(2 * 1024 * 1024) + '\\n');\nprocess.exit(0);\n");
+const savedCmd = process.env.FREEZE_GATE_CMD;
+process.env.FREEZE_GATE_CMD = `"${process.execPath.replace(/\\/g, '/')}" "${loudStub.replace(/\\/g, '/')}"`;
+const loudRun = runVerify(loudRoot, 'unused', '.', 600000);
+if (savedCmd === undefined) delete process.env.FREEZE_GATE_CMD; else process.env.FREEZE_GATE_CMD = savedCmd;
+check('a run printing more than 1 MiB and exiting 0 keeps its exit status',
+  loudRun.status === 0, `${loudRun.status} / ${loudRun.error} / ${loudRun.signal}`);
+check('...and is not reported as killed', !loudRun.signal && !loudRun.error,
+  `${loudRun.signal} ${loudRun.error}`);
+check('...and the output past 1 MiB is actually captured',
+  loudRun.stdout.length > 1024 * 1024, String(loudRun.stdout.length));
+fs.rmSync(loudRoot, { recursive: true, force: true });
+
 // --- end to end, through the CLI, with a stubbed verify command ------------------------------
 
 // A stub that reports red exactly when the directory it is given holds files — the behaviour
-// of an honest test runner, and the only shape that produces a `red` verdict.
+// of an honest test runner, and the only shape that produces a `red` verdict. Which TREE it is
+// running in is read from a marker file in its own working directory, never from comparing
+// `process.cwd()` against a string: on the reference host a temp path can be an 8.3 short name,
+// and Git Bash and the child disagree on separators and case, so that comparison passes for
+// whoever wrote it and fails for everyone else.
 const STUB = `
-const fs = require('fs'); const p = process.argv[2];
+const fs = require('fs'); const path = require('path'); const p = process.argv[2];
 const mode = process.env.STUB_MODE || 'honest';
+if (process.env.STUB_LOG) {
+  fs.appendFileSync(process.env.STUB_LOG, JSON.stringify({ arg: p }) + '\\n');
+  fs.writeFileSync(path.join(process.cwd(),
+    '.ran-here-' + process.pid + '-' + Math.floor(process.hrtime()[1])), '');
+}
+const inProbe = fs.existsSync(path.join(process.cwd(), '.is-probe'));
+const isControl = /_control|freeze-gate-control/.test(p);
+let n = 0; try { n = fs.readdirSync(p).length; } catch { n = 0; }
 if (mode === 'always-green') process.exit(0);
 if (mode === 'always-red') process.exit(4);
-let n = 0; try { n = fs.readdirSync(p).length; } catch { n = 0; }
+if (inProbe && mode === 'probe-broken') process.exit(1);
+if (inProbe && mode === 'probe-red') process.exit(isControl ? 0 : 1);
+if (inProbe) process.exit(0);
 process.exit(n > 0 ? 1 : 0);
 `;
 const stubPath = path.join(tmpRepo, 'stub.js');
@@ -367,22 +548,175 @@ const silence = () => {
 };
 const runMain = (args) => { const restore = silence(); try { return main(args); } finally { restore(); } };
 
+// The probe: a second repo-shaped tree carrying its own copy of the suite, byte for byte, plus
+// the marker the stub reads to know which tree it woke up in.
+const probeRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-probe-'));
+fs.writeFileSync(path.join(probeRepo, 'pipeline.config.json'),
+  JSON.stringify({ verifyCommand: 'a probe-side config is never read' }));
+fs.mkdirSync(path.join(probeRepo, 'tests', 'acceptance', 'demo'), { recursive: true });
+fs.writeFileSync(path.join(probeRepo, 'tests', 'acceptance', 'demo', 'test.js'), '// a test');
+fs.writeFileSync(path.join(probeRepo, '.is-probe'), '');
+
 const ARGS = ['--repo', tmpRepo, '--tests', 'tests/acceptance/demo/'];
-check('CLI exits 0 when the tests are genuinely red', runMain(ARGS) === 0);
+const GREEN = [...ARGS, '--green', probeRepo];
+check('CLI exits 0 when the tests are red at the fork point and GREEN in the probe',
+  runMain(GREEN) === 0);
+check('CLI exits 4 — half-proven — when the tests are red and no probe was given',
+  runMain(ARGS) === 4);
+
+process.env.STUB_MODE = 'probe-red';
+check('CLI exits 3 when the tests are red in the probe too', runMain(GREEN) === 3);
+process.env.STUB_MODE = 'probe-broken';
+check('CLI exits 2, never 3, when the PROBE\'S control is not green', runMain(GREEN) === 2);
+delete process.env.STUB_MODE;
 
 process.env.STUB_MODE = 'always-green';
 check('CLI exits 1 when the tests pass at the fork point', runMain(ARGS) === 1);
+check('...and still 1 with a probe supplied', runMain(GREEN) === 1);
 
 process.env.STUB_MODE = 'always-red';
 check('CLI exits 2 when red cannot be told from a broken harness', runMain(ARGS) === 2);
+check('...and still 2 with a probe supplied', runMain(GREEN) === 2);
 delete process.env.STUB_MODE;
+
+// The refusals, each NAMING the offending path. An exit-code-only check passes vacuously here:
+// before this flag existed, `--green` hit `unexpected argument` and ALSO exited 2.
+const refusal = (args) => {
+  const o = console.log; const e = console.error;
+  let buf = '';
+  console.log = (...a) => { buf += `${a.join(' ')}\n`; };
+  console.error = (...a) => { buf += `${a.join(' ')}\n`; };
+  try { return { code: main(args), out: buf }; } finally { console.log = o; console.error = e; }
+};
+const missingProbe = path.join(os.tmpdir(), 'freeze-gate-no-such-probe-dir');
+const fileProbe = path.join(tmpRepo, 'probe-is-a-file'); fs.writeFileSync(fileProbe, 'x');
+let r = refusal([...ARGS, '--green', missingProbe]);
+check('a --green path that does not exist exits 2', r.code === 2, String(r.code));
+check('...and the refusal NAMES the path', r.out.includes(path.basename(missingProbe)), r.out);
+r = refusal([...ARGS, '--green', fileProbe]);
+check('a --green path that is a file exits 2', r.code === 2, String(r.code));
+check('...and that refusal names the path too', r.out.includes(path.basename(fileProbe)), r.out);
+r = refusal([...ARGS, '--green', '']);
+check('an empty --green value exits 2', r.code === 2, String(r.code));
+check('...and says the flag was given no usable value', /--green/.test(r.out), r.out);
+r = refusal([...ARGS, '--green']);
+check('--green with no value at all exits 2 and says so',
+  r.code === 2 && /--green/.test(r.out), `${r.code}: ${r.out}`);
+check('every one of those refusals names WHICH SIDE is broken',
+  [missingProbe, fileProbe, '', null].every((p) => {
+    const out = refusal(p === null ? [...ARGS, '--green'] : [...ARGS, '--green', p]).out;
+    return /probe|arguments/i.test(out);
+  }));
+
+// A probe that is not repo-shaped is the probe's bug, and it is caught BEFORE any probe run —
+// so it is reported as a broken probe and never as unsatisfiable criteria.
+const shapeless = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-shapeless-'));
+r = refusal([...ARGS, '--green', shapeless]);
+check('a probe carrying no copy of the suite exits 2, not 3', r.code === 2, String(r.code));
+check('...and the message names the probe and says what a probe is',
+  /probe/i.test(r.out) && /repo-shaped/i.test(r.out), r.out);
+// The crudest way to make a suite pass is to delete the check that fails. The probe runs its
+// OWN copy, so this must be refused before the probe runs at all — and this message WINS over
+// the broken-probe verdict, which would otherwise describe the same tree.
+const deleter = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-deleter-'));
+fs.mkdirSync(path.join(deleter, 'tests', 'acceptance', 'demo'), { recursive: true });
+fs.writeFileSync(path.join(deleter, '.is-probe'), '');
+r = refusal([...ARGS, '--green', deleter]);
+check('a probe that DELETED a file of the frozen suite exits 2', r.code === 2, String(r.code));
+check('...and the missing file is named', /test\.js/.test(r.out), r.out);
+fs.rmSync(shapeless, { recursive: true, force: true });
+fs.rmSync(deleter, { recursive: true, force: true });
+fs.rmSync(fileProbe, { force: true });
+
+// A probe that EDITED a test is not refused — the fork point's own copy is what the verdict is
+// about — but the difference is named, loudly, because a green probe then says only that the
+// edited test passes.
+const editor = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-editor-'));
+fs.mkdirSync(path.join(editor, 'tests', 'acceptance', 'demo'), { recursive: true });
+fs.writeFileSync(path.join(editor, 'tests', 'acceptance', 'demo', 'test.js'), '// EDITED');
+fs.writeFileSync(path.join(editor, '.is-probe'), '');
+r = refusal([...ARGS, '--green', editor]);
+check('a probe whose copy of a test was edited names the difference',
+  /probe suite differs:/.test(r.out) && /test\.js/.test(r.out), r.out);
+fs.rmSync(editor, { recursive: true, force: true });
+
+// The report says what happened in the probe, not only what it decided.
+const withProbe = refusal(GREEN);
+check('the report shows the probe run', /probe run\s+exit\s+0/.test(withProbe.out), withProbe.out);
+check('the report shows the probe\'s own control run',
+  /probe control\s+exit\s+0/.test(withProbe.out), withProbe.out);
+check('the report still names the verdict as RED:', /RED:/.test(withProbe.out));
+
+// The probe's control is resolved against the PROBE, by the same rule used at the target root.
+// The fixture is a PAIR and has to be read as one: the probe carries a `_control` fixture and
+// the target does not, so the two lines of the report differ — an implementation that resolved
+// the probe's control against the target would print the target's answer twice, and with both
+// trees shaped alike that is invisible.
+fs.mkdirSync(path.join(probeRepo, 'tests', 'acceptance', '_control'), { recursive: true });
+fs.writeFileSync(path.join(probeRepo, 'tests', 'acceptance', '_control', 'c.js'), 'process.exit(0);');
+const twoControls = refusal(GREEN);
+check('the probe\'s control comes from the PROBE\'s own tree',
+  new RegExp(`probe control\\s+exit\\s+0\\s+\\(${CONTROL_DIR} in the probe`).test(twoControls.out),
+  twoControls.out.split(/\r?\n/).slice(0, 6).join(' | '));
+check('...while the target, which has no fixture, still admits its control is weak',
+  /control run\s+exit\s+0\s+\(empty directory — NO control fixture/.test(twoControls.out),
+  twoControls.out.split(/\r?\n/).slice(0, 6).join(' | '));
+
+// --- HOW the probe is invoked, not only what it decided -----------------------------------
+//
+// Four invocations with a probe, two without — suite and control in each of two trees. The two
+// suite runs carry the SAME repo-relative string, byte for byte, because a frozen suite resolves
+// its own root from the tree it sits in and the runner is handed a path relative to cwd: an
+// absolute path into the probe would run the fork point's own copy from inside the probe and
+// prove nothing about either. WHICH TREE a run happened in is decided by where the stub's marker
+// file landed, never by string-comparing `process.cwd()` — on the reference host a temp path can
+// be an 8.3 short name, and Git Bash and the child disagree on separators and case, so that
+// comparison passes for whoever wrote it and fails for everyone else.
+const stubLog = path.join(tmpRepo, 'stub-log.jsonl');
+const markers = (d) => fs.readdirSync(d).filter((n) => n.startsWith('.ran-here-'));
+const clearMarkers = (d) => { for (const n of markers(d)) fs.rmSync(path.join(d, n)); };
+const invocations = (args) => {
+  fs.writeFileSync(stubLog, '');
+  clearMarkers(tmpRepo); clearMarkers(probeRepo);
+  process.env.STUB_LOG = stubLog;
+  try { runMain(args); } finally { delete process.env.STUB_LOG; }
+  return fs.readFileSync(stubLog, 'utf8').split(/\r?\n/).filter(Boolean).map((l) => JSON.parse(l));
+};
+const plain = invocations(ARGS);
+check('without a probe the verify command is spawned twice', plain.length === 2, String(plain.length));
+const four = invocations(GREEN);
+check('with a probe it is spawned four times — suite and control, in each of two trees',
+  four.length === 4, String(four.length));
+const suiteArgs = four.map((l) => l.arg).filter((a) => /demo/.test(a));
+check('exactly two of the four carry the suite directory', suiteArgs.length === 2,
+  suiteArgs.join(' | '));
+check('and both carry the SAME repo-relative string, byte for byte',
+  suiteArgs[0] === suiteArgs[1], `${suiteArgs[0]} vs ${suiteArgs[1]}`);
+check('neither is an absolute path into the probe', !suiteArgs.some((a) => path.isAbsolute(a)),
+  suiteArgs.join(' | '));
+check('the two suite runs happened in DIFFERENT trees',
+  markers(tmpRepo).length >= 1 && markers(probeRepo).length >= 1,
+  `repo ${markers(tmpRepo).length}, probe ${markers(probeRepo).length}`);
+clearMarkers(tmpRepo); clearMarkers(probeRepo);
+fs.rmSync(stubLog, { force: true });
+
+// Nothing is left behind in EITHER tree, after a run that exited non-zero for any reason.
+process.env.STUB_MODE = 'probe-red';
+runMain(GREEN);
+delete process.env.STUB_MODE;
+check('no control scratch directory survives in the target tree',
+  fs.readdirSync(tmpRepo).every((e) => !e.startsWith('.freeze-gate-control')),
+  fs.readdirSync(tmpRepo).join(', '));
+check('no control scratch directory survives in the PROBE tree',
+  fs.readdirSync(probeRepo).every((e) => !e.startsWith('.freeze-gate-control')),
+  fs.readdirSync(probeRepo).join(', '));
 
 check('CLI exits 2 on a missing test directory',
   runMain(['--repo', tmpRepo, '--tests', 'tests/acceptance/nope/']) === 2);
 check('CLI exits 2 with no arguments', runMain([]) === 2);
 check('CLI exits 2 when the target has no pipeline.config.json',
   runMain(['--repo', path.join(tmpRepo, 'tests'), '--tests', 'acceptance/demo/']) === 2);
-check('CLI still exits 0 with --spec supplied', runMain([...ARGS, '--spec', specPath]) === 0);
+check('CLI still exits 0 with --spec supplied', runMain([...GREEN, '--spec', specPath]) === 0);
 
 // The gate must leave nothing behind in the target repo — it runs against a tree that is
 // about to be committed and frozen, so a stray directory would land in the freeze.
@@ -403,7 +737,7 @@ const COUNT_LINE = /brittleness findings:\s*(\d+)/;
 
 // A clean suite must still print the count. A discriminator silent when it finds nothing
 // cannot be told from one that never ran — the `guards declared:` precedent.
-const clean = capture(ARGS);
+const clean = capture(GREEN);
 check('the count line prints even when the suite is clean',
   /brittleness findings:\s*0\b/.test(clean.out), clean.out.split('\n').slice(-3).join(' | '));
 check('a clean suite does not change the verdict', clean.code === 0);
@@ -420,26 +754,45 @@ fs.writeFileSync(path.join(testDir, 'brittle.js'), [
   "spawnSync('git', ['merge-base', 'origin/main', 'HEAD']);",
 ].join('\n'));
 fs.writeFileSync(path.join(testDir, 'logo.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+// The probe carries the same suite, byte for byte — plus one brittle file of its own, which the
+// lint must never read: the lint runs ONCE, over the fork-point suite only. A probe is
+// throwaway and deliberately crude, and findings nobody will ever fix are noise in a report
+// whose whole value is that every finding takes a disposition.
+const probeSuite = path.join(probeRepo, 'tests', 'acceptance', 'demo');
+fs.copyFileSync(path.join(testDir, 'brittle.js'), path.join(probeSuite, 'brittle.js'));
+fs.copyFileSync(path.join(testDir, 'logo.png'), path.join(probeSuite, 'logo.png'));
+fs.writeFileSync(path.join(probeSuite, 'probe-only-brittle.js'),
+  "assert.deepStrictEqual(keys, ['probe', 'only', 'list']);\nassert.strictEqual(rows.length, 44);\n");
 
 // The exit code is a verdict about red, green and indeterminate that PLANNING.md step 4
 // branches on. A lint that can fail a freeze is a gate on spec AUTHORING, whose only defeat is
 // rewording until it passes (hard rule 5) — so it is checked in all three arms, with findings
 // present in every one. The green and indeterminate arms are the ones that catch an
 // `if (findings.length) return 1`: red already exits 0, so there it is invisible.
-const arms = [[null, 0], ['always-green', 1], ['always-red', 2]];
-let armsHeld = true; let armsFired = true;
-for (const [mode, expected] of arms) {
+const arms = [
+  [null, ARGS, 4], [null, GREEN, 0], ['always-green', GREEN, 1], ['always-red', GREEN, 2],
+  ['probe-red', GREEN, 3], ['probe-broken', GREEN, 2],
+];
+let armsHeld = true; let armsFired = true; const armsSeen = [];
+for (const [mode, args, expected] of arms) {
   if (mode) process.env.STUB_MODE = mode; else delete process.env.STUB_MODE;
-  const r = capture(ARGS);
+  const r = capture(args);
   const m = r.out.match(COUNT_LINE);
+  armsSeen.push(`${mode || 'honest'}:${r.code}`);
   if (r.code !== expected) armsHeld = false;
   if (!m || Number(m[1]) < 4) armsFired = false;
 }
 delete process.env.STUB_MODE;
-check('findings never move the exit code, in any of the three verdicts', armsHeld);
+check('findings never move the exit code, in any of the FIVE verdicts', armsHeld, armsSeen.join(' '));
 check('and the lint is proven to have FIRED in each of those same runs', armsFired);
+check('every exit code the gate can produce was reached in that sweep',
+  new Set(armsSeen.map((s) => s.split(':')[1])).size === 5, armsSeen.join(' '));
 
-const loud = capture(ARGS);
+const loud = capture(GREEN);
+check('the lint runs ONCE, over the fork-point suite only — never over the probe',
+  Number(loud.out.match(COUNT_LINE)[1]) === 4, loud.out.match(COUNT_LINE)[0]);
+check('...and no finding names a file that exists only in the probe',
+  !/probe-only-brittle\.js:\d+\s+\[/.test(loud.out));
 check('each finding is reported as <file>:<line>  [<shape>]',
   /brittle\.js:1\s+\[literal-name-list\]/.test(loud.out));
 check('all four shapes reach stdout',
@@ -463,11 +816,16 @@ try {
   };
   broken = capture(ARGS);
 } finally { fs.statSync = realStatSync; }
-check('a lint that throws still leaves the verdict at its own exit code', broken.code === 0);
+// 4 because these ARGS carry no probe: the verdict is half-proven, and a lint that threw must
+// leave it exactly there — the seam is injected on the suite directory, which the probe-side
+// comparison also reads, so this arm deliberately runs without one.
+check('a lint that throws still leaves the verdict at its own exit code', broken.code === 4,
+  String(broken.code));
 check('a lint that throws prints `unavailable` and names the reason',
   /brittleness findings: unavailable - .*injected read failure/.test(broken.out), broken.out);
 check('a lint that throws NEVER prints a count of 0 — a silent false clean',
   !/brittleness findings:\s*0\b/.test(broken.out));
 
 fs.rmSync(tmpRepo, { recursive: true, force: true });
+fs.rmSync(probeRepo, { recursive: true, force: true });
 process.exit(failed);

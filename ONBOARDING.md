@@ -135,6 +135,18 @@ coverage that matters is of the area about to be tasked out, not of the whole sy
       on "no test files found", so the gate would be unable to discriminate on exactly the
       projects it works best for.
 
+      **The control is load-bearing twice over since change-log row `repo-inj`.** The gate's
+      `--green <probe-dir>` runs the same suite a second time in a *probe* — a throwaway,
+      repo-shaped tree in which the criteria are already satisfied by any means however crude —
+      and resolves a control against the **probe's** root by this same rule, because a probe
+      whose control is not green is a malformed probe rather than an unreachable criterion.
+      Two onboarding consequences. Keep `verifyCommand` a path to a runner that **lives in the
+      tree** and is invoked relative to cwd (`sh tools/run-acceptance.sh`, not an absolute path
+      or a globally-installed binary): a probe is built by copying that runner, the suite and
+      `_control/` to the same relative paths, so a runner the tree does not carry cannot be
+      copied into one. And keep the control trivially passing for the same reason as above — it
+      is now the thing that tells a broken probe from a criterion no implementation can reach.
+
       The same run also prints a **brittleness lint** over the tests being frozen — never over
       `_control/`, which is live repo content rather than anything under review (§3.2, move 6;
       change-log row `repo-uw6`). It names assertions whose *expected side is a literal the
