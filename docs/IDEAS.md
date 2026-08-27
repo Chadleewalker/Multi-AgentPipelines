@@ -86,6 +86,20 @@ Two hard boundaries, both inherited:
 
 <!-- Newest at the top. Nothing here is committed to. -->
 
+- **Name the checks that failed in BOTH freeze-gate runs, not just the verdict.** `unreachable`
+  now exists (change-log row `repo-inj`) and says *something in this suite cannot be reached by
+  any implementation* — but it says it about the whole suite, so the human's next move is to
+  read two captures side by side and intersect them by eye. That intersection is mechanical:
+  the fork-point run's failing lines minus the probe run's passing ones is exactly the
+  candidate set, and both captures are already in hand when the verdict is decided. Held back
+  from `repo-inj` deliberately and sequenced after it — the verdict had to exist first, and a
+  failure-line parser is a separable deliverable with failure modes of its own (every runner
+  formats failures differently, so a parser that reads one project's output and silently
+  matches nothing in another is the shape that ships as a feature and does nothing). Worth
+  wanting because the two runs it would have named — 11 of 29 checks in one, a `git init -q -c`
+  in the other — each cost three container attempts and were found by reading, in a container,
+  at attempt three. Related: DESIGN.md §3.2, `PLANNING.md` step 4. 2026-08-27
+
 - **Give `PLANNING.md` step 3 a charter and fresh context, the way step 1b got them.**
   Step 1b already drafts the acceptance criteria in fresh context; step 3 then writes the
   frozen tests back inside the primed session, and states no context requirement at all —

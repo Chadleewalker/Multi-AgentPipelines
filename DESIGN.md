@@ -259,8 +259,8 @@ work licensed to change this?* — and it prints the count **even when it is zer
 nothing is indistinguishable from one that never ran.
 
 **The pass cannot change the exit code, and that is the design rather than a limitation.**
-The gate's exit codes are a verdict about red, green and indeterminate which `PLANNING.md`
-step 4 branches on; overloading them would break that contract and turn a lint into a gate
+The gate's exit codes are a verdict about red, green, indeterminate, unreachable and
+half-proven which `PLANNING.md` step 4 branches on; overloading them would break that contract and turn a lint into a gate
 on spec *authoring* — the shape hard rule 5 refuses, since the way past a gate that can
 fail you is to reword until it passes. Nor can the tool decide these cases: it cannot tell
 a catalogue later work will grow from an enumeration of the task's own output, and the
