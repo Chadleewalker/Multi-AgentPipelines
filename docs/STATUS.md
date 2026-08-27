@@ -1428,6 +1428,81 @@ freeze gate at all — one move behind before this task and two behind after it.
 `node scripts/build-pipeline-map.js` after editing; the builder needs
 `tools/mapbuild/node_modules` and cannot run in a container.
 
+## The freeze gate proves the green side too (`repo-inj`, 2026-08-27)
+
+**Proven.** `scripts/freeze-gate.js` gains `--green <probe-dir>`: the same suite is run a
+second and third time in a *probe* — a throwaway, repo-shaped tree in which the criteria are
+already satisfied, by any means however crude — with cwd inside the probe, the **same**
+repo-relative test-directory string as the fork-point run, and a control resolved against the
+probe's own root. `verifyCommand` and `defaultBranch` are still read from the target's
+`pipeline.config.json` and never the probe's: a probe-side config would be an editable thing
+deciding how the probe is judged. The table gains `unreachable` (exit 3) and `half-proven`
+(exit 4); 0, 1 and 2 keep their meanings, and the `red` token is deliberately kept for exit 0
+because `scripts/test-freeze-gate.sh` greps the report for `RED:`. `tests/unit/freeze-gate.test.js`
+100 → 170 checks, `scripts/test-freeze-gate.sh`'s floor 90 → 110.
+
+**Why: red is only half the proof.** A suite that discriminates and a suite whose own fixture
+is broken are **the same observation** — non-zero — so the gate had never once seen the thing
+it blesses pass. It has cost two tasks three attempts each. `repo-8v0` froze with 11 of 29
+checks unreachable by any implementation, because a `NODE_OPTIONS=--require` stub reached the
+child the suite spawned and killed it before its first line. `repo-cfe` froze with the
+criterion the task existed for calling `git init -q -c …`, where `-c` is a global option that
+must precede the subcommand — so no repository was ever created, and its two neighbouring
+checks passed *vacuously*, the file appends landing regardless and the control "conflicting"
+only because git had errored. Both were diagnosed by the task agent through the concern
+channel, in a container, at attempt three.
+
+**A broken probe is `indeterminate`, never `unreachable`.** Exit 3 is reachable only behind a
+green probe control, for the same reason the fork point's red means nothing when its own
+control fails. That pair is the load-bearing fixture in both suites — a naive implementation
+answers 3 for both, and only running both tells them apart — and every exit-2 detail now names
+which side is broken: the fork point, the probe, the probe's control, or the arguments.
+`half-proven` **proceeds**: a freeze with no probe stays legal, and the state is carried into
+the approval pass the way the guard count is.
+
+**Two defects fixed on the way past.** `runVerify` had no `maxBuffer`, so Node's 1 MiB default
+applied and `spawnSync` killed the child on overflow — change-log row `verify-nobuffer`
+recurring inside the gate that judges the freeze, and a passing probe is verbose by
+definition. It now uses the `MAX_BUFFER` **imported** from `pipeline/verify-classify.js`, and
+the suite pins both halves: the value, and that no line retypes it. The empty-directory
+control's name was keyed on the pid alone, which was one name per process — with two trees in
+play, the second call's `finally` deleted the first call's directory out from under it.
+
+**Nine mutations, nine kills** — dropping the `maxBuffer`, swapping the `probe`/`probeControl`
+argument order, letting a broken probe read as `unreachable`, handing the probe run an
+absolute path into its own tree, resolving the probe's control against the target root,
+keying the control directory on the pid alone, linting the probe's suite as well, removing the
+suite comparison, and exiting 0 where `half-proven`'s 4 belongs. Two of them are caught by
+*paired* fixtures and by nothing else: the probe-control one needs a probe that carries a
+`_control` fixture beside a target that does not (with both trees shaped alike the wrong
+answer is invisible), and the absolute-path one needs the stub to record which tree it woke up
+in by dropping a **marker file**, never by string-comparing `process.cwd()` — on the reference
+host a temp path can be an 8.3 short name, and Git Bash and the child disagree on separators
+and case.
+
+**The frozen `repo-uw6` suite is now red, by design.** Five of its checks assert the *old*
+three-verdict table — `verdictFor` answering "all nine rows", the CLI answering 0/1/2 where a
+probe-less red run now answers 4, and `RED:` appearing in output from runs that no longer
+produce it (every one of them omits `--green`). The repeal is deliberate and is recorded in
+change-log row `repo-inj`; the token itself survives and is pinned by both re-runnable suites.
+Nothing re-runs a frozen directory — the verifier runs only the task's own — so this costs
+nothing today, and it is the same shape `repo-iok` left behind in `repo-1cy`. It is also the
+argument for extracting coverage into `tests/unit/` stated once more.
+
+**Known gap, deliberate.** Constraint 4 asked for the probe's copy of the suite to be
+compared byte for byte and any mismatch refused with exit 2. What ships refuses a probe that
+does not carry the suite at all and one that **deleted** a file of it, and *names* every file
+whose bytes differ in the report without moving the exit code — because criterion 6's frozen
+fixture supplies a probe whose copy of the suite deliberately differs from the fork point's
+and requires exit 0, so a strict byte-equality gate would make that criterion unsatisfiable.
+Raised as a spec concern on the run. The cheapest way to close it later is to fix the fixture,
+not the tool.
+
+**Host obligation.** `docs/pipeline-map.html` is exempt from task docs phases (CLAUDE.md) and
+nothing else updates it; its planning panel still shows the approval pass with no freeze gate
+at all, and is now three moves behind. Redraw with `node scripts/build-pipeline-map.js` after
+editing; the builder needs `tools/mapbuild/node_modules` and cannot run in a container.
+
 ## What's next
 
 **The live queue feed shipped on 2026-08-25** — a run re-reads the ready queue while it is
@@ -1641,7 +1716,7 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-verify-buffer.sh` | the verifier's capture limit (change-log row `verify-nobuffer`) — a loud passing suite is a pass, a loud failing one is still a fail |
 | `scripts/test-pipeline-map.sh` | the reader's map drawn at build time (change-log row `map-prerender`) — a good SVG's stylesheet versus a real error card, neither check meaning anything alone |
 | `scripts/test-batch.sh` | the batch marker reader (change-log rows `repo-0b3`, `repo-8v0`) — the marker name anchored at both ends, the manifest-less run dated from `run.log`, the conservative `run-time-unknown` direction, the degraded labels, byte-identical repeat output, the pure-reader contract checked by sha1 snapshot and parsed `require` specifiers, and the live-queue reconciliation driven through the `PIPELINE_BD_CMD` seam: the runner's own epic filter, the `-C` slot, a queue past 1 MiB, and every degraded reason against the reconciled one |
-| `scripts/test-freeze-gate.sh` | the fork-point red gate and its brittleness lint (change-log rows `freeze-gate-red`, `repo-uw6`) — the nine-row decision table from every side, the control convention, the empty-probe fallback cleaned up even on a throw, and for the lint the **near-miss pairs first**: two computed digests and git against a self-created ref (the house patterns a `createHash`- or `git diff`-keyed detector flags), `> 0` / `=== 0` / `=== 1` against `=== N`, an input list against an expected one, plus line numbers over CRLF, a split assertion reported where it starts, the three skip reasons, and a lint that throws printing `unavailable` rather than a `0` |
+| `scripts/test-freeze-gate.sh` | the fork-point red gate, its GREEN-side probe and its brittleness lint (change-log rows `freeze-gate-red`, `repo-uw6`, `repo-inj`) — every verdict from a real command line including `unreachable` 3 and `half-proven` 4, the broken-probe/red-probe **pair** that separates 2 from 3, a probe refused by name for every unusable path, a probe missing the runner under the REAL verify command, and — the nine-row decision table from every side, the control convention, the empty-probe fallback cleaned up even on a throw, and for the lint the **near-miss pairs first**: two computed digests and git against a self-created ref (the house patterns a `createHash`- or `git diff`-keyed detector flags), `> 0` / `=== 0` / `=== 1` against `=== N`, an input list against an expected one, plus line numbers over CRLF, a split assertion reported where it starts, the three skip reasons, and a lint that throws printing `unavailable` rather than a `0` |
 | `scripts/test-dispatch-gate.sh` | the ready queue's second admission rule (change-log rows `dispatch-gate`, `repo-5yu`) — the origin-versus-`targetRepoRemote` pair that discriminates this design from a working-tree check, the `ls-remote --symref` link of the branch chain against a `master` project, an unresolvable branch aborting rather than guessing, a sibling id that merely extends another, the `-d`, the throwaway repository removed on the abort path too, `gitTimeoutMs` at the spawn and at config load, and every `spawnSync` in `runner/queue.js` built from one exported builder |
 
 **`scripts/test-runner-memory.sh` is one of the eighteen suites that need no Docker**

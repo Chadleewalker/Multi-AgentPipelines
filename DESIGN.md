@@ -188,13 +188,35 @@ blind spot common to both survives. Never batch unrelated specs to save money.
 text. *Then* (change-log row `spec-lint-frozen-paths`): move 3(a), as `scripts/spec-lint.js`
 — a rule registry the remaining checks slot into, reporting `file:line` findings that take a
 disposition like a critic's rather than gating. *Then* (change-log row `freeze-gate-red`):
-move 1, as `scripts/freeze-gate.js`, which runs the target's `verifyCommand` twice — once
-against the new tests and once against an empty directory — and reads the pair, so a broken
-harness is reported as *indeterminate* instead of being blessed as red. *Then* (change-log
-row `repo-uw6`): move 6, as a second **textual** pass inside the same gate, printing
-`brittleness findings:` beside `guards declared:` and touching neither the verdict nor the
-exit code. Move 3(b) alone remains declared and unbuilt, the §3.7 declared-then-built
-sequencing.
+move 1, as `scripts/freeze-gate.js`, which runs the target's `verifyCommand` against the new
+tests and against a control, and reads the pair, so a broken harness is reported as
+*indeterminate* instead of being blessed as red. *Then* (change-log row `repo-uw6`): move 6, as
+a second **textual** pass inside the same gate, printing `brittleness findings:` beside
+`guards declared:` and touching neither the verdict nor the exit code. *Then* (change-log row
+`repo-inj`): the gate's second input, `--green <probe-dir>`, which runs the same suite a second
+and third time in a throwaway tree where the criteria are already satisfied — so the gate has
+seen the suite **pass** as well as fail, and the two verdicts that needs are added to the table
+below. Move 3(b) alone remains declared and unbuilt, the §3.7 declared-then-built sequencing.
+
+**The gate's table, as it now stands.** Red is not one state and neither is the proof:
+
+| fork point | its control | probe | its control | verdict | exit |
+|---|---|---|---|---|---|
+| green | — | — | — | `green` — the suite cannot detect anything | 1 |
+| red | not green | — | — | `indeterminate` — a broken harness, not a red test | 2 |
+| red | green | — | — | `half-proven` — legal, and it proceeds | 4 |
+| red | green | green | green | `red` — it discriminates, in both directions | 0 |
+| red | green | red | green | `unreachable` — no implementation may be able to pass it | 3 |
+| red | green | any | not green | `indeterminate` — the **probe** is the broken side | 2 |
+
+The load-bearing line is the last one. A broken probe is never `unreachable`: exit 3 is
+reachable only behind a green probe control, because otherwise the probe's red says nothing
+about the criteria, exactly as the fork point's red says nothing when its own control fails.
+`half-proven` proceeds because a probe is real work and a one-line criterion rarely earns it —
+but the state is carried into the approval pass the way the guard count is, so a spec proven on
+one side only is visible rather than assumed. The probe's copy of the suite is hashed against
+the fork point's before any probe run: a probe that satisfies the criteria by editing the test
+rather than the tree would bless the freeze the gate exists to prevent.
 
 **Upstream of step 1: the idea inbox.** Each repo — this one and every target — carries a
 `docs/IDEAS.md`, a flat list of parked notes saying *a design might be wanted here

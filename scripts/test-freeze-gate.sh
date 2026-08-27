@@ -29,21 +29,30 @@ if [ "$RC" -eq 0 ]; then pass "freeze-gate checker exits 0"; else fail "freeze-g
 # A FLOOR, never an equality — and deliberately so, because an exact count here would be an
 # instance of the very shape the brittleness lint below warns about: later work is licensed to
 # add checks to that file, and `-eq` would go red for exactly that. The floor moves up when a
-# batch of coverage lands (40 -> 90 with change-log row `freeze-brittleness-lint`), which is
-# the only way a number like this stays worth asserting.
+# batch of coverage lands (40 -> 90 with change-log row `freeze-brittleness-lint`, 90 -> 110
+# with change-log row `repo-inj`), which is the only way a number like this stays worth
+# asserting.
 CHECKS="$(echo "$OUT" | grep -c '^PASS  ')"
-if [ "$CHECKS" -ge 90 ]; then pass "checker ran $CHECKS checks"
-else fail "checker ran only $CHECKS checks (expected at least 90)"; fi
+if [ "$CHECKS" -ge 110 ]; then pass "checker ran $CHECKS checks"
+else fail "checker ran only $CHECKS checks (expected at least 110)"; fi
 
 # The three verdicts are reachable from a real command line, not only through the module.
 # A stub `.js` run through node — never a `#!/bin/sh` script, which spawnSync cannot execute
 # on the Windows host (CLAUDE.md, the Docker-free suite rule).
+# Which TREE the stub is running in is read from a marker file in its own working directory,
+# never from comparing `process.cwd()` to a string: on the reference host a temp path can be an
+# 8.3 short name, and Git Bash and the child disagree on separators and case.
 cat > "$TMP/stub.js" <<'STUB'
-const fs = require('fs');
+const fs = require('fs'); const path = require('path');
 const mode = process.env.STUB_MODE || 'honest';
+const inProbe = fs.existsSync(path.join(process.cwd(), '.is-probe'));
+const isControl = /_control|freeze-gate-control/.test(process.argv[2] || '');
+let n = 0; try { n = fs.readdirSync(process.argv[2]).length; } catch { n = 0; }
 if (mode === 'always-green') process.exit(0);
 if (mode === 'always-red') process.exit(4);
-let n = 0; try { n = fs.readdirSync(process.argv[2]).length; } catch { n = 0; }
+if (inProbe && mode === 'probe-broken') process.exit(1);
+if (inProbe && mode === 'probe-red') process.exit(isControl ? 0 : 1);
+if (inProbe) process.exit(0);
 process.exit(n > 0 ? 1 : 0);
 STUB
 mkdir -p "$TMP/repo/tests/acceptance/demo"
@@ -51,11 +60,18 @@ echo '// a test' > "$TMP/repo/tests/acceptance/demo/test.js"
 printf '{"verifyCommand":"unused"}' > "$TMP/repo/pipeline.config.json"
 printf '1. does a thing\n2. [guard] existing behaviour holds\n' > "$TMP/spec.md"
 
+# The probe: a repo-shaped tree carrying the SAME suite, byte for byte, in which the criteria
+# are already satisfied. A directory holding only the criteria's artifacts is not a probe.
+mkdir -p "$TMP/probe/tests/acceptance/demo"
+cp "$TMP/repo/tests/acceptance/demo/test.js" "$TMP/probe/tests/acceptance/demo/test.js"
+printf '{"verifyCommand":"a probe-side config is never read"}' > "$TMP/probe/pipeline.config.json"
+: > "$TMP/probe/.is-probe"
+
 NODE_Q="$(printf '%s' "${TMP}/stub.js")"
 export FREEZE_GATE_CMD="node \"$NODE_Q\""
 
-node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ >/dev/null 2>&1; RC1=$?
-if [ "$RC1" -eq 0 ]; then pass "CLI exits 0 on genuinely red tests"; else fail "expected 0, got $RC1"; fi
+node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ --green "$TMP/probe" >/dev/null 2>&1; RC1=$?
+if [ "$RC1" -eq 0 ]; then pass "CLI exits 0 on genuinely red tests with a green probe"; else fail "expected 0, got $RC1"; fi
 
 STUB_MODE=always-green node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ >/dev/null 2>&1; RC2=$?
 if [ "$RC2" -eq 1 ]; then pass "CLI exits 1 when the tests pass at the fork point"; else fail "expected 1, got $RC2"; fi
@@ -63,9 +79,65 @@ if [ "$RC2" -eq 1 ]; then pass "CLI exits 1 when the tests pass at the fork poin
 STUB_MODE=always-red node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ >/dev/null 2>&1; RC3=$?
 if [ "$RC3" -eq 2 ]; then pass "CLI exits 2 when a broken harness cannot be told from red"; else fail "expected 2, got $RC3"; fi
 
+# --- the green side, through a real command line (§3.2 move 1; change-log row `repo-inj`) ---
+# Red at the fork point and a suite whose own fixture is broken are the SAME observation, so
+# each of these states has to be reachable from a command line, not only from the module.
+node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ >/dev/null 2>&1; RC4=$?
+if [ "$RC4" -eq 4 ]; then pass "CLI exits 4 — half-proven — when no probe is supplied"
+else fail "expected 4 for a red run with no probe, got $RC4"; fi
+
+STUB_MODE=probe-red node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ --green "$TMP/probe" >/dev/null 2>&1; RC5=$?
+if [ "$RC5" -eq 3 ]; then pass "CLI exits 3 — unreachable — when the tests are red in the probe too"
+else fail "expected 3 for a red probe behind a green probe control, got $RC5"; fi
+
+# The pair. A naive implementation answers 3 for both, and only running both tells them apart:
+# exit 3 is reachable ONLY when the probe's own control comes back green.
+STUB_MODE=probe-broken node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ --green "$TMP/probe" >/dev/null 2>&1; RC6=$?
+if [ "$RC6" -eq 2 ]; then pass "CLI exits 2, never 3, when the probe's own control is not green"
+else fail "expected 2 for a broken probe, got $RC6"; fi
+
+BROKEN_PROBE="$(STUB_MODE=probe-broken node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ --green "$TMP/probe" 2>&1)"
+echo "$BROKEN_PROBE" | grep -qi "probe" \
+  && pass "the broken-probe report names the probe as the broken side" \
+  || fail "the broken-probe report does not say which side is broken"
+
+# An unusable probe path is refused NAMING THE PATH. Exit-code-only would pass vacuously: before
+# this flag existed, --green hit `unexpected argument` and also exited 2.
+MISSING_OUT="$(node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ --green "$TMP/no-such-probe" 2>&1)"; MRC=$?
+if [ "$MRC" -eq 2 ]; then pass "a --green path that does not exist exits 2"; else fail "expected 2, got $MRC"; fi
+echo "$MISSING_OUT" | grep -q "no-such-probe" \
+  && pass "the refusal names the offending path" || fail "the refusal does not name the path"
+
+NOVAL_OUT="$(node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ --green 2>&1)"; NRC=$?
+if [ "$NRC" -eq 2 ]; then pass "--green with no value exits 2"; else fail "expected 2, got $NRC"; fi
+echo "$NOVAL_OUT" | grep -q -- "--green" \
+  && pass "and says which flag was given no value" || fail "the no-value refusal does not name --green"
+
+# A probe that is not repo-shaped is the PROBE's bug, caught before any probe run.
+mkdir -p "$TMP/shapeless"
+SHAPELESS_OUT="$(node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ --green "$TMP/shapeless" 2>&1)"; SRC=$?
+if [ "$SRC" -eq 2 ]; then pass "a probe carrying no copy of the suite exits 2, not 3"
+else fail "expected 2 for a probe with no suite, got $SRC"; fi
+echo "$SHAPELESS_OUT" | grep -qi "repo-shaped" \
+  && pass "and the message says what a probe actually is" || fail "the message does not say what a probe is"
+
+# Nothing is left behind in the PROBE either — it is a throwaway tree, but a scratch directory
+# surviving there is the same bug as one surviving in the repo, seen from the other side.
+if ls -a "$TMP/probe" | grep -q 'freeze-gate-control'; then
+  fail "a control directory was left behind in the probe"
+else
+  pass "no control directory is left in the probe"
+fi
+
+PROBE_REPORT="$(node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ --green "$TMP/probe" 2>&1)"
+echo "$PROBE_REPORT" | grep -q "probe run" \
+  && pass "the report shows the probe run" || fail "the report hides the probe run"
+echo "$PROBE_REPORT" | grep -q "probe control" \
+  && pass "the report shows the probe's own control run" || fail "the report hides the probe control"
+
 # The report has to say which state it is in and count guards, or the exit code is the only
 # output and a human cannot act on it.
-REPORT="$(node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ --spec "$TMP/spec.md" 2>&1)"
+REPORT="$(node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ --green "$TMP/probe" --spec "$TMP/spec.md" 2>&1)"
 echo "$REPORT" | grep -q "RED:" && pass "report names the verdict" || fail "report does not name the verdict"
 echo "$REPORT" | grep -q "control run" && pass "report shows the control run" || fail "report hides the control run"
 echo "$REPORT" | grep -q "guards declared: 1" && pass "report counts declared guards" || fail "report does not count guards"
@@ -84,7 +156,11 @@ assert.strictEqual(sha1(tree), 'd41d8cd98f00b204e9800998ecf8427e');
 spawnSync('git', ['merge-base', 'origin/main', 'HEAD']);
 BRITTLE
 printf '\211PNG' > "$TMP/repo/tests/acceptance/demo/logo.png"
-LINT="$(node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ 2>&1)"; LINT_RC=$?
+# The probe carries the same two files, byte for byte: a probe satisfies the criteria by
+# changing the TREE, never by editing or dropping a check.
+cp "$TMP/repo/tests/acceptance/demo/brittle.js" "$TMP/probe/tests/acceptance/demo/brittle.js"
+cp "$TMP/repo/tests/acceptance/demo/logo.png" "$TMP/probe/tests/acceptance/demo/logo.png"
+LINT="$(node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ --green "$TMP/probe" 2>&1)"; LINT_RC=$?
 # The exit code is a verdict about red, green and indeterminate. A lint that can fail a freeze
 # is a gate on spec AUTHORING, and the way past a gate that can fail you is to reword until it
 # passes (hard rule 5) — so four findings must leave a red run reading exactly 0.
@@ -96,7 +172,17 @@ echo "$LINT" | grep -q "brittle.js:1  \[literal-name-list\]" \
   && pass "a finding names its file, line and shape" || fail "a finding is not file:line [shape]"
 echo "$LINT" | grep -q "skipped: logo.png  (extension)" \
   && pass "a skipped path is named with its pinned reason" || fail "a skipped path is not named"
+# The lint runs ONCE, over the fork-point suite only. A probe is throwaway and deliberately
+# crude; linting it produces findings nobody will ever fix, in a report whose whole value is
+# that every finding takes a disposition.
+cp "$TMP/repo/tests/acceptance/demo/brittle.js" "$TMP/probe/tests/acceptance/demo/probe-only.js"
+LINT_ONCE="$(node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ --green "$TMP/probe" 2>&1)"
+echo "$LINT_ONCE" | grep -q "brittleness findings: 4" \
+  && pass "the lint reads the fork-point suite only, not the probe's copy" \
+  || fail "the lint count changed when the probe gained a brittle file"
+rm -f "$TMP/probe/tests/acceptance/demo/probe-only.js"
 rm -f "$TMP/repo/tests/acceptance/demo/brittle.js" "$TMP/repo/tests/acceptance/demo/logo.png"
+rm -f "$TMP/probe/tests/acceptance/demo/brittle.js" "$TMP/probe/tests/acceptance/demo/logo.png"
 
 GREEN_REPORT="$(STUB_MODE=always-green node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ 2>&1)"
 echo "$GREEN_REPORT" | grep -qi "guard" && pass "the green verdict names the guard escape" || fail "green verdict does not mention guards"
@@ -139,12 +225,41 @@ else fail "real runner: expected exit 1 for a green directory, got $REAL_RC"; fi
 
 PROOF="$ROOT/tests/acceptance/_freeze-gate-selftest"
 mkdir -p "$PROOF"
-printf 'process.exit(1);\n' > "$PROOF/failing.js"
+# A test that fails until something exists in the tree it is run from — the smallest honest
+# criterion there is, and the only kind a probe can satisfy without touching the test itself.
+printf "process.exit(require('fs').existsSync('PROBE-IMPLEMENTED') ? 0 : 1);\n" > "$PROOF/failing.js"
 RED_RC=0
 node "$GATE" --repo "$ROOT" --tests tests/acceptance/_freeze-gate-selftest/ >/dev/null 2>&1 || RED_RC=$?
+if [ "$RED_RC" -eq 4 ]; then pass "real runner: a failing test directory with no probe is half-proven"
+else fail "real runner: expected exit 4 for red with no probe, got $RED_RC"; fi
+
+# The probe, built the way the playbook says to build one: the project's runner at the same
+# relative path, a byte-identical copy of the suite, its own control, and the tree change that
+# satisfies the criterion. With the command stubbed the probe's CONTENTS are irrelevant, so this
+# is the only section here that can catch a probe-side path resolved wrongly — the miss
+# change-log row `freeze-gate-red` records, from the other side.
+GPROBE="$TMP/real-probe"
+mkdir -p "$GPROBE/tools" "$GPROBE/tests/acceptance/_freeze-gate-selftest" "$GPROBE/tests/acceptance/_control"
+cp "$ROOT/tools/run-acceptance.sh" "$GPROBE/tools/run-acceptance.sh"
+cp "$PROOF/failing.js" "$GPROBE/tests/acceptance/_freeze-gate-selftest/failing.js"
+cp "$ROOT/tests/acceptance/_control/"* "$GPROBE/tests/acceptance/_control/" 2>/dev/null
+: > "$GPROBE/PROBE-IMPLEMENTED"
+GREEN_RC=0
+node "$GATE" --repo "$ROOT" --tests tests/acceptance/_freeze-gate-selftest/ --green "$GPROBE" >/dev/null 2>&1 || GREEN_RC=$?
+if [ "$GREEN_RC" -eq 0 ]; then pass "real runner: red at the fork point and green in the probe is exit 0"
+else fail "real runner: expected exit 0 with a satisfying probe, got $GREEN_RC"; fi
+
+# The same probe with the RUNNER removed: that is the probe's bug, not the spec's, so it must be
+# reported as a broken probe (2) and never as unsatisfiable criteria (3).
+rm -f "$GPROBE/tools/run-acceptance.sh"
+BAD_RC=0
+BAD_OUT="$(node "$GATE" --repo "$ROOT" --tests tests/acceptance/_freeze-gate-selftest/ --green "$GPROBE" 2>&1)" || BAD_RC=$?
 rm -rf "$PROOF"
-if [ "$RED_RC" -eq 0 ]; then pass "real runner: a failing test directory is reported red"
-else fail "real runner: expected exit 0 for genuine red, got $RED_RC"; fi
+if [ "$BAD_RC" -eq 2 ]; then pass "real runner: a probe missing the runner script is exit 2, not 3"
+else fail "real runner: expected exit 2 for a probe with no runner, got $BAD_RC"; fi
+echo "$BAD_OUT" | grep -qi "probe" \
+  && pass "real runner: and the refusal names the probe as the broken side" \
+  || fail "real runner: the refusal does not name the probe"
 
 if [ "$FAIL" -eq 0 ]; then echo "== ALL freeze-gate CHECKS PASSED =="; else echo "== freeze-gate CHECKS FAILED =="; fi
 exit $FAIL

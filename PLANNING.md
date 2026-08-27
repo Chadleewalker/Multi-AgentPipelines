@@ -215,19 +215,46 @@ cannot fail is caught before the user signs off on it:
 
 ```bash
 node scripts/freeze-gate.js --repo <target-repo> \
-  --tests tests/acceptance/<issue-id>/ --spec docs/planning-draft-<date>.md
+  --tests tests/acceptance/<issue-id>/ --green <probe-dir> \
+  --spec docs/planning-draft-<date>.md
 ```
 
 The tests exist and the implementation does not, which is exactly the state a task branch
 forks from — so **they must be red**. A test green here is satisfied by an empty diff: it
 would pass a correct submission, a broken one, and no submission at all.
 
+**Red is only half the proof, and `--green` is the other half.** A suite that discriminates
+and a suite whose own fixture is broken are *the same observation* — non-zero — so everything
+in the paragraph above is satisfied by a suite no implementation could ever turn green. That
+has cost two tasks three attempts each: one froze with 11 of 29 checks unreachable because a
+preload stub killed the child process before its first line, and one froze with the criterion
+the task existed for calling `git init -q -c …`, where `-c` must precede the subcommand, so no
+repository was ever created and the two neighbouring checks passed *vacuously*. Both were
+diagnosed by the task agent through the spec-concern channel, in a container, at attempt three.
+
+So build a **probe**: a throwaway tree in which the criteria are *already satisfied*, by any
+means however crude, and hand it to `--green`. It is not an implementation and nobody keeps it.
+
+- **A probe is a REPO-SHAPED TREE, not a handful of files.** Every frozen suite resolves its
+  own root as the tree it sits in, never the working directory, and `verifyCommand` is a path
+  relative to cwd. So a probe carries the project's test runner at the same relative path,
+  `tests/acceptance/<issue-id>/`, and `tests/acceptance/_control/` if the project has one. A
+  directory holding only the criteria's artifacts yields "no test files" and a false *unreachable*.
+- **A probe satisfies the criteria by changing the tree, never by editing a check.** The probe
+  runs its own copy of the suite, so the gate hashes both copies first: a copy with a file
+  *missing* is refused, and any file whose bytes differ is named in the report. A probe that
+  edits its judge blesses exactly the freeze this gate exists to prevent.
+- **Crude is the point.** Hard-code the return value, write the file the test looks for, stub
+  the command. If a criterion cannot be satisfied even by cheating, that is the finding.
+
 - **exit 0 — red.** The tests discriminate. Proceed.
 - **exit 1 — green.** A spec bug. Either the criterion is not discriminating and needs
   rewriting, or it is a **guard** ("existing behaviour X still holds"), which is legal but
   must be labelled `[guard]` in the spec. The gate counts labelled guards and prints the
   count; that count belongs in the approval pass, so a spec that is all guards is visible
-  rather than silent.
+  rather than silent — and a spec that is *nothing but* guards is a **pure refactor**, which
+  is a spec bug of a different kind and cannot be fixed by rewriting the criteria. See
+  [**A pure refactor cannot be frozen**](#a-pure-refactor-cannot-be-frozen) in step 1.
 - **exit 2 — could not tell.** The command also fails against the **control**
   (`tests/acceptance/_control/`, one trivially-passing test committed at onboarding), so its
   exit code says nothing about *these* tests — the harness is broken independently of the
@@ -235,6 +262,24 @@ would pass a correct submission, a broken one, and no submission at all.
   If the project has no control fixture the gate says so in its report and falls back to
   probing with an empty directory, which proves very little: a good runner is *supposed* to
   fail when it finds no tests. Add the fixture rather than reading anything into that.
+  **A malformed probe lands here too, not on exit 3** — a probe whose own control is not green,
+  or that does not carry the suite at all, is the *probe's* bug and is reported as one. Every
+  exit-2 detail names which side is broken: the fork point, the probe, the probe's control, or
+  the arguments.
+- **exit 3 — unreachable.** The tests are red at the fork point *and* red in the probe, on a
+  probe whose own control is green. So the harness works and the criteria still did not pass in
+  a tree where they are supposed to be satisfied already: either the probe does not really
+  satisfy them, or one or more checks cannot be reached by any implementation. **Never a pass.**
+  Find out which before freezing — read the probe's failing lines, and if the probe is honest,
+  the criterion is the thing to fix. This is the verdict that would have saved the two runs
+  above, and it is worth the cost of building the probe on its own.
+- **exit 4 — half-proven.** Red at the fork point, on a green control, with no probe supplied.
+  The tests can fail; nothing has ever seen them pass. **This is legal and it proceeds** — a
+  freeze with no probe stays a freeze, and building a probe for a one-line criterion is often
+  not worth the minutes. What it is not is silent: carry the half-proven state into the approval
+  pass the way the guard count is carried, so the user is approving a spec they know is proven
+  on one side only. Prefer a probe for anything hard, anything whose tests build fixtures of
+  their own, and anything where a criterion's *setup* could fail without the check noticing.
 
 **Then read what the gate says, not only how it exited.** Below the verdict the same run
 prints a second, textual pass over the suite it is about to bless (§3.2, move 6; change-log
@@ -296,6 +341,11 @@ The user is approving intent, not auditing reviews, so this is not
 something they have to read; it is there so that "the panel raised nine things and the lint
 raised four, and all thirteen were handled" is a claim anyone can check later instead of
 taking on trust.
+
+**And the gate's own state travels with them**, one line each: the count of declared guards,
+and — when step 4 exited 4 — that the spec is **half-proven**, red at the fork point with no
+probe ever run against it. Both are recorded for the same reason, which is that an exemption
+nobody sees is an exemption nobody weighed.
 
 **Developers may go deeper (§3.3):** the plain-English criteria are the required gate,
 but the actual test files from step 3 are open for inspection — a developer who wants
