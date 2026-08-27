@@ -86,6 +86,8 @@ Two hard boundaries, both inherited:
 
 <!-- Newest at the top. Nothing here is committed to. -->
 
+- **Decide what happens when two people point the pipeline at one project** — §4.12’s run lock makes “one run per project” true on *one machine*: the record lives under the git-ignored `runs/locks/`, so a second person’s clone has a second lock and cannot see the first. The Beads database is per-clone too, so the two of them do not contend for one queue — they each drain a **copy** of it, claim the same ids, and push branches for the same work, which is hard rule 1 (“the host is the only writer to the task queue”) failing by arithmetic rather than by anyone breaking it: the rule assumes one host and nothing asserts that. §6 says “first target: a single developer workstation” and is silent on a second person, so this is undecided rather than decided-against. The cheap answer is a stated convention — one project has one owner — which is what `SETUP.md` Part F now carries, and it may well be the right one: the expensive answers all involve a lock somewhere both machines can see, which means shared state the design has so far refused. Worth deciding before the second person arrives rather than after, because the failure is silent on both machines and the evidence of it is two PRs for one issue. Related: DESIGN.md §4.12, §6, hard rule 1, change-log row `setup-agent-installs`. 2026-08-27
+
 - **Name the checks that failed in BOTH freeze-gate runs, not just the verdict.** `unreachable`
   now exists (change-log row `repo-inj`) and says *something in this suite cannot be reached by
   any implementation* — but it says it about the whole suite, so the human's next move is to
