@@ -40,9 +40,9 @@ function fakeResolver({ probes = {}, where = [], calls = [] } = {}) {
 try {
   {
     const calls = [];
-    const configured = 'D:\\Tools\\Git\\bin\\bash.exe';
+    const configured = 'D:\\path\\to\\Git\\bin\\bash.exe';
     const got = resolveHostShell(configured, {
-      platform: 'win32', execPath: 'D:\\Node\\node.exe',
+      platform: 'win32', execPath: 'D:\\path\\to\\node.exe',
       spawnSync: fakeResolver({ probes: { [configured]: ok() }, calls }),
       existsSync: () => false, env: {},
     });
@@ -52,8 +52,8 @@ try {
       calls.length === 1 && calls[0].command === configured);
     check('the probe disables profiles and passes host Node as an argument, not shell text',
       calls[0].args[0] === '--noprofile' && calls[0].args[1] === '--norc'
-      && calls[0].args[calls[0].args.length - 1] === 'D:\\Node\\node.exe'
-      && !calls[0].args[3].includes('D:\\Node\\node.exe'));
+      && calls[0].args[calls[0].args.length - 1] === 'D:\\path\\to\\node.exe'
+      && !calls[0].args[3].includes('D:\\path\\to\\node.exe'));
     check('the shell probe itself is bounded and force-killable',
       calls[0].options.timeout === PROBE_TIMEOUT_MS && calls[0].options.killSignal === 'SIGKILL');
   }
@@ -88,10 +88,10 @@ try {
 
   {
     const wsl = 'C:\\Windows\\System32\\bash.exe';
-    const gitBash = 'E:\\PortableGit\\usr\\bin\\bash.exe';
+    const gitBash = 'E:\\path\\to\\PortableGit\\usr\\bin\\bash.exe';
     const calls = [];
     const got = resolveHostShell(null, {
-      platform: 'win32', execPath: 'E:\\Node\\node.exe', env: {}, existsSync: () => false,
+      platform: 'win32', execPath: 'E:\\path\\to\\node.exe', env: {}, existsSync: () => false,
       spawnSync: fakeResolver({
         where: [wsl, gitBash], probes: { [wsl]: fail(41), [gitBash]: ok() }, calls,
       }),
@@ -104,9 +104,9 @@ try {
   }
 
   {
-    const shell = 'C:\\Git\\bin\\bash.exe';
+    const shell = 'C:\\path\\to\\Git\\bin\\bash.exe';
     const got = resolveHostShell(shell, {
-      platform: 'win32', execPath: 'C:\\Node\\node.exe', env: {}, existsSync: () => true,
+      platform: 'win32', execPath: 'C:\\path\\to\\node.exe', env: {}, existsSync: () => true,
       spawnSync: fakeResolver({ probes: { [shell]: fail(42) } }),
     });
     check('Git Bash that cannot launch the exact host Node toolchain is refused',
@@ -117,7 +117,7 @@ try {
 
   {
     const got = resolveHostShell(null, {
-      platform: 'win32', execPath: 'C:\\Node\\node.exe', env: {}, existsSync: () => false,
+      platform: 'win32', execPath: 'C:\\path\\to\\node.exe', env: {}, existsSync: () => false,
       spawnSync: fakeResolver(),
     });
     check('Windows with no Git Bash fails early and names that no candidate existed',
@@ -152,14 +152,14 @@ try {
   function configFile(name, hostShell) {
     const file = path.join(TMP, name);
     fs.writeFileSync(file, `${JSON.stringify({
-      targetRepoPath: 'C:/fixture/project', targetRepoRemote: 'https://example.invalid/repo.git',
+      targetRepoPath: 'C:/path/to/project', targetRepoRemote: 'https://example.invalid/repo.git',
       image: 'fixture:local', ...(hostShell === '__absent__' ? {} : { hostShell }),
     }, null, 2)}\n`);
     return file;
   }
   check('run config accepts automatic null and an explicit shell path',
     loadConfig(configFile('auto.json', null)).hostShell === null
-    && loadConfig(configFile('explicit.json', 'C:/Git/bin/bash.exe')).hostShell === 'C:/Git/bin/bash.exe');
+    && loadConfig(configFile('explicit.json', 'C:/path/to/Git/bin/bash.exe')).hostShell === 'C:/path/to/Git/bin/bash.exe');
   for (const [name, value] of [['blank', '  '], ['number', 7], ['false', false], ['object', {}]]) {
     let message = '';
     try { loadConfig(configFile(`${name}.json`, value)); } catch (error) { message = error.message; }

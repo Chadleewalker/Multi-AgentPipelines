@@ -59,10 +59,10 @@ function windowsCandidates(env, run, exists, timeoutMs) {
     if (candidate && !found.some((item) => item.toLowerCase() === candidate.toLowerCase())) found.push(candidate);
   };
   const roots = [env.ProgramFiles, env['ProgramFiles(x86)']];
-  if (env.LOCALAPPDATA) roots.push(path.join(env.LOCALAPPDATA, 'Programs'));
+  if (env.LOCALAPPDATA) roots.push(path.win32.join(env.LOCALAPPDATA, 'Programs'));
   for (const root of roots.filter(Boolean)) {
-    for (const rel of [path.join('Git', 'bin', 'bash.exe'), path.join('Git', 'usr', 'bin', 'bash.exe')]) {
-      const candidate = path.join(root, rel);
+    for (const rel of [path.win32.join('Git', 'bin', 'bash.exe'), path.win32.join('Git', 'usr', 'bin', 'bash.exe')]) {
+      const candidate = path.win32.join(root, rel);
       if (exists(candidate)) add(candidate);
     }
   }
