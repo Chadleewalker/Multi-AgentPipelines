@@ -16,6 +16,10 @@
       "type": "integer",
       "minimum": 1
     },
+    "allowHalfProven": {
+      "description": "Whether this run admitted a frozen suite whose freeze receipt records a 'half-proven' verdict - red at the fork point with no probe supplied (DESIGN.md 4.12's third admission rule, change-log row `repo-isq`). The effective setting, defaulted to false. Recorded because it changes which tasks were ELIGIBLE, so two runs over the same queue are not comparable without it. Optional: manifests written before the rule existed carry no such field.",
+      "type": "boolean"
+    },
     "feed": {
       "description": "The live queue feed (DESIGN.md 4.12, change-log row `live-queue-feed`). Present on every manifest written since the feed shipped, whether or not it was enabled; absent means a manifest written before it existed. When enabled is false the run read its roster once at startup - the pre-feed behaviour, and the default. When true the run re-read the ready queue while in flight, so 'tasks' is in DISPATCH order and its length is not knowable from the startup queue-summary line.",
       "type": "object",
@@ -55,6 +59,10 @@
           "outcome": {
             "description": "Report status from the 4.11 table. 'undispatchable' is the one value that touches Beads not at all: the ready queue refused the issue before claim() because its frozen acceptance suite is absent from the branch its container would fork from (4.12), so it stays open.",
             "enum": ["done", "partial", "stuck", "tampered", "failed", "paused", "undispatchable"]
+          },
+          "refusal": {
+            "description": "Why the ready queue refused this issue, present only on an 'undispatchable' row (DESIGN.md 4.12). 'no-suite' = no frozen acceptance suite on the integration branch; 'no-receipt' = a suite the freeze gate never blessed, or a receipt that is unparseable, of an unknown version or of an unknown verdict; 'receipt-mismatch' = the suite changed after the gate passed; 'half-proven' = the gate saw it red with no probe, and this run did not set allowHalfProven. Absent on a row written before the third admission rule existed, which renders as 'no-suite'.",
+            "enum": ["no-suite", "no-receipt", "receipt-mismatch", "half-proven"]
           },
           "exitCode": {
             "description": "Container exit code, or 'killed' for a host wall-clock kill (which produces no code).",

@@ -128,10 +128,21 @@ function createFeedSource(initial, opts = {}) {
   let ending = null;
   let stopped = false;
 
+  // The KIND travels with the reason (§4.12's third admission rule, change-log row `repo-isq`).
+  // The map is what `run.js` manufactures its manifest rows from, so a kind dropped here is a
+  // kind the report never sees — and the report's heading, body and remedy are all keyed by it,
+  // so losing it silently downgrades all four refusals to the historic sentence about a missing
+  // suite, which is the wrong remedy for three of them. Copied field by field rather than by
+  // spread, deliberately: the row is schema-bound (`additionalProperties: false`), so a caller
+  // that grew an extra key would otherwise carry it all the way into `run.json`.
   function initialRefusals(list) {
     return (Array.isArray(list) ? list : [])
       .filter((u) => u && u.issue && u.issue.id)
-      .map((u) => [u.issue.id, { issue: u.issue, reason: u.reason }]);
+      .map((u) => {
+        const entry = { issue: u.issue, reason: u.reason };
+        if (u.refusal) entry.refusal = u.refusal;
+        return [u.issue.id, entry];
+      });
   }
 
   const note = (msg, ev) => { if (log && typeof log.info === 'function') log.info(log.trace ? log.trace('feed') : null, msg, ev); };

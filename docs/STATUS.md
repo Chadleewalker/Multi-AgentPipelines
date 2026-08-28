@@ -1665,15 +1665,74 @@ never into the probe, so from the second run onwards an unfiltered comparison wo
 file the probe is *missing* and refuse — turning every re-run of a gated suite into an exit 2.
 Excluded on both sides, since a probe copied from a gated tree carries a stale one.
 
-**Nothing reads the receipt yet.** §4.12's third admission rule is the task after this one and
-is marked *Not built yet* in `DESIGN.md`. That split is exactly why the coverage is re-runnable:
-`tests/acceptance/repo-erq/` gated the writer once and never runs again, and the enforcer lands
-a task later against a file this task defined.
+**The reader landed a task later** (`repo-isq`, below): §4.12's third admission rule now refuses
+a candidate whose suite carries no receipt or whose receipt does not match the branch. That
+split is exactly why the coverage is re-runnable: `tests/acceptance/repo-erq/` gated the writer
+once and never runs again, and the enforcer landed against a file this task defined.
 
 **Host obligation.** `docs/pipeline-map.html` is exempt from task docs phases and nothing else
 updates it; its planning panel now trails the freeze gate by four moves. Redraw with
 `node scripts/build-pipeline-map.js` after editing; the builder needs
 `tools/mapbuild/node_modules` and cannot run in a container.
+
+## A frozen suite without a matching receipt is never dispatched (`repo-isq`, 2026-08-28)
+
+**Proven.** The receipt stopped being a note and became a gate. `runner/queue.js` reads
+`tests/acceptance/<issue-id>/.freeze-gate.json` from the branch it already fetches, recomputes
+the suite's hash from that branch's blobs through `runner/suite-hash.js` — the same formula the
+freeze gate wrote it with — and refuses in four named kinds, checked in order, first refusal
+winning: `no-suite` (as before), `no-receipt`, `receipt-mismatch`, `half-proven`. A candidate
+that survives all four is dispatched exactly as before. Beads is untouched on every one of
+them, so a refused issue stays `open` for the next run.
+
+**`no-receipt` is four different files, deliberately collapsed into one refusal.** A receipt
+that is absent, unparseable, of a `gateVersion` this runner does not know, of a verdict the gate
+never writes a receipt for, or recording no digest at all are all *a receipt the runner cannot
+interpret* — and interpreting one anyway is how a suite nobody gated reaches a container. The
+one deliberate split: a `suiteHash` that is not a digest is `no-receipt` and **not**
+`receipt-mismatch`, because junk compares unequal to everything and the lazy reading would send
+a person to re-gate a suite whose real problem is the file beside it.
+
+**`half-proven` refuses by default, and the knob is per project.** `allowHalfProven` is
+validated by name at config load, defaults to `false`, ships in `run.config.example.json` and is
+written top-level into the manifest — because it changes which tasks were *eligible*, so two
+runs over the same queue are not comparable without it. With it on, exactly one of the four
+refusals moves; a suite it also admitted an ungated or a changed version of would be an off
+switch for the whole rule wearing the name of one refusal, and `G10o` in the unit suite is the
+check that says so.
+
+**The branch, never the working copy** — the pair that matters. `targetRepoPath` and
+`targetRepoRemote` are independent config keys the loader never relates, so a gate reading the
+working copy passes every fixture where the two agree and then fails the two that count: an
+uncommitted edit made beside a live run refuses a correctly frozen queue, and a pristine
+checkout admits a suite whose *pushed* form nobody gated. Both directions are fixtures in the
+frozen suite and in `tests/unit/dispatch-gate.test.js` (`G10q`/`G10r`), which grew 64 → 103
+checks; every receipt in them is written by `runner/suite-hash.js` rather than by a formula the
+test carries, since a second copy would agree with a wrong implementation and disagree with the
+real gate.
+
+**The kind travels.** `refusal` is on the manifest row (schema enum of exactly those four),
+through `runner/feed.js`'s live refusal map — so a task refused at 14:05 and gated at 14:20
+still runs — and into `runner/report.js`'s heading, body paragraph and remedy, all four keyed by
+it, with the negative half asserted per kind: the `no-suite` texts never mention the freeze
+gate, the receipt ones never offer `--green` or `allowHalfProven`, and the `half-proven` one
+never claims a missing suite. A row carrying no kind renders the historic sentence byte for
+byte, which is what an older manifest gets.
+
+**Deliberately not changed:** the queue-summary log line's `NOT DISPATCHABLE` clause still
+speaks only of a missing suite. Naming the kind there belongs to the follow-up that teaches
+`scripts/batch.js show` this rule; the critic panel cut it from this task's spec precisely so
+one string and its six grep sites do not move twice in two consecutive runs.
+
+**Host obligations, three.** (1) **Re-gate every open frozen suite before the next batch** —
+any suite frozen before `repo-erq` carries no receipt at all and is now refused per issue, and
+any suite edited after its gate run needs `node scripts/freeze-gate.js` run over it again with
+the fresh receipt committed *and pushed* beside the suite; `PLANNING.md` step 8 now carries this
+as a checklist bullet, but nothing re-gates an existing suite for you and the first batch after
+this merges is where that bites. (2) Run `bash scripts/test-all.sh` on the reference host: the
+gate is on the path of every run and the Docker suites that merely *touch* `runner/queue.js`
+have not seen it. (3) `docs/pipeline-map.html` is exempt from task docs phases and nothing else
+updates it; its dispatch panel now trails the queue by two admission rules.
 
 ## What's next
 

@@ -517,6 +517,32 @@ async function drain(source, concurrency, body = async () => {}) {
     check('R6 and passes the startup roster’s refusals into it — the two-day regression',
       !!call && call.includes('undispatchable: q.undispatchable'));
   }
+  {
+    // R7/R8 — §4.12's THIRD admission rule (change-log row `repo-isq`). A refusal now carries
+    // a KIND as well as a reason, and the report's heading, body and remedy are all keyed by
+    // it. The map is the only thing standing between the gate that decided the kind and the
+    // row that renders it, so a kind dropped here downgrades all four refusals to the historic
+    // sentence about a missing suite — the wrong remedy for three of them, and green in every
+    // check above, because the reason survives. Both directions: carried where it was given,
+    // and INVENTED WHERE IT WAS NOT, which is what keeps an older caller's row rendering the
+    // historic sentence rather than a kind nobody chose.
+    const kinds = ['no-suite', 'no-receipt', 'receipt-mismatch', 'half-proven'];
+    const source = createFeedSource([], {
+      poll: () => { throw new Error('a run with the feed off must never poll'); },
+      concurrency: 1,
+      idleGraceMs: 0,
+      undispatchable: [
+        ...kinds.map((k) => ({ issue: issue(`k-${k}`), reason: `refused: ${k}`, refusal: k })),
+        { issue: issue('k-none'), reason: 'a refusal from before the third rule existed' },
+      ],
+    });
+    await drain(source, 1);
+    const left = source.undispatchable();
+    check('R7 every refusal kind survives the feed\'s map',
+      kinds.every((k) => (left.find((u) => u.issue.id === `k-${k}`) || {}).refusal === k));
+    check('R8 and a refusal given no kind is handed back with none',
+      !('refusal' in (left.find((u) => u.issue.id === 'k-none') || { refusal: 'invented' })));
+  }
 
   // ===================================================================================
   // THE MANIFEST CONTRACT — the schema admits what run.js writes

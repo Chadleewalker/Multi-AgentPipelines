@@ -2,9 +2,12 @@
 # Copyright 2026 Chad Walker
 # SPDX-License-Identifier: Apache-2.0
 
-# Dispatch-gate checks — the ready queue's second admission rule in `runner/queue.js`
-# (DESIGN.md §4.12, §4.11's `undispatchable` outcome; change-log rows `dispatch-gate`,
-# `repo-5yu`).
+# Dispatch-gate checks — the ready queue's second and third admission rules in
+# `runner/queue.js` (DESIGN.md §4.12, §4.11's `undispatchable` outcome; change-log rows
+# `dispatch-gate`, `repo-5yu`, `repo-isq`). The second asks whether a task's frozen suite is
+# on the branch its container will fork from; the third asks whether that suite was ever
+# GATED, by reading the freeze receipt from the same branch and recomputing the suite's hash
+# with the shared `runner/suite-hash.js` formula.
 #
 # Docker-free and network-free: the Node checker builds throwaway bare remotes and working
 # copies under the OS temp directory and drives the real `readyQueue()` against them through
@@ -18,8 +21,10 @@
 # on a confident wrong branch, or dispatch an unfrozen task that spends three attempts and
 # a container to record `stuck`. It is also DOWNSTREAM of things it does not own — the
 # outcome enum in `schemas/run.schema.json`, the scrutiny table in `runner/report.js`, the
-# summary line `scripts/dashboard.js` parses, and `runner/config.js`'s validation of
-# `gitTimeoutMs` — so run it if you touch any of those, not only `runner/queue.js`.
+# summary line `scripts/dashboard.js` parses, `runner/config.js`'s validation of
+# `gitTimeoutMs` and `allowHalfProven`, `runner/suite-hash.js`'s formula, and the receipt
+# shape `scripts/freeze-gate.js` writes — so run it if you touch any of those, not only
+# `runner/queue.js`.
 #
 # Run from Git Bash:  bash scripts/test-dispatch-gate.sh
 # POSIX sh only in the body: it must also run as `sh <path>`, which is dash in a container
@@ -67,10 +72,10 @@ fi
 # The count is the guard against a checker that silently stops asserting: a suite whose
 # every check vanished still exits 0.
 CHECKS="$(echo "$OUT" | grep -c '^ok - ')"
-if [ "$CHECKS" -ge 55 ]; then
+if [ "$CHECKS" -ge 95 ]; then
   pass "checker ran $CHECKS checks"
 else
-  fail "checker ran only $CHECKS checks (expected at least 55)"
+  fail "checker ran only $CHECKS checks (expected at least 95)"
 fi
 
 if [ "$FAIL" -eq 0 ]; then echo "== ALL DISPATCH-GATE CHECKS PASSED =="; else echo "== DISPATCH-GATE CHECKS FAILED =="; fi
