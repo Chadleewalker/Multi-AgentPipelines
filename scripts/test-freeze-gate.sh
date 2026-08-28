@@ -30,11 +30,13 @@ if [ "$RC" -eq 0 ]; then pass "freeze-gate checker exits 0"; else fail "freeze-g
 # instance of the very shape the brittleness lint below warns about: later work is licensed to
 # add checks to that file, and `-eq` would go red for exactly that. The floor moves up when a
 # batch of coverage lands (40 -> 90 with change-log row `freeze-brittleness-lint`, 90 -> 110
-# with change-log row `repo-inj`), which is the only way a number like this stays worth
-# asserting.
+# with change-log row `repo-inj`, 110 -> 170 with change-log row `repo-i4b`), which is the only
+# way a number like this stays worth asserting. Each raise is to the count that was ALREADY
+# passing before the new work landed, never to the new total: a floor set at today's number goes
+# red the first time an unrelated task quite legitimately reorganises two checks into one.
 CHECKS="$(echo "$OUT" | grep -c '^PASS  ')"
-if [ "$CHECKS" -ge 110 ]; then pass "checker ran $CHECKS checks"
-else fail "checker ran only $CHECKS checks (expected at least 110)"; fi
+if [ "$CHECKS" -ge 220 ]; then pass "checker ran $CHECKS checks"
+else fail "checker ran only $CHECKS checks (expected at least 220)"; fi
 
 # The three verdicts are reachable from a real command line, not only through the module.
 # A stub `.js` run through node — never a `#!/bin/sh` script, which spawnSync cannot execute
@@ -47,6 +49,12 @@ const fs = require('fs'); const path = require('path');
 const mode = process.env.STUB_MODE || 'honest';
 const inProbe = fs.existsSync(path.join(process.cwd(), '.is-probe'));
 const isControl = /_control|freeze-gate-control/.test(process.argv[2] || '');
+// The guard subset is a different question asked of the same command, so it is answered before
+// every mode below — those describe what the SUITE does.
+if (/[.]freeze-gate-guards-/.test(process.argv[2] || '')) {
+  if (mode === 'guard-red') { process.stderr.write('guard: the burn table moved\n'); process.exit(1); }
+  process.exit(0);
+}
 let n = 0; try { n = fs.readdirSync(process.argv[2]).length; } catch { n = 0; }
 if (mode === 'always-green') process.exit(0);
 if (mode === 'always-red') process.exit(4);
@@ -59,6 +67,24 @@ mkdir -p "$TMP/repo/tests/acceptance/demo"
 echo '// a test' > "$TMP/repo/tests/acceptance/demo/test.js"
 printf '{"verifyCommand":"unused"}' > "$TMP/repo/pipeline.config.json"
 printf '1. does a thing\n2. [guard] existing behaviour holds\n' > "$TMP/spec.md"
+
+# The target has to be a real git repository since change-log row `repo-erq`: the receipt the
+# gate writes hashes the suite over git blob ids and records the checkout's HEAD, so a plain
+# directory is refused at exit 2 before anything runs. Identity and `commit.gpgsign` go into
+# the fixture's OWN config — a container has neither, and `-c` would have to precede the
+# subcommand to work at all (change-log row `repo-cfe`).
+git -C "$TMP/repo" init -q --initial-branch main . 2>/dev/null || git -C "$TMP/repo" init -q .
+git -C "$TMP/repo" config user.email fixture@test.local
+git -C "$TMP/repo" config user.name fixture
+git -C "$TMP/repo" config commit.gpgsign false
+git -C "$TMP/repo" config core.autocrlf false
+git -C "$TMP/repo" config core.eol lf
+git -C "$TMP/repo" add -A >/dev/null 2>&1
+git -C "$TMP/repo" commit -qm fixture >/dev/null 2>&1
+# The fixture's commit is its own check: a `git commit` that silently did nothing would leave
+# every receipt assertion below passing or failing for a reason that is not about the gate.
+if git -C "$TMP/repo" rev-parse HEAD >/dev/null 2>&1; then pass "the fixture repository has a commit"
+else fail "the fixture repository has no commit — every receipt check below is meaningless"; fi
 
 # The probe: a repo-shaped tree carrying the SAME suite, byte for byte, in which the criteria
 # are already satisfied. A directory holding only the criteria's artifacts is not a probe.
@@ -195,6 +221,57 @@ else
   pass "no control directory is left in the target repo"
 fi
 
+# --- the freeze receipt, from a real command line -----------------------------------------
+# DESIGN.md §3.2; change-log rows `receipt-design` and `repo-erq`. The formula and the field
+# values are pinned in tests/unit/freeze-gate.test.js, which can call the module directly;
+# what only a command line can show is that the file lands on disk where the playbook tells a
+# planner to look for it, and that the report says so.
+RECEIPT="$TMP/repo/tests/acceptance/demo/.freeze-gate.json"
+rm -f "$RECEIPT"
+RCPT_OUT="$(node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ --green "$TMP/probe" 2>&1)"
+if [ -f "$RECEIPT" ]; then pass "a proceeding verdict leaves .freeze-gate.json in the suite"
+else fail "no receipt was written on exit 0"; fi
+if [ -f "$TMP/probe/tests/acceptance/demo/.freeze-gate.json" ]; then
+  fail "the PROBE gained a receipt — only the fork point's suite is gated"
+else pass "the probe's copy of the suite gains no receipt"; fi
+echo "$RCPT_OUT" | grep -q 'receipt written: tests/acceptance/demo/.freeze-gate.json' \
+  && pass "the report names the receipt it wrote" \
+  || fail "the report does not name the receipt"
+node -e '
+  const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+  const keys = Object.keys(r).sort().join(",");
+  const want = "brittleness,gateHead,gateVersion,guards,probeSupplied,suiteHash,verdict,writtenAt";
+  if (keys !== want) { console.error("keys: " + keys); process.exit(1); }
+  if (r.gateVersion !== 1 || r.verdict !== "red" || r.probeSupplied !== true) process.exit(1);
+  if (!/^[0-9a-f]{64}$/.test(r.suiteHash)) process.exit(1);
+' "$RECEIPT" \
+  && pass "the receipt parses and carries the agreed fields" \
+  || fail "the receipt is missing, unparsable or wrong"
+
+# A verdict that does not proceed writes nothing and leaves what is there alone: a stale
+# receipt beside a failing verdict is the operator's evidence that the suite has moved.
+cp "$RECEIPT" "$TMP/receipt-before.json"
+STUB_MODE=always-green node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ >/dev/null 2>&1
+if cmp -s "$RECEIPT" "$TMP/receipt-before.json"; then pass "a green verdict leaves the receipt byte-identical"
+else fail "a green verdict rewrote or removed the receipt"; fi
+rm -f "$RECEIPT" "$TMP/receipt-before.json"
+
+# A --repo with no git history is refused before anything runs — every value on the receipt
+# comes from git, so the alternative is a receipt that hashes nothing.
+mkdir -p "$TMP/nogit/tests/acceptance/demo"
+echo '// a test' > "$TMP/nogit/tests/acceptance/demo/test.js"
+printf '{"verifyCommand":"unused"}' > "$TMP/nogit/pipeline.config.json"
+NOGIT_RC=0
+NOGIT_OUT="$(node "$GATE" --repo "$TMP/nogit" --tests tests/acceptance/demo/ 2>&1)" || NOGIT_RC=$?
+if [ "$NOGIT_RC" -eq 2 ]; then pass "a --repo that is not a git repository exits 2"
+else fail "expected 2 for a non-git --repo, got $NOGIT_RC"; fi
+echo "$NOGIT_OUT" | grep -qi "not a git repositor" \
+  && pass "and the refusal says so in words" \
+  || fail "the non-git refusal does not say what is wrong"
+if [ -f "$TMP/nogit/tests/acceptance/demo/.freeze-gate.json" ]; then
+  fail "a refused run still wrote a receipt"
+else pass "a refused run writes no receipt"; fi
+
 # The control convention, through the CLI. With no fixture the report must ADMIT the
 # discriminator is weak rather than quietly proceeding on it.
 WEAK="$(STUB_MODE=always-red node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ 2>&1)"
@@ -211,6 +288,62 @@ WITH="$(node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ 2>&1)"
 echo "$WITH" | grep -q "one passing test" \
   && pass "a present _control fixture is used and named" \
   || fail "the _control fixture was not picked up"
+
+# --- the stale guard, from a real command line (§3.2; change-log row `repo-i4b`) -----------
+# The sixth verdict, and the only one the whole-suite run cannot produce: a test file declaring
+# itself a guard is run ALONE against the fork point and must be green there. Its own tree,
+# with no _control fixture, so the empty-directory fallback answers the control and the fork
+# point is red on a green control — the one state that asks the question at all.
+mkdir -p "$TMP/grepo/tests/acceptance/demo"
+printf '{"verifyCommand":"unused"}' > "$TMP/grepo/pipeline.config.json"
+echo '// an ordinary criterion' > "$TMP/grepo/tests/acceptance/demo/test.js"
+printf '// [guard] the burn table is unchanged\nprocess.exit(0);\n' \
+  > "$TMP/grepo/tests/acceptance/demo/guard.js"
+# A real repository, as the receipt writer requires (change-log row `repo-erq`): the guard
+# subset and the receipt are answered by one gate, so this tree needs history like the one above.
+git -C "$TMP/grepo" init -q --initial-branch main . 2>/dev/null || git -C "$TMP/grepo" init -q .
+git -C "$TMP/grepo" config user.email fixture@test.local
+git -C "$TMP/grepo" config user.name fixture
+git -C "$TMP/grepo" config commit.gpgsign false
+git -C "$TMP/grepo" config core.autocrlf false
+git -C "$TMP/grepo" add -A && git -C "$TMP/grepo" commit -qm "guard fixture"
+
+GOK="$(node "$GATE" --repo "$TMP/grepo" --tests tests/acceptance/demo/ 2>&1)"; GOK_RC=$?
+if [ "$GOK_RC" -eq 4 ]; then pass "a GREEN guard leaves the no-probe verdict at half-proven"
+else fail "expected 4 with a green guard, got $GOK_RC"; fi
+echo "$GOK" | grep -qE '^guard files:[[:space:]]*1' \
+  && pass "the guard-file count reaches the report" || fail "no guard-file count in the report"
+echo "$GOK" | grep -qE 'guard run[[:space:]]+exit[[:space:]]+0' \
+  && pass "the guard run's own exit status is shown" || fail "the guard run is not shown"
+
+GBAD="$(STUB_MODE=guard-red node "$GATE" --repo "$TMP/grepo" --tests tests/acceptance/demo/ 2>&1)"; GBAD_RC=$?
+if [ "$GBAD_RC" -eq 5 ]; then pass "CLI exits 5 — stale-guard — when a [guard] file is red at the fork point"
+else fail "expected 5 for a red guard, got $GBAD_RC"; fi
+echo "$GBAD" | grep -q '^STALE-GUARD:' \
+  && pass "the stale-guard verdict names itself" || fail "the stale-guard verdict is not named"
+echo "$GBAD" | grep -q 'guard\.js' \
+  && pass "and names WHICH guard is stale" || fail "the report does not name the stale guard file"
+echo "$GBAD" | grep -q 'the burn table moved' \
+  && pass "the subset's own stderr survives into the report" || fail "the subset's stderr is dropped"
+
+# A suite with no guard file says zero and prints no guard line: "nothing could have run" is a
+# different statement from "it did not run", and the count prints either way.
+rm -f "$TMP/grepo/tests/acceptance/demo/guard.js"
+git -C "$TMP/grepo" add -A && git -C "$TMP/grepo" commit -qm "no guard file"   # the receipt hashes what the branch carries
+GNONE="$(node "$GATE" --repo "$TMP/grepo" --tests tests/acceptance/demo/ 2>&1)"
+echo "$GNONE" | grep -qE '^guard files:[[:space:]]*0' \
+  && pass "a suite with no guard file reports zero" || fail "the zero count is silent"
+echo "$GNONE" | grep -q 'guard run' \
+  && fail "a guard run is reported for a suite that has no guard file" \
+  || pass "no guard run line when there is nothing to run"
+
+# The scratch directory is a sibling of the suite, inside a tree about to be committed and
+# frozen — so a survivor would land in the freeze, exactly as a stray control directory would.
+if ls -a "$TMP/grepo/tests/acceptance" | grep -q 'freeze-gate-guards'; then
+  fail "a guard subset directory was left behind beside the suite"
+else
+  pass "no guard subset directory is left behind"
+fi
 
 # --- against the REAL verify command, not the stub ---------------------------------------
 # The stub proves the decision table; only this proves the gate works with a verify command

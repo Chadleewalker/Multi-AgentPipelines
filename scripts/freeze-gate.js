@@ -87,6 +87,29 @@
 // (the approval pass, PLANNING.md step 5). A pure refactor's only honest criteria are
 // guards, which is why they are labelled rather than banned.
 //
+// A STALE GUARD IS ITS OWN VERDICT (DESIGN.md §3.2, change-log rows `stale-guard-design`
+// and `repo-i4b`). The exemption above is what makes the suite-level red honest — a guard
+// file is *supposed* to be green at the fork point, so its green cannot be read as
+// non-discriminating. But that cuts both ways, and the other edge had no name until now: a
+// guard that is RED before any work exists is not a criterion waiting to be satisfied, it is
+// a pin that has ALREADY MOVED. Four of the twelve suites that reached `stuck` in one
+// fortnight were exactly that — "flight unchanged", "keys untouched", "content not code",
+// each pinned to a number, a key or a file that had changed before the task was frozen. The
+// suite-level red says nothing about them: one ordinary criterion failing makes the whole
+// run non-zero, and the stale guard hides inside it.
+//
+// So a test file that DECLARES ITSELF a guard — the literal `[guard]` token, any case, on a
+// comment line within its first ten lines, the same word the spec uses — is run ALONE
+// against the fork point and must be green there:
+//
+//   real RED, control GREEN, guard subset RED -> stale-guard.  exit 5
+//
+// It beats `half-proven`, `red` and `unreachable`, and it short-circuits the probe: a stale
+// pin is a fact about the fork point, and no probe result can change what it means. A guard
+// subset that could not RUN — exit above 1, a kill, a failed spawn — is `indeterminate` and
+// names the guard side, on exactly the reasoning that makes a broken probe `indeterminate`
+// rather than `unreachable`.
+//
 // NO LLM, no judgment, no network: it runs one command two or four times and compares exit codes.
 //
 // Usage:
@@ -96,7 +119,19 @@
 // Exit codes: 0 gate passed (red at the fork point, green in the probe), 1 gate failed (green —
 //             a spec bug), 2 could not run, or ran and could not discriminate, 3 the criteria
 //             were red in the probe too — they may be unreachable, 4 red but half-proven: no
+//             probe was supplied, so the green side has never been seen, 5 a `[guard]` test
+//             file is red at the fork point — a stale pin, and never a pass.
 //             probe was supplied, so the green side has never been seen.
+//
+// THE RECEIPT. On a verdict that PROCEEDS — 0 or 4 — the gate writes
+// `tests/acceptance/<issue-id>/.freeze-gate.json` and says so (DESIGN.md §3.2, change-log rows
+// `receipt-design` and `repo-erq`). It records the gate version, the verdict, whether a probe
+// was supplied, a hash of the suite over GIT BLOB IDS (`runner/suite-hash.js`, shared with the
+// dispatch gate so the two cannot drift), the planning checkout's HEAD, the guard and
+// brittleness counts, and a timestamp. Commit it with the suite. The point is that a freeze
+// stops being a step the playbook asks for and becomes a fact the runner can check: fourteen
+// planning drafts on the first real project mention this gate zero times, and nothing could
+// tell. Nothing reads it yet — §4.12's third admission rule is the task after this one.
 'use strict';
 const crypto = require('crypto');
 const fs = require('fs');
@@ -109,6 +144,20 @@ const { spawnSync } = require('child_process');
 // by definition, so change-log row `verify-nobuffer` was recurring inside the gate that judges
 // the freeze. One value, one file: two copies of a limit drift silently and unattended.
 const { MAX_BUFFER } = require('../pipeline/verify-classify.js');
+
+// The receipt's formula and its name, IMPORTED rather than reimplemented. The dispatch gate
+// (DESIGN.md §4.12, third admission rule) recomputes this hash from the integration branch and
+// refuses a suite that has moved since the gate blessed it; two copies of the formula would
+// drift silently and the failure would be a whole batch refused for a reason nobody could
+// reproduce. One value, one file — the same rule MAX_BUFFER above is here for.
+const {
+  suiteHash, workingTreeEntries, isGitRepo, headCommit, RECEIPT_NAME,
+} = require('../runner/suite-hash.js');
+
+// The receipt's schema version. An integer the dispatch gate can refuse on: a receipt of an
+// unknown version is a receipt this runner cannot interpret, which is not the same as no
+// receipt and must not be read as one.
+const RECEIPT_VERSION = 1;
 
 // The guard marker. Case-insensitive so a draft is not failed on capitalisation; explicit
 // either way, because the whole point of the exemption is that it is visible.
@@ -187,6 +236,37 @@ function withEmptyControlDir(root, fn) {
   }
 }
 
+// The guard subset's scratch directory — the same shape as `withEmptyControlDir` above, and
+// for the same reasons, which is why it is a mirror of it rather than a second idea. It is
+// created INSIDE the target tree, as a SIBLING of the suite: a frozen test resolves its own
+// root as `path.resolve(__dirname, '..', '..', '..')` — the tree it sits in — so a guard file
+// judged from anywhere else in the filesystem would resolve a different root and fail for a
+// reason that has nothing to do with the pin it holds. Sibling and same depth is the only
+// placement where a guard file sees exactly the tree it saw in the suite.
+//
+// Named with the pid AND a per-call counter for the reason recorded on `withEmptyControlDir`:
+// a name keyed on the pid alone is one name per process, and two calls in one process would
+// have the second's `finally` delete the first's directory out from under it.
+//
+// The handed-back path is repo-relative POSIX, exactly as `tests` is: an absolute path into
+// the tree would be a path the project's runner is entitled to refuse, and the whole point of
+// running the subset through `verifyCommand` is that it is judged by the harness the task
+// will really be judged by.
+let guardDirSeq = 0;
+function withGuardDir(root, suiteDir, names, fn) {
+  guardDirSeq += 1;
+  const dir = path.join(path.resolve(suiteDir, '..'), `.freeze-gate-guards-${process.pid}-${guardDirSeq}`);
+  fs.mkdirSync(dir, { recursive: true });
+  try {
+    // Copied, never linked or moved: the fork-point suite is about to be committed and
+    // frozen, and the subset run must judge the same bytes the freeze will carry.
+    for (const n of names) fs.copyFileSync(path.join(suiteDir, n), path.join(dir, n));
+    return fn(path.relative(root, dir).split(path.sep).join('/') + '/');
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+  }
+}
+
 // One side of the gate: the suite and its control, in ONE tree. Called once for the fork point
 // and once for the probe, with the SAME repo-relative `tests` string both times — never an
 // absolute path into the probe. The comment on `withEmptyControlDir` above records why: engine
@@ -234,6 +314,14 @@ function digestSuite(dir) {
 
 // Returns the difference in the probe's favour-free form: what the fork point has that the probe
 // does not, and what both have but spelled differently.
+//
+// THE RECEIPT IS NOT PART OF THE COMPARISON. `.freeze-gate.json` is written by this gate into
+// the fork point's suite and never into the probe, so from the second run onwards the fork side
+// carries a file the probe cannot have — and an unfiltered comparison would call that a probe
+// MISSING a frozen file and refuse at exit 2, turning every re-run of a gated suite into a
+// refusal. It is excluded on both sides rather than only on the fork's: a probe copied from a
+// gated tree carries a stale receipt, and reporting that as an edited or extra file is noise
+// about the one file in the suite that is not a test.
 function compareSuites(forkDir, probeDir) {
   const fork = digestSuite(forkDir);
   const probe = digestSuite(probeDir);
@@ -241,10 +329,12 @@ function compareSuites(forkDir, probeDir) {
   const absent = [];
   const differing = [];
   for (const [rel, sha] of (fork || new Map())) {
+    if (rel === RECEIPT_NAME) continue;
     if (!probe.has(rel)) absent.push(rel);
     else if (probe.get(rel) !== sha) differing.push(rel);
   }
-  const extra = [...probe.keys()].filter((rel) => !(fork || new Map()).has(rel)).sort();
+  const extra = [...probe.keys()]
+    .filter((rel) => rel !== RECEIPT_NAME && !(fork || new Map()).has(rel)).sort();
   return { probeMissing: false, absent: absent.sort(), differing: differing.sort(), extra };
 }
 
@@ -259,7 +349,13 @@ const brokenRun = (r) => !r || r.error || r.signal || r.status === null || typeo
 const whyBroken = (r) => (!r ? 'no result at all'
   : r.error || (r.signal ? `killed by ${r.signal}` : 'no exit status'));
 
-function verdictFor(real, control, controlKind = 'conventional', probe = null, probeControl = null) {
+// `guard` is the guard subset's run — the `[guard]` files of the suite, run ALONE against the
+// fork point — and `guard === null` means there were none, or the fork point was never in the
+// state that makes the question meaningful. It defaults to null so every five-argument caller
+// keeps its exact answer: guard-absent and guard-green are the same row, which is what lets
+// the frozen `repo-inj` suite go on meaning what it meant.
+function verdictFor(real, control, controlKind = 'conventional', probe = null, probeControl = null,
+  guard = null) {
   if (brokenRun(real)) {
     return {
       verdict: 'indeterminate',
@@ -326,6 +422,46 @@ function verdictFor(real, control, controlKind = 'conventional', probe = null, p
 
   // Red at the fork point, on a harness proven to work there. That is half the proof, and
   // everything below is the other half.
+
+  // The guard subset comes FIRST of everything below, and the order is the verdict: a stale
+  // pin beats `half-proven`, `red` and `unreachable` alike, because it is a fact about the
+  // fork point and no probe result can change what it means. Above this line nothing is
+  // reached — a green fork point is still `green`, a broken harness is still `indeterminate`,
+  // and a suite that exited 2 still did not run — because in every one of those states the
+  // suite-level observation is already uninterpretable and the guard's would be too.
+  if (guard) {
+    if (brokenRun(guard) || guard.status > 1) {
+      return {
+        verdict: 'indeterminate',
+        exit: 2,
+        headline: 'cannot judge the guard subset: the [guard] files were never run at the fork point',
+        detail:
+          `The broken side is the guard subset. ${brokenRun(guard) ? whyBroken(guard) : `It exited ${guard.status}, which is "could not run", not "failed"`}. `
+          + 'The suite\'s own control is green, so the harness works — it is this subset that did '
+          + 'not execute, and a guard that was never run cannot be called stale any more than a '
+          + 'broken probe can be called unreachable. Most often the subset is not self-contained: '
+          + 'a guard file that imports a helper from its own suite directory sees only itself in '
+          + 'here. Fix it and re-run; until then the guard side carries no information.',
+      };
+    }
+    if (guard.status !== 0) {
+      return {
+        verdict: 'stale-guard',
+        exit: 5,
+        headline: 'a [guard] test is RED at the fork point — it pins behaviour that is already gone',
+        detail:
+          'A guard says "existing behaviour X still holds", so it is the one kind of criterion '
+          + 'that is SUPPOSED to be green before any work exists. Red here cannot mean the '
+          + 'implementation is missing — there is nothing for it to be waiting for. It means the '
+          + 'pin has already moved: the number, the key or the file it names changed before this '
+          + 'task was ever frozen. Four of the twelve suites that reached `stuck` in one fortnight '
+          + 'were exactly this. Never a pass, and never fixable during a run — a frozen test is '
+          + 'not editable in a container. Re-read the guard against the tree as it is now and '
+          + 'either re-pin it or drop the criterion, then re-run the gate.',
+      };
+    }
+  }
+
   if (probe === null) {
     return {
       verdict: 'half-proven',
@@ -632,6 +768,43 @@ function guardCount(specText) {
   return guards;
 }
 
+// A guard FILE declares itself, in its own text, and the declaration is deliberately narrow.
+//
+// WHY A COMMENT LINE, AND WHY THE FIRST TEN. The token has to be somewhere a reader opening
+// the file sees it without scrolling, because the whole value of the exemption is that it is
+// visible — and it has to be somewhere no ordinary code puts it by accident. A string literal
+// is not that place: `const G = '[guard]'` is a test ABOUT guards, and this repo's own suites
+// are full of them (this scanner's own fixtures included). A ten-line header window and a
+// comment marker together make the declaration deliberate: nothing lands there by accident,
+// and nothing that lands there is hard to find.
+//
+// TOP-LEVEL ONLY, and the same read allowlist and NUL sniff the lint uses. A file the lint
+// refuses to read is a file this cannot read either — `fs.readFileSync(p, 'utf8')` does not
+// throw on binary input, it returns replacement characters, so a `[guard]` "found" in a PNG
+// is confident nonsense. Nested files are out because the subset is a FLAT directory: a guard
+// file is copied to a sibling of the suite and run alone, and a file that needed its own
+// subdirectory around it would be judged in a shape it never had.
+const GUARD_HEADER_LINES = 10;
+const COMMENT_LINE = /^\s*(?:\/\/|\/\*|\*|#|--)/;
+
+function guardFiles(dir) {
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return []; }
+  const found = [];
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    if (!LINT_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) continue;
+    let buf;
+    try { buf = fs.readFileSync(path.join(dir, entry.name)); } catch { continue; }
+    if (buf.slice(0, BINARY_SNIFF_BYTES).includes(0)) continue;
+    // `\r?\n`, not `\n`: the reference host's working copy is CRLF and every container sees
+    // LF, so the line count and the line text both have to say which they mean.
+    const header = buf.toString('utf8').split(/\r?\n/).slice(0, GUARD_HEADER_LINES);
+    if (header.some((line) => COMMENT_LINE.test(line) && GUARD.test(line))) found.push(entry.name);
+  }
+  return found.sort();
+}
+
 // --- CLI --------------------------------------------------------------------------------------
 
 function main(argv) {
@@ -699,6 +872,20 @@ function main(argv) {
     return 2;
   }
 
+  // A --repo that is not a git repository is refused HERE, before a single verify run. Every
+  // value the receipt records comes from git — the suite's blob ids and the checkout's HEAD —
+  // so on a plain directory the gate could still print a verdict and would then write a receipt
+  // hashing nothing: present, well-formed and meaningless, which is the failure shape this repo
+  // has a rule about. Refusing early also means the operator is not left reading a verdict that
+  // took four container-free minutes and cannot be recorded.
+  if (!isGitRepo(repoRoot)) {
+    console.error(`freeze-gate: --repo is not a git repository: ${repoRoot}`);
+    console.error('freeze-gate: the freeze receipt hashes the suite over GIT BLOB IDS and records the');
+    console.error('freeze-gate: checkout\'s HEAD, so a tree with no history cannot be gated. Point --repo');
+    console.error('freeze-gate: at the target project\'s working copy.');
+    return 2;
+  }
+
   // The probe's copy of the suite, compared BEFORE any probe run — so this refusal WINS over
   // the broken-probe verdict when both would apply, which is the point: a probe that edited the
   // tests is not a probe that failed, it is a probe that changed the question.
@@ -729,17 +916,67 @@ function main(argv) {
     catch (e) { console.error(`freeze-gate: ${e.message}`); return 2; }
   }
 
+  // THE SUITE HASH, TAKEN BEFORE ANYTHING RUNS. A suite is entitled to write beside itself while
+  // it executes — a fixture's scratch file, a log, a snapshot — and every one of those would be
+  // an untracked file inside the suite directory by the time the runs are over. Hashed
+  // afterwards, the receipt would pin a state that exists only on this machine, and the dispatch
+  // gate would refuse the task for a file the branch has never seen. Before the runs is the only
+  // moment the suite is the thing being frozen and nothing else.
+  let hash;
+  try {
+    hash = suiteHash(workingTreeEntries(repoRoot, tests));
+  } catch (e) {
+    console.error(`freeze-gate: could not hash the suite at ${tests}: ${e.message}`);
+    return 2;
+  }
+  const gateHead = headCommit(repoRoot);
+
   const fork = runSide(repoRoot, verifyCommand, tests, timeoutMs, controlArg);
   const real = fork.suite;
   const control = fork.control;
   const chosen = fork.chosen;
+
+  // The guard subset — the third observation in the fork-point tree, and the only one that
+  // asks about a subset of the suite rather than the whole of it.
+  //
+  // It runs ONCE, and only from the one state in which its answer means anything: the fork
+  // point red at exactly 1, on a control proven green. Anywhere else the suite-level
+  // observation is already uninterpretable — a green fork point, a red control, an exit above
+  // 1 — and a guard's red would be one more unreadable number rather than a finding. It
+  // reuses THIS tree's control result rather than taking one of its own: the control answers
+  // "can this command report success right now?", which is a fact about the tree and the
+  // command, and it was answered a moment ago in the same tree by the same command.
+  const guardNames = guardFiles(testPath);
+  const forkIsRedOnGreen = !brokenRun(real) && real.status === 1
+    && !brokenRun(control) && control.status === 0;
+  let guardRun = null;
+  let guardDir = null;
+  if (guardNames.length && forkIsRedOnGreen) {
+    try {
+      guardRun = withGuardDir(repoRoot, testPath, guardNames, (dir) => {
+        guardDir = dir;
+        return runVerify(repoRoot, verifyCommand, dir, timeoutMs);
+      });
+    } catch (e) {
+      // A subset that could not even be BUILT is the same finding as one that could not be
+      // run, and it takes the same shape rather than a stack trace over the verdict: the
+      // guard side is unavailable, and an unavailable discriminator announces itself.
+      guardRun = { status: null, signal: null, stdout: '', stderr: '', error: (e && e.message) || String(e) };
+    }
+  }
+  // A guard that is not green short-circuits the probe, because `verdictFor` will not read a
+  // probe result behind one: running it anyway would spend two more invocations of the
+  // project's whole test command to produce an answer nothing consults.
+  const guardBlocks = !!guardRun && (brokenRun(guardRun) || guardRun.status !== 0);
+
   // The SAME repo-relative `tests` string, in the probe's own tree. Never an absolute path into
   // the probe: a frozen suite resolves its own root from `__dirname`, and the runner is given a
   // path relative to cwd, so an absolute path would run the fork point's copy from inside the
   // probe and prove nothing about either.
-  const probe = probeRoot ? runSide(probeRoot, verifyCommand, tests, timeoutMs, controlArg) : null;
+  const probe = probeRoot && !guardBlocks
+    ? runSide(probeRoot, verifyCommand, tests, timeoutMs, controlArg) : null;
   const v = verdictFor(real, control, chosen.kind,
-    probe ? probe.suite : null, probe ? probe.control : null);
+    probe ? probe.suite : null, probe ? probe.control : null, guardRun);
 
   const CONTROL_LABEL = {
     conventional: `${CONTROL_DIR} — one passing test`,
@@ -754,6 +991,15 @@ function main(argv) {
   console.log(`freeze-gate: ${tests}`);
   console.log(`  real run       exit ${fmtStatus(real)}`);
   console.log(`  control run    exit ${fmtStatus(control)}   (${CONTROL_LABEL[chosen.kind]})`);
+  // Printed whenever the suite HAS a guard file, including when the subset did not run — a
+  // line that only appears on the interesting branch cannot be told from one that never ran,
+  // which is the same argument the brittleness count's unconditional zero rests on. A suite
+  // with no guard file gets no line at all: there is nothing that could have run.
+  if (guardNames.length) {
+    console.log(guardRun
+      ? `  guard run      exit ${fmtStatus(guardRun)}   (${guardNames.length} file(s) run alone in ${guardDir})`
+      : '  guard run      not run   (only a fork point red at exit 1 on a green control asks the question)');
+  }
   if (probe) {
     console.log(`  probe run      exit ${fmtStatus(probe.suite)}   (--green ${probeRoot})`);
     console.log(`  probe control  exit ${fmtStatus(probe.control)}   (${probeLabel(probe.chosen.kind)})`);
@@ -773,6 +1019,13 @@ function main(argv) {
   console.log('');
   console.log(`${v.verdict.toUpperCase()}: ${v.headline}`);
   console.log(wrap(v.detail));
+  // The guard files themselves, NAMED and counted — on the `guards declared:` precedent, and
+  // printed even at zero. `guard files: 0` is the evidence that none were quietly assumed;
+  // the names are what a `stale-guard` verdict is actionable from, since the exit code alone
+  // says a guard is stale and not which one.
+  console.log('');
+  console.log(`guard files: ${guardNames.length}`);
+  for (const g of guardNames) console.log(`  ${g}`);
   if (spec) {
     console.log('');
     console.log(`guards declared: ${guards.length}`);
@@ -789,8 +1042,14 @@ function main(argv) {
   // names the reason rather than propagating a stack trace over the verdict or printing a `0`
   // that would read as a silent all-clear.
   console.log('');
+  // `null`, never 0, when the pass could not run: the receipt records what was observed, and a
+  // count of zero from a lint that never executed is the silent false clean the printed
+  // `unavailable` line exists to prevent. The two have to stay distinguishable on the artifact
+  // for the same reason they are distinguishable on stdout.
+  let brittleness = null;
   try {
     const lint = lintSuite(testPath, { defaultBranch });
+    brittleness = lint.findings.length;
     console.log(`brittleness findings: ${lint.findings.length}`);
     for (const f of lint.findings) {
       console.log(`  ${f.file}:${f.line}  [${f.shape}]  ${f.question}`);
@@ -805,6 +1064,58 @@ function main(argv) {
     console.log('');
     console.log('last stderr from the real run:');
     console.log(String(real.stderr).trim().split(/\r?\n/).slice(-8).map((l) => `  ${l}`).join('\n'));
+  }
+  // The subset's own stderr, kept apart from the real run's. On a `stale-guard` this is the
+  // only place the failing assertion appears at all — the suite-level run drowned it in the
+  // ordinary criteria's failures, which is the whole reason the subset exists.
+  if (guardRun && v.verdict !== 'red' && (guardRun.stderr || '').trim()) {
+    console.log('');
+    console.log('last stderr from the guard run:');
+    console.log(String(guardRun.stderr).trim().split(/\r?\n/).slice(-8).map((l) => `  ${l}`).join('\n'));
+  }
+
+
+  // THE RECEIPT (DESIGN.md §3.2, change-log rows `receipt-design` and `repo-erq`). Written on a
+  // verdict that PROCEEDS and on no other: `red` (0) and `half-proven` (4). `green`,
+  // `indeterminate` and `unreachable` are findings, not freezes, and a receipt written for one
+  // of them would tell the runner that a suite it must refuse had been blessed. Nothing here
+  // deletes or rewrites an existing receipt on those verdicts either — a stale receipt beside a
+  // failing verdict is the operator's evidence that the suite has changed since it last passed,
+  // and the dispatch gate's hash comparison is what turns that into a refusal.
+  //
+  // It lives INSIDE `tests/acceptance/<issue-id>/`, which is a frozen path, so the verifier
+  // already diffs it against the fork point (§4.4): a container that edits it ends the task
+  // `tampered` with no new rule anywhere.
+  if (v.exit === 0 || v.exit === 4) {
+    const receipt = {
+      gateVersion: RECEIPT_VERSION,
+      verdict: v.verdict,
+      probeSupplied: probeRoot !== null,
+      suiteHash: hash,
+      gateHead,
+      // `null`, never 0, without `--spec`: "no spec was read" and "a spec declaring no guards"
+      // are different facts, and the approval pass branches on which one it is.
+      guards: spec ? guards.length : null,
+      brittleness,
+      writtenAt: new Date().toISOString(),
+    };
+    const receiptRel = path.join(tests, RECEIPT_NAME).split(path.sep).join('/');
+    try {
+      fs.writeFileSync(path.join(testPath, RECEIPT_NAME), `${JSON.stringify(receipt, null, 2)}\n`);
+    } catch (e) {
+      // A verdict nothing recorded is a freeze the runner will refuse, so this is a failure of
+      // the whole invocation and not a warning under a passing verdict. The path is what the
+      // message is about: an exit-code-only refusal here is indistinguishable from the several
+      // other things that exit 2.
+      console.error(`freeze-gate: could not write the freeze receipt ${receiptRel}: ${e.message}`);
+      console.error(`freeze-gate: the verdict above stands, but nothing recorded it — a suite with no`);
+      console.error('freeze-gate: receipt is refused at dispatch. Fix the path and re-run the gate.');
+      return 2;
+    }
+    console.log('');
+    console.log(`receipt written: ${receiptRel}`);
+    console.log(`  suite hash ${hash}  (${v.verdict}, gate version ${RECEIPT_VERSION})`);
+    console.log('  commit it with the suite: the runner refuses a frozen suite that carries no receipt.');
   }
   return v.exit;
 }
@@ -822,12 +1133,18 @@ function usage() {
   console.log('                       satisfied, however crudely. The same suite is run there');
   console.log('                       and must come out GREEN. Exit 3 = red there too');
   console.log('                       (unreachable); omitted = exit 4 (half-proven, proceeds).');
+  console.log('  a test file declaring itself [guard] in its first ten comment lines is also');
+  console.log('  run ALONE against the fork point. Red there = exit 5 (stale-guard), never a pass.');
+  console.log('  on exit 0 or 4 the suite gains .freeze-gate.json — the freeze receipt.');
+  console.log('  Commit it with the tests; --repo must be a git repository.');
 }
 
 module.exports = {
-  verdictFor, guardCount, runVerify, withEmptyControlDir, resolveControl, CONTROL_DIR, main,
+  verdictFor, guardCount, guardFiles, runVerify, withEmptyControlDir, withGuardDir,
+  resolveControl, CONTROL_DIR, main,
   brittleFindings, lintSuite, LINT_EXTENSIONS, QUESTIONS,
   runSide, digestSuite, compareSuites, MAX_BUFFER,
+  RECEIPT_NAME, RECEIPT_VERSION,
 };
 
 if (require.main === module) process.exit(main(process.argv.slice(2)));

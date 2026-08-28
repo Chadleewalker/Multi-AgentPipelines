@@ -20,11 +20,16 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
+const { spawnSync } = require('child_process');
 const {
-  verdictFor, guardCount, withEmptyControlDir, resolveControl, CONTROL_DIR, main,
+  verdictFor, guardCount, guardFiles, withEmptyControlDir, withGuardDir, resolveControl,
+  CONTROL_DIR, main,
   brittleFindings, lintSuite, runVerify, compareSuites, digestSuite, MAX_BUFFER,
+  RECEIPT_NAME, RECEIPT_VERSION,
 } = require('../../scripts/freeze-gate.js');
 const { MAX_BUFFER: VERIFIER_MAX_BUFFER } = require('../../pipeline/verify-classify.js');
+const suiteHashMod = require('../../runner/suite-hash.js');
 
 let failed = 0;
 const pass = (n) => console.log(`PASS  ${n}`);
@@ -32,6 +37,38 @@ const fail = (n, why) => { console.log(`FAIL  ${n}${why ? ` — ${why}` : ''}`);
 const check = (n, cond, why) => { (cond ? pass : (x) => fail(x, why))(n); return cond; };
 
 const ok = (status) => ({ status, signal: null, stdout: '', stderr: '', error: null });
+
+// --- git fixtures --------------------------------------------------------------------------
+//
+// The gate now refuses a `--repo` that is not a git repository, because every value the receipt
+// records comes from git. So every fixture the CLI is pointed at has to be a real repository.
+//
+// The identity and `commit.gpgsign=false` are written into the fixture's OWN config, never
+// passed per call: a container has neither a global identity nor a signing key, and a suite that
+// commits only on a developer's machine is a suite that fails in exactly the environment this
+// repo's Docker-free rule exists to serve. `-c` would also have to precede the subcommand to
+// work at all, which has cost a task all three of its attempts before (change-log row
+// `repo-cfe`). Line endings are pinned in the fixture too, so the host's global `core.autocrlf`
+// cannot decide what any blob id here comes out as — except in the CRLF fixture below, which
+// pins the opposite value deliberately.
+function git(cwd, args) {
+  return spawnSync('git', args, { cwd, encoding: 'utf8' });
+}
+const gitOut = (cwd, args) => (git(cwd, args).stdout || '').trim();
+function initFixtureRepo(dir, { crlf = false } = {}) {
+  git(dir, ['init', '-q', '--initial-branch', 'main', '.']);
+  git(dir, ['config', 'user.email', 'fixture@test.local']);
+  git(dir, ['config', 'user.name', 'fixture']);
+  git(dir, ['config', 'commit.gpgsign', 'false']);
+  git(dir, ['config', 'core.autocrlf', crlf ? 'true' : 'false']);
+  if (!crlf) git(dir, ['config', 'core.eol', 'lf']);
+  return dir;
+}
+function commitAll(dir, message) {
+  git(dir, ['add', '-A']);
+  git(dir, ['commit', '-qm', message]);
+  return gitOut(dir, ['rev-parse', 'HEAD']);
+}
 
 // --- the decision table -------------------------------------------------------------------
 
@@ -151,6 +188,95 @@ check('the fork point exiting 2 stays indeterminate even with a green probe',
 check('the existing `red` token is kept for exit 0 rather than renamed',
   row(1, 0, 0, 0).verdict === 'red');
 
+// --- the stale guard: the sixth verdict (change-log rows `stale-guard-design`, `repo-i4b`) ----
+//
+// The guard row is a SIXTH argument, and the load-bearing property is what it does NOT change:
+// `guard` absent and `guard` green must answer identically to each other AND to the
+// five-argument call, or the frozen `repo-inj` suite — which cannot be edited and will never
+// run again — silently stops meaning what it meant. That equivalence is checked over every
+// existing row rather than spot-checked, because it is a property of the whole table.
+const guardRow = (real, control, probe, probeControl, guard) => verdictFor(
+  ok(real), ok(control), 'conventional',
+  probe === null ? null : ok(probe), probeControl === null ? null : ok(probeControl),
+  guard === null ? null : (typeof guard === 'object' ? guard : ok(guard)));
+
+v = guardRow(1, 0, null, null, 1);
+check('a [guard] file red at the fork point is stale-guard, exit 5',
+  v.verdict === 'stale-guard' && v.exit === 5, `${v.verdict}/${v.exit}`);
+check('the stale-guard verdict says it is never a pass', /never a pass/i.test(v.detail));
+check('the stale-guard verdict explains that a guard is SUPPOSED to be green',
+  /supposed to be green/i.test(v.detail));
+check('the stale-guard verdict says the pin has already moved', /already moved/i.test(v.detail));
+// It BEATS the three verdicts a red fork point can otherwise produce. Each of these is a
+// separate row rather than one loop, because getting the ORDER wrong inside `verdictFor`
+// produces a different wrong answer in each: 0, 3 and 4 respectively.
+check('stale-guard beats `red` — a green probe cannot rescue a moved pin',
+  guardRow(1, 0, 0, 0, 1).exit === 5);
+check('stale-guard beats `unreachable` — the guard is read before the probe',
+  guardRow(1, 0, 1, 0, 1).exit === 5);
+check('stale-guard beats `half-proven` — no probe is needed to reach it',
+  guardRow(1, 0, null, null, 1).exit === 5);
+// And it is beaten by everything that makes the fork-point observation unreadable in the first
+// place. In all three the guard's own red is one more uninterpretable number, not a finding.
+check('a green fork point stays green/1 whatever the guard did',
+  guardRow(0, 0, null, null, 1).verdict === 'green' && guardRow(0, 0, null, null, 1).exit === 1);
+check('a not-green control stays indeterminate/2 whatever the guard did',
+  guardRow(1, 1, null, null, 1).exit === 2);
+check('a fork point that exited 2 stays indeterminate/2 whatever the guard did',
+  guardRow(2, 0, null, null, 1).exit === 2);
+
+// A guard subset that could not RUN is `indeterminate` naming the guard side — never 5, and
+// never 0. Same reasoning that keeps a broken probe off exit 3: a run that never happened is
+// not evidence, and blaming the spec for it would be the exact false confidence the control
+// run exists to prevent. The 'killed' shapes are only reachable here: a CLI fixture for them
+// would have to make a real spawn time out, which is a slow test measuring the clock.
+for (const [label, broken] of [
+  ['exit 2', ok(2)],
+  ['exit 127 — the command did not exist', ok(127)],
+  ['a null exit status', ok(null)],
+  ['killed by a signal', { ...ok(null), signal: 'SIGTERM' }],
+  ['a spawn that errored', { ...ok(null), error: 'ENOENT' }],
+]) {
+  const bad = guardRow(1, 0, null, null, broken);
+  check(`a guard subset that could not run (${label}) is indeterminate/2 naming the guard side`,
+    bad.verdict === 'indeterminate' && bad.exit === 2 && /guard/i.test(bad.headline),
+    JSON.stringify(bad));
+}
+
+// The equivalence, over every row of the pre-existing table. Not a spot check: an
+// implementation that reads the guard argument one branch too early answers differently on
+// exactly one of these, and which one depends on the mistake.
+const PRIOR_ROWS = [[1, 0, 0, 0], [0, 0, null, null], [1, 1, null, null], [2, 0, null, null],
+  [1, 0, 1, 0], [1, 0, null, null], [1, 0, 1, 1], [1, 0, 0, 1], [1, 0, 2, 0]];
+const sameAnswer = (a, b) => a && b && a.verdict === b.verdict && a.exit === b.exit;
+check('every pre-existing row answers identically with no guard argument at all, with null, and with a green guard',
+  PRIOR_ROWS.every(([r2, c2, p2, pc2]) => {
+    const five = row(r2, c2, p2, pc2);
+    return sameAnswer(five, guardRow(r2, c2, p2, pc2, null))
+      && sameAnswer(five, guardRow(r2, c2, p2, pc2, 0));
+  }));
+// Exit 5 is the gate's own number and has nothing to do with the runner's. A SUITE that exits
+// 5 is "could not run", exactly as 2 and 127 are — the two 5s must never be confused, because
+// one of them is a pass-adjacent verdict and the other is a broken harness.
+check('a SUITE exiting 5 is still indeterminate — the gate\'s 5 is not the runner\'s',
+  verdictFor(ok(5), ok(0)).exit === 2);
+check('exit 5 is reachable from exactly one row, and only with a red guard',
+  (() => {
+    let fives = 0; let staleGuards = 0;
+    for (const r2 of [0, 1, 2, 5]) {
+      for (const c2 of [0, 1]) {
+        for (const [p2, pc2] of [[null, null], [0, 0], [1, 0], [1, 1], [2, 0]]) {
+          for (const g2 of [null, 0, 1, 2, 127]) {
+            const got = guardRow(r2, c2, p2, pc2, g2);
+            if (got.exit === 5) { fives++; if (!(r2 === 1 && c2 === 0 && g2 === 1)) return false; }
+            if (got.verdict === 'stale-guard') staleGuards++;
+          }
+        }
+      }
+    }
+    return fives > 0 && fives === staleGuards;
+  })());
+
 // --- guards ---------------------------------------------------------------------------------
 
 const SPEC = [
@@ -167,6 +293,130 @@ check('guards report their line number', g[0] && g[0].line === 3);
 check('an unmarked criterion is not a guard', !g.some((x) => /clamps/.test(x.text)));
 check('a spec with no guards reports zero, not an error', guardCount('1. does a thing').length === 0);
 check('guard counting survives CRLF', guardCount(SPEC.split('\n').join('\r\n')).length === 2);
+
+// --- guardFiles: which TEST FILES declare themselves guards ------------------------------------
+//
+// `guardCount` reads the SPEC and counts labels a human typed; `guardFiles` reads the SUITE and
+// decides which files are run alone. The pairs below are what separate a useful scanner from
+// one that answers "every file that mentions the word": for each rule, one file that must be
+// found and one that differs in exactly the feature the rule turns on. The near-miss that
+// matters most is `d.js` — a `[guard]` token inside a STRING, which is what a test ABOUT guards
+// looks like, and this very file is full of them.
+{
+  const suite = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-guardfiles-'));
+  const TOKEN = `[${'guard'}]`;   // assembled: a literal here would make this file a guard
+  fs.mkdirSync(path.join(suite, 'nested'), { recursive: true });
+  const write = (n, body) => fs.writeFileSync(path.join(suite, n), body);
+  write('a.js', `'use strict';\n// ${TOKEN} the burn table is unchanged\nprocess.exit(0);\n`);
+  write('b.sh', `#!/bin/sh\n#\n#\n#\n#\n#\n#\n#\n#\n# ${TOKEN} on the tenth line exactly\nexit 0\n`);
+  write('c.js', `${'//\n'.repeat(10)}// ${TOKEN} on the eleventh line\n`);
+  write('d.js', `'use strict';\nconst MARKER = '${TOKEN}';\nprocess.exit(0);\n`);
+  write('e.gd', `# ${TOKEN} GDScript comments are #\nfunc _ready(): pass\n`);
+  write('f.py', `# nothing here\n`);
+  write('g.sql', `-- ${TOKEN} a dialect this repo does not lint\n`);
+  write('h.ts', `/* ${TOKEN} a block comment opener counts */\n`);
+  write('i.js', ` *  ${TOKEN} a continuation line inside a block comment\n`);
+  write('j.js', `//    ${TOKEN.toUpperCase()} shouting is still declaring\n`);
+  write('README.md', `${TOKEN} described in prose, in a file nothing runs\n`);
+  write('logo.png', Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47]), Buffer.from(`// ${TOKEN}\n`)]));
+  write('nul.js', Buffer.concat([Buffer.from('// \0 a NUL in the header\n'), Buffer.from(`// ${TOKEN}\n`)]));
+  fs.writeFileSync(path.join(suite, 'nested', 'k.js'), `// ${TOKEN} one directory down\n`);
+
+  const found = guardFiles(suite);
+  const has = (n) => found.includes(n);
+  check('guardFiles finds a token on a // comment line inside the first ten', has('a.js'));
+  check('guardFiles finds a token on the tenth line exactly — the boundary is inclusive', has('b.sh'));
+  check('guardFiles does NOT find a token on the eleventh line', !has('c.js'));
+  check('guardFiles does NOT fire on a token inside a STRING — a test ABOUT guards is not a guard',
+    !has('d.js'));
+  check('guardFiles reads # as a comment marker (GDScript, Python, shell)', has('e.gd'));
+  check('guardFiles reads /* and a bare * as comment markers', has('h.ts') && has('i.js'));
+  check('guardFiles is case-insensitive, like the spec-side marker', has('j.js'));
+  check('guardFiles skips a file with no token at all', !has('f.py'));
+  check('guardFiles skips an extension the lint will not read — the SAME allowlist',
+    !has('README.md') && !has('g.sql'));
+  check('guardFiles skips a binary file rather than reading confident nonsense', !has('logo.png'));
+  check('guardFiles skips a file with a NUL in its header — the lint\'s own sniff', !has('nul.js'));
+  check('guardFiles is top-level only: a nested file is never in the subset', !has('k.js'));
+  check('guardFiles returns the exact set, sorted and suite-relative',
+    JSON.stringify(found) === JSON.stringify(['a.js', 'b.sh', 'e.gd', 'h.ts', 'i.js', 'j.js']),
+    JSON.stringify(found));
+  // CRLF: the reference host's working copy is CRLF and every container sees LF, so a scanner
+  // that split on '\n' alone would carry a trailing '\r' into the line it tests. Harmless for
+  // the token, and NOT harmless for the ten-line window: the count would still be right, but
+  // the same file has to answer the same way both ways or the gate disagrees with itself
+  // across hosts.
+  const crlf = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-guardfiles-crlf-'));
+  for (const n of ['a.js', 'b.sh', 'c.js', 'd.js']) {
+    fs.writeFileSync(path.join(crlf, n),
+      fs.readFileSync(path.join(suite, n), 'utf8').split('\n').join('\r\n'));
+  }
+  check('guardFiles answers identically on a CRLF checkout',
+    JSON.stringify(guardFiles(crlf)) === JSON.stringify(['a.js', 'b.sh']),
+    JSON.stringify(guardFiles(crlf)));
+
+  const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-guardfiles-empty-'));
+  check('a suite with no guard file yields [] rather than throwing',
+    Array.isArray(guardFiles(empty)) && guardFiles(empty).length === 0);
+  check('an unreadable or missing directory yields [] rather than throwing',
+    Array.isArray(guardFiles(path.join(empty, 'no-such-dir'))));
+  fs.rmSync(suite, { recursive: true, force: true });
+  fs.rmSync(crlf, { recursive: true, force: true });
+  fs.rmSync(empty, { recursive: true, force: true });
+}
+
+// --- withGuardDir: the scratch directory the subset runs from ---------------------------------
+//
+// A mirror of `withEmptyControlDir`, and it inherits both of that function's lessons. The
+// SIBLING placement is not cosmetic: every frozen suite resolves its own root as
+// `path.resolve(__dirname, '..', '..', '..')`, so a guard file judged from anywhere at another
+// depth resolves a different tree and fails for a reason that has nothing to do with its pin.
+{
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-guarddir-'));
+  const suite = path.join(root, 'tests', 'acceptance', 'demo');
+  fs.mkdirSync(suite, { recursive: true });
+  fs.writeFileSync(path.join(suite, 'guard.js'), 'process.exit(0);\n');
+  fs.writeFileSync(path.join(suite, 'other.js'), 'process.exit(1);\n');
+
+  let handed = null; let contents = null; let livedAt = null;
+  const returned = withGuardDir(root, suite, ['guard.js'], (dir) => {
+    handed = dir;
+    livedAt = path.join(root, dir);
+    contents = fs.readdirSync(livedAt).sort();
+    return 'the callback\'s value';
+  });
+  check('withGuardDir hands back a repo-relative POSIX path, never an absolute one',
+    typeof handed === 'string' && !path.isAbsolute(handed) && !handed.includes('\\'), handed);
+  check('...that is a SIBLING of the suite, at the same depth',
+    /^tests\/acceptance\/\.freeze-gate-guards-[^/]+\/$/.test(handed), handed);
+  check('...holding exactly the named files and nothing else',
+    JSON.stringify(contents) === JSON.stringify(['guard.js']), JSON.stringify(contents));
+  check('withGuardDir returns whatever its callback returned', returned === 'the callback\'s value');
+  check('the directory is removed afterwards', !fs.existsSync(livedAt));
+
+  // The per-call counter, not the pid alone. `withEmptyControlDir` was keyed on the pid and
+  // became one name per process the moment the gate started calling it twice; the second
+  // call's `finally` then deleted the first call's directory out from under it. The mirror
+  // inherits the fix, and this is the check that keeps it.
+  let first = null; let second = null;
+  withGuardDir(root, suite, [], (d) => { first = d; });
+  withGuardDir(root, suite, [], (d) => { second = d; });
+  check('two calls in one process get different directories', first !== second, `${first} vs ${second}`);
+
+  // Cleanup is in a `finally`, so a callback that throws still leaves nothing in a tree that is
+  // about to be committed and frozen.
+  let seen = null; let threw = false;
+  try {
+    withGuardDir(root, suite, ['guard.js'], (d) => { seen = path.join(root, d); throw new Error('boom'); });
+  } catch { threw = true; }
+  check('a callback that throws still removes the directory and propagates',
+    threw && seen && !fs.existsSync(seen));
+  check('nothing named .freeze-gate-guards- survives beside the suite',
+    fs.readdirSync(path.join(root, 'tests', 'acceptance'))
+      .every((e) => !e.startsWith('.freeze-gate-guards-')),
+    fs.readdirSync(path.join(root, 'tests', 'acceptance')).join(', '));
+  fs.rmSync(root, { recursive: true, force: true });
+}
 
 // --- the brittleness lint (DESIGN.md §3.2, "below the panel", move 6) -------------------------
 //
@@ -372,7 +622,7 @@ check('the real-control message blames the harness instead',
 
 // --- the empty-directory fallback ---------------------------------------------------------
 
-const tmpRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-gate-'));
+const tmpRepo = initFixtureRepo(fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-gate-')));
 let seenDir = null;
 const returned = withEmptyControlDir(tmpRepo, (dir) => {
   seenDir = dir;
@@ -507,21 +757,48 @@ fs.rmSync(loudRoot, { recursive: true, force: true });
 // and Git Bash and the child disagree on separators and case, so that comparison passes for
 // whoever wrote it and fails for everyone else.
 const STUB = `
-const fs = require('fs'); const path = require('path'); const p = process.argv[2];
+const fs = require('fs'); const path = require('path'); const crypto = require('crypto');
+const p = process.argv[2];
 const mode = process.env.STUB_MODE || 'honest';
+let listing = []; const digests = {};
+try {
+  listing = fs.readdirSync(p).sort();
+  for (const f of listing) {
+    try { digests[f] = crypto.createHash('sha256').update(fs.readFileSync(path.join(p, f))).digest('hex'); }
+    catch {}
+  }
+} catch {}
 if (process.env.STUB_LOG) {
-  fs.appendFileSync(process.env.STUB_LOG, JSON.stringify({ arg: p }) + '\\n');
+  fs.appendFileSync(process.env.STUB_LOG, JSON.stringify({ arg: p, listing, digests }) + '\\n');
+  // The marker carries the ARGUMENT as well as the pid, so a later check can ask which TREE a
+  // named run happened in rather than only how many runs each tree saw.
   fs.writeFileSync(path.join(process.cwd(),
-    '.ran-here-' + process.pid + '-' + Math.floor(process.hrtime()[1])), '');
+    '.ran-here-' + process.pid + '-' + Math.floor(process.hrtime()[1])
+    + '-' + String(p).replace(/[^A-Za-z0-9._-]/g, '_')), '');
 }
 const inProbe = fs.existsSync(path.join(process.cwd(), '.is-probe'));
 const isControl = /_control|freeze-gate-control/.test(p);
-let n = 0; try { n = fs.readdirSync(p).length; } catch { n = 0; }
+// The guard subset, judged before every other mode: the modes below describe what the SUITE
+// does, and the subset is a different question asked of the same command.
+if (/[.]freeze-gate-guards-/.test(p)) {
+  if (mode === 'guard-red') { process.stderr.write('guard: the burn table moved\\n'); process.exit(1); }
+  // What a FREEZE_GATE_CMD naming a command that does not exist produces, byte for byte:
+  // \`sh -c\` answers 127 on stderr. Reproduced on the guard run alone because one env var
+  // drives all four invocations — a genuinely missing command would take the fork point down
+  // with it and never reach the guard side at all.
+  if (mode === 'guard-nocmd') { process.stderr.write('sh: no-such-verify-command: not found\\n'); process.exit(127); }
+  process.exit(0);
+}
+let n = 0; try { n = listing.length; } catch { n = 0; }
 if (mode === 'always-green') process.exit(0);
 if (mode === 'always-red') process.exit(4);
 if (inProbe && mode === 'probe-broken') process.exit(1);
 if (inProbe && mode === 'probe-red') process.exit(isControl ? 0 : 1);
 if (inProbe) process.exit(0);
+// A control fixture is a test known to pass, so the honest answer is 0 whatever it holds. Last,
+// deliberately: every mode above describes a harness that is broken for ALL directories, and a
+// control that answered 0 through those would make the broken-harness rows unreachable.
+if (isControl) process.exit(0);
 process.exit(n > 0 ? 1 : 0);
 `;
 const stubPath = path.join(tmpRepo, 'stub.js');
@@ -538,6 +815,13 @@ fs.mkdirSync(testDir, { recursive: true });
 fs.writeFileSync(path.join(testDir, 'test.js'), '// a test');
 const specPath = path.join(tmpRepo, 'spec.md');
 fs.writeFileSync(specPath, SPEC);
+// The fixture's commit, and its own check: everything below reads a blob id or a HEAD out of
+// this repository, and a `git commit` that silently did nothing — no identity, a signing key it
+// cannot reach — would leave every one of those checks passing or failing for a reason that has
+// nothing to do with the gate. A fixture builder whose own git fails silently has hidden a real
+// cause here before (change-log row `repo-cfe`).
+const tmpHead = commitAll(tmpRepo, 'fixture');
+check('the fixture repository has a commit to hash against', /^[0-9a-f]{40}$/.test(tmpHead), tmpHead);
 
 // Silence both streams: the negative cases deliberately provoke error output, and a passing
 // run that prints its own expected errors trains a reader to ignore the output entirely.
@@ -724,6 +1008,162 @@ check('no control directory survives the run',
   fs.readdirSync(tmpRepo).every((e) => !e.startsWith('.freeze-gate-control')),
   fs.readdirSync(tmpRepo).join(', '));
 
+// --- the guard subset through the CLI (change-log row `repo-i4b`) -----------------------------
+//
+// A second repo/probe pair rather than more files in the one above: a guard file in the shared
+// suite would put a third invocation into every count the section above pins, and those counts
+// are the only thing that proves the probe is invoked the way it is.
+const GTOKEN = `[${'guard'}]`;              // assembled, so this file never declares itself one
+const BRITTLE = [
+  "assert.deepStrictEqual(keys, ['alpha', 'beta', 'gamma']);",
+  'assert.strictEqual(rows.length, 30);',
+  "assert.strictEqual(sha1(tree), 'd41d8cd98f00b204e9800998ecf8427e');",
+  "spawnSync('git', ['merge-base', 'origin/main', 'HEAD']);",
+].join('\n');
+const guardRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-guardcli-repo-'));
+const guardProbe = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-guardcli-probe-'));
+const buildGuardTree = (root, isProbe) => {
+  fs.writeFileSync(path.join(root, 'pipeline.config.json'),
+    JSON.stringify({ verifyCommand: 'unused-because-stubbed' }));
+  const d = path.join(root, 'tests', 'acceptance', 'demo');
+  fs.mkdirSync(d, { recursive: true });
+  fs.writeFileSync(path.join(d, 'test.js'), '// an ordinary criterion\n');
+  fs.writeFileSync(path.join(d, 'brittle.js'), BRITTLE);
+  fs.writeFileSync(path.join(d, 'guard.js'), `// ${GTOKEN} the burn table is unchanged\nprocess.exit(0);\n`);
+  const c = path.join(root, 'tests', 'acceptance', '_control');
+  fs.mkdirSync(c, { recursive: true });
+  fs.writeFileSync(path.join(c, 'c.js'), 'process.exit(0);\n');
+  if (isProbe) fs.writeFileSync(path.join(root, '.is-probe'), '');
+  // The receipt writer (change-log row `repo-erq`, merged alongside) refuses a --repo with no
+  // git history before it runs anything, so the fork-point side is a real repository; the
+  // probe stays a plain tree, as every probe is.
+  if (!isProbe) { initFixtureRepo(root); commitAll(root, 'guard fixture'); }
+};
+buildGuardTree(guardRepo, false);
+buildGuardTree(guardProbe, true);
+const GARGS = ['--repo', guardRepo, '--tests', 'tests/acceptance/demo/'];
+const GUARD_GREEN = [...GARGS, '--green', guardProbe];
+const gcap = (args, mode) => {
+  const o = console.log; const e = console.error;
+  let buf = '';
+  console.log = (...a) => { buf += `${a.join(' ')}\n`; };
+  console.error = (...a) => { buf += `${a.join(' ')}\n`; };
+  if (mode) process.env.STUB_MODE = mode; else delete process.env.STUB_MODE;
+  try { return { code: main(args), out: buf }; } finally {
+    console.log = o; console.error = e; delete process.env.STUB_MODE;
+  }
+};
+const gLog = path.join(os.tmpdir(), `freeze-guard-log-${process.pid}.jsonl`);
+const gruns = (args, mode) => {
+  fs.writeFileSync(gLog, '');
+  for (const t of [guardRepo, guardProbe]) clearMarkers(t);
+  process.env.STUB_LOG = gLog;
+  let out;
+  try { out = gcap(args, mode); } finally { delete process.env.STUB_LOG; }
+  return {
+    ...out,
+    lines: fs.readFileSync(gLog, 'utf8').split(/\r?\n/).filter(Boolean).map((l) => JSON.parse(l)),
+  };
+};
+const SUBSET = /[.]freeze-gate-guards-/;
+const strays = (root) => fs.readdirSync(path.join(root, 'tests', 'acceptance'))
+  .filter((n) => SUBSET.test(n));
+
+// The count IS the evidence. A subset that is built and then judged by nobody looks exactly
+// like a working one from the exit code alone, and a probe still running behind a stale guard
+// spends the project's whole test command twice for an answer nothing reads.
+const three = gruns(GARGS);
+check('a suite with one guard file is THREE invocations without a probe',
+  three.lines.length === 3, `${three.lines.length} (exit ${three.code})`);
+const five = gruns(GUARD_GREEN);
+check('...and FIVE with one — the subset is not re-run in the probe',
+  five.lines.length === 5, String(five.lines.length));
+const subsetRuns = five.lines.filter((l) => SUBSET.test(l.arg));
+check('exactly one invocation judged the guard subset', subsetRuns.length === 1,
+  subsetRuns.map((s) => s.arg).join(' | '));
+const sub = subsetRuns[0] || { arg: '', listing: [], digests: {} };
+check('the subset directory holds the guard file and nothing else',
+  JSON.stringify(sub.listing) === JSON.stringify(['guard.js']), JSON.stringify(sub.listing));
+check('...byte-identical to the fork point\'s copy',
+  sub.digests['guard.js'] === require('crypto').createHash('sha256')
+    .update(fs.readFileSync(path.join(guardRepo, 'tests', 'acceptance', 'demo', 'guard.js')))
+    .digest('hex'));
+check('the subset is handed over as a repo-relative POSIX sibling of the suite',
+  /^tests\/acceptance\/\.freeze-gate-guards-[^/]+\/?$/.test(sub.arg), sub.arg);
+// WHICH TREE, from the marker the stub named after its own argument — never by comparing
+// `process.cwd()` to a string, for the 8.3-short-name reason recorded above.
+const subsetMarker = markers(guardRepo).filter((m) => SUBSET.test(m));
+check('the subset ran in the FORK-POINT tree, not the probe',
+  subsetMarker.length === 1 && markers(guardProbe).filter((m) => SUBSET.test(m)).length === 0,
+  `${markers(guardRepo).join(' ')} || ${markers(guardProbe).join(' ')}`);
+for (const t of [guardRepo, guardProbe]) clearMarkers(t);
+check('no subset directory survives in either tree',
+  strays(guardRepo).length === 0 && strays(guardProbe).length === 0,
+  `${strays(guardRepo).join(' ')} | ${strays(guardProbe).join(' ')}`);
+
+// The verdicts, from a real argument vector.
+const staleNoProbe = gcap(GARGS, 'guard-red');
+check('a red guard is exit 5 from the CLI', staleNoProbe.code === 5, String(staleNoProbe.code));
+check('...announced as STALE-GUARD: at the start of a line',
+  /^STALE-GUARD:/m.test(staleNoProbe.out));
+check('...with the guard run\'s own exit status in the report',
+  /guard run\s+exit\s+1/.test(staleNoProbe.out), staleNoProbe.out.split('\n').slice(0, 6).join(' | '));
+check('...naming the file, because the exit code cannot say WHICH guard is stale',
+  staleNoProbe.out.includes('guard.js'));
+check('...and carrying the subset\'s stderr, which the whole-suite run drowned',
+  staleNoProbe.out.includes('the burn table moved'));
+const staleWithProbe = gruns(GUARD_GREEN, 'guard-red');
+check('a red guard is still exit 5 WITH a probe — it beats every probe verdict',
+  staleWithProbe.code === 5, String(staleWithProbe.code));
+check('...and the probe is short-circuited: three invocations, not five',
+  staleWithProbe.lines.length === 3, String(staleWithProbe.lines.length));
+check('a green guard leaves the no-probe verdict at half-proven/4', gcap(GARGS).code === 4);
+check('...reported as a green guard run', /guard run\s+exit\s+0/.test(gcap(GARGS).out));
+check('a green guard leaves the probe verdict at red/0', gcap(GUARD_GREEN).code === 0);
+check('a green guard leaves a red probe at unreachable/3',
+  gcap(GUARD_GREEN, 'probe-red').code === 3);
+
+// A subset that could not RUN is the guard side's bug and says so — never 5, never 0. This is
+// what a verify command that does not exist produces on the guard run specifically.
+const nocmd = gcap(GARGS, 'guard-nocmd');
+check('a guard subset spawned through a command that does not exist is exit 2',
+  nocmd.code === 2, String(nocmd.code));
+check('...reported as INDETERMINATE, never STALE-GUARD',
+  /^INDETERMINATE:/m.test(nocmd.out) && !/STALE-GUARD/.test(nocmd.out));
+check('...with the guard side named in the headline, not the spec',
+  /guard/i.test((nocmd.out.split('\n').find((l) => /^INDETERMINATE:/.test(l)) || '')),
+  nocmd.out.split('\n').find((l) => /^INDETERMINATE:/.test(l)));
+check('...and the failing command\'s own words carried through',
+  nocmd.out.includes('no-such-verify-command'));
+
+// The count line, on every run and at zero — the `guards declared:` precedent. A line that
+// only appears on the interesting branch cannot be told from one that never ran.
+check('every run prints the guard-file count',
+  [staleNoProbe.out, gcap(GARGS).out, gcap(GUARD_GREEN).out, gcap(GARGS, 'always-green').out]
+    .every((o) => /^guard files:\s*1\b/m.test(o)));
+// The subset is asked for ONLY from the one state where its answer means anything. In each of
+// these the fork point is already unreadable, and a guard's red would be one more number.
+for (const [mode, code] of [['always-green', 1], ['always-red', 2]]) {
+  const r2 = gruns(GARGS, mode);
+  check(`${mode}: the subset is not run at all — two invocations, and no STALE-GUARD`,
+    r2.lines.length === 2 && r2.code === code && !/STALE-GUARD/.test(r2.out),
+    `${r2.code} / ${r2.lines.length}`);
+  check(`${mode}: ...and the report SAYS the guard run did not happen`,
+    /guard run\s+not run/.test(r2.out), r2.out.split('\n').slice(0, 6).join(' | '));
+}
+// And a suite with no guard file says zero and prints no guard line at all — there is nothing
+// that could have run, which is a different statement from "it did not run".
+const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-guardcli-bare-'));
+buildGuardTree(bare, false);
+fs.rmSync(path.join(bare, 'tests', 'acceptance', 'demo', 'guard.js'));
+commitAll(bare, 'no guard file');   // the receipt hashes what the branch will carry, so the deletion is committed too
+const bareOut = gcap(['--repo', bare, '--tests', 'tests/acceptance/demo/']);
+check('a suite with no guard file prints `guard files: 0`', /^guard files:\s*0\b/m.test(bareOut.out));
+check('...and no guard run line of any kind', !/guard run/.test(bareOut.out), bareOut.out);
+check('...and is still half-proven/4', bareOut.code === 4, String(bareOut.code));
+fs.rmSync(bare, { recursive: true, force: true });
+fs.rmSync(gLog, { force: true });
+
 // --- the lint through the CLI: it reports, and it never touches the verdict -------------------
 
 const capture = (args) => {
@@ -769,9 +1209,13 @@ fs.writeFileSync(path.join(probeSuite, 'probe-only-brittle.js'),
 // rewording until it passes (hard rule 5) — so it is checked in all three arms, with findings
 // present in every one. The green and indeterminate arms are the ones that catch an
 // `if (findings.length) return 1`: red already exits 0, so there it is invisible.
+// The `stale-guard` arm runs against the guard pair rather than this one, because a guard file
+// in the suite above would put a third invocation into every count that section pins. Its suite
+// carries a byte-identical copy of the same brittle file, so the "the lint fired here too"
+// half of this check means the same thing in all seven arms.
 const arms = [
   [null, ARGS, 4], [null, GREEN, 0], ['always-green', GREEN, 1], ['always-red', GREEN, 2],
-  ['probe-red', GREEN, 3], ['probe-broken', GREEN, 2],
+  ['probe-red', GREEN, 3], ['probe-broken', GREEN, 2], ['guard-red', GUARD_GREEN, 5],
 ];
 let armsHeld = true; let armsFired = true; const armsSeen = [];
 for (const [mode, args, expected] of arms) {
@@ -783,10 +1227,10 @@ for (const [mode, args, expected] of arms) {
   if (!m || Number(m[1]) < 4) armsFired = false;
 }
 delete process.env.STUB_MODE;
-check('findings never move the exit code, in any of the FIVE verdicts', armsHeld, armsSeen.join(' '));
+check('findings never move the exit code, in any of the SIX verdicts', armsHeld, armsSeen.join(' '));
 check('and the lint is proven to have FIRED in each of those same runs', armsFired);
 check('every exit code the gate can produce was reached in that sweep',
-  new Set(armsSeen.map((s) => s.split(':')[1])).size === 5, armsSeen.join(' '));
+  new Set(armsSeen.map((s) => s.split(':')[1])).size === 6, armsSeen.join(' '));
 
 const loud = capture(GREEN);
 check('the lint runs ONCE, over the fork-point suite only — never over the probe',
@@ -828,4 +1272,337 @@ check('a lint that throws NEVER prints a count of 0 — a silent false clean',
 
 fs.rmSync(tmpRepo, { recursive: true, force: true });
 fs.rmSync(probeRepo, { recursive: true, force: true });
+fs.rmSync(guardRepo, { recursive: true, force: true });
+fs.rmSync(guardProbe, { recursive: true, force: true });
+
+// --- the freeze receipt ------------------------------------------------------------------
+//
+// DESIGN.md §3.2 ("The stale guard, and the receipt"), change-log rows `receipt-design` and
+// `repo-erq`. On a verdict that PROCEEDS the gate leaves `.freeze-gate.json` inside the suite,
+// and §4.12's third admission rule will refuse a candidate whose suite carries none or whose
+// hash disagrees with the branch. Nothing reads it yet, which is exactly why this coverage is
+// re-runnable rather than frozen: the file the enforcer will read is written here, and the two
+// halves ship a task apart.
+//
+// The hash is the part worth being careful about. A receipt that is present, well-formed and
+// WRONG is this repo's signature failure (CLAUDE.md, "assert the artifact is *right*"), and the
+// specific way this one goes wrong is silent: hash the bytes on disk instead of the blob ids and
+// every check below still passes on a repository configured the way the container is, while
+// every freeze on the CRLF reference host produces a receipt the dispatch gate must refuse. So
+// the CRLF fixture is a PAIR — the filtered blob id and the raw-byte one — and it is the only
+// thing here that tells the two implementations apart.
+
+const {
+  suiteHash, workingTreeEntries, treeEntries, isGitRepo, headCommit, normalizeSuiteRel,
+} = suiteHashMod;
+const SUITE = 'tests/acceptance/demo/';
+const E = (p, blob) => ({ path: p, blob });
+const B1 = '1'.repeat(40); const B2 = '2'.repeat(40);
+
+check('runner/suite-hash.js exports the formula', typeof suiteHash === 'function');
+check('...and the gate imports it rather than keeping a second copy',
+  /require\((['"])\.\.\/runner\/suite-hash(\.js)?\1\)/.test(gateSrc));
+
+const hashSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'runner', 'suite-hash.js'), 'utf8');
+const hashRequires = [...hashSrc.matchAll(/require\((['"])([^'"]+)\1\)/g)].map((m) => m[2]);
+// Structural, because the constraint's violation is still green: the module is HOST-ONLY and
+// node-built-ins-only, and the day it grows a repo-file dependency nothing behavioural notices.
+// The `runner/bd.js` precedent, from the other direction (change-log rows `repo-1ie`, `repo-8v0`).
+check('runner/suite-hash.js requires node built-ins only',
+  hashRequires.length > 0 && hashRequires.every((s) => !s.startsWith('.') && !s.startsWith('/')),
+  hashRequires.join(', '));
+
+const hA = suiteHash([E('a.js', B1), E('b.js', B2)]);
+check('suiteHash is 64 lowercase hex', /^[0-9a-f]{64}$/.test(hA), hA);
+check('the order entries arrive in does not matter — the formula sorts',
+  suiteHash([E('b.js', B2), E('a.js', B1)]) === hA);
+check('a changed blob id changes the hash', suiteHash([E('a.js', B2), E('b.js', B2)]) !== hA);
+check('a changed path changes the hash', suiteHash([E('a.js', B1), E('c.js', B2)]) !== hA);
+// The NUL is not decoration: without it `ab` + `cd` and `a` + `bcd` are the same byte string,
+// so two different suites would hash identically and the dispatch gate would admit the wrong one.
+check('the NUL separator is load-bearing — a path and a blob cannot run together',
+  suiteHash([E('ab', 'cd')]) !== suiteHash([E('a', 'bcd')]));
+check('an empty suite hashes the empty string rather than throwing',
+  suiteHash([]) === crypto.createHash('sha256').update('').digest('hex'));
+// Bytewise, not locale-aware: a hash whose value depends on the planning machine's collation is
+// a hash the dispatch gate cannot reproduce. Upper case sorts FIRST bytewise and second under
+// almost every locale, so this pair separates the two.
+check('the sort is bytewise, so an upper-case name sorts first',
+  suiteHash([E('a.js', B2), E('B.js', B1)])
+    === crypto.createHash('sha256').update(`B.js\0${B1}\n`).update(`a.js\0${B2}\n`).digest('hex'));
+check('a trailing slash and a backslash spell the same suite',
+  normalizeSuiteRel('tests\\acceptance\\demo\\') === 'tests/acceptance/demo'
+  && normalizeSuiteRel('./tests/acceptance/demo') === 'tests/acceptance/demo');
+
+// --- the entries the formula is fed, read out of a real repository ---------------------------
+
+const hashRoot = initFixtureRepo(fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-hash-')));
+const hashSuite = path.join(hashRoot, 'tests', 'acceptance', 'demo');
+fs.mkdirSync(path.join(hashSuite, 'nested'), { recursive: true });
+fs.writeFileSync(path.join(hashRoot, '.gitignore'), '*.tmp\n');
+fs.writeFileSync(path.join(hashSuite, 'test.js'), '// a test\n');
+fs.writeFileSync(path.join(hashSuite, 'nested', 'deep.js'), '// deeper\n');
+const hashHead = commitAll(hashRoot, 'suite');
+check('the entries fixture committed', /^[0-9a-f]{40}$/.test(hashHead), hashHead);
+// Three files that must each be treated differently, planted after the commit: one untracked
+// but committable, one the project ignores, and a receipt from an earlier gate run.
+fs.writeFileSync(path.join(hashSuite, 'untracked.js'), '// written during planning\n');
+fs.writeFileSync(path.join(hashSuite, 'scratch.tmp'), 'ignored\n');
+fs.writeFileSync(path.join(hashSuite, RECEIPT_NAME), '{"gateVersion":1}\n');
+
+const entries = workingTreeEntries(hashRoot, SUITE);
+const entryPaths = entries.map((e) => e.path).sort();
+check('a committed file is in the entries', entryPaths.includes('test.js'), entryPaths.join(','));
+check('an UNTRACKED file the project would commit is in the entries too',
+  entryPaths.includes('untracked.js'), entryPaths.join(','));
+check('a .gitignore\'d file is NOT — the branch will never carry it',
+  !entryPaths.includes('scratch.tmp'), entryPaths.join(','));
+check('the receipt itself is NOT — the hash it records cannot include it',
+  !entryPaths.some((p) => p === RECEIPT_NAME), entryPaths.join(','));
+check('a nested path is suite-relative with / separators',
+  entryPaths.includes('nested/deep.js'), entryPaths.join(','));
+check('every blob is a 40-hex object id', entries.every((e) => /^[0-9a-f]{40}$/.test(e.blob)),
+  JSON.stringify(entries));
+check('each blob id is the one git itself computes for that path',
+  entries.every((e) => e.blob === gitOut(hashRoot,
+    ['hash-object', '--path', `tests/acceptance/demo/${e.path}`, '--', `tests/acceptance/demo/${e.path}`])),
+  JSON.stringify(entries));
+// A run-written file lands in the working tree AFTER the gate has hashed. Proven the only way
+// that means anything — the hash of the tree the gate saw, against the hash of the tree once a
+// suite has written beside itself.
+const beforeSideEffect = suiteHash(entries);
+fs.writeFileSync(path.join(hashSuite, 'side.out'), 'written by the suite\n');
+check('a file the suite writes when it runs WOULD change the hash — hence "before the run"',
+  suiteHash(workingTreeEntries(hashRoot, SUITE)) !== beforeSideEffect);
+fs.rmSync(path.join(hashSuite, 'side.out'));
+
+// The committed side, which is what the dispatch gate will read: same formula, same answer, for
+// the two files that are actually on the branch.
+const committed = treeEntries(hashRoot, 'HEAD', SUITE);
+check('treeEntries reads the same suite out of a commit',
+  committed.map((e) => e.path).sort().join(',') === 'nested/deep.js,test.js',
+  JSON.stringify(committed));
+check('...with the same blob ids the working copy yields',
+  committed.every((c) => entries.some((e) => e.path === c.path && e.blob === c.blob)));
+
+check('isGitRepo is true for a repository', isGitRepo(hashRoot) === true);
+check('headCommit is the repository\'s HEAD', headCommit(hashRoot) === hashHead);
+const plainDir = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-plain-'));
+check('isGitRepo is false for a plain directory', isGitRepo(plainDir) === false);
+check('workingTreeEntries refuses a plain directory loudly rather than hashing nothing',
+  (() => { try { workingTreeEntries(plainDir, SUITE); return false; } catch { return true; } })());
+// An unborn HEAD is a legitimate state — a repository onboarded minutes ago — and `null` is the
+// honest answer. The wrong answer is a thrown error or the literal string git prints on stderr.
+const unborn = initFixtureRepo(fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-unborn-')));
+check('headCommit is null on an unborn HEAD, not a crash and not a string',
+  headCommit(unborn) === null, String(headCommit(unborn)));
+fs.rmSync(plainDir, { recursive: true, force: true });
+fs.rmSync(unborn, { recursive: true, force: true });
+
+// THE CRLF PAIR — the only fixture here that separates blob-id hashing from byte hashing. The
+// reference host's checkout is CRLF and the committed blob is LF, so a byte hash disagrees with
+// the branch on every freeze and the dispatch gate refuses every task it exists to admit.
+const crlfRoot = initFixtureRepo(fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-crlf-')), { crlf: true });
+const crlfSuite = path.join(crlfRoot, 'tests', 'acceptance', 'demo');
+fs.mkdirSync(crlfSuite, { recursive: true });
+fs.writeFileSync(path.join(crlfSuite, 'test.js'), '// a test\r\nprocess.exit(1);\r\n');
+commitAll(crlfRoot, 'crlf suite');
+const crlfCommitted = treeEntries(crlfRoot, 'HEAD', SUITE);
+const crlfWorking = workingTreeEntries(crlfRoot, SUITE);
+const crlfRawBlob = gitOut(crlfRoot, ['hash-object', '--no-filters', '--', 'tests/acceptance/demo/test.js']);
+check('CRLF fixture: the working copy really does carry \\r',
+  /\r\n/.test(fs.readFileSync(path.join(crlfSuite, 'test.js'), 'utf8')));
+check('CRLF fixture: the committed blob really does not',
+  !/\r/.test(git(crlfRoot, ['cat-file', '-p', crlfCommitted[0].blob]).stdout));
+check('CRLF fixture: the working-copy entries carry the COMMITTED blob ids',
+  suiteHash(crlfWorking) === suiteHash(crlfCommitted),
+  `${JSON.stringify(crlfWorking)} vs ${JSON.stringify(crlfCommitted)}`);
+check('CRLF fixture: and the raw bytes would have hashed to something else — the pair discriminates',
+  /^[0-9a-f]{40}$/.test(crlfRawBlob) && crlfRawBlob !== crlfCommitted[0].blob,
+  `${crlfRawBlob} vs ${crlfCommitted[0].blob}`);
+fs.rmSync(crlfRoot, { recursive: true, force: true });
+fs.rmSync(hashRoot, { recursive: true, force: true });
+
+// --- the gate writing it -----------------------------------------------------------------
+
+const RSTUB = `
+const fs = require('fs'); const path = require('path'); const p = process.argv[2];
+const mode = process.env.RSTUB_MODE || 'honest';
+if (process.env.RSTUB_LOG) fs.appendFileSync(process.env.RSTUB_LOG, p + '\\n');
+const isControl = /_control|freeze-gate-control/.test(p);
+const inProbe = fs.existsSync(path.join(process.cwd(), '.is-probe'));
+if (mode === 'always-green') process.exit(0);
+if (mode === 'always-red') process.exit(1);
+if (isControl) process.exit(0);
+if (inProbe) process.exit(mode === 'probe-red' ? 1 : 0);
+let n = 0; try { n = fs.readdirSync(p).length; } catch { n = 0; }
+process.exit(n > 0 ? 1 : 0);
+`;
+const rcRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-receipt-'));
+const rstubPath = path.join(rcRoot, 'stub.js');
+fs.writeFileSync(rstubPath, RSTUB);
+process.env.FREEZE_GATE_CMD = `${q(process.execPath)} ${q(rstubPath)}`;
+
+// A repo-shaped tree, `git: false` for a probe. The probe is deliberately NOT a repository:
+// only `--repo` is hashed, and requiring history of a throwaway probe would be a new cost for
+// nothing.
+function receiptFixture(name, { git: isGit = true, probe = false } = {}) {
+  const dir = path.join(rcRoot, name);
+  const suite = path.join(dir, 'tests', 'acceptance', 'demo');
+  const control = path.join(dir, 'tests', 'acceptance', '_control');
+  fs.mkdirSync(suite, { recursive: true });
+  fs.mkdirSync(control, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'pipeline.config.json'), JSON.stringify({ verifyCommand: 'stubbed' }));
+  fs.writeFileSync(path.join(suite, 'test.js'), '// a test\n');
+  fs.writeFileSync(path.join(control, 'c.js'), 'process.exit(0);\n');
+  if (probe) fs.writeFileSync(path.join(dir, '.is-probe'), '');
+  if (isGit) { initFixtureRepo(dir); commitAll(dir, 'fixture'); }
+  return dir;
+}
+const rcReceipt = (repo) => path.join(repo, 'tests', 'acceptance', 'demo', RECEIPT_NAME);
+const rcRead = (repo) => { try { return fs.readFileSync(rcReceipt(repo), 'utf8'); } catch { return null; } };
+const rcJson = (repo) => { try { return JSON.parse(rcRead(repo)); } catch { return null; } };
+
+const rcRepo = receiptFixture('target');
+const rcProbe = receiptFixture('probe', { git: false, probe: true });
+const RC_ARGS = ['--repo', rcRepo, '--tests', SUITE];
+const RC_GREEN = [...RC_ARGS, '--green', rcProbe];
+const rcSpec = path.join(rcRoot, 'spec.md');
+fs.writeFileSync(rcSpec, SPEC);
+
+const redRun = capture([...RC_GREEN, '--spec', rcSpec]);
+const rec = rcJson(rcRepo);
+check('a red verdict with a green probe writes the receipt', redRun.code === 0 && rec !== null,
+  `${redRun.code} / ${rcRead(rcRepo)}`);
+check('the receipt carries exactly the eight agreed keys',
+  rec !== null && Object.keys(rec).sort().join(',')
+    === 'brittleness,gateHead,gateVersion,guards,probeSupplied,suiteHash,verdict,writtenAt',
+  rec && Object.keys(rec).sort().join(','));
+check('gateVersion is the exported integer, not a retyped literal',
+  rec !== null && rec.gateVersion === RECEIPT_VERSION && Number.isInteger(RECEIPT_VERSION));
+check('the recorded verdict is the printed verdict', rec !== null && rec.verdict === 'red'
+  && /^RED:/m.test(redRun.out));
+check('probeSupplied is true when --green was given', rec !== null && rec.probeSupplied === true);
+check('gateHead is the target repository\'s HEAD',
+  rec !== null && rec.gateHead === gitOut(rcRepo, ['rev-parse', 'HEAD']));
+check('guards is the count of [guard] lines in --spec', rec !== null && rec.guards === 2,
+  rec && String(rec.guards));
+check('writtenAt is an ISO-8601 instant',
+  rec !== null && /^\d{4}-\d\d-\d\dT[\d:.]+Z$/.test(String(rec.writtenAt)), rec && rec.writtenAt);
+check('the gate SAYS it wrote the receipt, and where',
+  /receipt written: tests\/acceptance\/demo\/\.freeze-gate\.json/.test(redRun.out),
+  redRun.out.split('\n').slice(-4).join(' | '));
+
+// The hash on the artifact, against the formula recomputed here. Present-and-well-formed is
+// half a check; this is the other half.
+check('the recorded hash is the shared formula over the shared entries',
+  rec !== null && rec.suiteHash === suiteHash(workingTreeEntries(rcRepo, SUITE)),
+  `${rec && rec.suiteHash} vs ${suiteHash(workingTreeEntries(rcRepo, SUITE))}`);
+check('...and it is 64 lowercase hex', rec !== null && /^[0-9a-f]{64}$/.test(String(rec.suiteHash)));
+const secondRun = capture(RC_GREEN);
+check('a second run, with the first receipt on disk, agrees with the first',
+  secondRun.code === 0 && rcJson(rcRepo).suiteHash === rec.suiteHash);
+check('...and a re-run is not refused for a probe that lacks the receipt', secondRun.code === 0,
+  `${secondRun.code}: ${secondRun.out.slice(0, 200)}`);
+check('the probe never gains a receipt', !fs.existsSync(rcReceipt(rcProbe)));
+check('compareSuites does not call the receipt a file the probe is missing',
+  !compareSuites(path.join(rcRepo, 'tests', 'acceptance', 'demo'),
+    path.join(rcProbe, 'tests', 'acceptance', 'demo')).absent.includes(RECEIPT_NAME));
+check('...nor a file the probe added, when the probe is the side carrying one',
+  (() => {
+    fs.writeFileSync(rcReceipt(rcProbe), '{"stale":true}\n');
+    const d = compareSuites(path.join(rcRepo, 'tests', 'acceptance', 'demo'),
+      path.join(rcProbe, 'tests', 'acceptance', 'demo'));
+    fs.rmSync(rcReceipt(rcProbe));
+    return !d.extra.includes(RECEIPT_NAME) && !d.differing.includes(RECEIPT_NAME);
+  })());
+// Editing a test still moves the hash — the exclusion is the receipt and nothing else.
+fs.appendFileSync(path.join(rcRepo, 'tests', 'acceptance', 'demo', 'test.js'), '// one more byte\n');
+capture(RC_ARGS);
+check('one appended byte in a test moves the recorded hash',
+  rcJson(rcRepo).suiteHash !== rec.suiteHash);
+
+// Half-proven proceeds and is recorded as such. `guards: null` rather than 0 without --spec:
+// "no spec was read" and "a spec declaring no guards" are different facts.
+fs.rmSync(rcReceipt(rcRepo));
+const halfRun = capture(RC_ARGS);
+const half = rcJson(rcRepo);
+check('a half-proven verdict writes the receipt too — a freeze with no probe proceeds',
+  halfRun.code === 4 && half !== null, String(halfRun.code));
+check('...recorded as half-proven, with probeSupplied false',
+  half !== null && half.verdict === 'half-proven' && half.probeSupplied === false);
+check('...and guards null, never 0, when no --spec was read',
+  half !== null && half.guards === null, half && String(half.guards));
+
+// The three verdicts that do NOT proceed write nothing at all, and leave whatever is there
+// untouched: a stale receipt beside a failing verdict is the operator's evidence, and the
+// dispatch gate's hash comparison is what turns it into a refusal.
+for (const [mode, expected, label] of [
+  ['always-green', 1, 'green'], ['always-red', 2, 'indeterminate'], ['probe-red', 3, 'unreachable'],
+]) {
+  fs.writeFileSync(rcReceipt(rcRepo), 'SENTINEL');
+  process.env.RSTUB_MODE = mode;
+  const r = capture(RC_GREEN);
+  delete process.env.RSTUB_MODE;
+  check(`a ${label} verdict still exits ${expected}`, r.code === expected, String(r.code));
+  check(`a ${label} verdict leaves an existing receipt byte-identical`, rcRead(rcRepo) === 'SENTINEL');
+}
+fs.rmSync(rcReceipt(rcRepo));
+
+// The brittleness count is the lint's, and `null` — never 0 — when the lint could not run. A
+// count of zero from a pass that never executed is the silent false clean the printed
+// `unavailable` line exists to prevent; the artifact has to keep the two apart for the same
+// reason stdout does. Injected at the seam, exactly as the stdout half above is.
+fs.writeFileSync(path.join(rcRepo, 'tests', 'acceptance', 'demo', 'brittle.js'),
+  "assert.deepStrictEqual(keys, ['alpha', 'beta', 'gamma']);\n");
+const withFindings = capture(RC_ARGS);
+check('brittleness on the receipt is the count the report printed',
+  rcJson(rcRepo).brittleness === Number(withFindings.out.match(COUNT_LINE)[1])
+  && rcJson(rcRepo).brittleness >= 1, withFindings.out.match(COUNT_LINE)[0]);
+fs.rmSync(rcReceipt(rcRepo));
+const realStat = fs.statSync;
+let lintless;
+try {
+  fs.statSync = (p, ...rest) => {
+    if (String(p).replace(/\\/g, '/').includes('tests/acceptance/demo')) throw new Error('injected read failure');
+    return realStat(p, ...rest);
+  };
+  lintless = capture(RC_ARGS);
+} finally { fs.statSync = realStat; }
+check('a lint that could not run still leaves a receipt', lintless.code === 4 && rcJson(rcRepo) !== null,
+  String(lintless.code));
+check('...recording brittleness as null, never 0', rcJson(rcRepo) !== null
+  && rcJson(rcRepo).brittleness === null, JSON.stringify(rcJson(rcRepo)));
+
+// A --repo that is not a git repository: refused before a single verify run, and nothing
+// written. Every value on the receipt comes from git, so a plain directory could only produce a
+// receipt hashing nothing — present, well-formed and meaningless.
+const rcPlain = receiptFixture('plain', { git: false });
+const rcLog = path.join(rcRoot, 'runs.log');
+fs.writeFileSync(rcLog, '');
+process.env.RSTUB_LOG = rcLog;
+const notRepo = capture(['--repo', rcPlain, '--tests', SUITE]);
+delete process.env.RSTUB_LOG;
+check('a --repo that is not a git repository exits 2', notRepo.code === 2, String(notRepo.code));
+check('...and the refusal names the path and says why',
+  notRepo.out.includes(rcPlain) && /git repositor/i.test(notRepo.out), notRepo.out.slice(0, 200));
+check('...refused BEFORE any verify run', fs.readFileSync(rcLog, 'utf8').trim() === '',
+  fs.readFileSync(rcLog, 'utf8'));
+check('...and no receipt is written', !fs.existsSync(rcReceipt(rcPlain)));
+
+// A receipt that cannot be written is a failure of the whole invocation, not a warning under a
+// passing verdict: a verdict nothing recorded is a freeze the runner will refuse. Provoked
+// portably by making the path a DIRECTORY — chmod is unreadable in a container and ignored on
+// the Windows host.
+const rcBlocked = receiptFixture('blocked');
+fs.mkdirSync(rcReceipt(rcBlocked));
+const blockedRun = capture(['--repo', rcBlocked, '--tests', SUITE]);
+check('a receipt write that fails exits 2, not the verdict\'s own code', blockedRun.code === 2,
+  String(blockedRun.code));
+check('...and the message names the receipt path', blockedRun.out.includes(RECEIPT_NAME),
+  blockedRun.out.slice(-300));
+
+delete process.env.FREEZE_GATE_CMD;
+fs.rmSync(rcRoot, { recursive: true, force: true });
+
 process.exit(failed);

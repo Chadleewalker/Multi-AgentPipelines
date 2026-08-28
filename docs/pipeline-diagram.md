@@ -19,8 +19,10 @@ flowchart TB
   C --> D["Write acceptance tests<br/>before any code exists"]
   SP2["SLOT 2 — domain test author<br/>writes the domain's own checks<br/>energy conserved · contrast ratio"] -.-> D
   D --> E["Coverage check<br/>every criterion has a test"]
-  E --> FG["Freeze gate — the tests must FAIL at the fork point and PASS in a probe<br/>red 0 · green 1 · indeterminate 2 · unreachable 3 · half-proven 4 · deterministic, never an LLM"]
+  E --> FG["Freeze gate — the tests must FAIL at the fork point and PASS in a probe<br/>red 0 · green 1 · indeterminate 2 · unreachable 3 · half-proven 4 · stale-guard 5<br/>deterministic, never an LLM"]
+  FG -.-> SG["Guard subset — every test file declaring itself &#91;guard&#93; in its first<br/>ten comment lines, run ALONE against the fork point and required GREEN there<br/>red = stale-guard 5, never a pass · beats 0/3/4 · short-circuits the probe"]
   FG -.-> BL["Brittleness lint — the same run reads the suite's TEXT<br/>literal-name-list · literal-count · literal-digest · branch-self-diff<br/>count printed even at zero · skips named · never the exit code"]
+  SG -.-> F
   BL -.-> F
   FG --> F{"You approve intent"}
   F -->|"needs changes"| B
@@ -80,11 +82,29 @@ fixture is broken are the same observation from the fork point alone. `unreachab
 there too and is never a pass; `half-proven` is red with no probe supplied, which is legal and
 proceeds, carried into the approval pass beside the guard count. A **broken** probe is
 `indeterminate`, never `unreachable` — exit 3 is reachable only behind a green probe control.
-The lint hangs off it dotted because it decides nothing: a red test can still be the wrong
+
+The upper dotted branch is the guard subset (§3.2 "the stale guard"; change-log rows
+`stale-guard-design` and `repo-i4b`). It is dotted like the lint because it is a second pass
+over the same suite, and unlike the lint it *does* reach the exit code — `stale-guard` 5, the
+sixth verdict and the only one the whole-suite run cannot produce. A guard is the one kind of
+criterion that is supposed to be green before any work exists, so red there means the pin has
+already moved rather than that the implementation is missing; it beats `red`, `unreachable`
+and `half-proven` and short-circuits the probe, because no probe result can change what a
+stale pin at the fork point means. A guard subset that could not *run* is `indeterminate`
+naming the guard side, on exactly the reasoning that keeps a broken probe off exit 3.
+The lint hangs off the gate dotted because it decides nothing: a red test can still be the wrong
 test, so the same run names the assertions whose *expected side is a literal the author
 typed*, and each finding takes a disposition in the planning draft the way a critic's does.
 It arrives at the approval pass as evidence, never as a gate — findings cannot fail a
 freeze, and a clean pass cannot rescue a green verdict.
+
+A verdict that *proceeds* — `red` 0 or `half-proven` 4 — also leaves a **receipt** in the
+suite it just judged, `tests/acceptance/<issue-id>/.freeze-gate.json` (§3.2; change-log rows
+`receipt-design` and `repo-erq`). It is not drawn as a node because it changes no path here:
+the receipt is committed with the tests in step 6 and read by nothing yet. What it will change
+is the queue's admission, one box to the right — §4.12's third admission rule refuses a
+candidate whose suite carries no receipt, or whose recorded hash disagrees with the branch,
+and that arrow gets drawn when the enforcer ships.
 
 The dotted branch off the freeze is the handoff between the two halves of the process (§3.9,
 change-log rows `batch-ready-marker`, `repo-0b3` and `repo-8v0`). A planning session's last act

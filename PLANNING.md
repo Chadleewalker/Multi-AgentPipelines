@@ -280,6 +280,18 @@ means however crude, and hand it to `--green`. It is not an implementation and n
   pass the way the guard count is carried, so the user is approving a spec they know is proven
   on one side only. Prefer a probe for anything hard, anything whose tests build fixtures of
   their own, and anything where a criterion's *setup* could fail without the check noticing.
+- **exit 5 — stale-guard. Never a pass.** A test file that declares itself a guard — the
+  literal `[guard]` token on a comment line within its first ten lines, the same word the spec
+  uses — is run *alone* against the fork point, and this one came back red. A guard says
+  "existing behaviour X still holds", so it is the one kind of criterion that is *supposed* to
+  be green before any work exists: red here cannot mean the implementation is missing, because
+  there is nothing for it to be waiting for. It means the pin has already moved — the number,
+  the key or the file it names changed before you got here. It beats exits 0, 3 and 4 and
+  short-circuits the probe, and the report names the file. Re-read that guard against the tree
+  as it stands now, re-pin it or drop the criterion, and re-run the gate. A guard subset that
+  could not *run* is exit 2 naming the guard side, on the same reasoning that puts a malformed
+  probe on 2 rather than 3. The count of guard files is printed on every run, at zero too, and
+  belongs in the approval pass beside the count of `[guard]` labels in the spec.
 
 **Then read what the gate says, not only how it exited.** Below the verdict the same run
 prints a second, textual pass over the suite it is about to bless (§3.2, move 6; change-log
@@ -315,6 +327,23 @@ which is why the gate reads the text as well.
 - **Skips are findings too.** Each skipped path is named with a reason — `binary`,
   `extension`, `unreadable`. A suite whose real assertions all sit in a file the pass could
   not read has been blessed by a discriminator that never looked at it.
+
+**A verdict that proceeds leaves a receipt** (§3.2; change-log rows `receipt-design` and
+`repo-erq`). On exit 0 and on exit 4 the gate writes `.freeze-gate.json` into the suite
+directory it just judged and says so on the last line of its report. It records the gate
+version, the verdict, whether a probe was supplied, a content hash of the suite, the
+checkout's HEAD, the guard and brittleness counts, and the moment it ran. Three things follow
+for a planning session:
+
+- **`--repo` must be a git repository.** The hash is over the blob ids git will store, not
+  the bytes on disk — this machine's checkout is CRLF and the committed blob is LF, so a byte
+  hash would disagree with the branch on every freeze. A `--repo` with no history is refused
+  at exit 2 before anything runs.
+- **The receipt is part of the freeze**, not a by-product: it goes to the integration branch
+  in the same commit as the tests (step 6), and it is inside `tests/acceptance/`, so the
+  verifier already diffs it and a container that edits it ends the task `tampered`.
+- **Re-run the gate after touching a test.** The hash is of the suite as it stood when the
+  gate ran, so an edit after the fact leaves a receipt that describes a suite nobody gated.
 
 A pure refactor's only honest criteria are guards, which is why they are labelled rather
 than forbidden — and a spec that is *nothing but* guards is the sign that the task has no
@@ -370,6 +399,11 @@ On approval, in the target repo:
    is the same as absent. A refused issue is never dispatched, never touched in Beads and
    stays `open` — it appears in the report as `undispatchable` with the remedy, rather than
    burning three attempts and a container on a verifier that could only ever exit 1.
+   **Commit `.freeze-gate.json` with the tests.** The gate wrote it into the suite directory
+   on the verdict that let you get this far (step 4; §3.2), it records the hash of the suite
+   as gated, and it is what turns "the gate was run" from a step the playbook asks for into a
+   fact the runner can check. If the suite changed after the gate ran, re-run the gate first
+   — the receipt would otherwise describe a suite nobody gated.
 2. Create the issue with all five fields via the wrapper (refuses a missing design-ref):
    `scripts/new-issue.sh -t "<title>" -d "<description>" -c "<constraints>"
    -a "<acceptance>" -r "<design-ref>" [-p 0-4] [-D dep-id,dep-id] -C <target-repo>`

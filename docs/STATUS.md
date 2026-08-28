@@ -4,7 +4,7 @@ Where the build actually is. Update this when something changes — it is the fi
 session reads to pick up the thread, and unlike a machine-local memory folder it travels
 with the repo.
 
-_Last updated: 2026-08-26_
+_Last updated: 2026-08-28_
 
 ## Where things stand
 
@@ -1578,6 +1578,102 @@ its node in this PR. Two suites — `test-feed.sh` and `test-worktree.sh` — ha
 row in the table below and got one here, which is the same rot repo-4d8 recorded: grep the
 table for every `scripts/test-*.sh` that exists, because a missing row is invisible to a
 count.
+## A `[guard]` test red at the fork point is a stale pin (`repo-i4b`, 2026-08-28)
+
+**Proven.** `scripts/freeze-gate.js` gains `guardFiles(dir)`, `withGuardDir(...)`, a sixth
+`verdictFor` argument and the sixth verdict: `stale-guard`, exit 5. A test file declaring
+itself a guard — the literal `[guard]` token, any case, on a comment line within its first
+ten lines — is copied into `<parent of --tests>/.freeze-gate-guards-<pid>-<seq>/` and run
+**alone** through the project's own verify command. Green there is the only acceptable
+answer. Red is exit 5, it beats `red`, `unreachable` and `half-proven`, and it
+short-circuits the probe, so a stale guard with `--green` is three invocations rather than
+five. The subset runs once, only from a fork point red at exactly 1 on a green control, and
+reuses that tree's control result. A subset that could not run — above 1, killed, a failed
+spawn, a copy that threw — is `indeterminate` naming the guard side, never 5.
+`tests/unit/freeze-gate.test.js` 170 → 243 checks, `scripts/test-freeze-gate.sh` 37 → 47 of
+its own and its floor 110 → 170. §3.2's stale guard, built; the receipt writer beside it
+landed the same day (`repo-erq`, below).
+
+**Why the whole-suite red cannot see it.** A guard is the one criterion that is *supposed*
+to be green before any work exists, which is exactly what makes a red one invisible: one
+ordinary criterion failing makes the run non-zero, and the stale guard hides inside that
+number. Four of the twelve suites that reached `stuck` in one fortnight were guards pinned
+to something that had already moved before the task was frozen — and no amount of
+suite-level red could have said so, because the suite was correctly red either way. Running
+the guards alone is the only observation that separates "the implementation is missing"
+from "there is nothing left for this to be waiting for".
+
+**Two decisions that read as details.** The subset directory is a **sibling** of the suite
+at the same depth, not a temp directory: every frozen suite resolves its own root as
+`path.resolve(__dirname, '..', '..', '..')`, so a guard judged from anywhere else resolves a
+different tree and fails for a reason unrelated to its pin. The acceptance suite's
+real-runner criterion is a pair written as one criterion for exactly this — the same guard
+file, green then red, in the same tree — and a sibling-depth mistake fails only its green
+half. And a guard that is absent, green, or a call made with five arguments all answer
+identically, which is what lets the frozen `repo-inj` suite (which pins the five-verdict
+table and cannot be edited) go on meaning what it meant. It is still green.
+
+**A criterion this task could not satisfy as written, and why it is not a defect.**
+Criterion 6 asks for "a `FREEZE_GATE_CMD` naming a command that does not exist behind a
+red-on-green fork point → 2 naming the guard side". One environment variable drives all four
+invocations, so a genuinely missing command takes the fork point down with it and the guard
+side is never reached — that state is unreachable from a command line by construction. The
+frozen suite does not ask for it (its A6 covers the guard-broken shape only). What ships
+covers the branch from both sides instead: `verdictFor` is driven with an errored, a
+signalled, a null-status and an exit-127 guard run, and the CLI is driven with a stub that
+answers the subset exactly as `sh -c` answers a missing command — 127 on stderr. Raised as a
+spec concern on the run.
+
+**Host obligation.** `docs/pipeline-map.html` is one further move behind: its planning panel
+now omits the guard subset as well as the gate itself.
+## The freeze gate leaves a receipt (`repo-erq`, 2026-08-28)
+
+**Proven.** On a verdict that *proceeds* — `red` (0) or `half-proven` (4) — `scripts/freeze-gate.js`
+writes `tests/acceptance/<issue-id>/.freeze-gate.json` and names it on the last lines of its
+report. Eight fields: `gateVersion` (1), `verdict`, `probeSupplied`, `suiteHash`, `gateHead`,
+`guards`, `brittleness`, `writtenAt`. Exits 1, 2 and 3 write nothing and leave an existing
+receipt byte-identical — a stale receipt beside a failing verdict is evidence, and it is the
+dispatch gate's hash comparison that turns it into a refusal. `tests/unit/freeze-gate.test.js`
+170 → 237 checks, `scripts/test-freeze-gate.sh`'s floor 110 → 220.
+
+**The hash is over git blob ids, and the formula lives in one file.** `runner/suite-hash.js`
+is new, host-only and node-built-ins-only: `suiteHash(entries)` sorts bytewise by suite-relative
+path and hashes `path\0blob\n` with sha256, `workingTreeEntries` reads the planning checkout
+(`git ls-files --cached --others --exclude-standard`, then `git hash-object --path`), and
+`treeEntries` reads a commit, which is the side §4.12's third admission rule will use. Blob
+ids rather than bytes because the reference host's checkout is CRLF and the committed blob is
+LF: a byte hash would disagree with the branch on **every** freeze and the dispatch gate would
+refuse every task it exists to admit. Both re-runnable suites carry the CRLF pair — the
+filtered blob id beside the raw-byte one — because it is the only fixture that tells the two
+implementations apart, and every other fixture in the file answers the same way for both.
+
+**Taken before the suite is run.** A suite is entitled to write beside itself while it
+executes, and those files are untracked entries inside the suite directory by the time the
+runs are over; hashed afterwards, the receipt would pin a state only this machine has ever
+seen. The frozen suite proves it with a stub that drops a file into the directory it is
+judging, and the unit suite proves the same fact from the other side — that such a file *would*
+move the hash.
+
+**Two new refusals, both at exit 2.** A `--repo` that is not a git repository is refused before
+a single verify run: every value on the receipt comes from git, so the alternative is a receipt
+that hashes nothing — present, well-formed and meaningless. And a receipt that cannot be
+written fails the whole invocation rather than warning under a passing verdict, naming the
+path, because a verdict nothing recorded is a freeze the runner would refuse anyway.
+
+**`compareSuites` now excludes the receipt.** It is written into the fork point's suite and
+never into the probe, so from the second run onwards an unfiltered comparison would call it a
+file the probe is *missing* and refuse — turning every re-run of a gated suite into an exit 2.
+Excluded on both sides, since a probe copied from a gated tree carries a stale one.
+
+**Nothing reads the receipt yet.** §4.12's third admission rule is the task after this one and
+is marked *Not built yet* in `DESIGN.md`. That split is exactly why the coverage is re-runnable:
+`tests/acceptance/repo-erq/` gated the writer once and never runs again, and the enforcer lands
+a task later against a file this task defined.
+
+**Host obligation.** `docs/pipeline-map.html` is exempt from task docs phases and nothing else
+updates it; its planning panel now trails the freeze gate by four moves. Redraw with
+`node scripts/build-pipeline-map.js` after editing; the builder needs
+`tools/mapbuild/node_modules` and cannot run in a container.
 
 ## What's next
 
@@ -1793,7 +1889,7 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-verify-buffer.sh` | the verifier's capture limit (change-log row `verify-nobuffer`) — a loud passing suite is a pass, a loud failing one is still a fail |
 | `scripts/test-pipeline-map.sh` | the reader's map drawn at build time (change-log row `map-prerender`) — a good SVG's stylesheet versus a real error card, neither check meaning anything alone |
 | `scripts/test-batch.sh` | the batch marker reader (change-log rows `repo-0b3`, `repo-8v0`) — the marker name anchored at both ends, the manifest-less run dated from `run.log`, the conservative `run-time-unknown` direction, the degraded labels, byte-identical repeat output, the pure-reader contract checked by sha1 snapshot and parsed `require` specifiers, and the live-queue reconciliation driven through the `PIPELINE_BD_CMD` seam: the runner's own epic filter, the `-C` slot, a queue past 1 MiB, and every degraded reason against the reconciled one |
-| `scripts/test-freeze-gate.sh` | the fork-point red gate, its GREEN-side probe and its brittleness lint (change-log rows `freeze-gate-red`, `repo-uw6`, `repo-inj`) — every verdict from a real command line including `unreachable` 3 and `half-proven` 4, the broken-probe/red-probe **pair** that separates 2 from 3, a probe refused by name for every unusable path, a probe missing the runner under the REAL verify command, and — the nine-row decision table from every side, the control convention, the empty-probe fallback cleaned up even on a throw, and for the lint the **near-miss pairs first**: two computed digests and git against a self-created ref (the house patterns a `createHash`- or `git diff`-keyed detector flags), `> 0` / `=== 0` / `=== 1` against `=== N`, an input list against an expected one, plus line numbers over CRLF, a split assertion reported where it starts, the three skip reasons, and a lint that throws printing `unavailable` rather than a `0` |
+| `scripts/test-freeze-gate.sh` | the fork-point red gate, its GREEN-side probe, its guard subset, its receipt and its brittleness lint (change-log rows `freeze-gate-red`, `repo-uw6`, `repo-inj`, `repo-i4b`) — every verdict from a real command line including `unreachable` 3, `half-proven` 4 and `stale-guard` 5, the broken-probe/red-probe **pair** that separates 2 from 3, a probe refused by name for every unusable path, a probe missing the runner under the REAL verify command, and — the nine-row decision table from every side, the control convention, the empty-probe fallback cleaned up even on a throw, and for the lint the **near-miss pairs first**: two computed digests and git against a self-created ref (the house patterns a `createHash`- or `git diff`-keyed detector flags), `> 0` / `=== 0` / `=== 1` against `=== N`, an input list against an expected one, plus line numbers over CRLF, a split assertion reported where it starts, the three skip reasons, and a lint that throws printing `unavailable` rather than a `0`; and for the guard subset the near-miss pairs again — a token on the tenth line against one on the eleventh, a token on a comment line against the same token inside a STRING (which is what a test *about* guards looks like), a nested file against a top-level one, and a binary file against a readable one — plus the invocation counts that are the only evidence the subset ran at all (three without a probe, five with, three again behind a stale guard) and `guard files: 0` printed for a suite that has none |
 | `scripts/test-dispatch-gate.sh` | the ready queue's second admission rule (change-log rows `dispatch-gate`, `repo-5yu`) — the origin-versus-`targetRepoRemote` pair that discriminates this design from a working-tree check, the `ls-remote --symref` link of the branch chain against a `master` project, an unresolvable branch aborting rather than guessing, a sibling id that merely extends another, the `-d`, the throwaway repository removed on the abort path too, `gitTimeoutMs` at the spawn and at config load, and every `spawnSync` in `runner/queue.js` built from one exported builder |
 | `scripts/test-feed.sh` | the live queue feed (change-log row `live-queue-feed`) — a poll that keeps returning an already-dispatched issue, one idle worker beside a working one at concurrency 2, a throwing poll beside one returning `ok:false`, and the manifest's `feed` block against the ending vocabulary; `now` and `wait` injected, so nothing turns on wall clock |
 | `scripts/test-worktree.sh` | one folder per agent session (change-log row `parallel-sessions`) — a worktree dirty with only an untracked file beside one with a tracked modification, a clean worktree holding a commit on no remote, `new` invoked from inside a worktree, and two refusals pinned by *this tool's* message rather than by an exit code git would have produced anyway |
