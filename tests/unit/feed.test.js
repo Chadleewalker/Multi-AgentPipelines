@@ -456,6 +456,69 @@ async function drain(source, concurrency, body = async () => {}) {
     zeroPoll.ok === false && /feedPollSeconds/.test(zeroPoll.error));
 
   // ===================================================================================
+  // THE STARTUP ROSTER'S REFUSALS SURVIVE A RUN THAT NEVER POLLS
+  //
+  // Every check above feeds a refusal in through poll(). A run with the feed OFF — the
+  // default, and what every project here actually runs — polls exactly zero times, so a
+  // refusal read at startup reaches the manifest only if the SOURCE was seeded with it.
+  // It was not, for two days: the report of a wholly refused queue read "0 task(s): none"
+  // and named none of the eight issues the run had just declined, which is the same
+  // picture a project with nothing queued produces.
+  //
+  // READ R1-R4 AND R6 AS ONE FIXTURE. R1-R4 pin the SOURCE’s half of the contract: a
+  // seeded roster of refusals must survive a run that never polls. They pass against the
+  // broken build too, because the source was never wrong — run.js simply never handed it
+  // the refusals. R6 is the check that goes red on the real defect, and it is a call-site
+  // read rather than a behavioural one because run.js reaches that call only after
+  // loadToken and the Docker preflight, which no Docker-free suite can execute. Deleting
+  // R6 as “just a grep” leaves four green checks over a build that reports nothing.
+  // ===================================================================================
+  {
+    const refusal = { issue: issue('z-1'), reason: 'no frozen acceptance suite at tests/acceptance/z-1/ on main' };
+    const source = createFeedSource([], {
+      poll: () => { throw new Error('a run with the feed off must never poll'); },
+      concurrency: 1,
+      idleGraceMs: 0,
+      undispatchable: [refusal],
+    });
+    const { dispatched } = await drain(source, 1);
+    check('R1 a wholly refused queue dispatches nothing and ends drained',
+      dispatched.length === 0 && source.ending() === ENDINGS.DRAINED && source.polls() === 0);
+    const left = source.undispatchable();
+    check('R2 and the startup refusal still reaches the report, with its reason',
+      left.length === 1 && left[0].issue.id === 'z-1' && /frozen acceptance suite/.test(left[0].reason));
+  }
+  {
+    // The same, beside a task that DOES dispatch: the half-refused queue is the shape that
+    // hid the defect, because its report was non-empty and looked right.
+    const refusal = { issue: issue('y-2'), reason: 'no frozen acceptance suite at tests/acceptance/y-2/ on main' };
+    const source = createFeedSource([issue('y-1')], {
+      poll: () => { throw new Error('a run with the feed off must never poll'); },
+      concurrency: 1,
+      idleGraceMs: 0,
+      undispatchable: [refusal],
+    });
+    const { dispatched } = await drain(source, 1);
+    check('R3 the dispatchable half of a queue still runs', dispatched.includes('y-1@0'));
+    check('R4 and the refused half is still named, not silently dropped',
+      source.undispatchable().map((u) => u.issue.id).join() === 'y-2');
+  }
+  {
+    // The defect was a MISSING ARGUMENT at one call site, not a logic error, so no test that
+    // drives runner/feed.js can see it: every check above passes against the broken build.
+    // run.js reaches this call only after loadToken and the Docker preflight, which no
+    // Docker-free suite can execute, so the call site is read as text — the same move the
+    // manifest-contract block below makes against the schema.
+    const src = fs.readFileSync(path.join(ROOT, 'runner', 'run.js'), 'utf8');
+    const at = src.indexOf('createFeedSource(');
+    const close = src.indexOf(String.fromCharCode(10) + '  });', at);
+    const call = at >= 0 && close > at ? src.slice(at, close) : null;
+    check('R5 runner/run.js builds its source with createFeedSource', !!call);
+    check('R6 and passes the startup roster’s refusals into it — the two-day regression',
+      !!call && call.includes('undispatchable: q.undispatchable'));
+  }
+
+  // ===================================================================================
   // THE MANIFEST CONTRACT — the schema admits what run.js writes
   // ===================================================================================
   {
