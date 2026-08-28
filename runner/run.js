@@ -19,8 +19,8 @@ const { startRun } = require('./log');
 const { preflight, networkDown } = require('./preflight');
 const { release: releaseLock } = require('./lock');
 const {
-  readyQueue, queueSummary, claim, exportIssue, finish, outcomeFor, attemptNotes,
-  undispatchableRow,
+  readyQueue, claim, exportIssue, finish, outcomeFor, attemptNotes,
+  undispatchableRow, logQueueRead, logUndispatched,
 } = require('./queue');
 const { prepare, hasCommits, collectArtifacts, discard } = require('./workspace');
 const { runTask } = require('./container');
@@ -133,6 +133,88 @@ async function drainQueue(source, taskFn, concurrency) {
   // body resolved `undefined` leaves a hole that `Array.from` normalises away, so callers see
   // a real list at every index rather than a sparse array they have to know about.
   return Array.from(results);
+}
+
+// ---- the two ledger-only task facts (§4.12, §5; change-log row `repo-3xw`) --------------
+// Neither has a prose form, and that is the point: `run.log` already tells a human how the
+// task ended, and nothing it could say would let a reader ask "did the last two attempts fail
+// the same set of checks?" without re-parsing a verifier log it may no longer have. So these
+// go to the ledger only — `log.event()`, `msg: null`, never echoed — and `run.log` stays
+// byte-identical for the human reading it.
+
+// WHICH checks failed, from `scripts/sweep-assertions.js`: the one file that owns this repo's
+// assertion-line vocabulary. Importing it rather than re-parsing here is the whole reason
+// `failingChecks` was added there — a second parser would drift the first time a suite's
+// output changed, and the drift would be a name list that is non-empty, well-formed and stale.
+const { failingChecks } = require('../scripts/sweep-assertions');
+
+// THREE ANSWERS, and they are three different facts:
+//   [ ]   — nothing failed;
+//   [...] — these failed;
+//   null  — nothing is known either way.
+// Collapsing the third onto the first is the "non-empty, well-formed and false" shape this
+// repo keeps paying for: a reader comparing attempt sets would score two attempts that
+// recorded nothing as having failed identically.
+//
+// TWO ways to know the set is empty, and only one of them needs text. Where the attempt left
+// verifier output, the names come from parsing it. Where it left none but the verifier called
+// it a PASS, the set is empty by definition — the frozen suite ran and every check in it
+// passed — and answering `null` there would be a small lie about a fact the run does know.
+// `null` is reserved for the case that is genuinely unknown: an attempt that FAILED and whose
+// output did not survive (a killed container leaves a half-written verify.json, which
+// `collectArtifacts` drops on purpose), where the run knows something failed and not what.
+function checksFor(attempt, text) {
+  if (typeof text === 'string') return failingChecks(text);
+  if (attempt && attempt.verifierResult === 'pass') return [];
+  return null;
+}
+
+// The THIRD argument of `info`/`error` has always been absent-safe — a log object that ignores
+// it still works, which is what lets four other suites hand `runOneTask` a bare
+// `{info, error}` stand-in. `event()` is a different shape and cannot be ignored the same way:
+// calling a method that is not there THROWS, from inside the task body, after the container
+// has run and before the outcome is written. So both emitters ask for the writer first.
+// This is not a fail-safe swallow of an error — its ABSENCE is checked, never its failure —
+// and it costs a real run nothing, because the real `runner/log.js` always has it.
+const hasLedger = (log) => !!log && typeof log.event === 'function';
+
+function logAttempts(log, tr, issueId, status, verify) {
+  if (!hasLedger(log)) return;
+  const attempts = (status && Array.isArray(status.attempts)) ? status.attempts : [];
+  attempts.forEach((a, i) => {
+    // Only a FAILING attempt records feedback — `pipeline/entrypoint.sh` writes it from that
+    // attempt's verify.json when the verifier exits 1, and a pass has nothing to feed back.
+    // `verify.json` itself survives for the LAST attempt only, because each attempt
+    // overwrites it, so its output may stand in for the final attempt and no other.
+    const feedback = a && typeof a.feedback === 'string' ? a.feedback : null;
+    const final = i === attempts.length - 1;
+    const text = feedback !== null ? feedback
+      : (final && verify && typeof verify.acceptanceOutput === 'string' ? verify.acceptanceOutput : null);
+    log.event(tr, 'attempt.finished', {
+      // Carried in `data` as well as in the envelope: the envelope's `issueId` is derived from
+      // the trace, and a reader extracting attempt rows should not have to know that rule.
+      issueId,
+      number: Number.isInteger(a && a.number) ? a.number : null,
+      verifierResult: (a && typeof a.verifierResult === 'string') ? a.verifierResult : null,
+      failingChecks: checksFor(a, text),
+    });
+  });
+}
+
+// §3.7's "this spec is wrong" channel, one event per entry, VERBATIM — never summarised and
+// never counted, because the text is the whole content of a concern. Non-strings are skipped
+// rather than coerced: `pipeline/status.js` bounds this channel on the way in, but the status
+// file is not schema-validated here, and `String(x)` on a stray object would file `[object
+// Object]` as a concern a human then has to go and disprove (repo-iok-note-2's lesson).
+// Evidence only, exactly like every other surface this channel reaches: it cannot change an
+// outcome (§3.5).
+function logConcerns(log, tr, status) {
+  if (!hasLedger(log)) return;
+  const concerns = (status && Array.isArray(status.specConcerns)) ? status.specConcerns : [];
+  for (const text of concerns) {
+    if (typeof text !== 'string') continue;
+    log.event(tr, 'concern.raised', { text });
+  }
 }
 
 // One task, start to finish: claim, export, workspace, container (with pause/resume),
@@ -253,6 +335,15 @@ async function runOneTask(cfg, issue, log, token, gate) {
       { event: 'task.relaunched', data: {} });
   }
   if (pauses) log.info(tr, `task resumed across ${pauses} usage-window pause(s)`);
+
+  // ---- the two ledger-only facts (§4.12, §5; change-log row `repo-3xw`) ----------------
+  // AFTER the relaunch loop, once, from the COLLECTED status file — never inside it. A parked
+  // task collects its status on every relaunch, and emitting there would write attempt 1
+  // twice for a task that paused once and three times for one that paused twice: a ledger
+  // whose attempt count depends on how the subscription window happened to fall.
+  logAttempts(log, tr, issue.id, artifacts.status, artifacts.verify);
+  logConcerns(log, tr, artifacts.status);
+
   const outcome = outcomeFor(exec.exitCode, artifacts.verify);
   const commits = hasCommits(ws.dir, ws.forkPoint);
   log.info(tr, `branch ${ws.branch}: ${commits ? 'has commits (push candidate)' : 'no commits (nothing to push)'}`);
@@ -396,7 +487,10 @@ async function main() {
     networkDown(REPO_ROOT, cfg);
     process.exit(1);
   }
-  log.info(t, queueSummary(q.issues, q.skipped, q.undispatchable));
+  // The summary line and its structured twin, from ONE call (change-log row `repo-3xw`).
+  // `queueSummary` is no longer called here: two call sites would be two chances for the
+  // prose and the event to describe different queues.
+  logQueueRead(log, q);
 
   // Every task is the same body; `concurrency` (default 1) decides how many of them are
   // in flight at once, and the drain hands back one row per DISPATCHED issue in dispatch
@@ -454,9 +548,7 @@ async function main() {
   // reviewer can see succeeded.
   const stillRefused = source.undispatchable();
   const refusedRows = stillRefused.map((u) => undispatchableRow(u.issue, u.reason, log.runId, u.refusal));
-  for (const u of stillRefused) {
-    log.error(log.trace(u.issue.id), `not dispatched: ${u.reason} — Beads untouched, the issue stays open`);
-  }
+  for (const u of stillRefused) logUndispatched(log, u);
 
   if (gate.waits) {
     log.info(t, `run-level rate-limit park: ${gate.waits} shared wait(s), ${gate.cycles} cycle(s) spent` +
@@ -525,4 +617,9 @@ if (require.main === module) {
 // gh, the container — is behind a seam (PIPELINE_BD_CMD, targetRepoRemote, PIPELINE_GH_CMD,
 // PIPELINE_EXEC_STUB), so "a refused task never touches Beads" and "an exit-20 task reports
 // to the gate exactly once" are both provable without Docker.
-module.exports = { drainQueue, executeTask, runOneTask };
+// `logAttempts` and `logConcerns` are exported for the third time on the same reasoning: the
+// trichotomy they decide — `[]` vs a list vs `null` — turns on shapes a fixture RUN can only
+// reach one of at a time (a container writes one status file per task), and the answer that
+// matters most is the one for an attempt whose output did not survive. Driven directly, a
+// planted status object reaches all of them in a few lines and none of them needs a clone.
+module.exports = { drainQueue, executeTask, runOneTask, logAttempts, logConcerns };

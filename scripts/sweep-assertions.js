@@ -40,6 +40,11 @@
 // feeds a verdict. `countAssertions` decides a COUNT; the RESULT column and the sweep's exit
 // code come from the suite's exit code and that FAIL grep, exactly as before.
 //
+// A SECOND question over the same vocabulary — WHICH checks failed — is `failingChecks`
+// below. It has no CLI: its only consumer is the event ledger, which imports it (change-log
+// row `repo-3xw`). It is here rather than in `runner/` because this file is where the
+// assertion-line constants live, and a second copy of them would drift silently.
+//
 // Usage:
 //   node scripts/sweep-assertions.js count <logfile>   # prints the summary cell, e.g. `34` or `?`
 //
@@ -56,6 +61,14 @@ const NODE_PASS = /^ok - /;
 const NODE_FAIL = /^FAIL - /;
 const SHELL_PASS = /^PASS[ \t]/;
 const SHELL_FAIL = /^FAIL[ \t]/;
+
+// A THIRD failure form, and `failingChecks`'s alone — `countAssertions` never sees it, which
+// is why it is declared apart from the four above rather than added to them. `FAIL: <text>`
+// is what the verifier's own harness prints for a whole file (`FAIL: tests/acceptance/x/t.js`)
+// and what a suite prints when its label follows a colon rather than a dash. Counting it would
+// move `failed` on logs that have been reporting the same number since `repo-0ay`, and the
+// PASSED column's warrant is that no suite's number moves as a side effect of a change here.
+const COLON_FAIL = /^FAIL:/;
 
 // What the summary prints when nothing countable was in the log. Not `0`.
 const NOT_FOUND = '?';
@@ -100,6 +113,42 @@ function countAssertions(logText) {
   };
 }
 
+// WHICH checks failed, not how many — the ledger's `attempt.finished` records the names so a
+// reader can ask "did the last two attempts fail the same set?" without re-reading a log
+// (DESIGN.md §4.12, change-log row `repo-3xw`).
+//
+// It lives HERE, beside `countAssertions`, because this file owns the assertion-line
+// vocabulary: a second parser in `runner/` would drift from this one the first time a suite's
+// output changed, and the drift would be silent — a name list that is non-empty, well-formed
+// and stale. The three constants are the same objects `countAssertions` matches on, plus the
+// colon form above.
+//
+// Sorted and de-duplicated because the consumer compares SETS across attempts: two attempts
+// that failed the same checks in a different order are the same fact, and an ordered list with
+// repeats would say otherwise.
+function failingChecks(logText) {
+  const text = typeof logText === 'string' ? logText : '';
+  const names = new Set();
+  for (const raw of text.split('\n')) {
+    // Same guard, same place, same reason as `countAssertions`: CRLF working copy, LF
+    // container (CLAUDE.md's line-ending rule).
+    const line = raw.replace(/\r+$/, '');
+    // NODE_FAIL FIRST: `FAIL - b broke` also satisfies `^FAIL[ \t]`, and the shell reading
+    // would name the check `- b broke`. Order is the whole difference between the two.
+    for (const re of [NODE_FAIL, COLON_FAIL, SHELL_FAIL]) {
+      const m = re.exec(line);
+      if (!m) continue;
+      // The text after the MATCHED prefix, trimmed. A file-level `FAIL: <path>` line is a
+      // name like any other — the path IS what failed, and inventing a category for it would
+      // make the set incomparable across attempts.
+      const name = line.slice(m[0].length).trim();
+      if (name) names.add(name);
+      break;
+    }
+  }
+  return [...names].sort();
+}
+
 // The one string the sweep puts in its table. Kept here so "could not tell" renders the same
 // way wherever it is asked for.
 function cell(result) {
@@ -123,7 +172,7 @@ function main(argv) {
   return 0;
 }
 
-module.exports = { countAssertions, cell, NOT_FOUND };
+module.exports = { countAssertions, failingChecks, cell, NOT_FOUND };
 
 if (require.main === module) {
   process.exitCode = main(process.argv.slice(2));

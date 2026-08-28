@@ -1545,8 +1545,7 @@ source of truth.
     **The writer is built** (change-log row `repo-qzy`): `runner/log.js` appends both files
     from one clock read, `info()` and `error()` take an optional `{event, data}` third
     argument, and `event()` records a fact with no prose form. Every line the dashboard's
-    prefix table parses is a named typed event; `queue.read` is declared in the schema and
-    reserved for the task that carries the queue read across. `issueId` is the trace's tail,
+    prefix table parses is a named typed event. `issueId` is the trace's tail,
     and null for the two PSEUDO-tasks — `preflight` and `feed` — because they are run-level
     work borrowing the trace shape rather than Beads issues, and recording them as issue ids
     would invent two issues that do not exist. `scripts/dashboard.js` exports its prefix
@@ -1554,6 +1553,35 @@ source of truth.
     second copy; no reader reads the ledger yet. `scripts/test-events.sh` runs the writer's
     suite and, from the same script, the three reader suites — because "`run.log` is
     unchanged" is a claim about files the writer's own suite never opens.
+
+    **The three facts are in** (change-log row `repo-3xw`), which is what makes the ledger
+    worth reading rather than a second copy of `run.log`. `queue.read` is the structured twin
+    of the `ready queue: ` line and `task.undispatched` the twin of each `not dispatched: `
+    line; both come from exported helpers in `runner/queue.js` that `main()` calls, for the
+    reason `queueSummary` and `undispatchableRow` were lifted out of `main()` before them —
+    everything written inside `main()` sits behind the token load and the Docker preflight,
+    unreachable to every Docker-free suite, and an event no test can reach is an event that
+    stops being emitted quietly. Both carry **ids, never issue objects**: a `bd` issue holds a
+    title, a description and whatever a future `bd` adds, so embedding one would grow every
+    line without anyone deciding to and would put issue prose into the artifact whose value is
+    that it reads by machine. `task.undispatched` is traced to its ISSUE rather than to
+    `preflight`, so `issueId` files it where a reader asking about that issue will look.
+
+    `attempt.finished` and `concern.raised` are LEDGER-ONLY (`msg: null`), emitted once per
+    task **after** the relaunch loop from the collected status file — never inside it, because
+    a parked task collects its status again on every relaunch and emitting there would make
+    the recorded attempt count depend on how the subscription window happened to fall.
+    `attempt.finished` carries the attempt's verifier result and the NAMES of the checks that
+    failed, from `failingChecks` in `scripts/sweep-assertions.js`: the file that already owns
+    this repo's assertion-line vocabulary, so the ledger imports the decision rather than
+    keeping a second parser that would drift silently into a name list that is non-empty,
+    well-formed and stale. Its answer is a trichotomy and all three values are load-bearing —
+    `[]` nothing failed, a list these failed, and `null` *nothing is known*, which is the state
+    of an attempt that failed and whose output did not survive (a killed container leaves a
+    half-written `verify.json` that artifact collection drops on purpose). Collapsing `null`
+    onto `[]` would score two attempts that recorded nothing as having failed identically.
+    `concern.raised` carries each `specConcerns` entry verbatim — evidence only, like every
+    other surface 3.7's channel reaches, and unable to move an outcome (3.5).
 
     The container-side isolation assertions (no `git push`, read-only verifier, no
     non-allowlisted egress) live in this repo and run as part of the E2E pass and on

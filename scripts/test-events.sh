@@ -3,7 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # repo-qzy checks — the event ledger, runs/<runId>/events.jsonl (DESIGN.md §4.12, §5;
-# change-log rows `events-ledger-design` and `repo-qzy`).
+# change-log rows `events-ledger-design`, `repo-qzy` and `repo-3xw`).
+#
+# Since `repo-3xw` the ledger also carries the three facts no other artifact holds — the
+# queue read with every refusal and its reason, each attempt's verifier result and failing
+# check names, and each spec concern — so this wrapper also covers `failingChecks` in
+# `scripts/sweep-assertions.js` and the two exported emitters in `runner/queue.js`.
 #
 # Two halves, and the second is the point of the file.
 #
@@ -66,10 +71,10 @@ fi
 # a checker that silently stopped running most of its fixtures would still exit 0. An
 # honesty floor, not a target.
 CHECKS="$(echo "$OUT" | grep -c '^ok - ')"
-if [ "$CHECKS" -ge 45 ]; then
+if [ "$CHECKS" -ge 95 ]; then
   pass "ledger checker ran $CHECKS checks"
 else
-  fail "ledger checker ran only $CHECKS checks (expected at least 45)"
+  fail "ledger checker ran only $CHECKS checks (expected at least 95)"
 fi
 
 # The readers. Each is its own wrapper with its own seams and its own floor, so this asks

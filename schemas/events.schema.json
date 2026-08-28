@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/chadleewalker/multi-agent-pipelines/schemas/events.schema.json",
   "title": "Run event ledger line",
-  "description": "One line of runs/<runId>/events.jsonl — the structured twin of a run.log line, appended by runner/log.js from the same timestamp (DESIGN.md 4.12, change-log rows `events-ledger-design` and `repo-qzy`). A line with a string `msg` has a run.log line at the same index; a line with `msg: null` is ledger-only and was never echoed. The envelope is CLOSED: a reader may rely on these eight keys and nothing else appearing.",
+  "description": "One line of runs/<runId>/events.jsonl — the structured twin of a run.log line, appended by runner/log.js from the same timestamp (DESIGN.md 4.12, change-log rows `events-ledger-design`, `repo-qzy` and `repo-3xw`). A line with a string `msg` has a run.log line at the same index; a line with `msg: null` is ledger-only and was never echoed. The envelope is CLOSED: a reader may rely on these eight keys and nothing else appearing. Three facts here reach no other artifact: the queue read with every refusal and its reason (queue.read, task.undispatched), each attempt's verifier result and failing check names (attempt.finished), and each spec concern (concern.raised).",
   "type": "object",
   "additionalProperties": false,
   "required": ["ts", "level", "runId", "issueId", "trace", "event", "msg", "data"],
@@ -35,7 +35,10 @@
         "lock.held",
         "lock.tookOver",
         "queue.read",
+        "task.undispatched",
         "task.started",
+        "attempt.finished",
+        "concern.raised",
         "workspace.ready",
         "container.launched",
         "container.ran",
@@ -96,21 +99,52 @@
       "queue.read": {
         "type": "object",
         "additionalProperties": false,
-        "description": "RESERVED. Declared here so the vocabulary is settled, and emitted by the task that carries every refusal into the ledger; nothing writes it yet. Its fields are not required, so the emitting task can widen them without a schema-versioning problem.",
+        "required": ["ready", "skipped", "refused"],
+        "description": "What the run decided about its own ready queue, paired with the `ready queue: ` prose line from one call in `runner/queue.js`'s logQueueRead (change-log row `repo-3xw`). IDS, NEVER ISSUE OBJECTS: a bd issue carries a title, a description and whatever a future bd adds, so embedding one would grow every line without anyone deciding to, and would put issue prose into the artifact whose value is that it reads by machine. The title is in run.json.",
         "properties": {
-          "ready": { "type": "integer", "description": "Issues the run will dispatch." },
-          "skipped": { "type": "integer", "description": "Issues the epic filter removed." },
-          "undispatchable": {
+          "ready": {
             "type": "array",
-            "description": "One entry per issue the freeze gate refused, with the reason.",
+            "description": "The ids the run will dispatch, in dispatch order.",
+            "items": { "type": "string" }
+          },
+          "skipped": {
+            "type": "array",
+            "description": "One entry per issue the epic filter removed. The type is carried because it is WHY the entry went: an id alone would say an issue vanished without saying what removed it.",
             "items": {
               "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "type"],
               "properties": {
-                "issueId": { "type": "string" },
-                "reason": { "type": "string" }
+                "id": { "type": "string" },
+                "type": { "type": "string", "description": "The issue type as bd reports it, lower-cased and trimmed (runner/queue.js's typeOf); '' when it carries none." }
+              }
+            }
+          },
+          "refused": {
+            "type": "array",
+            "description": "One entry per issue the dispatch gate refused (4.12's second admission rule), with the reason a human reads.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "reason"],
+              "properties": {
+                "id": { "type": "string" },
+                "reason": { "type": "string", "description": "The sentence the run.log line carries." },
+                "refusal": { "type": "string", "description": "The refusal KIND — a short machine token, where `reason` is prose. Present only when the refusing code named one; the gate has one way to refuse today, so nothing sets it yet." }
               }
             }
           }
+        }
+      },
+      "task.undispatched": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "reason"],
+        "description": "One issue the dispatch gate refused, paired with its `not dispatched: ` ERROR line. Traced to the ISSUE rather than to preflight, so the ledger's issueId files it under the task a reader will ask about. Beads was never touched and the issue stays open.",
+        "properties": {
+          "id": { "type": "string" },
+          "reason": { "type": "string" },
+          "refusal": { "type": "string", "description": "The refusal kind, when the refusing code named one. See queue.read.refused." }
         }
       },
       "task.started": {
@@ -120,6 +154,31 @@
         "properties": {
           "priority": { "type": "integer", "description": "The issue's priority, or 2 when it carries none — the number the line printed." },
           "title": { "type": "string" }
+        }
+      },
+      "attempt.finished": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["issueId", "number", "verifierResult", "failingChecks"],
+        "description": "LEDGER-ONLY (msg: null): one per attempt in the collected status file, emitted once per task after the relaunch loop rather than per collection — a parked task collects its status again on every relaunch, and emitting there would make the attempt count depend on how the subscription window fell.",
+        "properties": {
+          "issueId": { "type": "string", "description": "Carried in data as well as in the envelope, so a reader extracting attempt rows need not know that the envelope's issueId is derived from the trace." },
+          "number": { "type": ["integer", "null"], "description": "The attempt number the container recorded; null when it recorded none." },
+          "verifierResult": { "type": ["string", "null"], "description": "pass or fail, as the status file recorded it; null when it recorded none." },
+          "failingChecks": {
+            "type": ["array", "null"],
+            "description": "The names of the checks that failed, sorted and de-duplicated by scripts/sweep-assertions.js's failingChecks. THREE ANSWERS, three different facts: [] means text was there and nothing failed; a list means text was there and these failed; null means there is no text at all, so nothing is known either way. The text is the attempt's own feedback, or — for the FINAL attempt only, and only when it recorded none — verify.json's acceptanceOutput, which describes the last attempt because the verifier wrote it last.",
+            "items": { "type": "string" }
+          }
+        }
+      },
+      "concern.raised": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["text"],
+        "description": "LEDGER-ONLY (msg: null): one per specConcerns entry in the collected status file, verbatim — 3.7's 'this spec is wrong' channel. Evidence only: like every other surface this channel reaches, it cannot change an outcome (3.5).",
+        "properties": {
+          "text": { "type": "string", "description": "The concern as the agent wrote it. Never summarised and never counted: the text is the whole content of a concern." }
         }
       },
       "workspace.ready": {

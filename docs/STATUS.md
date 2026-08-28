@@ -1512,14 +1512,16 @@ line, **written by the same call from the same clock read** (§4.12, change-log 
 `level`, `runId`, `issueId`, `trace`, `event`, `msg`, `data` — with
 `schemas/events.schema.json` as the contract. `info()` and `error()` take an optional third
 argument `{event, data}` and default to `event: "log"` with empty `data`; `event()` records a
-fact with no prose form (`msg: null`, never echoed, always INFO), and **this task emits
-none** — the channel exists for the tasks that carry the queue read, the per-attempt verifier
-result and the spec concerns across.
+fact with no prose form (`msg: null`, never echoed, always INFO), and **that task emitted
+none** — the channel existed for the task that would carry the queue read, the per-attempt
+verifier result and the spec concerns across, which is `repo-3xw` in the section below.
 
-Every line the dashboard's prefix table parses is now a named typed event. `queue.read` is
-**declared in the schema and emitted by nothing**, reserved for the next task; the unit suite
-asserts that on purpose, so "no call site writes it" reads as the design rather than as a
-hole. `run.log` is byte-identical, the container writes none of this, and the only reader edit
+Every line the dashboard's prefix table parses is now a named typed event. `queue.read` was
+**declared in the schema and emitted by nothing**, reserved for that next task; the unit suite
+asserted the absence on purpose, so "no call site writes it" read as the design rather than as
+a hole. (Both halves of that reservation have since been honoured and the assertion is now its
+mirror image — see below.)
+`run.log` is byte-identical, the container writes none of this, and the only reader edit
 is `scripts/dashboard.js` exporting its prefix table `P` — no reader reads the ledger yet, and
 each will move across in its own task with its own suite staying green.
 
@@ -1578,6 +1580,111 @@ its node in this PR. Two suites — `test-feed.sh` and `test-worktree.sh` — ha
 row in the table below and got one here, which is the same rot repo-4d8 recorded: grep the
 table for every `scripts/test-*.sh` that exists, because a missing row is invisible to a
 count.
+
+## The ledger carries three facts no other artifact holds (`repo-3xw`, 2026-08-28)
+
+**Proven.** The ledger stopped being a second copy of `run.log` (§4.12, §5, change-log row
+`repo-3xw`). Three facts that reached no artifact at all now do:
+
+* **The queue read and its refusals.** `runner/queue.js` exports `logQueueRead(log, q)` and
+  `logUndispatched(log, u)`; `main()` calls both. The `ready queue: ` line and its `queue.read`
+  twin come from **one call and one timestamp**, and `queueSummary` is no longer called
+  separately in `run.js` — two call sites would be two chances for the prose and the event to
+  describe different queues. Data is **ids, never issue objects**: `ready: [id]`,
+  `skipped: [{id, type}]` (the type is *why* the entry went), `refused: [{id, reason,
+  refusal?}]`. `task.undispatched` is traced to its own issue, so `issueId` — the trace's tail
+  — files each refusal where a reader asking about that issue will look.
+* **Each attempt's verifier result and failing check names.** `attempt.finished`, ledger-only,
+  one per attempt in the collected status file, emitted **after** the relaunch loop.
+* **Each spec concern.** `concern.raised`, ledger-only, one per `specConcerns` entry, verbatim.
+
+`scripts/sweep-assertions.js` gained `failingChecks(logText) → string[]` — sorted,
+de-duplicated, and built from the same constants `countAssertions` matches plus a colon form
+(`FAIL: <text>`) that is `failingChecks`' alone. `schemas/events.schema.json` enumerates the
+four events with typed `data`; `run.log` is byte-identical and nothing under `pipeline/`
+moved. `tests/unit/events.test.js` went from 45 checks to 101, and `scripts/test-events.sh`'s
+floor moved with it.
+
+**Four things worth carrying forward.**
+
+*A "not built yet" declaration has to be repealed by the task that builds it, in the suite as
+well as the doc.* `repo-qzy` asserted `queue.read` was **declared and emitted by nothing** so
+the hole would read as design. That assertion is now the exact obstacle to shipping the
+feature, which is the point: the check flipped to its mirror (`queue.read` has a call site, in
+`queue.js`) rather than being deleted, so the declaration cannot quietly be left empty a
+second time. Anything declared-then-built should leave a check of that shape behind.
+
+*The third answer is the one that gets collapsed.* `failingChecks` per attempt is `[]`, a
+list, or `null`, and `null` — *nothing is known* — is the state of an attempt that failed with
+its output lost to a kill (`collectArtifacts` drops a half-written `verify.json` on purpose).
+Read as `[]` it says the attempt failed nothing, and a reader asking "did the last two
+attempts fail the same checks?" scores two attempts that recorded nothing as identical. There
+is a second, honest route to `[]` that needs no text at all: an attempt the verifier called a
+**pass** failed zero checks by definition, and answering `null` there would be a small lie
+about something the run does know. The unit suite plants both beside each other, because they
+are the pair a lazy implementation cannot tell apart.
+
+*A prefix table entry for an event that writes no line would match nothing forever.* The
+ledger's drift guard rests on a bijection between `scripts/dashboard.js`'s `P` and the event
+names, and ledger-only events have no line to prefix. So the suite now holds **two** maps —
+prose-paired and ledger-only — asserts they do not overlap, asserts their union plus `"log"`
+is exactly the schema enum, and scans for the *other* call form (`log.event(trace, '<name>')`)
+to prove every ledger-only event has a call site. Without the second scan a ledger-only event
+is invisible to every structural check in the file.
+
+*A schema's `items` is decoration until a validator descends into it.* `queue.read`'s whole
+contract is that `ready` holds ids and never issue objects, and the unit suite's `typeOk`
+stopped at "it is an array" — so the rule was stated in the schema and enforced by nothing.
+It now checks array item types and nested object shapes, which is what makes the five planted
+`queue.read` rejections mean anything.
+
+**A frozen fixture can be unable to reach the path its own check names.** Criterion 3's last
+check is labelled *"the passing final attempt has no feedback, so its checks come from
+`verify.acceptanceOutput`"* — but the fixture's stub writes `verify.json` with a `printf`
+whose `\n` becomes a real newline inside a JSON string, so the document does not parse,
+`collectArtifacts` drops it (deliberately — §4.11), and `verify` is `null` by the time
+anything reads it. The same stub writes `status.json` through a heredoc, where `\n` stays two
+characters and the JSON is valid, which is why the feedback-driven attempts work. The
+implementation ships **both** rules the criterion implies and the pass-driven one is what
+carries that check; the `acceptanceOutput` fallback is real, is what production actually uses
+(only a *failing* attempt records feedback — `pipeline/entrypoint.sh` writes it from
+`verify.json` on verifier exit 1), and is pinned in `tests/unit/events.test.js` against a
+valid verify object whose output **carries a failure**, so an implementation that skipped the
+fallback answers `null` and is caught. Raised through §3.3's concern channel. The general
+rule: a stub that writes JSON from a shell must use a heredoc or a `node -e`, never `printf`,
+the moment any value contains an escape.
+
+**Two frozen structural pins are deliberately repealed**, and both say the same thing:
+`tests/acceptance/repo-4l8`'s *"run.js calls queueSummary on a non-comment line"* (F6) and
+`tests/acceptance/repo-teq`'s `[guard]` twin of it. `run.js` no longer calls `queueSummary` —
+`logQueueRead` does, which is the whole content of "one call, one timestamp" — so both are red
+by design, exactly as `repo-inj` repealed five checks in `repo-uw6`. Nothing re-runs a frozen
+directory, so it costs nothing today, and it is the standing argument for extracting coverage
+into `tests/unit/`. The property both pins guarded is **not** lost: `tests/unit/dispatch-gate.
+test.js`'s G9d moved with it and now spans both files — `run.js` hands the whole queue result
+to `logQueueRead`, and `logQueueRead` hands all three populations to `queueSummary`. Asserting
+only the first would pass a helper that dropped the refusals on the floor. Every Docker-free
+suite is green; the two Docker suites that grep the run's OUTPUT for `ready queue: `
+(`test-runner-queue.sh`, six sites) are unaffected, because the line is byte-identical.
+
+**A compatibility break the ledger's own suite caught, in the file none of the affected suites
+names.** `info`/`error`'s third argument has always been absent-safe, which is what lets four
+suites hand `runOneTask` a bare `{info, error}` stand-in. `event()` is a different shape and
+cannot be ignored the same way: calling a method that is not there **throws**, from inside the
+task body, after the container has run and before the outcome is written. The first draft did
+exactly that, and `tests/acceptance/repo-qzy`'s *"runOneTask driven with the existing fake log
+object still completes"* plus four checks in `repo-t3h` went red together. Both emitters now
+ask for the writer before using it — its ABSENCE is checked, never its failure — and
+`tests/unit/events.test.js` pins it, because the frozen suite that caught it will not run
+again. Any future ledger-only emitter inherits the same rule.
+
+**Known-stale, not fixed here.** `docs/pipeline-map.html` is exempt from task docs phases and
+nothing else updates it; none of its panels show the ledger, let alone these three facts.
+`scripts/test-status-schema.sh` cannot be run in a container at all — it shells
+`npx --yes -p ajv-cli` and the egress allowlist blocks the npm registry — so it fails
+identically at the fork point and after this change; it is a host obligation for the sweep,
+and nothing here touches `schemas/status.schema.json`.
+
 ## A `[guard]` test red at the fork point is a stale pin (`repo-i4b`, 2026-08-28)
 
 **Proven.** `scripts/freeze-gate.js` gains `guardFiles(dir)`, `withGuardDir(...)`, a sixth
@@ -1952,7 +2059,7 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-dispatch-gate.sh` | the ready queue's second **and third** admission rules (change-log rows `dispatch-gate`, `repo-5yu`, `repo-isq`) — the origin-versus-`targetRepoRemote` pair that discriminates this design from a working-tree check, the `ls-remote --symref` link of the branch chain against a `master` project, an unresolvable branch aborting rather than guessing, a sibling id that merely extends another, the `-d`, the throwaway repository removed on the abort path too, `gitTimeoutMs` at the spawn and at config load, and every `spawnSync` in `runner/queue.js` built from one exported builder; then the receipt — all four refusal kinds in their fixed order, the branch-not-working-copy **pair** (an uncommitted edit beside a matching branch dispatches, a pristine checkout beside a moved branch does not), the four unreadable receipts that collapse to `no-receipt`, `allowHalfProven` moving exactly one of them, the kind riding the manifest row and the report's heading, body and remedy with a negative assertion per kind, and every receipt in the fixtures written by `runner/suite-hash.js` rather than by a second copy of its formula |
 | `scripts/test-feed.sh` | the live queue feed (change-log row `live-queue-feed`) — a poll that keeps returning an already-dispatched issue, one idle worker beside a working one at concurrency 2, a throwing poll beside one returning `ok:false`, and the manifest's `feed` block against the ending vocabulary; `now` and `wait` injected, so nothing turns on wall clock |
 | `scripts/test-worktree.sh` | one folder per agent session (change-log row `parallel-sessions`) — a worktree dirty with only an untracked file beside one with a tracked modification, a clean worktree holding a commit on no remote, `new` invoked from inside a worktree, and two refusals pinned by *this tool's* message rather than by an exit code git would have produced anyway |
-| `scripts/test-events.sh` | the event ledger (change-log rows `events-ledger-design`, `repo-qzy`) — the twin-per-line join including `ts`, a `Date` replaced by a counter so one clock read is proved rather than coincided into, `issueId` null for the two pseudo-tasks, the park's three events from the real gate and the feed's from a real poll, a type-checking validator against `schemas/events.schema.json` with eight planted rejections, the source-level guard that every emitting call site carries the dashboard prefix its event claims, and the three `run.log` reader suites run from inside it |
+| `scripts/test-events.sh` | the event ledger (change-log rows `events-ledger-design`, `repo-qzy`, `repo-3xw`) — the twin-per-line join including `ts`, a `Date` replaced by a counter so one clock read is proved rather than coincided into, `issueId` null for the two pseudo-tasks, the park's three events from the real gate and the feed's from a real poll, a type-checking validator against `schemas/events.schema.json` (array items and nested objects included) with eight planted envelope rejections and seven more over the new events, the source-level guard that every emitting call site carries the dashboard prefix its event claims plus the second scan that reaches the ledger-only call form, the queue read and its refusals through `runner/queue.js`'s exported emitters, the `[]`/list/`null` attempt trichotomy driven directly, the verbatim spec-concern channel with hostile interleaved entries, `failingChecks`' three failure forms, and the three `run.log` reader suites run from inside it |
 
 **`scripts/test-runner-memory.sh` is one of the twenty-one suites that need no Docker**
 (repo-dhp): it

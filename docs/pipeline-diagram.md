@@ -43,7 +43,7 @@ flowchart TB
   K -.-> AUD["Across ALL past runs — node scripts/audit-runs.js<br/>joins the corpus, prints one report, changes nothing"]
   AUD -.-> B
   J -.-> DASH["While THIS run is in flight — node scripts/dashboard.js<br/>localhost only · serves /state from runs/ · changes nothing"]
-  J -.-> LED["Every run.log line, structured — runs/&lt;runId&gt;/events.jsonl<br/>one writer, one timestamp · named typed events · schemas/events.schema.json<br/>host-only · append-only · no reader reads it yet"]
+  J -.-> LED["Every run.log line, structured — runs/&lt;runId&gt;/events.jsonl<br/>one writer, one timestamp · named typed events · schemas/events.schema.json<br/>plus three facts no other artifact holds: queue.read + task.undispatched,<br/>attempt.finished (verifier result + failing check names), concern.raised<br/>host-only · append-only · no reader reads it yet"]
 
   classDef specialist fill:#fdf4e3,stroke:#a86c17,stroke-width:1.5px,stroke-dasharray:5 3,color:#14181d
   class SP1,SP2 specialist
@@ -71,6 +71,32 @@ reader can move across on its own, in its own task, keeping its own suite green;
 would have put three readers and the writer in one change nobody could review. The container
 side of the diagram is untouched: nothing in a task container writes an event, and nothing
 in `pipeline/` knows the file exists.
+
+Change-log row `repo-3xw` gave the node its second line: **three facts that reach no other
+artifact at all**, which is what makes the ledger worth reading rather than merely a second
+copy of `run.log`.
+
+* **The queue read, with every refusal and its reason** — `queue.read`, the structured twin
+  of the `ready queue: ` line, carrying ids and never issue objects; and `task.undispatched`,
+  one per issue the dispatch gate refused, traced to that issue so a reader asking about it
+  finds the reason rather than an empty answer. Both are emitted by exported helpers in
+  `runner/queue.js`, because `main()` sits behind the token load and the Docker preflight
+  where no Docker-free suite can reach it.
+* **Each attempt's verifier result and failing check names** — `attempt.finished`, one per
+  attempt in the collected status file, emitted once per task *after* the relaunch loop
+  rather than per collection: a parked task collects its status again on every relaunch, and
+  emitting inside the loop would make the attempt count depend on how the subscription window
+  fell. The names come from `failingChecks` in `scripts/sweep-assertions.js`, the one file
+  that owns this repo's assertion-line vocabulary. `failingChecks` has three answers and they
+  are three facts: `[]` nothing failed, a list these failed, `null` nothing is known — the
+  last being an attempt that failed and whose output did not survive.
+* **Each spec concern** — `concern.raised`, one per `specConcerns` entry, verbatim. Evidence
+  only, exactly like every other surface §3.7's channel reaches: it cannot move an outcome.
+
+All three are *ledger-only* (`msg: null`): they are never echoed and never reach `run.log`,
+which stays byte-identical for the human reading it. That is the property the ledger was
+built to have — a place to record things too structured to be prose without changing a byte
+of what a person sees.
 
 The dotted branch off the freeze gate is its second, textual pass (§3.2 "below the panel",
 moves 1 and 6; change-log rows `freeze-gate-red` and `repo-uw6`). The solid path is the

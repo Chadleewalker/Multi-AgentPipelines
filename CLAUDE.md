@@ -219,7 +219,7 @@ bash scripts/test-lock.sh          # the per-project run lock (§4.12) — refus
 bash scripts/test-sweep-hygiene.sh # what the sweep reclaims after a suite, and what it must not touch
 bash scripts/test-concurrency.sh   # the §7 concurrency knob — the bound, the worker pool, result order
 bash scripts/test-pause-gate.sh    # the §7 run-level rate-limit park — one shared wait, one cap, admission
-bash scripts/test-sweep-assertions.sh # the sweep's PASSED column — both vocabularies, one honest total
+bash scripts/test-sweep-assertions.sh # the sweep's PASSED column — both vocabularies, one honest total; and which checks failed, not how many (change-log rows `repo-0ay`, `repo-3xw`)
 bash scripts/test-trace.sh         # the traceability ledger — spec-to-code refs, report and backfill (change-log row `trace-ledger`)
 bash scripts/test-verdict.sh       # the review verdict recorder — which run a verdict lands in, and what refuses (change-log row `repo-1ie`)
 bash scripts/test-audit-runs.sh    # the run-history audit — buckets, joins, channels, quantiles, the per-model cross-tab, and that it writes nothing (change-log rows `repo-73k`, `model-crosstab`)
@@ -230,7 +230,7 @@ bash scripts/test-batch.sh         # the batch marker reader — the marker shap
 bash scripts/test-dispatch-gate.sh # the ready queue's SECOND and THIRD admission rules — a task whose frozen suite is not on the fork branch, or carries no receipt matching that branch, is never dispatched (change-log rows `dispatch-gate`, `repo-5yu`, `repo-isq`)
 bash scripts/test-feed.sh       # the live queue feed — work frozen mid-run is picked up by the next free worker (change-log row `live-queue-feed`)
 bash scripts/test-worktree.sh   # one folder per agent session — what a worktree carries, what it refuses to carry, and what it refuses to delete (change-log row `parallel-sessions`)
-bash scripts/test-events.sh     # the event ledger — one writer, one clock, a named typed event per parsed line, and the three run.log readers still green (change-log row `repo-qzy`)
+bash scripts/test-events.sh     # the event ledger — one writer, one clock, a named typed event per parsed line, the three facts no other artifact holds (the queue read and its refusals, each attempt's failing check names, each spec concern), and the three run.log readers still green (change-log rows `repo-qzy`, `repo-3xw`)
 ```
 
 Reading the corpus itself is `node scripts/audit-runs.js` — a pure reader that prints one
@@ -463,7 +463,15 @@ the pipeline working on the pipeline's own code. The rules:
   `sh scripts/test-sweep-assertions.sh` (`tests/unit/sweep-assertions.test.js`), which counts
   lines in planted logs and drives a copy of `scripts/test-all.sh` over stub suites: run it if
   you touch `scripts/test-all.sh` or `scripts/sweep-assertions.js`, because the sweep's
-  `PASSED` column is a number, and a number that stops meaning anything goes on being printed —
+  `PASSED` column is a number, and a number that stops meaning anything goes on being printed.
+  That file now answers a **second** question over the same vocabulary — `failingChecks(text)`,
+  WHICH checks failed rather than how many, sorted and de-duplicated, whose only consumer is
+  the event ledger's `attempt.finished` (change-log row `repo-3xw`). It is there because that
+  is where the assertion-line constants live and a second copy would drift silently, so the
+  two answers move together: adding a form to the shared constants moves every suite's
+  `PASSED` number as a side effect, which is why the colon form (`FAIL: <text>`) is declared
+  apart and matched by `failingChecks` alone. Run `sh scripts/test-events.sh` too when you
+  touch it —
   and `sh scripts/test-trace.sh` (`tests/unit/trace.test.js`), which needs git and node
   only and builds its own throwaway repositories under the OS temp dir: run it if you touch
   `scripts/trace.js`, because backfill's whole warrant is that it recovers the *ticking*
@@ -587,16 +595,40 @@ the pipeline working on the pipeline's own code. The rules:
   wording of any `log.info`/`log.error` line under `runner/`** or `scripts/dashboard.js`'s
   exported prefix table `P` — the ledger names events at call sites, and a message reworded
   without its prefix keeps writing a well-formed event that no longer describes the line it
-  came from. Its load-bearing checks are the ones a plausible implementation passes by
+  came from. Since change-log row `repo-3xw` that reach is wider: run it if you touch
+  `runner/queue.js`'s exported `logQueueRead`/`logUndispatched` (or `queueSummary`,
+  `undispatchableRow` and `typeOf` underneath them), `runner/run.js`'s `runOneTask` after the
+  relaunch loop, or `failingChecks` in `scripts/sweep-assertions.js`. Those three carry the
+  facts no other artifact holds — the queue read with every refusal and its reason, each
+  attempt's verifier result and failing check NAMES, and each spec concern verbatim — and two
+  house rules travel with them. Ids, never issue objects: a `bd` issue grows fields nobody
+  decided to add and its prose does not belong in the artifact whose value is that it reads by
+  machine. And a ledger-only emitter (`msg: null`) asks whether the writer is THERE before
+  using it, never whether it worked: four suites hand `runOneTask` a bare `{info, error}`
+  stand-in, and calling an absent `event()` throws from inside the task body after the
+  container has run — which is how the first draft turned five green frozen checks red.
+  Its load-bearing checks are the ones a plausible implementation passes by
   accident otherwise. `Date` is replaced for the length of one call by a counter that
   answers a DIFFERENT instant on every construction, because "the two records carry the same
   timestamp" is satisfied by two clock reads a microsecond apart on most machines and by
   neither on a loaded one. The park's three events come from the real `createPauseGate` with
   only `sleepFn` injected, and the feed's from a real poll, because those are the call sites
   no fixture with a fake gate can reach. The validator checks declared TYPES, not just
-  declared keys: `priority: "1"` and `killed: "false"` are non-empty, well-formed and wrong.
-  And it runs the three `run.log` readers' own suites from inside itself, because "`run.log`
-  is unchanged" is a claim about files the ledger's suite never opens.
+  declared keys: `priority: "1"` and `killed: "false"` are non-empty, well-formed and wrong —
+  and it descends into ARRAY ITEMS and nested objects, without which `queue.read`'s whole
+  contract (ids, never issue objects) is stated in the schema and enforced by nothing. Its
+  attempt fixtures are a trichotomy where the third value is the one an implementation
+  collapses: `failingChecks` answers `[]` (nothing failed), a list (these failed) and `null`
+  (*nothing is known* — an attempt whose output was lost to a kill, since `collectArtifacts`
+  drops a half-written `verify.json` on purpose). Read as `[]`, `null` scores two attempts
+  that recorded nothing as having failed identically, so the suite plants both beside the
+  honest `[]` a passing attempt earns. A ledger-only event has no prose line to prefix, so the
+  file holds two maps — prose-paired and ledger-only — asserts they do not overlap, asserts
+  their union plus `"log"` is exactly the schema enum, and scans for the second call form
+  (`log.event(trace, '<name>')`); without that scan a ledger-only event is invisible to every
+  structural check in it. And it runs the three `run.log` readers' own suites from inside
+  itself, because "`run.log` is unchanged" is a claim about files the ledger's suite never
+  opens.
   Any new Docker-free suite belongs beside them in
   `tests/unit/`, and its seam stub must be a `.js` file invoked through
   `process.execPath`, never a `#!/bin/sh` script: `spawnSync` without a shell fails such a
