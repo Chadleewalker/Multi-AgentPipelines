@@ -114,9 +114,11 @@ function preflight(cfg, repoRoot, log) {
   }
   if (held.tookOver) {
     log.info(t, `project lock: took over the lock on ${cfg.targetRepoPath} left by run ${held.previous.runId}`
-      + ` (pid ${held.previous.pid}) — that process is gone`);
+      + ` (pid ${held.previous.pid}) — that process is gone`,
+    { event: 'lock.tookOver', data: { path: cfg.targetRepoPath } });
   }
-  log.info(t, `project lock held for ${cfg.targetRepoPath}`);
+  log.info(t, `project lock held for ${cfg.targetRepoPath}`,
+    { event: 'lock.held', data: { path: cfg.targetRepoPath } });
 
   if (!dockerAvailable()) return abort('Docker daemon not reachable (is Docker Desktop running?)');
   log.info(t, 'docker daemon reachable');

@@ -157,7 +157,8 @@ async function runOneTask(cfg, issue, log, token, gate) {
   // A refused task still resolves a row rather than null: main()'s .filter(Boolean) would
   // otherwise erase it from run.json entirely — a silent hole after an unattended run.
   if (!(await gate.admit(issue.id))) {
-    log.error(tr, 'refused: the run-level rate-limit pause cap has fired; nothing launched, issue stays open');
+    log.error(tr, 'refused: the run-level rate-limit pause cap has fired; nothing launched, issue stays open',
+      { event: 'task.refused', data: {} });
     return {
       issueId: issue.id,
       title: issue.title || '',
@@ -166,7 +167,12 @@ async function runOneTask(cfg, issue, log, token, gate) {
     };
   }
 
-  log.info(tr, `starting task (priority ${issue.priority ?? 2}): ${issue.title || ''}`);
+  // One expression, two records: the ledger's `priority` is the number the line printed,
+  // never a second reading of `issue`, so the twin cannot disagree with its own message.
+  const priority = issue.priority ?? 2;
+  const title = issue.title || '';
+  log.info(tr, `starting task (priority ${priority}): ${title}`,
+    { event: 'task.started', data: { priority, title } });
 
   if (!claim(cfg, issue.id)) {
     log.error(tr, 'could not mark the issue in_progress; skipping');
@@ -216,14 +222,22 @@ async function runOneTask(cfg, issue, log, token, gate) {
     activeMs += exec.durationMs || 0;
     if (exec.durationMs !== undefined) {
       log.info(tr, `container ran ${Math.round(exec.durationMs / 1000)}s` +
-        `${exec.killed ? ' (killed at budget)' : ''}; active total ${Math.round(activeMs / 1000)}s`);
+        `${exec.killed ? ' (killed at budget)' : ''}; active total ${Math.round(activeMs / 1000)}s`, {
+        event: 'container.ran',
+        data: {
+          seconds: Math.round(exec.durationMs / 1000),
+          killed: !!exec.killed,
+          activeSeconds: Math.round(activeMs / 1000),
+        },
+      });
     }
     artifacts = collectArtifacts(ws.dir, taskDir);
 
     if (exec.exitCode !== 20) break;                       // not a rate limit — done
 
     pauses += 1;
-    log.info(tr, `rate limit hit (pause ${pauses}) — parking the task; issue stays in_progress`);
+    log.info(tr, `rate limit hit (pause ${pauses}) — parking the task; issue stays in_progress`,
+      { event: 'task.rateLimited', data: { pause: pauses } });
     // The park is RUN-LEVEL (§7): the FIRST exit 20 of the run opens one shared wait, on
     // that task's reported reset time, and every later reporter — this one included —
     // joins it rather than sleeping against the same window on its own. Joining never
@@ -235,7 +249,8 @@ async function runOneTask(cfg, issue, log, token, gate) {
       log.error(tr, `giving up on the pause: ${waited.reason}`);
       break;                                               // stays exit 20 -> paused
     }
-    log.info(tr, 'relaunching in a fresh container against the same workspace (attempt counter carries over)');
+    log.info(tr, 'relaunching in a fresh container against the same workspace (attempt counter carries over)',
+      { event: 'task.relaunched', data: {} });
   }
   if (pauses) log.info(tr, `task resumed across ${pauses} usage-window pause(s)`);
   const outcome = outcomeFor(exec.exitCode, artifacts.verify);
@@ -270,7 +285,13 @@ async function runOneTask(cfg, issue, log, token, gate) {
   finish(cfg, issue.id, outcome, notes);
 
   log.info(tr, `task finished: exit ${exec.exitCode} -> ${outcome.status}` +
-    (outcome.beads ? ` (issue ${outcome.beads})` : ' (issue stays in_progress)'));
+    (outcome.beads ? ` (issue ${outcome.beads})` : ' (issue stays in_progress)'), {
+    event: 'task.finished',
+    // `beads` is null rather than absent when the issue stays in_progress: "no Beads
+    // transition" is a fact about this task, and a missing key would make it read as a
+    // ledger written before the field existed.
+    data: { exitCode: exec.exitCode, outcome: outcome.status, beads: outcome.beads || null },
+  });
   const v = artifacts.verify;
   const row = {
     issueId: issue.id,
@@ -323,7 +344,8 @@ async function main() {
   const startedAt = new Date().toISOString();
   const t = `${log.runId}/preflight`;
   log.info(t, `run started (config: ${cfg.configPath})`);
-  log.info(t, `target: ${cfg.targetRepoPath} -> ${cfg.targetRepoRemote}`);
+  log.info(t, `target: ${cfg.targetRepoPath} -> ${cfg.targetRepoRemote}`,
+    { event: 'run.target', data: { url: cfg.targetRepoRemote } });
 
   const token = loadToken(REPO_ROOT);
   if (!token) {
@@ -355,7 +377,7 @@ async function main() {
   if (args.dryRun) {
     log.info(t, 'dry run: stopping before the task loop');
     networkDown(REPO_ROOT, cfg);
-    log.info(t, `run finished; artifacts in ${log.dir}`);
+    log.info(t, `run finished; artifacts in ${log.dir}`, { event: 'run.finished', data: { dir: log.dir } });
     return;
   }
 
@@ -413,7 +435,8 @@ async function main() {
   });
   if (source.fed) {
     log.info(t, `live queue feed: ON — re-reading the ready queue while the run is in flight; `
-      + `closing after ${cfg.feedIdleGraceMinutes} idle minute(s), or when ${path.join(log.dir, 'stop')} appears`);
+      + `closing after ${cfg.feedIdleGraceMinutes} idle minute(s), or when ${path.join(log.dir, 'stop')} appears`,
+    { event: 'feed.on', data: {} });
   }
 
   const drained = await drainQueue(source, (issue) => runOneTask(cfg, issue, log, token, gate), cfg.concurrency);
@@ -440,7 +463,10 @@ async function main() {
       `${gate.exhausted ? ' — the run-level pause cap fired; refused tasks stay open for the next run' : ''}`);
   }
   if (source.fed) {
-    log.info(t, `live queue feed: ${source.polls()} re-read(s) of the ready queue; run ended: ${source.ending()}`);
+    // `ending` is normalised the way the manifest below normalises it, so the ledger and
+    // run.json give a later reader the same vocabulary for how the run ended.
+    log.info(t, `live queue feed: ${source.polls()} re-read(s) of the ready queue; run ended: ${source.ending()}`,
+      { event: 'feed.closed', data: { polls: source.polls(), ending: source.ending() || ENDINGS.DRAINED } });
   }
   // The refusals are named here too. "queue drained: (nothing ran)" against a queue that was
   // wholly refused is true and reads like an empty queue — the closing line is where an
@@ -473,7 +499,7 @@ async function main() {
   log.info(t, `run report: ${reportFile}`);
 
   networkDown(REPO_ROOT, cfg);
-  log.info(t, `run finished; artifacts in ${log.dir}`);
+  log.info(t, `run finished; artifacts in ${log.dir}`, { event: 'run.finished', data: { dir: log.dir } });
 }
 
 // Guarded, so `require('runner/run.js')` runs NOTHING and the scheduler above is reachable

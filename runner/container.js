@@ -52,7 +52,10 @@ function runTask(cfg, opts, log, traceId) {
     const logStream = fs.createWriteStream(path.join(opts.taskDir, 'container.log'));
     const started = Date.now();
 
-    log.info(traceId, `launching container ${opts.containerName} (budget ${Math.round(budgetMs / 60000)}m active)`);
+    log.info(traceId, `launching container ${opts.containerName} (budget ${Math.round(budgetMs / 60000)}m active)`, {
+      event: 'container.launched',
+      data: { name: opts.containerName, budgetMinutes: Math.round(budgetMs / 60000) },
+    });
     const child = spawn('docker', args, {
       env: { ...DOCKER_ENV, CLAUDE_CODE_OAUTH_TOKEN: opts.token || '' },
     });

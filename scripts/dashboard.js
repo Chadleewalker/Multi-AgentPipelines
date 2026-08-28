@@ -1284,7 +1284,12 @@ function main() {
 
 if (require.main === module) main();
 
+// `P` is exported for ONE reason (change-log row `repo-qzy`): the event ledger names the
+// same lines this table parses, and a suite that pins "the named event and the prefix agree"
+// has to read the prefix from here rather than keep a second copy of it. Nothing in this
+// file reads the ledger — the reader still parses run.log, and moving it across is a later
+// task — so the export is the only change the ledger asked of this reader.
 module.exports = {
   buildState, canonicalTarget, isHolderLive, readLog, readyQueueIds, readPark, readFeed,
-  resolveRoot, resolvePort, displayName, PAGE,
+  resolveRoot, resolvePort, displayName, PAGE, P,
 };

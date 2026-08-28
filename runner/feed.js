@@ -134,7 +134,7 @@ function createFeedSource(initial, opts = {}) {
       .map((u) => [u.issue.id, { issue: u.issue, reason: u.reason }]);
   }
 
-  const note = (msg) => { if (log && typeof log.info === 'function') log.info(log.trace ? log.trace('feed') : null, msg); };
+  const note = (msg, ev) => { if (log && typeof log.info === 'function') log.info(log.trace ? log.trace('feed') : null, msg, ev); };
   const warn = (msg) => { if (log && typeof log.error === 'function') log.error(log.trace ? log.trace('feed') : null, msg); };
 
   function stopRequested() {
@@ -174,7 +174,10 @@ function createFeedSource(initial, opts = {}) {
       dispatched.add(issue.id);
       added.push(issue.id);
     }
-    if (added.length) note(`feed: picked up ${added.length} new task(s) — ${added.join(', ')}`);
+    if (added.length) {
+      note(`feed: picked up ${added.length} new task(s) — ${added.join(', ')}`,
+        { event: 'feed.pickedUp', data: { added: added.length } });
+    }
     return added.length;
   }
 
