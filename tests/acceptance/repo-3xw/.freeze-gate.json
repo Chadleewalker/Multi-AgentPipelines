@@ -1,0 +1,10 @@
+{
+  "gateVersion": 1,
+  "verdict": "half-proven",
+  "probeSupplied": false,
+  "suiteHash": "cb7e2939b10d4250df40e6d77d5c836c1b7e4af10db18f2c63973736711b308e",
+  "gateHead": "26a2c9ab400706820fa1960461aabc2589a47990",
+  "guards": null,
+  "brittleness": 5,
+  "writtenAt": "2026-08-28T11:32:47.560Z"
+}

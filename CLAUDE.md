@@ -338,6 +338,14 @@ note keys are cited so the trail back to the run survives.
   the criterion it hid in had already been rewritten once, by the critic panel, for being a
   broken gate. Prove a suite both ways before freezing it: red without the work, green with
   it.
+- **A frozen check that diffs the branch against its fork point sees nothing.** The host commits
+  the agent's work AFTER the verifier has run, so at verify time `HEAD` *is* the fork point and
+  `git diff <fork>..HEAD` is empty — the check passes having observed nothing, and run against the
+  committed branch afterwards it says something else entirely (a line-based diff shows an edited
+  call site as a removal plus an addition). One frozen criterion did exactly this and was caught
+  by the task agent through the concern channel (`repo-qzy`). Assert on the working tree the
+  verifier can see — file contents, exports, behaviour — never on git history the container has
+  not written yet.
 - **Never remove a Docker resource you cannot prove you created.** The reference host runs
   unrelated long-lived containers, and `docker`'s `--filter name=` is a **substring** match,
   not a prefix one: `--filter name=task-` force-removed `my-task-runner` and anything else
