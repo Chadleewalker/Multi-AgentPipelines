@@ -48,9 +48,52 @@ const LABEL = {
   tampered: 'TAMPERED — frozen tests were modified',
   failed: 'FAILED',
   paused: 'PAUSED — usage window did not reopen',
-  // A label of its own, because the fallback below prints the bare outcome word (§4.12).
+  // A label of its own, because the fallback below prints the bare outcome word (§4.12). This
+  // is the HISTORIC sentence and it stays the default: a row carrying no `refusal` — a manifest
+  // written before §4.12's third admission rule, or any other writer of this outcome — is the
+  // second admission rule's refusal and nothing else, and renders exactly as it always did.
   undispatchable: 'UNDISPATCHABLE — no frozen acceptance suite on the integration branch',
 };
+
+// §4.12's four refusal kinds, in the heading. One phrase each, and DISTINCT: the heading is
+// what a person skimming a report of thirty tasks reads, and four different failures under one
+// sentence send three of them to the wrong remedy. The vocabulary is `runner/queue.js`'s
+// `REFUSAL` and `run.schema.json`'s enum; an unknown kind falls back to the historic label
+// rather than inventing a heading for a value this report does not understand.
+const UNDISPATCHABLE_LABEL = {
+  'no-suite': LABEL.undispatchable,
+  'no-receipt': 'UNDISPATCHABLE — the frozen suite carries no freeze receipt',
+  'receipt-mismatch': 'UNDISPATCHABLE — the frozen suite has changed since its receipt was written',
+  'half-proven': 'UNDISPATCHABLE — the freeze receipt records a half-proven freeze',
+};
+
+// The body paragraph, keyed by the same four. Every one of them opens on the fact that makes
+// this outcome unlike all the others — Beads was never touched — and then names the remedy for
+// THAT kind and no other.
+const NOT_DISPATCHED = 'so Beads was never touched and it is still `open`';
+const UNDISPATCHABLE_BODY = {
+  'no-suite': (id) => 'Freeze its acceptance suite at '
+    + `\`tests/acceptance/${id}/\` on the branch task containers fork from and **push it** — `
+    + 'freezing locally is not freezing — then re-run.',
+  'no-receipt': (id) => `The suite at \`tests/acceptance/${id}/\` is on the branch, but nothing `
+    + 'beside it records that it was ever gated: there is no receipt, or the one there is '
+    + 'cannot be read. Run the freeze gate over that suite and push the `.freeze-gate.json` it '
+    + 'writes, together with the suite, then re-run.',
+  'receipt-mismatch': (id) => `The suite at \`tests/acceptance/${id}/\` carries a receipt, but `
+    + 'the branch no longer holds the suite that receipt was written for — it was edited after '
+    + 'the gate blessed it, so what a container would be judged against has never been gated. '
+    + 'Run the freeze gate over it again and push the suite and its fresh receipt together, '
+    + 'then re-run.',
+  'half-proven': (id) => `The gate found the suite at \`tests/acceptance/${id}/\` red at the `
+    + 'fork point but was given no probe, so the green side has never been seen and nothing '
+    + 'has shown an implementation can satisfy it — the class that produced seven of twelve '
+    + 'stuck tasks in one fortnight. Re-gate it with a probe (`--green <probe-dir>`), or set '
+    + '`allowHalfProven: true` in the run config if a half-proven freeze is good enough for '
+    + 'this run, then re-run.',
+};
+
+const refusalKindOf = (t) => (
+  Object.prototype.hasOwnProperty.call(UNDISPATCHABLE_LABEL, t.refusal) ? t.refusal : 'no-suite');
 
 function renderReport(manifest) {
   const L = [];
@@ -96,7 +139,10 @@ function renderReport(manifest) {
   L.push('');
 
   for (const t of manifest.tasks) {
-    L.push(`## ${t.issueId} — ${LABEL[t.outcome] || t.outcome}`);
+    const label = t.outcome === 'undispatchable'
+      ? UNDISPATCHABLE_LABEL[refusalKindOf(t)]
+      : (LABEL[t.outcome] || t.outcome);
+    L.push(`## ${t.issueId} — ${label}`);
     L.push('');
     if (t.title) L.push(`**${t.title}**`);
     L.push('');
@@ -118,9 +164,8 @@ function renderReport(manifest) {
     // an older manifest, or any other writer of this outcome, carries none of them.
     if (t.outcome === 'undispatchable') {
       L.push('**Not dispatched.** The ready queue refused this issue before anything was '
-        + 'claimed, so Beads was never touched and it is still `open`. Freeze its acceptance '
-        + `suite at \`tests/acceptance/${t.issueId}/\` on the branch task containers fork `
-        + 'from and **push it** — freezing locally is not freezing — then re-run.');
+        + `claimed, ${NOT_DISPATCHED}. `
+        + UNDISPATCHABLE_BODY[refusalKindOf(t)](t.issueId));
       L.push('');
     }
 

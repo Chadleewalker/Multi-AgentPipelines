@@ -10,6 +10,7 @@
   "concurrency": 1,
   "feedIdleGraceMinutes": 0,
   "feedPollSeconds": 30,
+  "allowHalfProven": false,
   "agentCommand": null,
   "model": "opus"
 }

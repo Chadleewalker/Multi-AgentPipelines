@@ -178,10 +178,17 @@ coverage that matters is of the area about to be tasked out, not of the whole sy
       the repo for the same reason the empty control is, so an interrupted gate can leave one
       obviously disposable folder next to your suite.
       **A verdict that proceeds leaves a receipt in the suite** (§3.2; change-log rows
-      `receipt-design` and `repo-erq`). The gate writes `tests/acceptance/<issue-id>/.freeze-gate.json`
+      `receipt-design`, `repo-erq` and `repo-isq`). The gate writes `tests/acceptance/<issue-id>/.freeze-gate.json`
       — gate version, verdict, whether a probe was supplied, a content hash of the suite, the
       checkout's HEAD, the guard and brittleness counts, a timestamp — and it is committed to
-      the integration branch with the tests (PLANNING.md step 6). Two onboarding consequences.
+      the integration branch with the tests (PLANNING.md step 6). **The runner enforces this**
+      (§4.12's third admission rule): a suite on the branch with no receipt, or with one written
+      for a different version of that suite, is refused before anything is claimed and the issue
+      stays `open`. So for this project it is not a habit but a requirement — re-run the gate
+      after any edit to a frozen suite, however small, and push the fresh receipt in the same
+      commit. A suite the gate found red with **no probe** (`--green`) records `half-proven` and
+      is refused too, unless that project's `run.config.<project>.json` sets
+      `"allowHalfProven": true`. Two onboarding consequences.
       **The project must be a real git repository with history**, because the hash is over the
       blob ids git will store rather than the bytes on disk: a checkout with CRLF line endings
       and an LF blob is the normal case on Windows, and a byte hash would disagree with the

@@ -50,6 +50,22 @@
 //   * `run.js` IS PINNED STRUCTURALLY at the seams no Docker-free test can execute: it sits
 //     behind the token load and the Docker preflight, so "the two failure channels are told
 //     apart" and "the refused rows reach the manifest" are only assertable as source facts.
+//
+// §4.12's THIRD admission rule — the receipt (change-log row `repo-isq`) — is covered by G10
+// and G11 below. Two things about those fixtures are load-bearing rather than incidental:
+//
+//   EVERY RECEIPT HERE IS WRITTEN BY `runner/suite-hash.js`, never by a formula this file
+//   carries. A second copy of the formula would agree with a wrong implementation and disagree
+//   with the gate, which is the one failure mode the shared module exists to make impossible.
+//   `addSuite` therefore hashes the suite the way the freeze gate does — over the WORKING TREE,
+//   before the commit — and the gate under test hashes the branch; the fixtures pass only if
+//   the two sides genuinely agree.
+//
+//   THE BRANCH-NOT-WORKING-COPY PAIR IS REPEATED HERE (G10i/G10j), because it is the only
+//   fixture shape that separates a gate reading FETCH_HEAD from one reading the operator's
+//   desk. Every other receipt fixture in this file has the two agree — an implementation that
+//   hashed `targetRepoPath` would pass all of them, and would then refuse a correctly frozen
+//   queue the moment anyone edited a test file while a run was in flight.
 'use strict';
 const fs = require('fs');
 const os = require('os');
@@ -67,6 +83,10 @@ delete process.env.PIPELINE_BD_CMD;
 const queue = require(QUEUE_SRC);
 const report = require(path.join(ROOT, 'runner', 'report.js'));
 const { loadConfig, DEFAULTS } = require(path.join(ROOT, 'runner', 'config.js'));
+// The SHARED formula, and the freeze gate's own version constant. Both are required rather
+// than retyped: a receipt this file computed itself would agree with a wrong gate.
+const { suiteHash, workingTreeEntries, RECEIPT_NAME } = require(path.join(ROOT, 'runner', 'suite-hash.js'));
+const { RECEIPT_VERSION } = require(path.join(ROOT, 'scripts', 'freeze-gate.js'));
 
 let failed = 0;
 function check(name, cond) {
@@ -119,10 +139,36 @@ function mkWork(dir, remote, branch, pipelineConfig) {
   git(dir, ['push', '-q', 'origin', branch]);
   return dir;
 }
-function addSuite(work, branch, id, { push = true, asFile = false } = {}) {
+// A receipt for the suite AS IT STANDS IN THE WORKING COPY, written the way
+// `scripts/freeze-gate.js` writes one: the shared formula, over the working tree, before the
+// commit. `over` replaces fields — that is how the malformed-receipt fixtures are built — and
+// a string body is written verbatim, for the truncated-JSON case.
+function writeReceipt(work, id, over = {}) {
+  const dir = path.join(work, 'tests', 'acceptance', id);
+  const body = typeof over === 'string' ? over : `${JSON.stringify({
+    gateVersion: RECEIPT_VERSION,
+    verdict: 'red',
+    probeSupplied: true,
+    suiteHash: suiteHash(workingTreeEntries(work, `tests/acceptance/${id}`)),
+    gateHead: null,
+    guards: null,
+    brittleness: 0,
+    writtenAt: '2026-08-28T00:00:00.000Z',
+    ...over,
+  }, null, 2)}\n`;
+  fs.writeFileSync(path.join(dir, RECEIPT_NAME), body);
+}
+
+// `receipt` is the receipt's overrides (the default is a matching `red` one, which is what a
+// gated suite carries), `null` for a suite the gate never blessed, or a raw string body.
+function addSuite(work, branch, id, { push = true, asFile = false, receipt = {} } = {}) {
   const p = path.join(work, 'tests', 'acceptance', id);
   if (asFile) { mk(path.dirname(p)); fs.writeFileSync(p, 'not a directory\n'); }
-  else { mk(p); fs.writeFileSync(path.join(p, 'test.js'), 'process.exit(1);\n'); }
+  else {
+    mk(p);
+    fs.writeFileSync(path.join(p, 'test.js'), 'process.exit(1);\n');
+    if (receipt !== null) writeReceipt(work, id, receipt);
+  }
   git(work, ['add', '-A']);
   git(work, ['commit', '-qm', `suite ${id}`]);
   if (push) git(work, ['push', '-q', 'origin', branch]);
@@ -589,6 +635,235 @@ guarded('G9', () => {
     /tasks:\s*\[\s*\.\.\.results,\s*\.\.\.refusedRows\s*\]/.test(code));
   check('G9g the drain\'s closing line names the refusals too',
     /queue drained[\s\S]{0,120}refusedRows/.test(code));
+});
+
+// =======================================================================================
+// G10 — §4.12's THIRD admission rule: the freeze receipt
+// =======================================================================================
+// The second rule proves a suite is PRESENT; this one proves it was GATED. Every fixture below
+// is a suite that the second rule admits, so nothing here can pass by accident on the older
+// check — and each one is refused for a DIFFERENT reason, because a single "not dispatchable"
+// verdict over four causes sends three readers in four to the wrong remedy.
+guarded('G10', () => {
+  const base = tmp('g10');
+  const cfg = { verifyCommand: 'sh tools/run-acceptance.sh', defaultBranch: 'trunk' };
+  const remote = mkBare(path.join(base, 'r.git'), 'trunk');
+  const work = mkWork(path.join(base, 'w'), remote, 'trunk', cfg);
+
+  addSuite(work, 'trunk', 'gated');                                  // a matching red receipt
+  addSuite(work, 'trunk', 'ungated', { receipt: null });             // no receipt at all
+  addSuite(work, 'trunk', 'halfp', { receipt: { verdict: 'half-proven', probeSupplied: false } });
+  addSuite(work, 'trunk', 'verd', { receipt: { verdict: 'green' } });
+  addSuite(work, 'trunk', 'vers', { receipt: { gateVersion: 99 } });
+  addSuite(work, 'trunk', 'trunc', { receipt: '{"gateVersion": 1, "verdict": "red", "suiteHa' });
+  addSuite(work, 'trunk', 'nohash', { receipt: { suiteHash: true } });
+  // Gated, then edited and pushed without re-running the gate — the shape the rule exists for.
+  addSuite(work, 'trunk', 'moved');
+  fs.appendFileSync(path.join(work, 'tests', 'acceptance', 'moved', 'test.js'), '// after the gate\n');
+  git(work, ['add', '-A']); git(work, ['commit', '-qm', 'edit moved']); git(work, ['push', '-q', 'origin', 'trunk']);
+
+  const ids = ['gated', 'ungated', 'halfp', 'verd', 'vers', 'trunc', 'nohash', 'moved', 'never-frozen'];
+  const { res, argv } = run(work, remote, ids.map((i) => issue(i)));
+  const kindOf = (id) => {
+    const u = (res.undispatchable || []).find((x) => x.issue && x.issue.id === id);
+    return u ? u.refusal : null;
+  };
+  const reasonOf = (id) => {
+    const u = (res.undispatchable || []).find((x) => x.issue && x.issue.id === id);
+    return (u && u.reason) || '';
+  };
+
+  check('G10a the gate still answers with all nine candidates judged',
+    res.ok === true && res.issues.length + res.undispatchable.length === 9);
+  check('G10b a suite carrying a matching red receipt is DISPATCHED',
+    has(res.issues, 'gated') && !has(res.undispatchable, 'gated'));
+  check('G10c a suite the gate never blessed is refused `no-receipt`',
+    kindOf('ungated') === 'no-receipt' && /no freeze receipt/.test(reasonOf('ungated')));
+  check('G10d a suite edited after its receipt was written is refused `receipt-mismatch`',
+    kindOf('moved') === 'receipt-mismatch' && /receipt does not match/.test(reasonOf('moved')));
+  check('G10e a half-proven receipt is refused `half-proven` by default',
+    kindOf('halfp') === 'half-proven' && /half-proven/.test(reasonOf('halfp')));
+  // The three malformed shapes are ONE refusal, not three: a receipt the runner cannot
+  // interpret is a receipt it does not have, and reading one anyway is how a suite nobody
+  // gated reaches a container.
+  check('G10f a receipt of an unknown VERDICT is `no-receipt`, never a pass',
+    kindOf('verd') === 'no-receipt' && !has(res.issues, 'verd'));
+  check('G10g a receipt of an unknown gateVersion is `no-receipt`',
+    kindOf('vers') === 'no-receipt' && !has(res.issues, 'vers'));
+  check('G10h truncated JSON is `no-receipt`', kindOf('trunc') === 'no-receipt');
+  // ...and a receipt whose hash field is not a digest is `no-receipt` rather than
+  // `receipt-mismatch`: a junk hash compares unequal to everything, so the lazy reading would
+  // send a person to re-gate a suite whose real problem is the receipt beside it.
+  check('G10i a receipt recording no usable suite hash is `no-receipt`, not a mismatch',
+    kindOf('nohash') === 'no-receipt');
+  // CHECK ORDER: suite -> receipt -> hash -> verdict, first refusal wins. A suite that is
+  // absent has no receipt either, and naming the downstream symptom would send a person to run
+  // a gate over a directory that does not exist.
+  check('G10j an absent suite is still `no-suite`, not `no-receipt`',
+    kindOf('never-frozen') === 'no-suite' && /no frozen acceptance suite/.test(reasonOf('never-frozen')));
+  check('G10k every refusal carries one of the four declared kinds',
+    (res.undispatchable || []).every((u) => queue.REFUSAL
+      && Object.values(queue.REFUSAL).includes(u.refusal)));
+  const enumOf = JSON.parse(fs.readFileSync(path.join(ROOT, 'schemas', 'run.schema.json'), 'utf8'))
+    .properties.tasks.items.properties.refusal.enum;
+  check('G10l the four kinds are exactly run.schema.json\'s `refusal` enum',
+    [...Object.values(queue.REFUSAL)].sort().join() === [...enumOf].sort().join());
+  check('G10m no bd write of any kind reached the seam while refusing them',
+    !argv.map((a) => a.join(' ')).some((v) => /\b(update|note|close|create|remember)\b/.test(v)));
+
+  // allowHalfProven moves EXACTLY ONE of them. A knob that also admitted an ungated or a
+  // changed suite would be an off switch for the whole rule wearing the name of one refusal.
+  const on = run(work, remote, ids.map((i) => issue(i)), { allowHalfProven: true }).res;
+  check('G10n with allowHalfProven the half-proven suite dispatches',
+    on.ok === true && has(on.issues, 'halfp'));
+  check('G10o ...and nothing else moves — the other refusals are unchanged',
+    on.ok === true
+      && (on.undispatchable || []).map((u) => `${u.issue.id}:${u.refusal}`).sort().join()
+        === (res.undispatchable || []).filter((u) => u.issue.id !== 'halfp')
+          .map((u) => `${u.issue.id}:${u.refusal}`).sort().join());
+
+  // The throwaway repository is still removed on the receipt paths, which now read the tree
+  // twice more per candidate — the easiest place for an early `return` to skip a `finally`.
+  const before = tmpListing().length;
+  run(work, remote, [issue('ungated'), issue('moved')]);
+  check('G10p a run that refuses on the receipt leaves no throwaway repository behind',
+    tmpListing().length === before);
+});
+
+// =======================================================================================
+// G10b — the branch, never the operator's working copy
+// =======================================================================================
+// The ONE fixture shape that separates this design from a gate reading `targetRepoPath`. Every
+// other receipt fixture has the two agree, so an implementation hashing the working copy passes
+// all of them — and then refuses a correctly frozen queue the moment anyone edits a test file
+// while a run is in flight, which is the normal state of a planning session beside a fed run.
+guarded('G10-branch', () => {
+  const base = tmp('g10b');
+  const cfg = { verifyCommand: 'sh tools/run-acceptance.sh', defaultBranch: 'trunk' };
+  const remote = mkBare(path.join(base, 'r.git'), 'trunk');
+  const work = mkWork(path.join(base, 'w'), remote, 'trunk', cfg);
+  addSuite(work, 'trunk', 'pair');
+
+  // (a) the branch matches its receipt; the working copy carries an uncommitted edit.
+  fs.appendFileSync(path.join(work, 'tests', 'acceptance', 'pair', 'test.js'), '// uncommitted\n');
+  const a = run(work, remote, [issue('pair')]).res;
+  check('G10q an uncommitted working-copy edit does not refuse a branch that matches its receipt',
+    a.ok === true && has(a.issues, 'pair'));
+
+  // (b) the mirror: the working copy is pristine at the receipt's hash, and the BRANCH moved.
+  git(work, ['checkout', '--', 'tests/acceptance/pair/test.js']);
+  const other = mk(path.join(base, 'other'));
+  git(other, ['clone', '-q', remote, '.']);
+  fs.appendFileSync(path.join(other, 'tests', 'acceptance', 'pair', 'test.js'), '// pushed from elsewhere\n');
+  git(other, ['add', '-A']); git(other, ['commit', '-qm', 'one more byte']); git(other, ['push', '-q', 'origin', 'trunk']);
+  const b = run(work, remote, [issue('pair')]).res;
+  check('G10r a pristine working copy does not admit a branch whose suite moved past its receipt',
+    b.ok === true && !has(b.issues, 'pair')
+      && (b.undispatchable[0] || {}).refusal === 'receipt-mismatch');
+});
+
+// =======================================================================================
+// G11 — the kind travels: the row, the schema, the report, the config, the call sites
+// =======================================================================================
+guarded('G11', () => {
+  const props = JSON.parse(fs.readFileSync(path.join(ROOT, 'schemas', 'run.schema.json'), 'utf8'))
+    .properties.tasks.items.properties;
+  const kinds = Object.values(queue.REFUSAL);
+  const rows = kinds.map((k) => queue.undispatchableRow(issue('x-1'), `because ${k}`, 'run-2', k));
+  check('G11a every kind produces a row carrying it, and only schema-declared keys',
+    rows.length === 4 && rows.every((r, i) => r.refusal === kinds[i]
+      && r.outcome === 'undispatchable' && Object.keys(r).every((key) => key in props)));
+  const legacy = queue.undispatchableRow(issue('x-1'), 'because', 'run-2');
+  check('G11b a row asked for no kind carries no `refusal` key at all',
+    !('refusal' in legacy) && legacy.outcome === 'undispatchable');
+  check('G11c an unknown kind falls back rather than travelling into the manifest',
+    !('refusal' in queue.undispatchableRow(issue('x-1'), 'because', 'run-2', 'invented')));
+  check('G11d the four remedies are pairwise distinct',
+    new Set(rows.map((r) => r.changeSummary)).size === 4);
+  // Each kind's remedy names ITS OWN fix and no other kind's. A shared sentence would be four
+  // ways of telling a reader to do the wrong thing three times.
+  const md = (row) => report.renderReport({
+    runId: 'r', startedAt: 'a', finishedAt: 'b', targetRepo: 'x', tasks: [row],
+  });
+  const byKind = Object.fromEntries(rows.map((r) => [r.refusal, md(r)]));
+  check('G11e the no-suite report says freeze the suite and never mentions the gate',
+    /freeze/i.test(byKind['no-suite']) && !/freeze gate/i.test(byKind['no-suite']));
+  check('G11f the no-receipt and receipt-mismatch reports send the reader to the freeze gate',
+    /run the freeze gate/i.test(byKind['no-receipt'])
+      && /freeze gate/i.test(byKind['receipt-mismatch']));
+  check('G11g ...and neither offers the half-proven escape hatch',
+    !/--green|allowHalfProven/.test(byKind['no-receipt'])
+      && !/--green|allowHalfProven/.test(byKind['receipt-mismatch']));
+  check('G11h the half-proven report names the probe and the knob, and claims no missing suite',
+    /--green/.test(byKind['half-proven']) && /allowHalfProven/.test(byKind['half-proven'])
+      && !/no frozen/i.test(byKind['half-proven']));
+  check('G11i the four headings are distinct',
+    new Set(Object.values(byKind).map((m) => (m.split('\n').find((l) => /^## x-1 /.test(l)) || ''))).size === 4);
+  check('G11j a row with no kind still renders the historic sentence',
+    /no frozen acceptance suite on the integration branch/.test(md(legacy)));
+
+  // The reader's half of a constant whose writer's half lives in scripts/freeze-gate.js. Two
+  // constants that must overlap and cannot see each other drift in silence — the receipt would
+  // then be written in a version the runner refuses, and every freeze would read `no-receipt`.
+  check('G11k the runner understands the version the freeze gate writes',
+    queue.KNOWN_GATE_VERSIONS instanceof Set && queue.KNOWN_GATE_VERSIONS.has(RECEIPT_VERSION));
+  check('G11l the accepted verdicts are exactly the two the gate writes a receipt for',
+    [...queue.RECEIPT_VERDICTS].sort().join() === 'half-proven,red');
+
+  // The formula is IMPORTED, never re-derived: `runner/queue.js` must not grow a digest of its
+  // own, because a second copy would agree with a wrong gate and disagree with the real one.
+  const qsrc = fs.readFileSync(QUEUE_SRC, 'utf8');
+  check('G11m runner/queue.js requires the shared formula and computes no hash of its own',
+    /require\('\.\/suite-hash'\)/.test(qsrc) && !/createHash/.test(qsrc));
+
+  // Config: the knob is validated by name, defaults to false, and ships in the example.
+  const cdir = tmp('g11cfg');
+  const write = (o, tag) => {
+    const f = path.join(cdir, `run.config.${tag}.json`);
+    fs.writeFileSync(f, JSON.stringify({
+      targetRepoPath: cdir, targetRepoRemote: 'https://example.invalid/r.git', image: 'x:local', ...o,
+    }));
+    return f;
+  };
+  const rejects = (v, tag) => {
+    try { loadConfig(write({ allowHalfProven: v }, tag)); return false; }
+    catch (e) { return /allowHalfProven/.test(e.message); }
+  };
+  check('G11n loadConfig rejects a non-boolean allowHalfProven BY NAME',
+    ['yes', 1, 0, null, []].every((v, i) => rejects(v, `bad${i}`)));
+  let dflt = null; let on = null;
+  try { dflt = loadConfig(write({}, 'dflt')); on = loadConfig(write({ allowHalfProven: true }, 'on')); }
+  catch { /* reported below */ }
+  check('G11o an absent allowHalfProven loads as false, and DEFAULTS says so',
+    !!dflt && dflt.allowHalfProven === false && DEFAULTS.allowHalfProven === false);
+  check('G11p an explicit true survives the load', !!on && on.allowHalfProven === true);
+  check('G11q run.config.example.json carries the knob at its default',
+    EXAMPLE.allowHalfProven === DEFAULTS.allowHalfProven);
+  check('G11r the manifest schema declares it top-level as a boolean',
+    JSON.parse(fs.readFileSync(path.join(ROOT, 'schemas', 'run.schema.json'), 'utf8'))
+      .properties.allowHalfProven.type === 'boolean');
+
+  // run.js's two call sites, structural for the usual reason: main() sits behind the token load
+  // and the Docker preflight, so neither is executable by any Docker-free test. A kind dropped
+  // at the first is a report that names the wrong remedy; the second is the only record of
+  // which rule the run applied.
+  const rsrc = fs.readFileSync(RUN_SRC, 'utf8').split('\n')
+    .filter((l) => !l.trim().startsWith('//')).join('\n');
+  check('G11s run.js passes the refusal kind into the manufactured row',
+    /undispatchableRow\(u\.issue,\s*u\.reason,\s*log\.runId,\s*u\.refusal\)/.test(rsrc));
+  check('G11t run.js records the effective allowHalfProven in the manifest',
+    /allowHalfProven:\s*cfg\.allowHalfProven/.test(rsrc));
+
+  // And the feed, which is what carries the kind from the gate to the row across a whole run.
+  const feed = require(path.join(ROOT, 'runner', 'feed.js'));
+  const src = feed.createFeedSource([], {
+    poll: () => ({ ok: true, issues: [], undispatchable: [] }),
+    undispatchable: [{ issue: issue('f-1'), reason: 'no freeze receipt', refusal: 'no-receipt' },
+      { issue: issue('f-2'), reason: 'no frozen acceptance suite' }],
+  });
+  const left = src.undispatchable();
+  check('G11u the feed carries the kind through, and invents none where there was none',
+    left.length === 2 && left[0].refusal === 'no-receipt' && !('refusal' in left[1]));
 });
 
 process.exit(failed);

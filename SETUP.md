@@ -284,7 +284,10 @@ change the pipeline itself.
    Three fields worth knowing: **`proxyPort` is not tunable** (the gatekeeper hard-codes 3128
    and nothing validates your file against it — changing it kills preflight with no hint);
    `feedIdleGraceMinutes: 0` means the live queue feed is off; `concurrency` has no ceiling,
-   so start at 1.
+   so start at 1. A fourth if you ever hit it: `allowHalfProven: false` is the default and
+   means the runner refuses a suite the freeze gate found red with no probe supplied — set it
+   to `true` only if you accept dispatching suites whose green side has never been seen
+   (§4.12's third admission rule).
 3. **`cp .sanitize-denylist.example .sanitize-denylist`** if you touch private work, then list
    the names that must never appear here. This repo is public and is used on private work; it
    documents the machinery, never the work. Run `bash scripts/test-sanitize.sh` before you push.

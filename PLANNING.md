@@ -430,7 +430,7 @@ install anything at run time):
   `bd ready` returns the parent alongside its children — but the runner filters entries
   typed `epic` out and names them in its `ready queue:` log line (§3.1, §4.12). Every
   other type (`bug`, `feature`, `chore`, `decision`) is *eligible* to run — subject to the
-  next bullet, which is the queue's second admission rule — so anything in the list
+  next two bullets, which are the queue's second and third admission rules — so anything in the list
   that is not meant to run this batch must be blocked or closed, not merely retyped.
   The *membership* half of this bullet is automated by the marker's own reader — see the
   last act below — which leaves you the half it cannot check: the **priority order**.
@@ -444,6 +444,16 @@ install anything at run time):
   than failing one task. And `node scripts/batch.js show`'s `ready` verdict, below, is
   still Beads-only: it does not yet know this rule, so an id can read `ready` there and
   be refused at dispatch (a follow-up task; §4.12 records the gap).
+- **Every frozen suite carries its `.freeze-gate.json`, and it is pushed with the suite**
+  (§4.12's third admission rule, change-log row `repo-isq`). The freeze gate writes that
+  receipt beside the suite on a verdict that proceeds — `red` (exit 0) or `half-proven`
+  (exit 4) — and the runner now recomputes the suite's hash from the integration branch and
+  refuses anything that does not match: `no-receipt` for a suite the gate never blessed,
+  `receipt-mismatch` for one edited after the gate blessed it, and `half-proven` for a red
+  freeze no probe was ever run against, unless the run config sets `allowHalfProven: true`.
+  So: re-run the gate after *any* edit to a frozen suite, however small — a comment reflow
+  moves the hash — and commit the receipt in the same commit as the suite. The refusal names
+  the remedy in the run report, but it still costs that task its slot in the batch.
 - The per-project image exists; Docker Desktop is running.
 - Anything the task needs to *know* (API details, conventions) is in the repo or attached
   to the issue — the container has no internet beyond the Anthropic endpoints (§4.8).

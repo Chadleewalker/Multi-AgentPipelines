@@ -152,8 +152,10 @@ node runner/run.js --config run.config.<project>.json
 # set "feedIdleGraceMinutes" above 0 and the run re-reads the ready queue whenever a worker
 # is free, so an issue frozen while the run is going is picked up by the next free slot
 # instead of waiting for the next run. Feeding is just `bd` in a working session — there is
-# no submit command. Freeze the suite and PUSH it: an unpushed suite is refused by the
-# dispatch gate, and under feeding that refusal is a wait, so pushing it later is enough.
+# no submit command. Freeze the suite and PUSH it — the suite AND the .freeze-gate.json the
+# freeze gate wrote beside it, since a suite with no matching receipt is refused too
+# (§4.12's third rule, change-log row `repo-isq`). Under feeding a refusal is a wait, so
+# pushing both later is enough.
 touch runs/<runId>/stop   # stop a fed run without killing it: workers finish what they hold
 
 # reviewing what a run produced: one line per PR, at the moment the call is made (§5).
@@ -225,7 +227,7 @@ bash scripts/test-dashboard.sh     # the live dashboard's /state joins, its degr
 bash scripts/test-verify-buffer.sh # the verifier's capture limit — a loud PASS is a pass, a loud FAIL is still a fail (change-log row `verify-nobuffer`)
 bash scripts/test-pipeline-map.sh  # the reader's map is drawn at build time — an error card is not a diagram (change-log row `map-prerender`)
 bash scripts/test-batch.sh         # the batch marker reader — the marker shape, the corpus join, the live-queue reconciliation and both degraded vocabularies (change-log rows `repo-0b3`, `repo-8v0`)
-bash scripts/test-dispatch-gate.sh # the ready queue's SECOND admission rule — a task whose frozen suite is not on the fork branch is never dispatched (change-log rows `dispatch-gate`, `repo-5yu`)
+bash scripts/test-dispatch-gate.sh # the ready queue's SECOND and THIRD admission rules — a task whose frozen suite is not on the fork branch, or carries no receipt matching that branch, is never dispatched (change-log rows `dispatch-gate`, `repo-5yu`, `repo-isq`)
 bash scripts/test-feed.sh       # the live queue feed — work frozen mid-run is picked up by the next free worker (change-log row `live-queue-feed`)
 bash scripts/test-worktree.sh   # one folder per agent session — what a worktree carries, what it refuses to carry, and what it refuses to delete (change-log row `parallel-sessions`)
 bash scripts/test-events.sh     # the event ledger — one writer, one clock, a named typed event per parsed line, and the three run.log readers still green (change-log row `repo-qzy`)
@@ -538,7 +540,15 @@ the pipeline working on the pipeline's own code. The rules:
   replace; only that pair tells them apart. Its second is a `master` project with no
   `pipeline.config.json`, which is the only fixture that catches a branch chain ending at
   the literal `'main'` — the chain `runner/workspace.js`'s `detectDefaultBranch` has, which
-  is correct there and would refuse this whole queue with a confident wrong reason.
+  is correct there and would refuse this whole queue with a confident wrong reason. Since
+  change-log row `repo-isq` the same suite holds §4.12's THIRD admission rule — the freeze
+  receipt — so run it equally if you touch `runner/suite-hash.js` or the shape
+  `scripts/freeze-gate.js` writes into `.freeze-gate.json`: the gate and the runner share one
+  formula on purpose, and two copies of it would agree with a wrong implementation while
+  disagreeing with every real freeze. Its third load-bearing pair is the branch-not-working-copy
+  one — an uncommitted edit beside a branch that matches its receipt (dispatched) and a pristine
+  checkout beside a branch that has moved past it (refused) — which is the only shape that
+  separates a gate reading `FETCH_HEAD` from one reading the operator's desk.
   And `sh scripts/test-feed.sh` (`tests/unit/feed.test.js`), which needs node only and
   injects its own clock: run it if you touch `runner/feed.js`, `runner/run.js`'s
   `drainQueue` or task loop, `runner/config.js`'s feed knobs, or `schemas/run.schema.json`

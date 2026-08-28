@@ -453,7 +453,7 @@ async function main() {
   // 14:20 ran and has a PR. Reporting it as undispatchable would be a lie about a task the
   // reviewer can see succeeded.
   const stillRefused = source.undispatchable();
-  const refusedRows = stillRefused.map((u) => undispatchableRow(u.issue, u.reason, log.runId));
+  const refusedRows = stillRefused.map((u) => undispatchableRow(u.issue, u.reason, log.runId, u.refusal));
   for (const u of stillRefused) {
     log.error(log.trace(u.issue.id), `not dispatched: ${u.reason} — Beads untouched, the issue stays open`);
   }
@@ -482,6 +482,11 @@ async function main() {
     // The CONFIGURED (or defaulted) setting, not the observed peak in flight: what the run
     // was allowed to do is the thing a later reader needs to interpret its wall clock.
     concurrency: cfg.concurrency,
+    // §4.12's third admission rule, as this run applied it. Recorded because it changes which
+    // tasks were ELIGIBLE: a run with it on dispatched suites whose green side has never been
+    // seen, and a later reader comparing two runs of the same queue has no other way to know
+    // that the queues were judged by different rules.
+    allowHalfProven: cfg.allowHalfProven,
     // Recorded whether or not it was on, so a later reader can tell "this run did not feed"
     // from "this manifest predates feeding" — the same reason `concurrency` is written even
     // when it is 1. `ending` is the fact the log line alone would lose: a run that stopped
