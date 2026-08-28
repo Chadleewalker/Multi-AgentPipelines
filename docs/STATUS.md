@@ -1892,6 +1892,20 @@ checker does not find it, so that specific blindness cannot come back. This is t
 "assert the artifact is *right*, not merely present" rule (§3.6) applied to an audit: a
 scanner reporting zero findings and a scanner that cannot see the file look identical.
 
+**The third leak arrived as an instruction, and the suite never ran** (change-log row
+`setup-plugin-name`). `SETUP.md`’s A8 named the private plugin repository in a
+`/plugin marketplace add` line. The two earlier leaks came in as *evidence* — a project
+named in a change-log row, a side project in a worked example — and that is the shape
+§3.6’s rule describes. This one came in as a working command, where naming the repository
+is the entire point of the line, so it read as correct to every human who looked at it.
+Only the host-only denylist knows the name, so only the checker could have caught it.
+
+**It was green the whole time and nobody ran it.** `test-sanitize.sh` is in the sweep and
+the sweep is a manual step; nothing runs it on a pull request. The boundary that lets this
+repo be public while the work is private is therefore enforced by whoever remembers. That
+is the open gap, and it is a bigger one than any single leak: the two automated halves
+(generic patterns, denylisted names) both work, and neither is a gate.
+
 **`scripts/test-concurrency.sh` is the eighth** (`repo-teq`): it requires `runner/run.js` as
 a module and drives the exported `drainQueue` directly, plus the `PIPELINE_EXEC_STUB` branch
 of `executeTask` with shell stubs of its own — no Docker, no daemon, no target repo. Its
