@@ -271,11 +271,13 @@ receipt on exit 0 and exit 4, refuses a `--repo` that is not a git repository be
 anything, and fails the whole invocation at exit 2 if the receipt cannot be written — a
 verdict nothing recorded is a freeze the runner would refuse anyway. The formula lives in
 `runner/suite-hash.js` and the hash is taken *before* the suite is run, so a fixture that
-writes beside itself cannot pin a state only the planning machine has seen. *Not built yet:*
-the reader. §4.12's third admission rule below is the task after this one, and until it ships
-nothing consults the receipt — which is why the coverage for the writer is re-runnable
-(`tests/unit/freeze-gate.test.js`) rather than only frozen: the two halves ship a task apart,
-and the frozen directory that gated the writer never runs again.
+writes beside itself cannot pin a state only the planning machine has seen. *The reader is
+built too* (change-log row `repo-isq`): §4.12's third admission rule below refuses a candidate
+whose suite carries no receipt, or one written for a different suite than the branch now holds,
+so a freeze that is never committed is now a refusal at dispatch rather than three attempts and
+a container. The coverage for both halves is re-runnable (`tests/unit/freeze-gate.test.js`,
+`tests/unit/dispatch-gate.test.js`) rather than only frozen: they shipped a task apart, and the
+frozen directory that gated each one never runs again.
 
 **Upstream of step 1: the idea inbox.** Each repo — this one and every target — carries a
 `docs/IDEAS.md`, a flat list of parked notes saying *a design might be wanted here
@@ -1027,7 +1029,7 @@ source of truth.
     | Usage limit hit | 20 | paused (transient) | in-progress (runner parks it) | not yet | not yet  | `paused` |
     | Internal error | 30 | failed | blocked | if commits exist | no  | `internal` / `suite-error` |
     | Wall-clock kill (host `docker kill`, no exit code) | — | failed, timeout noted | blocked | if commits exist | no  | `timeout` |
-    | Not dispatched: no frozen suite on the fork branch | — (never launched) | undispatchable | unchanged (`open`) | no | no  | `no-suite` / `no-receipt` / `receipt-mismatch` / `half-proven` |
+    | Not dispatched: the frozen suite is absent from the fork branch, ungated, or changed since its receipt | — (never launched) | undispatchable | unchanged (`open`) | no | no  | `no-suite` / `no-receipt` / `receipt-mismatch` / `half-proven` |
 
     **The last column is decided after the outcome, never with it** (change-log row
     `failure-class-design`). A `failureClass` is written onto every manifest row whose outcome
@@ -1380,11 +1382,11 @@ source of truth.
     after this one and depending on it, not an inbox note; the shape is the same move again,
     importing the check rather than keeping a second copy.
 
-    **A frozen suite without a matching receipt is never dispatched either — the third
-    admission rule** (change-log row `receipt-design`). *Not built yet:* the receipt is
-    written (§3.2, change-log row `repo-erq`) and nothing reads it. Everything in this
-    paragraph is the design the next task implements. The second rule proves a suite is
-    *present*; this one proves it was *gated*. Before claiming, the runner reads
+    **A frozen suite without a matching receipt is never dispatched either — the
+    third admission rule** (change-log rows `receipt-design`, `repo-isq`). *Built* — the
+    receipt is written (§3.2, change-log row `repo-erq`) and `runner/queue.js` now reads it.
+    The second rule proves a suite is *present*; this one proves it was *gated*. Before
+    claiming, the runner reads
     `tests/acceptance/<issue-id>/.freeze-gate.json` from the fetched integration branch and
     recomputes the suite's hash from that branch's blobs with the same `runner/suite-hash.js`
     the gate used. Four refusals, each with a distinct reason and a `refusal` kind on the
@@ -1398,7 +1400,18 @@ source of truth.
     call this adds is bounded like the fetch already is. Beads is never written: a refused
     issue stays `open` with the remedy named. The decision that `half-proven` does not
     dispatch by default was the user's (2026-08-27): the probe is what catches a fixture no
-    implementation can satisfy, and that class was seven of the twelve.
+    implementation can satisfy, and that class was seven of the twelve. Three things the
+    build settled that the design above left open. The set of receipt versions the reader
+    accepts is the *runner's own* and not an import of the gate's `RECEIPT_VERSION`: a writer
+    writes one version, a reader accepts every version it can still interpret, so the two are
+    different facts with one element in common today, and the unit suite pins the overlap
+    rather than a shared constant hiding it. A receipt whose `suiteHash` is not a digest at
+    all is `no-receipt`, not `receipt-mismatch` — junk compares unequal to everything, and the
+    lazy reading would send a person to re-gate a suite whose real problem is the file beside
+    it. And the queue-summary log line's `NOT DISPATCHABLE` clause is deliberately *unchanged*:
+    naming the kind there belongs to the follow-up that teaches `scripts/batch.js show` this
+    rule, because two consecutive tasks rewriting one string is how the same six grep sites
+    move twice.
 
     **The run's process exit codes, in one place** (change-log row `refused-exit-design`).
     Before this row they were scattered: 1 for an unreadable queue or a failed preflight, 2
@@ -1454,8 +1467,10 @@ source of truth.
       both push a branch for it, which is the failure the per-project run lock exists to
       prevent (change-log row `repo-os9`) reintroduced inside one process.
     - **A refusal becomes a wait rather than a verdict.** A task frozen mid-run is refused by
-      the second admission rule above for the minutes before its suite is pushed, which is
-      exactly right and exactly temporary. So refusals are re-evaluated on every poll, and
+      the second admission rule above for the minutes before its suite is pushed — and by the
+      third for as long as the receipt beside it is unpushed, which is a second way the same
+      few minutes look from in here — which is exactly right and exactly temporary. So
+      refusals are re-evaluated on every poll, carrying their `refusal` kind, and
       only what is **still** refused when the run closes is manufactured into a manifest row.
       Reporting a task as undispatchable when it later ran and has a PR would be a lie about a
       task the reviewer can see succeeded.

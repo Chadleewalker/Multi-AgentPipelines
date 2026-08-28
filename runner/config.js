@@ -29,6 +29,12 @@ const DEFAULTS = {
   // workers producing N `bd` calls — each is synchronous and blocks every other worker's
   // container I/O for as long as `bd` and `git fetch` take.
   feedPollSeconds: 30,
+  // §4.12's third admission rule (change-log row `repo-isq`). FALSE, and the default is the
+  // decision rather than a hedge: a `half-proven` receipt says the suite was red at the fork
+  // point and no probe was ever supplied, so nothing has shown an implementation can turn it
+  // green — the class that produced seven of the twelve stuck tasks the receipt exists to
+  // prevent. An operator who accepts that trade says so per project, in writing.
+  allowHalfProven: false,
   // "opus" is an alias the CLI resolves to the CURRENT latest Opus, so the pipeline
   // follows model releases without edits here. The entrypoint records the RESOLVED
   // id (e.g. claude-opus-5) in the status file, so provenance stays exact even
@@ -155,6 +161,13 @@ function loadConfig(file) {
   if (raw.feedPollSeconds !== undefined
       && !(Number.isInteger(raw.feedPollSeconds) && raw.feedPollSeconds > 0)) {
     throw new Error(`run.config.json: 'feedPollSeconds' must be a positive whole number`);
+  }
+  // §4.12's third admission rule. A BOOLEAN and nothing else: the gate reads it as `!== true`,
+  // so a config saying "true", 1 or null would silently mean false and a run would refuse
+  // half-proven suites the operator believed they had admitted — a whole batch not dispatched,
+  // discovered in the morning, with the config on screen appearing to say otherwise.
+  if (raw.allowHalfProven !== undefined && typeof raw.allowHalfProven !== 'boolean') {
+    throw new Error(`run.config.json: 'allowHalfProven' must be true or false`);
   }
   for (const k of ['network', 'proxyName']) {
     if (raw[k] !== undefined && (typeof raw[k] !== 'string' || !raw[k].trim())) {

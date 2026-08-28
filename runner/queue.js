@@ -11,6 +11,13 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { bd, bdJson } = require('./bd');
+// ONE FORMULA, ONE FILE (§3.2, change-log row `receipt-design`). The freeze gate writes the
+// receipt's `suiteHash` with `suiteHash(workingTreeEntries(...))` and this module recomputes it
+// with `suiteHash(treeEntries(...))` from the fetched branch. A second copy of that formula
+// here would drift from the gate's silently and unattended — the `runner/pause.js` precedent —
+// and the failure would be a whole batch refused for a reason nobody could reproduce, or a
+// changed suite admitted.
+const { suiteHash, treeEntries, RECEIPT_NAME } = require('./suite-hash');
 
 // §4.11 outcome table: exit code -> {report status, Beads status}. 'killed' is the
 // host-observed wall-clock kill, which produces no exit code.
@@ -144,6 +151,142 @@ function hasSuite(cfg, probe, issueId) {
   return { ok: true, present: !!(r.stdout || '').trim() };
 }
 
+// ---- §4.12's THIRD admission rule: the receipt ----------------------------------------
+// The second rule proves a suite is PRESENT; this one proves it was GATED. The freeze gate
+// writes `tests/acceptance/<issue-id>/.freeze-gate.json` on a verdict that proceeds (§3.2), and
+// a suite that carries none — or carries one written for a different suite than the branch now
+// holds — is a suite nothing has ever proved an implementation can turn green. Twelve stuck
+// tasks in one fortnight were traced to exactly that, so it is a refusal rather than a note.
+//
+// The four kinds. They are a CLOSED VOCABULARY, shared with `schemas/run.schema.json`'s
+// `tasks.items.properties.refusal` enum and with the report's per-kind heading and remedy: a
+// refusal a reader cannot name is a refusal nobody can act on, which is the whole failure this
+// gate exists to end.
+const REFUSAL = {
+  NO_SUITE: 'no-suite',
+  NO_RECEIPT: 'no-receipt',
+  MISMATCH: 'receipt-mismatch',
+  HALF_PROVEN: 'half-proven',
+};
+
+// Verdicts the gate writes a receipt for at all (§3.2): `red` — the suite fails at the fork
+// point and passes in a probe — and `half-proven` — red, but no probe was supplied, so the
+// green side has never been seen. Anything else in the field is a receipt this runner cannot
+// interpret and is treated as no receipt, never as a pass.
+const RECEIPT_VERDICTS = new Set(['red', 'half-proven']);
+
+// The receipt schema versions this runner understands. Deliberately the READER's own set and
+// not an import of `scripts/freeze-gate.js`'s `RECEIPT_VERSION`: a writer writes exactly one
+// version and a reader accepts every version it can still interpret, so the two are different
+// facts that only happen to have one element in common today. `tests/unit/dispatch-gate.test.js`
+// pins the overlap — the gate's current version must be in here — which is the drift the two
+// constants could otherwise develop in silence.
+const KNOWN_GATE_VERSIONS = new Set([1]);
+
+// The receipt as it stands on the branch, or null where there is none to read. `git show` of a
+// path a tree does not hold exits non-zero, which is the ordinary "no receipt" answer; a spawn
+// that never answered at all (status null — the bound fired) is the discriminator being
+// unavailable and aborts, exactly as an unreadable tree does. Reporting a timed-out git as a
+// missing receipt would refuse a perfectly frozen queue with a confident wrong reason.
+function readReceipt(cfg, probe, issueId) {
+  const rel = `${suitePath(issueId)}/${RECEIPT_NAME}`;
+  const r = git(cfg, ['show', `FETCH_HEAD:${rel}`], { cwd: probe.dir });
+  if (r.status === null) {
+    return { ok: false, error: `cannot read ${rel} from FETCH_HEAD: ${(r.stderr || '').trim() || `git show was killed by ${r.signal || 'a signal'}`}` };
+  }
+  if (r.status !== 0) return { ok: true, text: null };
+  return { ok: true, text: r.stdout || '' };
+}
+
+// What the runner will accept as a receipt, or the reason it will not. Unparseable, missing
+// either load-bearing field, an unknown verdict and an unknown version are ALL "no receipt"
+// (§4.12): each of them is
+// a file the runner cannot interpret, and interpreting one anyway is how a suite nobody gated
+// reaches a container. The distinction is kept in `detail` so the refusal reason can say which.
+function parseReceipt(text) {
+  if (text === null || text === undefined) return { ok: false, detail: 'the freeze gate has never been run over it, or its receipt was not pushed' };
+  let parsed;
+  try { parsed = JSON.parse(text); } catch { return { ok: false, detail: 'the file beside the suite is not valid JSON' }; }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { ok: false, detail: 'the file beside the suite is not a receipt object' };
+  }
+  if (!KNOWN_GATE_VERSIONS.has(parsed.gateVersion)) {
+    return { ok: false, detail: `its gateVersion ${JSON.stringify(parsed.gateVersion)} is not one this runner understands` };
+  }
+  if (typeof parsed.verdict !== 'string' || !RECEIPT_VERDICTS.has(parsed.verdict)) {
+    return { ok: false, detail: `its verdict ${JSON.stringify(parsed.verdict)} is not one the gate writes a receipt for` };
+  }
+  // Hex, and long enough to be a digest: a `suiteHash` of `true`, `""` or `0` compares unequal
+  // to everything and would be reported as a mismatch — the wrong refusal, sending a person to
+  // re-gate a suite whose real problem is the receipt.
+  if (typeof parsed.suiteHash !== 'string' || !/^[0-9a-f]{40,128}$/.test(parsed.suiteHash)) {
+    return { ok: false, detail: 'it records no suite hash' };
+  }
+  return { ok: true, receipt: { gateVersion: parsed.gateVersion, verdict: parsed.verdict, suiteHash: parsed.suiteHash } };
+}
+
+// The suite's hash AS THE BRANCH HOLDS IT — never the working copy, which is the operator's
+// desk and routinely holds an uncommitted edit made while a run is in flight. `treeEntries`
+// reads blob ids straight out of the fetched tree and is bounded by the run's own git timeout,
+// so no unbounded spawn enters the gate through the shared formula.
+function branchSuiteHash(cfg, probe, issueId) {
+  const rel = suitePath(issueId);
+  try {
+    return { ok: true, hash: suiteHash(treeEntries(probe.dir, 'FETCH_HEAD', rel, { timeoutMs: gitSpawnOptions(cfg).timeout })) };
+  } catch (e) {
+    return { ok: false, error: `cannot hash ${rel}/ on the fetched branch: ${(e && e.message) || String(e)}` };
+  }
+}
+
+// One candidate, in the order the design fixes: suite -> receipt -> hash -> verdict, first
+// refusal wins (§4.12). The order is not cosmetic — a suite that is absent has no receipt and
+// no hash either, and reporting the downstream symptom would send a person to re-run a gate
+// over a directory that does not exist.
+function judge(cfg, probe, issue, branch) {
+  const where = `${suitePath(issue.id)}/ on ${branch} of ${cfg.targetRepoRemote}`;
+  const present = hasSuite(cfg, probe, issue.id);
+  // An unreadable tree is the discriminator being unavailable (§3.2): it aborts rather than
+  // quietly refusing the whole queue with a confident wrong reason.
+  if (!present.ok) return { abort: present.error };
+  if (!present.present) {
+    return { refusal: REFUSAL.NO_SUITE, reason: `no frozen acceptance suite at ${where}` };
+  }
+
+  const raw = readReceipt(cfg, probe, issue.id);
+  if (!raw.ok) return { abort: raw.error };
+  const parsed = parseReceipt(raw.text);
+  if (!parsed.ok) {
+    return {
+      refusal: REFUSAL.NO_RECEIPT,
+      reason: `no freeze receipt the runner can read at ${suitePath(issue.id)}/${RECEIPT_NAME} on ${branch} of ${cfg.targetRepoRemote} — ${parsed.detail}`,
+    };
+  }
+
+  const hashed = branchSuiteHash(cfg, probe, issue.id);
+  if (!hashed.ok) return { abort: hashed.error };
+  if (hashed.hash !== parsed.receipt.suiteHash) {
+    return {
+      refusal: REFUSAL.MISMATCH,
+      reason: `the freeze receipt does not match the suite at ${where}: the gate blessed `
+        + `${parsed.receipt.suiteHash.slice(0, 12)} and the branch now holds ${hashed.hash.slice(0, 12)}`,
+    };
+  }
+
+  // The one refusal an operator can turn off, and it is off by default: a probe is what catches
+  // a frozen suite no implementation can satisfy, and that class was seven of the twelve stuck
+  // tasks. `!== true` rather than a truthiness test, so a config that says "yes" says it in the
+  // boolean `run.config.json` validates rather than in whatever a JSON file happens to carry.
+  if (parsed.receipt.verdict === 'half-proven' && cfg.allowHalfProven !== true) {
+    return {
+      refusal: REFUSAL.HALF_PROVEN,
+      reason: `the freeze receipt for ${where} records a half-proven freeze — the suite was red `
+        + 'at the fork point but no probe was supplied, so nothing has ever shown an '
+        + 'implementation can turn it green, and this run does not admit half-proven suites',
+    };
+  }
+  return { dispatch: true };
+}
+
 // Split the candidates into what may be dispatched and what may not. LAZY at the caller:
 // a queue with no candidates never reaches here, so it neither fetches nor aborts — an
 // eager gate turns a legitimately empty run into an exit-1 failure.
@@ -157,17 +300,13 @@ function partitionByFreeze(cfg, candidates) {
     const issues = [];
     const undispatchable = [];
     for (const issue of candidates) {
-      const answer = hasSuite(cfg, probe, issue.id);
-      // An unreadable tree is the discriminator being unavailable (§3.2): it aborts rather
-      // than quietly refusing the whole queue with a confident wrong reason.
-      if (!answer.ok) return { ok: false, error: answer.error };
-      if (answer.present) issues.push(issue);
-      else {
-        undispatchable.push({
-          issue,
-          reason: `no frozen acceptance suite at ${suitePath(issue.id)}/ on ${branch} of ${cfg.targetRepoRemote}`,
-        });
-      }
+      const answer = judge(cfg, probe, issue, branch);
+      if (answer.abort) return { ok: false, error: answer.abort };
+      if (answer.dispatch) issues.push(issue);
+      // The KIND travels beside the reason from here on: through the feed's live refusal map,
+      // onto the manifest row, and into the report's heading and remedy. A reason is prose a
+      // human reads; the kind is what every consumer downstream branches on.
+      else undispatchable.push({ issue, reason: answer.reason, refusal: answer.refusal });
     }
     return { ok: true, issues, undispatchable, branch };
   } finally {
@@ -217,16 +356,38 @@ function readyQueue(cfg) {
 // It carries more than the outcome word because the report renders a row's BODY from these
 // fields, and a minimal row produces a section reading "no change summary produced" that
 // tells the reader nothing to do — the outcome this whole gate exists to prevent.
-function undispatchableRow(issue, reason, runId) {
+// The remedy, KEYED BY KIND. Four refusals with one remedy between them would be four ways of
+// telling a reader to do the wrong thing three times: freezing a suite that already exists
+// changes nothing, and re-running the gate over a suite that is missing cannot even start.
+// `runner/report.js` renders the same four kinds into its heading and its body paragraph and
+// keeps its own wording, because a heading is a phrase and this is an instruction.
+const REMEDY = {
+  [REFUSAL.NO_SUITE]: (id) => `freeze the suite at ${suitePath(id)}/ on the integration branch and push it`,
+  [REFUSAL.NO_RECEIPT]: (id) => `run the freeze gate over ${suitePath(id)}/ and push the ${RECEIPT_NAME} it writes beside the suite`,
+  [REFUSAL.MISMATCH]: (id) => `run the freeze gate over ${suitePath(id)}/ again and push the suite and its fresh ${RECEIPT_NAME} together`,
+  [REFUSAL.HALF_PROVEN]: (id) => `re-gate ${suitePath(id)}/ with a probe so the green side is seen, or set \`allowHalfProven: true\` in the run config to accept a half-proven freeze`,
+};
+const REFUSAL_KINDS = new Set(Object.values(REFUSAL));
+
+// `refusal` is optional and the fallback is the historic remedy: a manifest written before the
+// third admission rule existed, and any other writer of this outcome, carries no kind at all,
+// and a row that renders "undefined" for one is worse than a row that renders the old sentence.
+function undispatchableRow(issue, reason, runId, refusal) {
   const id = (issue && issue.id) || '';
-  const remedy = `freeze the suite at ${suitePath(id)}/ on the integration branch and push it`;
-  return {
+  const kind = REFUSAL_KINDS.has(refusal) ? refusal : null;
+  const remedy = (REMEDY[kind] || REMEDY[REFUSAL.NO_SUITE])(id);
+  const row = {
     issueId: id,
     title: (issue && issue.title) || '',
     outcome: 'undispatchable',
     changeSummary: `Nothing ran: ${reason}. To dispatch it, ${remedy}. Beads was never touched — the issue is still \`open\` and the next run picks it up unchanged.`,
     attemptNotes: [`run ${runId}: not dispatched — ${reason}\n  remedy: ${remedy}; the issue is untouched in Beads and stays open`],
   };
+  // Set only when it is known: `additionalProperties: false` accepts the field, but a row
+  // carrying `refusal: undefined` would serialise it away and read, to every later consumer,
+  // exactly like a row that was never given one — while `Object.keys` says otherwise.
+  if (kind) row.refusal = kind;
+  return row;
 }
 
 const describe = (i) => `${i.id} (${typeOf(i) || 'untyped'})`;
@@ -401,8 +562,14 @@ function attemptNotes(runId, outcome, status, memoryIn) {
 // a bound applied there, or a row manufactured there, is unreachable to every Docker-free
 // test — and a gate that refuses correctly while manufacturing nothing would pass a suite
 // that never looked.
+//
+// `REFUSAL` and `KNOWN_GATE_VERSIONS` are exported for the same reason again, and for one more:
+// the version set is the READER's half of a constant whose writer's half lives in
+// `scripts/freeze-gate.js`, and two constants that must overlap and cannot see each other drift
+// in silence. `tests/unit/dispatch-gate.test.js` reads both and pins the overlap.
 module.exports = {
   readyQueue, queueSummary, claim, exportIssue, finish, outcomeFor, attemptNotes, OUTCOMES,
   EXCLUDED_TYPES, typeOf, gitSpawnOptions, undispatchableRow, DEFAULT_GIT_TIMEOUT_MS,
   logQueueRead, logUndispatched,
+  REFUSAL, KNOWN_GATE_VERSIONS, RECEIPT_VERDICTS,
 };

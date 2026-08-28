@@ -29,8 +29,8 @@ flowchart TB
   F -->|"approved"| G["Freeze — tests committed<br/>to the integration branch"]
   G --> H[("Beads issue = the task spec")]
   G -.-> BM["Batch marker, written at freeze — runs/batches/&lt;project&gt;-&lt;date&gt;.json<br/>read back with node scripts/batch.js show · pending · never a queue item"]
-  H --> I["Runner drains the ready queue<br/>epics skipped · unfrozen refused · priority, then FIFO"]
-  I -.-> UD["Refused before claim — no suite on the fork branch<br/>one git fetch of targetRepoRemote per run · ls-tree -d per candidate<br/>run.json row, outcome undispatchable · Beads untouched, issue stays open"]
+  H --> I["Runner drains the ready queue<br/>epics skipped · unfrozen and ungated refused · priority, then FIFO"]
+  I -.-> UD["Refused before claim — no-suite · no-receipt · receipt-mismatch · half-proven<br/>one git fetch of targetRepoRemote per run · per candidate: ls-tree -d, then .freeze-gate.json vs the branch's blobs<br/>run.json row, outcome undispatchable + the refusal kind · Beads untouched, issue stays open"]
   UD -.-> G
   I -->|"a worker is free and the queue is empty"| FEED["Live queue feed — re-read the ready queue<br/>OFF unless feedIdleGraceMinutes &gt; 0 · a failed re-poll is never fatal<br/>ends: drained · idle · stopped (runs/&lt;runId&gt;/stop) · halted"]
   FEED -->|"new work, or a refusal that has cleared"| I
@@ -126,11 +126,12 @@ freeze, and a clean pass cannot rescue a green verdict.
 
 A verdict that *proceeds* — `red` 0 or `half-proven` 4 — also leaves a **receipt** in the
 suite it just judged, `tests/acceptance/<issue-id>/.freeze-gate.json` (§3.2; change-log rows
-`receipt-design` and `repo-erq`). It is not drawn as a node because it changes no path here:
-the receipt is committed with the tests in step 6 and read by nothing yet. What it will change
-is the queue's admission, one box to the right — §4.12's third admission rule refuses a
-candidate whose suite carries no receipt, or whose recorded hash disagrees with the branch,
-and that arrow gets drawn when the enforcer ships.
+`receipt-design`, `repo-erq` and `repo-isq`). It is not drawn as a node of its own, because
+what it changes is one box to the right: the receipt is committed with the tests in step 6,
+and the queue's admission now reads it. §4.12's third admission rule refuses a candidate whose
+suite carries no receipt, whose recorded hash disagrees with the branch, or whose verdict is
+`half-proven` on a run that has not set `allowHalfProven` — which is why the refusal box names
+four kinds and the freeze box is where all four arrows go back to.
 
 The dotted branch off the freeze is the handoff between the two halves of the process (§3.9,
 change-log rows `batch-ready-marker`, `repo-0b3` and `repo-8v0`). A planning session's last act
@@ -268,7 +269,7 @@ stateDiagram-v2
   in_progress --> blocked: stuck · tampered · failed
   in_progress --> in_progress: rate limit — parked, then resumed
   open --> open: refused — the run-level pause cap had already fired
-  open --> open: not dispatched — no frozen suite on the fork branch
+  open --> open: not dispatched — the frozen suite is missing, ungated or changed
   blocked --> open: you fix the spec and unblock it
   closed --> [*]
 ```
@@ -279,11 +280,12 @@ Without it a task that cannot pass would be picked up again on every run, foreve
 Both `open → open` self-loops are populations that never enter the diagram's `in_progress`
 half, because both gates are consulted **before the claim**. The first is the run-level
 park's refusal: the pause cap had already fired, so nothing launched. The second is the
-ready queue's dispatchability gate (§4.12, change-log row `dispatch-gate`) — the issue's
-frozen acceptance suite is not on the branch its container would fork from, so the verifier
-could only ever have exited 1 three times over. Neither is blocked and neither is failed;
-one is waiting for a usage window and the other for a freeze session, and both are picked
-up untouched by the next run.
+ready queue's dispatchability gate (§4.12, change-log rows `dispatch-gate` and `repo-isq`) —
+the issue's frozen acceptance suite is not on the branch its container would fork from, or it
+is there and nothing records that the freeze gate ever blessed *that* version of it, so the
+verifier could only ever have exited 1 three times over. Neither is blocked and neither is
+failed; one is waiting for a usage window and the other for a freeze session, and both are
+picked up untouched by the next run.
 
 An **epic** never enters this diagram at all. `bd ready` returns it alongside its children
 and never closes it when they close, so the runner filters ready entries typed `epic` out
@@ -305,6 +307,18 @@ fails, hangs past `gitTimeoutMs`, or resolves no branch **aborts the run in its 
 rather than dispatching blind. Like the type skip, refusals are named in the queue-summary
 line — with the remedy, because until this shipped they appeared in the report as
 three-attempt failures indexed under the agent's name rather than under the missing freeze.
+
+The **third admission rule** (change-log row `repo-isq`) asks the question the second one
+cannot: the suite is *there*, but was it ever *gated*? Same fetch, same `FETCH_HEAD`, two more
+reads per surviving candidate — `git show FETCH_HEAD:tests/acceptance/<issue-id>/.freeze-gate.json`
+for the receipt the freeze gate wrote, and `runner/suite-hash.js` over that branch's blob ids
+for what the suite is *now*. Four refusals in a fixed order, first one winning: `no-suite`,
+`no-receipt` (never gated, or a receipt unparseable, of an unknown version or verdict, or
+recording no digest), `receipt-mismatch` (edited after the gate blessed it — a comment reflow is
+enough), and `half-proven` (red with no probe ever run against it, admitted only where the run
+config says `allowHalfProven: true`). The kind rides on the manifest row as `refusal` and keys
+the report's heading, body and remedy, so each refusal names its own fix rather than one
+sentence covering four different mistakes.
 
 ## Where the walls are
 
@@ -368,12 +382,14 @@ place the closed-network policy would have to be revisited deliberately.
 | Usage limit hit | 20 | paused | stays in progress | not yet | not yet |
 | Internal error | 30 | failed | blocked | if commits exist | no |
 | Wall-clock kill | — | failed | blocked | if commits exist | no |
-| Not dispatched: no frozen suite on the fork branch | — never launched | undispatchable | untouched, stays `open` | no | no |
+| Not dispatched: the frozen suite is absent, ungated, or changed since its receipt | — never launched | undispatchable | untouched, stays `open` | no | no |
 
 `undispatchable` is the one row here that touches Beads **not at all** (§4.11, §4.12,
-change-log row `dispatch-gate`). The ready queue's second admission rule refuses the issue
-before `claim()`, so it is never in progress, never blocked, and the next run picks it up
-unchanged the moment its suite is pushed. It is a row in the manifest and not a hole — a
+change-log rows `dispatch-gate` and `repo-isq`). The ready queue's second and third admission
+rules refuse the issue before `claim()`, so it is never in progress, never blocked, and the
+next run picks it up unchanged the moment its suite — and its receipt — are pushed. The row
+carries the `refusal` kind that decided it, which is what lets the report name one remedy of
+four. It is a row in the manifest and not a hole — a
 refused task that produced no row is, after the unattended run where nobody watched it
 happen, indistinguishable from a task nobody queued — and it ranks second in scrutiny order
 behind `tampered`, because a batch that could not run is the first thing a person opening
