@@ -140,19 +140,22 @@ A long-lived token, separate from the A3 sign-in. Keep it to copy once at B2. Do
 into a session. One subscription per person: at your limit a run parks itself, waits for the
 window to reopen, and carries on.
 
-### A8. The harness plugin — recommended, and not a clone
+### A8. The harness plugin — optional, and not a clone
 
-Inside `claude`:
+A companion Claude Code plugin adds `/pipeline-onboard`, `/scaffold`, `/design`, `/review`
+and `/harness-check`. It lives in a **separate, private repository**, so it is not named
+here — this document is public and the plugin repository is not. If you have access, ask
+the person who gave you this repo for the one marketplace line, then, inside `claude`:
 
 ```
-/plugin marketplace add Chadleewalker/Harness_Pipeline
+/plugin marketplace add <the line you were given>
 /plugin install harness-pipeline
 ```
 
 Claude Code fetches and updates it; it lives under `~/.claude/plugins`, not your projects
-folder. It adds `/pipeline-onboard`, `/scaffold`, `/design`, `/review` and `/harness-check`.
-Nothing here requires it, and it is a separate repository with its own version — if a plugin
-command and this document disagree, this document and `DESIGN.md` win.
+folder. **Nothing in this document requires it** — if you have no access, skip A8 and
+carry on at A9; every instruction here works without it. It carries its own version, and
+if a plugin command and this document disagree, this document and `DESIGN.md` win.
 
 ### A9. `/profile` — after the clone, and do not skip it
 
