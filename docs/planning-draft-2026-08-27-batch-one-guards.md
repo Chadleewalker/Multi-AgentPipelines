@@ -1,9 +1,9 @@
 # Planning draft — batch one: guards that fire at the start, and the ledger's writer
 
-**Status:** planning session in progress. Step 1a (intent) written here; step 1b (the
-"Done means" lists) drafted in fresh context against the code; step 2 (lint + critics)
-recorded below with a disposition per finding. **Step 5 — Chad's approval of each "Done
-means" list — has not happened yet.**
+**Status: APPROVED by Chad, 2026-08-27** — the seven "Done means" lists in step 5, the
+labels and the run plan. Run one's three suites are frozen with this approval (the merge
+of PR #65); runs two and three get their tests written and frozen in the session before
+each run, against the merged tree. Steps 1a–4 are recorded below as they happened.
 **Date:** 2026-08-27.
 **Design source:** `planning-draft-2026-08-27-guards-and-ledger.md` (approved as a
 direction, Option A). Decision already taken by Chad: **a suite proven red but never proven
