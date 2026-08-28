@@ -177,6 +177,19 @@ coverage that matters is of the area about to be tasked out, not of the whole sy
       directory — `.freeze-gate-guards-<pid>-<seq>/`, removed in a `finally` — is built inside
       the repo for the same reason the empty control is, so an interrupted gate can leave one
       obviously disposable folder next to your suite.
+      **A verdict that proceeds leaves a receipt in the suite** (§3.2; change-log rows
+      `receipt-design` and `repo-erq`). The gate writes `tests/acceptance/<issue-id>/.freeze-gate.json`
+      — gate version, verdict, whether a probe was supplied, a content hash of the suite, the
+      checkout's HEAD, the guard and brittleness counts, a timestamp — and it is committed to
+      the integration branch with the tests (PLANNING.md step 6). Two onboarding consequences.
+      **The project must be a real git repository with history**, because the hash is over the
+      blob ids git will store rather than the bytes on disk: a checkout with CRLF line endings
+      and an LF blob is the normal case on Windows, and a byte hash would disagree with the
+      branch on every freeze. A `--repo` with no history is refused before the gate runs
+      anything. And **the README you wrote above should name the receipt**, because it lives
+      inside `tests/acceptance/` and is therefore frozen like everything else there: a
+      container that edits it ends the task `tampered`, and that is worth saying once in the
+      place a task agent is likely to read.
 - [ ] Create `docs/IDEAS.md` — the project's own idea inbox. Copy the structure from
       this pipeline repo's `docs/IDEAS.md`: a flat list of parked "this should probably
       become a design someday" notes, plus **Promoted** and **Dropped** tables. It costs

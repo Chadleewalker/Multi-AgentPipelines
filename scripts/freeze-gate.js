@@ -121,6 +121,17 @@
 //             were red in the probe too — they may be unreachable, 4 red but half-proven: no
 //             probe was supplied, so the green side has never been seen, 5 a `[guard]` test
 //             file is red at the fork point — a stale pin, and never a pass.
+//             probe was supplied, so the green side has never been seen.
+//
+// THE RECEIPT. On a verdict that PROCEEDS — 0 or 4 — the gate writes
+// `tests/acceptance/<issue-id>/.freeze-gate.json` and says so (DESIGN.md §3.2, change-log rows
+// `receipt-design` and `repo-erq`). It records the gate version, the verdict, whether a probe
+// was supplied, a hash of the suite over GIT BLOB IDS (`runner/suite-hash.js`, shared with the
+// dispatch gate so the two cannot drift), the planning checkout's HEAD, the guard and
+// brittleness counts, and a timestamp. Commit it with the suite. The point is that a freeze
+// stops being a step the playbook asks for and becomes a fact the runner can check: fourteen
+// planning drafts on the first real project mention this gate zero times, and nothing could
+// tell. Nothing reads it yet — §4.12's third admission rule is the task after this one.
 'use strict';
 const crypto = require('crypto');
 const fs = require('fs');
@@ -133,6 +144,20 @@ const { spawnSync } = require('child_process');
 // by definition, so change-log row `verify-nobuffer` was recurring inside the gate that judges
 // the freeze. One value, one file: two copies of a limit drift silently and unattended.
 const { MAX_BUFFER } = require('../pipeline/verify-classify.js');
+
+// The receipt's formula and its name, IMPORTED rather than reimplemented. The dispatch gate
+// (DESIGN.md §4.12, third admission rule) recomputes this hash from the integration branch and
+// refuses a suite that has moved since the gate blessed it; two copies of the formula would
+// drift silently and the failure would be a whole batch refused for a reason nobody could
+// reproduce. One value, one file — the same rule MAX_BUFFER above is here for.
+const {
+  suiteHash, workingTreeEntries, isGitRepo, headCommit, RECEIPT_NAME,
+} = require('../runner/suite-hash.js');
+
+// The receipt's schema version. An integer the dispatch gate can refuse on: a receipt of an
+// unknown version is a receipt this runner cannot interpret, which is not the same as no
+// receipt and must not be read as one.
+const RECEIPT_VERSION = 1;
 
 // The guard marker. Case-insensitive so a draft is not failed on capitalisation; explicit
 // either way, because the whole point of the exemption is that it is visible.
@@ -289,6 +314,14 @@ function digestSuite(dir) {
 
 // Returns the difference in the probe's favour-free form: what the fork point has that the probe
 // does not, and what both have but spelled differently.
+//
+// THE RECEIPT IS NOT PART OF THE COMPARISON. `.freeze-gate.json` is written by this gate into
+// the fork point's suite and never into the probe, so from the second run onwards the fork side
+// carries a file the probe cannot have — and an unfiltered comparison would call that a probe
+// MISSING a frozen file and refuse at exit 2, turning every re-run of a gated suite into a
+// refusal. It is excluded on both sides rather than only on the fork's: a probe copied from a
+// gated tree carries a stale receipt, and reporting that as an edited or extra file is noise
+// about the one file in the suite that is not a test.
 function compareSuites(forkDir, probeDir) {
   const fork = digestSuite(forkDir);
   const probe = digestSuite(probeDir);
@@ -296,10 +329,12 @@ function compareSuites(forkDir, probeDir) {
   const absent = [];
   const differing = [];
   for (const [rel, sha] of (fork || new Map())) {
+    if (rel === RECEIPT_NAME) continue;
     if (!probe.has(rel)) absent.push(rel);
     else if (probe.get(rel) !== sha) differing.push(rel);
   }
-  const extra = [...probe.keys()].filter((rel) => !(fork || new Map()).has(rel)).sort();
+  const extra = [...probe.keys()]
+    .filter((rel) => rel !== RECEIPT_NAME && !(fork || new Map()).has(rel)).sort();
   return { probeMissing: false, absent: absent.sort(), differing: differing.sort(), extra };
 }
 
@@ -837,6 +872,20 @@ function main(argv) {
     return 2;
   }
 
+  // A --repo that is not a git repository is refused HERE, before a single verify run. Every
+  // value the receipt records comes from git — the suite's blob ids and the checkout's HEAD —
+  // so on a plain directory the gate could still print a verdict and would then write a receipt
+  // hashing nothing: present, well-formed and meaningless, which is the failure shape this repo
+  // has a rule about. Refusing early also means the operator is not left reading a verdict that
+  // took four container-free minutes and cannot be recorded.
+  if (!isGitRepo(repoRoot)) {
+    console.error(`freeze-gate: --repo is not a git repository: ${repoRoot}`);
+    console.error('freeze-gate: the freeze receipt hashes the suite over GIT BLOB IDS and records the');
+    console.error('freeze-gate: checkout\'s HEAD, so a tree with no history cannot be gated. Point --repo');
+    console.error('freeze-gate: at the target project\'s working copy.');
+    return 2;
+  }
+
   // The probe's copy of the suite, compared BEFORE any probe run — so this refusal WINS over
   // the broken-probe verdict when both would apply, which is the point: a probe that edited the
   // tests is not a probe that failed, it is a probe that changed the question.
@@ -866,6 +915,21 @@ function main(argv) {
     try { guards = guardCount(fs.readFileSync(spec, 'utf8')); }
     catch (e) { console.error(`freeze-gate: ${e.message}`); return 2; }
   }
+
+  // THE SUITE HASH, TAKEN BEFORE ANYTHING RUNS. A suite is entitled to write beside itself while
+  // it executes — a fixture's scratch file, a log, a snapshot — and every one of those would be
+  // an untracked file inside the suite directory by the time the runs are over. Hashed
+  // afterwards, the receipt would pin a state that exists only on this machine, and the dispatch
+  // gate would refuse the task for a file the branch has never seen. Before the runs is the only
+  // moment the suite is the thing being frozen and nothing else.
+  let hash;
+  try {
+    hash = suiteHash(workingTreeEntries(repoRoot, tests));
+  } catch (e) {
+    console.error(`freeze-gate: could not hash the suite at ${tests}: ${e.message}`);
+    return 2;
+  }
+  const gateHead = headCommit(repoRoot);
 
   const fork = runSide(repoRoot, verifyCommand, tests, timeoutMs, controlArg);
   const real = fork.suite;
@@ -978,8 +1042,14 @@ function main(argv) {
   // names the reason rather than propagating a stack trace over the verdict or printing a `0`
   // that would read as a silent all-clear.
   console.log('');
+  // `null`, never 0, when the pass could not run: the receipt records what was observed, and a
+  // count of zero from a lint that never executed is the silent false clean the printed
+  // `unavailable` line exists to prevent. The two have to stay distinguishable on the artifact
+  // for the same reason they are distinguishable on stdout.
+  let brittleness = null;
   try {
     const lint = lintSuite(testPath, { defaultBranch });
+    brittleness = lint.findings.length;
     console.log(`brittleness findings: ${lint.findings.length}`);
     for (const f of lint.findings) {
       console.log(`  ${f.file}:${f.line}  [${f.shape}]  ${f.question}`);
@@ -1003,6 +1073,50 @@ function main(argv) {
     console.log('last stderr from the guard run:');
     console.log(String(guardRun.stderr).trim().split(/\r?\n/).slice(-8).map((l) => `  ${l}`).join('\n'));
   }
+
+
+  // THE RECEIPT (DESIGN.md §3.2, change-log rows `receipt-design` and `repo-erq`). Written on a
+  // verdict that PROCEEDS and on no other: `red` (0) and `half-proven` (4). `green`,
+  // `indeterminate` and `unreachable` are findings, not freezes, and a receipt written for one
+  // of them would tell the runner that a suite it must refuse had been blessed. Nothing here
+  // deletes or rewrites an existing receipt on those verdicts either — a stale receipt beside a
+  // failing verdict is the operator's evidence that the suite has changed since it last passed,
+  // and the dispatch gate's hash comparison is what turns that into a refusal.
+  //
+  // It lives INSIDE `tests/acceptance/<issue-id>/`, which is a frozen path, so the verifier
+  // already diffs it against the fork point (§4.4): a container that edits it ends the task
+  // `tampered` with no new rule anywhere.
+  if (v.exit === 0 || v.exit === 4) {
+    const receipt = {
+      gateVersion: RECEIPT_VERSION,
+      verdict: v.verdict,
+      probeSupplied: probeRoot !== null,
+      suiteHash: hash,
+      gateHead,
+      // `null`, never 0, without `--spec`: "no spec was read" and "a spec declaring no guards"
+      // are different facts, and the approval pass branches on which one it is.
+      guards: spec ? guards.length : null,
+      brittleness,
+      writtenAt: new Date().toISOString(),
+    };
+    const receiptRel = path.join(tests, RECEIPT_NAME).split(path.sep).join('/');
+    try {
+      fs.writeFileSync(path.join(testPath, RECEIPT_NAME), `${JSON.stringify(receipt, null, 2)}\n`);
+    } catch (e) {
+      // A verdict nothing recorded is a freeze the runner will refuse, so this is a failure of
+      // the whole invocation and not a warning under a passing verdict. The path is what the
+      // message is about: an exit-code-only refusal here is indistinguishable from the several
+      // other things that exit 2.
+      console.error(`freeze-gate: could not write the freeze receipt ${receiptRel}: ${e.message}`);
+      console.error(`freeze-gate: the verdict above stands, but nothing recorded it — a suite with no`);
+      console.error('freeze-gate: receipt is refused at dispatch. Fix the path and re-run the gate.');
+      return 2;
+    }
+    console.log('');
+    console.log(`receipt written: ${receiptRel}`);
+    console.log(`  suite hash ${hash}  (${v.verdict}, gate version ${RECEIPT_VERSION})`);
+    console.log('  commit it with the suite: the runner refuses a frozen suite that carries no receipt.');
+  }
   return v.exit;
 }
 
@@ -1021,6 +1135,8 @@ function usage() {
   console.log('                       (unreachable); omitted = exit 4 (half-proven, proceeds).');
   console.log('  a test file declaring itself [guard] in its first ten comment lines is also');
   console.log('  run ALONE against the fork point. Red there = exit 5 (stale-guard), never a pass.');
+  console.log('  on exit 0 or 4 the suite gains .freeze-gate.json — the freeze receipt.');
+  console.log('  Commit it with the tests; --repo must be a git repository.');
 }
 
 module.exports = {
@@ -1028,6 +1144,7 @@ module.exports = {
   resolveControl, CONTROL_DIR, main,
   brittleFindings, lintSuite, LINT_EXTENSIONS, QUESTIONS,
   runSide, digestSuite, compareSuites, MAX_BUFFER,
+  RECEIPT_NAME, RECEIPT_VERSION,
 };
 
 if (require.main === module) process.exit(main(process.argv.slice(2)));
