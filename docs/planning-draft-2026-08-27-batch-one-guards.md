@@ -849,6 +849,39 @@ surprised): the scanner is exported as `guardFiles(dir)`; the events schema desc
 events under `$defs.events.<name>` with `properties` and `required` for `data`, and `log`
 events carry an empty `data`; the receipt's HEAD field is `gateHead`.
 
+### Run one — done, merged, verdicts recorded (2026-08-28)
+
+All three tasks passed on the first attempt, ~20 minutes each; PRs #66, #67, #68 merged by
+Claude at Chad's instruction, with the two gate tasks reconciled by hand (they disagreed on one
+thing neither could know: the receipt writer refuses a `--repo` with no git history, and the
+stale guard's fixtures were plain folders — the fixtures became repositories). Two spec
+concerns, both about the frozen tests: the ledger suite's diff-based guard was vacuous at
+verify time and contradictory afterwards (now a `CLAUDE.md` convention: *a frozen check that
+diffs the branch against its fork point sees nothing*), and the stale-guard issue text kept a
+case the frozen suite had already dropped.
+
+### Run two — tests written through the new gate, receipts carried
+
+| Task | Issue | Suite | Gate verdict | Receipt |
+|---|---|---|---|---|
+| 1b receipt-enforce | `repo-isq` | 52 checks, 36 red today | half-proven, control green | written by the merged gate, committed with the suite |
+| 3b ledger-facts | `repo-3xw` | 27 checks, 19 red today | half-proven, control green | written by the merged gate, committed with the suite |
+
+These are the first suites in any project to carry `.freeze-gate.json`. Half-proven for the
+same reason run one was: a green probe is the implementation. Chad's rule that half-proven does
+not dispatch is the enforcer itself (1b), so it cannot apply to its own freeze; from run three
+on it does.
+
+Brittleness dispositions — all **rejected** for the same reason as run one's: `repo-isq`
+test.js:187 and :337 pin the number of distinct refusal kinds and the fork point's check count,
+both of which are the criterion; `repo-3xw` test.js:55, :93 and :231 pin `failingChecks`'s exact
+answers and the four event names, :226 and :243 the attempt and concern counts of a fixed
+fixture.
+
+**Migration, as declared:** run two's own suites are the re-gated ones. No other suite in this
+repo is waiting to dispatch, and the first real project's open suites are re-gated in that
+project's next planning session before its next run (recorded in `docs/STATUS.md`).
+
 ### What Chad is approving
 
 The seven "Done means" lists above, the labels, and the run plan — including the
