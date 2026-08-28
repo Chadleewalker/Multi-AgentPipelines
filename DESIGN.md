@@ -208,6 +208,7 @@ below. Move 3(b) alone remains declared and unbuilt, the §3.7 declared-then-bui
 | red | green | green | green | `red` — it discriminates, in both directions | 0 |
 | red | green | red | green | `unreachable` — no implementation may be able to pass it | 3 |
 | red | green | any | not green | `indeterminate` — the **probe** is the broken side | 2 |
+| red | green | *(guard subset red)* | — | `stale-guard` — a file declaring itself `[guard]` is red before any work exists: a stale pin, never a pass | 5 |
 
 The load-bearing line is the last one. A broken probe is never `unreachable`: exit 3 is
 reachable only behind a green probe control, because otherwise the probe's red says nothing
@@ -217,6 +218,32 @@ but the state is carried into the approval pass the way the guard count is, so a
 one side only is visible rather than assumed. The probe's copy of the suite is hashed against
 the fork point's before any probe run: a probe that satisfies the criteria by editing the test
 rather than the tree would bless the freeze the gate exists to prevent.
+
+**The stale guard, and the receipt** (change-log rows `stale-guard-design`, `receipt-design`).
+Two more things the gate says, both added after twelve stuck tasks in one fortnight were
+traced to frozen suites no implementation could pass. First: a test file that declares
+itself a guard — the literal `[guard]` token on a comment line within its first ten lines,
+the same word the spec uses — is run **alone** against the fork point and must be green
+there. A guard is by definition "existing behaviour still holds", so a red guard before any
+work exists can only be a pin that has already moved: four of the twelve were exactly that.
+The verdict is `stale-guard`, exit 5, reachable from one row of the table and never a pass;
+it beats `half-proven`, `red` and `unreachable`, and it short-circuits the probe. A guard
+subset that cannot run (exit above 1, or a failed spawn) is `indeterminate`, naming the
+guard side. Second: on a verdict that proceeds — `red` or `half-proven` — the gate writes a
+**receipt**, `tests/acceptance/<issue-id>/.freeze-gate.json`: the gate version, the
+verdict, whether a probe was supplied, a content hash of the suite, the planning
+checkout's HEAD when the gate ran (informational, never compared), the guard count, the
+brittleness count and a timestamp. The hash is over **git blob ids** — `git hash-object`
+after the clean filter, for every file `git ls-files --cached --others --exclude-standard`
+lists in the suite except the receipt itself, taken before the suite is run — never raw
+bytes, because the reference host's checkout is CRLF and the committed blob is LF, so a
+byte hash would disagree with the branch on every freeze. The formula is one exported
+function, `runner/suite-hash.js`, that the gate and the dispatch gate (4.12's third
+admission rule) both import, so the two cannot drift. The receipt lives inside the frozen
+path, so the verifier already diffs it and a container that edits it is `tampered` with no
+new rule. What the receipt buys is that a freeze becomes a **fact the runner can check**
+rather than a step the playbook asks for: fourteen planning drafts on the first real
+project mentioned the gate zero times, and nothing could tell.
 
 **Upstream of step 1: the idea inbox.** Each repo — this one and every target — carries a
 `docs/IDEAS.md`, a flat list of parked notes saying *a design might be wanted here
@@ -959,16 +986,27 @@ source of truth.
 11. **The outcome taxonomy — one table, cited by every component.** The contract between
     entrypoint, runner, and report generator:
 
-    | Outcome | Exit code | Report status | Beads status after | Branch pushed? | PR? |
-    |---|---|---|---|---|---|
-    | Acceptance pass, regressions pass or absent | 0 | done | closed | yes | yes |
-    | Acceptance pass, regressions fail | 0 | partial | closed | yes | yes, flagged |
-    | Bailed at the attempt cap (default 3) | 10 | stuck | blocked | yes (WIP) | no |
-    | Test tampering detected | 11 | tampered | blocked | yes (WIP) | no |
-    | Usage limit hit | 20 | paused (transient) | in-progress (runner parks it) | not yet | not yet |
-    | Internal error | 30 | failed | blocked | if commits exist | no |
-    | Wall-clock kill (host `docker kill`, no exit code) | — | failed, timeout noted | blocked | if commits exist | no |
-    | Not dispatched: no frozen suite on the fork branch | — (never launched) | undispatchable | unchanged (`open`) | no | no |
+    | Outcome | Exit code | Report status | Beads status after | Branch pushed? | PR? | Failure class (change-log row `failure-class-design`) |
+    |---|---|---|---|---|---|---|
+    | Acceptance pass, regressions pass or absent | 0 | done | closed | yes | yes  | — (a `done` row carries no class) |
+    | Acceptance pass, regressions fail | 0 | partial | closed | yes | yes, flagged  | `regressions` |
+    | Bailed at the attempt cap (default 3) | 10 | stuck | blocked | yes (WIP) | no  | `identical-failures` / `attempts-exhausted` / `suite-error` / `unclassified` |
+    | Test tampering detected | 11 | tampered | blocked | yes (WIP) | no  | `tampered` |
+    | Usage limit hit | 20 | paused (transient) | in-progress (runner parks it) | not yet | not yet  | `paused` |
+    | Internal error | 30 | failed | blocked | if commits exist | no  | `internal` / `suite-error` |
+    | Wall-clock kill (host `docker kill`, no exit code) | — | failed, timeout noted | blocked | if commits exist | no  | `timeout` |
+    | Not dispatched: no frozen suite on the fork branch | — (never launched) | undispatchable | unchanged (`open`) | no | no  | `no-suite` / `no-receipt` / `receipt-mismatch` / `half-proven` |
+
+    **The last column is decided after the outcome, never with it** (change-log row
+    `failure-class-design`). A `failureClass` is written onto every manifest row whose outcome
+    is not `done` — required there, forbidden on a `done` row — by a pure host-side module
+    (`runner/failure-class.js`) reading artifacts already in hand: the refusal kind, the
+    verifier's own `error` verdict, the exit code, and the last two attempts' failing check
+    names as `scripts/sweep-assertions.js` extracts them. `identical-failures` means the final
+    attempt failed the same set of checks as the one before it; it is **recorded only** and
+    changes no outcome, no exit code and no attempt (hard rule 5). An input the rules cannot
+    place is `unclassified`, never a guess. The report prints the class beside the outcome
+    label; the audit tables that count by class are a later task.
 
     The runner distinguishes done from partial by reading `verify.json`. The runner sets
     an issue in-progress when its task starts; **blocked** is what takes failed work out
@@ -1310,6 +1348,39 @@ source of truth.
     after this one and depending on it, not an inbox note; the shape is the same move again,
     importing the check rather than keeping a second copy.
 
+    **A frozen suite without a matching receipt is never dispatched either — the third
+    admission rule** (change-log row `receipt-design`). The second rule proves a suite is
+    *present*; this one proves it was *gated*. Before claiming, the runner reads
+    `tests/acceptance/<issue-id>/.freeze-gate.json` from the fetched integration branch and
+    recomputes the suite's hash from that branch's blobs with the same `runner/suite-hash.js`
+    the gate used. Four refusals, each with a distinct reason and a `refusal` kind on the
+    manifest row: `no-suite` (as before), `no-receipt` (a suite the gate never blessed — or a
+    receipt that is unparseable, of an unknown version, or of an unknown verdict),
+    `receipt-mismatch` (the suite changed after the gate passed), and `half-proven` (red
+    without a probe, refused unless the run config sets `allowHalfProven: true`, whose
+    effective value the manifest records). Check order per candidate is suite → receipt →
+    hash → verdict; the first refusal wins. The kind travels into the feed's live refusal
+    map and into the report's heading, body and remedy, which are keyed by it. Every git
+    call this adds is bounded like the fetch already is. Beads is never written: a refused
+    issue stays `open` with the remedy named. The decision that `half-proven` does not
+    dispatch by default was the user's (2026-08-27): the probe is what catches a fixture no
+    implementation can satisfy, and that class was seven of the twelve.
+
+    **The run's process exit codes, in one place** (change-log row `refused-exit-design`).
+    Before this row they were scattered: 1 for an unreadable queue or a failed preflight, 2
+    for a bad config or a missing token, 0 for everything else — including a run that read
+    eight ready issues and dispatched none, which no script could tell from a run with
+    nothing to do. Now: **4** when the ready queue was non-empty and nothing was dispatched,
+    decided by a pure function of the dispatched and refused counts after the drain and
+    recorded in the manifest as `queue: {ready, dispatched, refused}`; 0 for an empty queue,
+    which is a legitimate no-op. The exit is set through `process.exitCode`, never
+    `process.exit()`, so the manifest, the report, the network teardown and the lock release
+    all still happen. The queue-summary line leads with the count that matters — `ready
+    queue: <d> of <r> dispatchable — <ids>` — and names refusals by kind in a clause after the
+    id slot, which is unchanged so the dashboard's parser and every log already on disk keep
+    reading. Five grep sites in `scripts/test-runner-queue.sh` pin the historic prefix, not
+    six as earlier rows say.
+
     **The ready queue is re-read while the run is in flight** (change-log row
     `live-queue-feed`). Until this, a run's roster was decided once: `readyQueue()` at the
     top of the task loop, then the pool walked that array to its end. An issue made ready a
@@ -1409,7 +1480,18 @@ source of truth.
     generator reads the manifest (plus Beads + git) as a frozen input; Beads alone
     cannot reconstruct report statuses, since stuck/tampered/failed all map to blocked.
     Per-run logs, trace IDs, collected status files, the manifest, and the run report
-    live under `runs/<run-timestamp>/` in this repo on the host, git-ignored. The
+    live under `runs/<run-timestamp>/` in this repo on the host, git-ignored — and, since
+    change-log row `events-ledger-design`, so does `events.jsonl`: one JSON object per
+    `run.log` line, appended by the **same function with the same timestamp**, so the two
+    cannot disagree. Every object carries `ts`, `level`, `runId`, `issueId`, `trace`,
+    `event`, `msg` and a `data` object; the lines the readers already parse by regular
+    expression are named events with typed fields, everything else is `event: "log"`, and
+    three facts no reader could previously reach — the queue read with every refusal, each
+    attempt's verifier result and failing check names, and each spec concern — are
+    ledger-only events with `msg: null`. `schemas/events.schema.json` is the contract.
+    `run.log` stays byte-identical for humans; the readers move onto the ledger one at a
+    time, each keeping its suite green. Append-only, host-only: nothing in a container
+    writes an event. The
     container-side isolation assertions (no `git push`, read-only verifier, no
     non-allowlisted egress) live in this repo and run as part of the E2E pass and on
     demand.
