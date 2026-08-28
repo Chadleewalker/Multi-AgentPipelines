@@ -2108,7 +2108,8 @@ proxy sidecar software and the empirical completion of the endpoint enumeration 
 spellings, timestamp and trace-ID formats, report and Dockerfile file names, fixture-repo
 name, probe host choices. Anything touching **two or more separately-built components** is
 decided in this doc (the 4.11 table, `status.schema.json`, `verify.schema.json`,
-`run.schema.json`, the 4.10 input contract incl. the `/pipeline` mount and
+`run.schema.json`, `events.schema.json` — §4.12, written by the runner and read by tools
+built separately from it — the 4.10 input contract incl. the `/pipeline` mount and
 `PIPELINE_AGENT_CMD`, the 3.4 config schema) — that is the dividing line.
 
 ## 11. Readiness Bar

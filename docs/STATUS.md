@@ -1552,6 +1552,26 @@ reworded `task.started` message, the abbreviated fork point in `data`, the pseud
 recorded as issue ids, the ledger rewritten rather than appended, the third argument dropped
 on the floor, and the dashboard's `P` export removed.
 
+**A frozen criterion that diffs a *committed range* sees nothing, and this task's did.**
+Criterion 5 asked that `git diff <merge-base integration HEAD>..HEAD -- runner/` remove no
+line containing `log.info(` or `log.error(`. In a task container the host commits the agent's
+work only *after* the container exits — this workspace's reflog holds exactly one commit,
+authored `pipeline` and timestamped after the run — so at verify time `HEAD` **is** the fork
+point, that diff is empty, and the check passes having observed nothing. Run against the
+committed branch afterwards it fails instead, because `git diff` is line-based: a call site
+that gains the permitted third argument emits a `-` line carrying `log.info(` beside a `+`
+line with the same wording, so the guard contradicts the constraint it exists to protect
+(*"a call site may gain a third argument and nothing else"*). Both readings are wrong in the
+same place. The property itself holds and is proved elsewhere in the same criterion — the
+`log.info(`/`log.error(` count is identical file by file across all seven changed `runner/`
+files, and A5's literal whole-`run.log` expectation is what actually pins the wording. Two
+rules for the next spec: a criterion about what the change did to tracked files reads the
+**working tree** (`git diff <fork>`, no `..HEAD`), never a committed range; and "the diff
+removes no line matching X" is the wrong shape even when it can see the diff — assert
+per-file counts of X, or pair each removed line with an added one carrying the same message.
+This is the vacuous-pass family from CLAUDE.md reached from its other side: not a plausible
+wrong artifact, but an empty one read as proof.
+
 **Known-stale, not fixed here.** `docs/pipeline-map.html` is exempt from task docs phases and
 nothing else updates it; none of its panels show the ledger. `docs/pipeline-diagram.md` gained
 its node in this PR. Two suites — `test-feed.sh` and `test-worktree.sh` — had shipped with no
