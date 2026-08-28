@@ -1836,7 +1836,10 @@ any suite frozen before `repo-erq` carries no receipt at all and is now refused 
 any suite edited after its gate run needs `node scripts/freeze-gate.js` run over it again with
 the fresh receipt committed *and pushed* beside the suite; `PLANNING.md` step 8 now carries this
 as a checklist bullet, but nothing re-gates an existing suite for you and the first batch after
-this merges is where that bites. (2) Run `bash scripts/test-all.sh` on the reference host: the
+this merges is where that bites. **And re-gating a pre-receipt suite can only yield `half-proven`**:
+no green probe exists for a task not yet built, so the run config that drains those suites must set
+`allowHalfProven: true` (decided 2026-08-28: existing suites are admitted half-proven; suites frozen
+from here on need the full red-and-green proof). This repo has one such suite, re-gated that day. (2) Run `bash scripts/test-all.sh` on the reference host: the
 gate is on the path of every run and the Docker suites that merely *touch* `runner/queue.js`
 have not seen it. (3) `docs/pipeline-map.html` is exempt from task docs phases and nothing else
 updates it; its dispatch panel now trails the queue by two admission rules.
