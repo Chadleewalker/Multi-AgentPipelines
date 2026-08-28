@@ -1,9 +1,9 @@
 # Planning draft — batch one: guards that fire at the start, and the ledger's writer
 
-**Status:** planning session in progress. Step 1a (intent) written here; step 1b (the
-"Done means" lists) drafted in fresh context against the code; step 2 (lint + critics)
-recorded below with a disposition per finding. **Step 5 — Chad's approval of each "Done
-means" list — has not happened yet.**
+**Status: APPROVED by Chad, 2026-08-27** — the seven "Done means" lists in step 5, the
+labels and the run plan. Run one's three suites are frozen with this approval (the merge
+of PR #65); runs two and three get their tests written and frozen in the session before
+each run, against the merged tree. Steps 1a–4 are recorded below as they happened.
 **Date:** 2026-08-27.
 **Design source:** `planning-draft-2026-08-27-guards-and-ledger.md` (approved as a
 direction, Option A). Decision already taken by Chad: **a suite proven red but never proven
@@ -801,8 +801,58 @@ this session).
 5. For every classed row the heading is `## <id> — <LABEL> · failure class: <class>`; the `done` row's and an old-style `stuck` row's full rendered sections equal literal captures; `test-report.sh`'s `grep -o '^## [a-z0-9-]*'` ordering is unchanged; rendering twice is byte-identical.
 6. `DESIGN.md` §4.11's table has the *Failure class* column [guard — written this session]; a change-log row; `docs/pipeline-diagram.md`'s outcome table has it; `scripts/test-failure-class.sh` exists, wraps `tests/unit/failure-class.test.js`, is listed in `CLAUDE.md`; `scripts/test-report.sh`'s synthetic manifest carries classes on its non-`done` rows; `test-changelog.sh` and `test-sanitize.sh` exit 0.
 
+### Steps 3 and 4 for run one — tests written, gate run
+
+The three run-one issues exist (step 6 done early, so the suites have real ids):
+
+| Task | Issue | Suite | Gate verdict | Brittleness findings |
+|---|---|---|---|---|
+| 1a receipt-writer | `repo-erq` | `tests/acceptance/repo-erq/test.js` — 53 checks, 32 red today | **half-proven** (real exit 1, control green) | 1 |
+| 2 guard-red | `repo-i4b` | `tests/acceptance/repo-i4b/test.js` — 59 checks, 38 red today | **half-proven** | 6 |
+| 3a ledger-writer | `repo-qzy` | `tests/acceptance/repo-qzy/test.js` — 40 checks, 29 red today | **half-proven** | 3 |
+
+**Half-proven, and why that is the honest state.** No probe was built for any of the three.
+For these tasks a green probe *is* the implementation — the suites drive `scripts/freeze-gate.js`
+and `runner/log.js` through their own exports, so a tree in which the criteria are satisfied
+is a tree in which the feature is written. Building one would be doing the task in the
+planning session. The playbook calls half-proven legal and proceeding; Chad's decision that
+half-proven does not *dispatch* applies once 1b exists, and 1b is what this batch builds. What
+stands in for the probe: every check was read against the vacuous-success question (what
+wrong implementation passes it?), the panel's fixtures are in, and the red run is red for the
+right reasons — the checks that pass today are the guards and the harness sanity checks,
+named as such, and a check that passed for the wrong reason was found and tightened
+(A2's second-run hash check compared `undefined` to `undefined`). Two suites threw or
+misfired while being written — the ledger suite's preloaded stub stood aside from every
+`bd` call because node absolutises the first argument even when it is a subcommand — and both
+were caught by running the suite red *and reading why*, which is the step that has to happen
+regardless of a probe.
+
+**Brittleness-lint dispositions** (every finding, as the playbook requires):
+- `repo-erq` test.js:221 literal-name-list — the receipt's eight keys. **Rejected**: the key
+  set *is* criterion 1; later work that adds a key is a new gate version and a new criterion.
+- `repo-i4b` test.js:152 literal-name-list — `['a.js','b.sh']`. **Rejected**: the scanner's
+  answer over a fixed nine-file fixture is the criterion.
+- `repo-i4b` test.js:210, 214, 231, 251, 273 literal-count — spawn counts 3/5/2/4/3.
+  **Rejected**: how many times the verify command runs is exactly what criteria 3–5 assert;
+  a later task that adds a spawn changes the gate's contract and rewrites these on purpose.
+- `repo-qzy` test.js:209 literal-name-list — the eight envelope keys. **Rejected**, as for
+  the receipt: the envelope is the contract, closed by schema.
+- `repo-qzy` test.js:286, 297 literal-count — fifty lines, twenty-nine survivors. **Rejected**:
+  the numbers are the fixture's own, not a population later work grows.
+
+**`guards declared: 16`** — the gate counted `[guard]` across this whole file, critics' text
+included. The guards that matter are the ones tagged in the step-5 criteria: 1a has one,
+2 has one, 3a has one, and each is green today by design.
+
+**Design choices the tests pin that the specs left open** (recorded so the task agent is not
+surprised): the scanner is exported as `guardFiles(dir)`; the events schema describes named
+events under `$defs.events.<name>` with `properties` and `required` for `data`, and `log`
+events carry an empty `data`; the receipt's HEAD field is `gateHead`.
+
 ### What Chad is approving
 
 The seven "Done means" lists above, the labels, and the run plan — including the
 migration step between runs 1 and 2. Decision already recorded: `allowHalfProven` defaults
-to `false`.
+to `false`. **On approval**: the three run-one suites are committed to `main` with the draft
+(step 6), the batch marker is written (step 8), and the run is launched from the main
+checkout. Nothing is frozen until then — the suites sit on the branch `batch-one-guards`.
