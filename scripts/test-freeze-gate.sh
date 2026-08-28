@@ -33,8 +33,8 @@ if [ "$RC" -eq 0 ]; then pass "freeze-gate checker exits 0"; else fail "freeze-g
 # with change-log row `repo-inj`), which is the only way a number like this stays worth
 # asserting.
 CHECKS="$(echo "$OUT" | grep -c '^PASS  ')"
-if [ "$CHECKS" -ge 110 ]; then pass "checker ran $CHECKS checks"
-else fail "checker ran only $CHECKS checks (expected at least 110)"; fi
+if [ "$CHECKS" -ge 220 ]; then pass "checker ran $CHECKS checks"
+else fail "checker ran only $CHECKS checks (expected at least 220)"; fi
 
 # The three verdicts are reachable from a real command line, not only through the module.
 # A stub `.js` run through node — never a `#!/bin/sh` script, which spawnSync cannot execute
@@ -59,6 +59,24 @@ mkdir -p "$TMP/repo/tests/acceptance/demo"
 echo '// a test' > "$TMP/repo/tests/acceptance/demo/test.js"
 printf '{"verifyCommand":"unused"}' > "$TMP/repo/pipeline.config.json"
 printf '1. does a thing\n2. [guard] existing behaviour holds\n' > "$TMP/spec.md"
+
+# The target has to be a real git repository since change-log row `repo-erq`: the receipt the
+# gate writes hashes the suite over git blob ids and records the checkout's HEAD, so a plain
+# directory is refused at exit 2 before anything runs. Identity and `commit.gpgsign` go into
+# the fixture's OWN config — a container has neither, and `-c` would have to precede the
+# subcommand to work at all (change-log row `repo-cfe`).
+git -C "$TMP/repo" init -q --initial-branch main . 2>/dev/null || git -C "$TMP/repo" init -q .
+git -C "$TMP/repo" config user.email fixture@test.local
+git -C "$TMP/repo" config user.name fixture
+git -C "$TMP/repo" config commit.gpgsign false
+git -C "$TMP/repo" config core.autocrlf false
+git -C "$TMP/repo" config core.eol lf
+git -C "$TMP/repo" add -A >/dev/null 2>&1
+git -C "$TMP/repo" commit -qm fixture >/dev/null 2>&1
+# The fixture's commit is its own check: a `git commit` that silently did nothing would leave
+# every receipt assertion below passing or failing for a reason that is not about the gate.
+if git -C "$TMP/repo" rev-parse HEAD >/dev/null 2>&1; then pass "the fixture repository has a commit"
+else fail "the fixture repository has no commit — every receipt check below is meaningless"; fi
 
 # The probe: a repo-shaped tree carrying the SAME suite, byte for byte, in which the criteria
 # are already satisfied. A directory holding only the criteria's artifacts is not a probe.
@@ -194,6 +212,57 @@ if ls -a "$TMP/repo" | grep -q 'freeze-gate-control'; then
 else
   pass "no control directory is left in the target repo"
 fi
+
+# --- the freeze receipt, from a real command line -----------------------------------------
+# DESIGN.md §3.2; change-log rows `receipt-design` and `repo-erq`. The formula and the field
+# values are pinned in tests/unit/freeze-gate.test.js, which can call the module directly;
+# what only a command line can show is that the file lands on disk where the playbook tells a
+# planner to look for it, and that the report says so.
+RECEIPT="$TMP/repo/tests/acceptance/demo/.freeze-gate.json"
+rm -f "$RECEIPT"
+RCPT_OUT="$(node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ --green "$TMP/probe" 2>&1)"
+if [ -f "$RECEIPT" ]; then pass "a proceeding verdict leaves .freeze-gate.json in the suite"
+else fail "no receipt was written on exit 0"; fi
+if [ -f "$TMP/probe/tests/acceptance/demo/.freeze-gate.json" ]; then
+  fail "the PROBE gained a receipt — only the fork point's suite is gated"
+else pass "the probe's copy of the suite gains no receipt"; fi
+echo "$RCPT_OUT" | grep -q 'receipt written: tests/acceptance/demo/.freeze-gate.json' \
+  && pass "the report names the receipt it wrote" \
+  || fail "the report does not name the receipt"
+node -e '
+  const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+  const keys = Object.keys(r).sort().join(",");
+  const want = "brittleness,gateHead,gateVersion,guards,probeSupplied,suiteHash,verdict,writtenAt";
+  if (keys !== want) { console.error("keys: " + keys); process.exit(1); }
+  if (r.gateVersion !== 1 || r.verdict !== "red" || r.probeSupplied !== true) process.exit(1);
+  if (!/^[0-9a-f]{64}$/.test(r.suiteHash)) process.exit(1);
+' "$RECEIPT" \
+  && pass "the receipt parses and carries the agreed fields" \
+  || fail "the receipt is missing, unparsable or wrong"
+
+# A verdict that does not proceed writes nothing and leaves what is there alone: a stale
+# receipt beside a failing verdict is the operator's evidence that the suite has moved.
+cp "$RECEIPT" "$TMP/receipt-before.json"
+STUB_MODE=always-green node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ >/dev/null 2>&1
+if cmp -s "$RECEIPT" "$TMP/receipt-before.json"; then pass "a green verdict leaves the receipt byte-identical"
+else fail "a green verdict rewrote or removed the receipt"; fi
+rm -f "$RECEIPT" "$TMP/receipt-before.json"
+
+# A --repo with no git history is refused before anything runs — every value on the receipt
+# comes from git, so the alternative is a receipt that hashes nothing.
+mkdir -p "$TMP/nogit/tests/acceptance/demo"
+echo '// a test' > "$TMP/nogit/tests/acceptance/demo/test.js"
+printf '{"verifyCommand":"unused"}' > "$TMP/nogit/pipeline.config.json"
+NOGIT_RC=0
+NOGIT_OUT="$(node "$GATE" --repo "$TMP/nogit" --tests tests/acceptance/demo/ 2>&1)" || NOGIT_RC=$?
+if [ "$NOGIT_RC" -eq 2 ]; then pass "a --repo that is not a git repository exits 2"
+else fail "expected 2 for a non-git --repo, got $NOGIT_RC"; fi
+echo "$NOGIT_OUT" | grep -qi "not a git repositor" \
+  && pass "and the refusal says so in words" \
+  || fail "the non-git refusal does not say what is wrong"
+if [ -f "$TMP/nogit/tests/acceptance/demo/.freeze-gate.json" ]; then
+  fail "a refused run still wrote a receipt"
+else pass "a refused run writes no receipt"; fi
 
 # The control convention, through the CLI. With no fixture the report must ADMIT the
 # discriminator is weak rather than quietly proceeding on it.

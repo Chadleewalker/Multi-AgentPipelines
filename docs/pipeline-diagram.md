@@ -74,6 +74,14 @@ typed*, and each finding takes a disposition in the planning draft the way a cri
 It arrives at the approval pass as evidence, never as a gate — findings cannot fail a
 freeze, and a clean pass cannot rescue a green verdict.
 
+A verdict that *proceeds* — `red` 0 or `half-proven` 4 — also leaves a **receipt** in the
+suite it just judged, `tests/acceptance/<issue-id>/.freeze-gate.json` (§3.2; change-log rows
+`receipt-design` and `repo-erq`). It is not drawn as a node because it changes no path here:
+the receipt is committed with the tests in step 6 and read by nothing yet. What it will change
+is the queue's admission, one box to the right — §4.12's third admission rule refuses a
+candidate whose suite carries no receipt, or whose recorded hash disagrees with the branch,
+and that arrow gets drawn when the enforcer ships.
+
 The dotted branch off the freeze is the handoff between the two halves of the process (§3.9,
 change-log rows `batch-ready-marker`, `repo-0b3` and `repo-8v0`). A planning session's last act
 writes the marker; a later, different session reads it back — `node scripts/batch.js show` to

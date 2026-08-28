@@ -20,11 +20,15 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
+const { spawnSync } = require('child_process');
 const {
   verdictFor, guardCount, withEmptyControlDir, resolveControl, CONTROL_DIR, main,
   brittleFindings, lintSuite, runVerify, compareSuites, digestSuite, MAX_BUFFER,
+  RECEIPT_NAME, RECEIPT_VERSION,
 } = require('../../scripts/freeze-gate.js');
 const { MAX_BUFFER: VERIFIER_MAX_BUFFER } = require('../../pipeline/verify-classify.js');
+const suiteHashMod = require('../../runner/suite-hash.js');
 
 let failed = 0;
 const pass = (n) => console.log(`PASS  ${n}`);
@@ -32,6 +36,38 @@ const fail = (n, why) => { console.log(`FAIL  ${n}${why ? ` — ${why}` : ''}`);
 const check = (n, cond, why) => { (cond ? pass : (x) => fail(x, why))(n); return cond; };
 
 const ok = (status) => ({ status, signal: null, stdout: '', stderr: '', error: null });
+
+// --- git fixtures --------------------------------------------------------------------------
+//
+// The gate now refuses a `--repo` that is not a git repository, because every value the receipt
+// records comes from git. So every fixture the CLI is pointed at has to be a real repository.
+//
+// The identity and `commit.gpgsign=false` are written into the fixture's OWN config, never
+// passed per call: a container has neither a global identity nor a signing key, and a suite that
+// commits only on a developer's machine is a suite that fails in exactly the environment this
+// repo's Docker-free rule exists to serve. `-c` would also have to precede the subcommand to
+// work at all, which has cost a task all three of its attempts before (change-log row
+// `repo-cfe`). Line endings are pinned in the fixture too, so the host's global `core.autocrlf`
+// cannot decide what any blob id here comes out as — except in the CRLF fixture below, which
+// pins the opposite value deliberately.
+function git(cwd, args) {
+  return spawnSync('git', args, { cwd, encoding: 'utf8' });
+}
+const gitOut = (cwd, args) => (git(cwd, args).stdout || '').trim();
+function initFixtureRepo(dir, { crlf = false } = {}) {
+  git(dir, ['init', '-q', '--initial-branch', 'main', '.']);
+  git(dir, ['config', 'user.email', 'fixture@test.local']);
+  git(dir, ['config', 'user.name', 'fixture']);
+  git(dir, ['config', 'commit.gpgsign', 'false']);
+  git(dir, ['config', 'core.autocrlf', crlf ? 'true' : 'false']);
+  if (!crlf) git(dir, ['config', 'core.eol', 'lf']);
+  return dir;
+}
+function commitAll(dir, message) {
+  git(dir, ['add', '-A']);
+  git(dir, ['commit', '-qm', message]);
+  return gitOut(dir, ['rev-parse', 'HEAD']);
+}
 
 // --- the decision table -------------------------------------------------------------------
 
@@ -372,7 +408,7 @@ check('the real-control message blames the harness instead',
 
 // --- the empty-directory fallback ---------------------------------------------------------
 
-const tmpRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-gate-'));
+const tmpRepo = initFixtureRepo(fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-gate-')));
 let seenDir = null;
 const returned = withEmptyControlDir(tmpRepo, (dir) => {
   seenDir = dir;
@@ -538,6 +574,13 @@ fs.mkdirSync(testDir, { recursive: true });
 fs.writeFileSync(path.join(testDir, 'test.js'), '// a test');
 const specPath = path.join(tmpRepo, 'spec.md');
 fs.writeFileSync(specPath, SPEC);
+// The fixture's commit, and its own check: everything below reads a blob id or a HEAD out of
+// this repository, and a `git commit` that silently did nothing — no identity, a signing key it
+// cannot reach — would leave every one of those checks passing or failing for a reason that has
+// nothing to do with the gate. A fixture builder whose own git fails silently has hidden a real
+// cause here before (change-log row `repo-cfe`).
+const tmpHead = commitAll(tmpRepo, 'fixture');
+check('the fixture repository has a commit to hash against', /^[0-9a-f]{40}$/.test(tmpHead), tmpHead);
 
 // Silence both streams: the negative cases deliberately provoke error output, and a passing
 // run that prints its own expected errors trains a reader to ignore the output entirely.
@@ -828,4 +871,335 @@ check('a lint that throws NEVER prints a count of 0 — a silent false clean',
 
 fs.rmSync(tmpRepo, { recursive: true, force: true });
 fs.rmSync(probeRepo, { recursive: true, force: true });
+
+// --- the freeze receipt ------------------------------------------------------------------
+//
+// DESIGN.md §3.2 ("The stale guard, and the receipt"), change-log rows `receipt-design` and
+// `repo-erq`. On a verdict that PROCEEDS the gate leaves `.freeze-gate.json` inside the suite,
+// and §4.12's third admission rule will refuse a candidate whose suite carries none or whose
+// hash disagrees with the branch. Nothing reads it yet, which is exactly why this coverage is
+// re-runnable rather than frozen: the file the enforcer will read is written here, and the two
+// halves ship a task apart.
+//
+// The hash is the part worth being careful about. A receipt that is present, well-formed and
+// WRONG is this repo's signature failure (CLAUDE.md, "assert the artifact is *right*"), and the
+// specific way this one goes wrong is silent: hash the bytes on disk instead of the blob ids and
+// every check below still passes on a repository configured the way the container is, while
+// every freeze on the CRLF reference host produces a receipt the dispatch gate must refuse. So
+// the CRLF fixture is a PAIR — the filtered blob id and the raw-byte one — and it is the only
+// thing here that tells the two implementations apart.
+
+const {
+  suiteHash, workingTreeEntries, treeEntries, isGitRepo, headCommit, normalizeSuiteRel,
+} = suiteHashMod;
+const SUITE = 'tests/acceptance/demo/';
+const E = (p, blob) => ({ path: p, blob });
+const B1 = '1'.repeat(40); const B2 = '2'.repeat(40);
+
+check('runner/suite-hash.js exports the formula', typeof suiteHash === 'function');
+check('...and the gate imports it rather than keeping a second copy',
+  /require\((['"])\.\.\/runner\/suite-hash(\.js)?\1\)/.test(gateSrc));
+
+const hashSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'runner', 'suite-hash.js'), 'utf8');
+const hashRequires = [...hashSrc.matchAll(/require\((['"])([^'"]+)\1\)/g)].map((m) => m[2]);
+// Structural, because the constraint's violation is still green: the module is HOST-ONLY and
+// node-built-ins-only, and the day it grows a repo-file dependency nothing behavioural notices.
+// The `runner/bd.js` precedent, from the other direction (change-log rows `repo-1ie`, `repo-8v0`).
+check('runner/suite-hash.js requires node built-ins only',
+  hashRequires.length > 0 && hashRequires.every((s) => !s.startsWith('.') && !s.startsWith('/')),
+  hashRequires.join(', '));
+
+const hA = suiteHash([E('a.js', B1), E('b.js', B2)]);
+check('suiteHash is 64 lowercase hex', /^[0-9a-f]{64}$/.test(hA), hA);
+check('the order entries arrive in does not matter — the formula sorts',
+  suiteHash([E('b.js', B2), E('a.js', B1)]) === hA);
+check('a changed blob id changes the hash', suiteHash([E('a.js', B2), E('b.js', B2)]) !== hA);
+check('a changed path changes the hash', suiteHash([E('a.js', B1), E('c.js', B2)]) !== hA);
+// The NUL is not decoration: without it `ab` + `cd` and `a` + `bcd` are the same byte string,
+// so two different suites would hash identically and the dispatch gate would admit the wrong one.
+check('the NUL separator is load-bearing — a path and a blob cannot run together',
+  suiteHash([E('ab', 'cd')]) !== suiteHash([E('a', 'bcd')]));
+check('an empty suite hashes the empty string rather than throwing',
+  suiteHash([]) === crypto.createHash('sha256').update('').digest('hex'));
+// Bytewise, not locale-aware: a hash whose value depends on the planning machine's collation is
+// a hash the dispatch gate cannot reproduce. Upper case sorts FIRST bytewise and second under
+// almost every locale, so this pair separates the two.
+check('the sort is bytewise, so an upper-case name sorts first',
+  suiteHash([E('a.js', B2), E('B.js', B1)])
+    === crypto.createHash('sha256').update(`B.js\0${B1}\n`).update(`a.js\0${B2}\n`).digest('hex'));
+check('a trailing slash and a backslash spell the same suite',
+  normalizeSuiteRel('tests\\acceptance\\demo\\') === 'tests/acceptance/demo'
+  && normalizeSuiteRel('./tests/acceptance/demo') === 'tests/acceptance/demo');
+
+// --- the entries the formula is fed, read out of a real repository ---------------------------
+
+const hashRoot = initFixtureRepo(fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-hash-')));
+const hashSuite = path.join(hashRoot, 'tests', 'acceptance', 'demo');
+fs.mkdirSync(path.join(hashSuite, 'nested'), { recursive: true });
+fs.writeFileSync(path.join(hashRoot, '.gitignore'), '*.tmp\n');
+fs.writeFileSync(path.join(hashSuite, 'test.js'), '// a test\n');
+fs.writeFileSync(path.join(hashSuite, 'nested', 'deep.js'), '// deeper\n');
+const hashHead = commitAll(hashRoot, 'suite');
+check('the entries fixture committed', /^[0-9a-f]{40}$/.test(hashHead), hashHead);
+// Three files that must each be treated differently, planted after the commit: one untracked
+// but committable, one the project ignores, and a receipt from an earlier gate run.
+fs.writeFileSync(path.join(hashSuite, 'untracked.js'), '// written during planning\n');
+fs.writeFileSync(path.join(hashSuite, 'scratch.tmp'), 'ignored\n');
+fs.writeFileSync(path.join(hashSuite, RECEIPT_NAME), '{"gateVersion":1}\n');
+
+const entries = workingTreeEntries(hashRoot, SUITE);
+const entryPaths = entries.map((e) => e.path).sort();
+check('a committed file is in the entries', entryPaths.includes('test.js'), entryPaths.join(','));
+check('an UNTRACKED file the project would commit is in the entries too',
+  entryPaths.includes('untracked.js'), entryPaths.join(','));
+check('a .gitignore\'d file is NOT — the branch will never carry it',
+  !entryPaths.includes('scratch.tmp'), entryPaths.join(','));
+check('the receipt itself is NOT — the hash it records cannot include it',
+  !entryPaths.some((p) => p === RECEIPT_NAME), entryPaths.join(','));
+check('a nested path is suite-relative with / separators',
+  entryPaths.includes('nested/deep.js'), entryPaths.join(','));
+check('every blob is a 40-hex object id', entries.every((e) => /^[0-9a-f]{40}$/.test(e.blob)),
+  JSON.stringify(entries));
+check('each blob id is the one git itself computes for that path',
+  entries.every((e) => e.blob === gitOut(hashRoot,
+    ['hash-object', '--path', `tests/acceptance/demo/${e.path}`, '--', `tests/acceptance/demo/${e.path}`])),
+  JSON.stringify(entries));
+// A run-written file lands in the working tree AFTER the gate has hashed. Proven the only way
+// that means anything — the hash of the tree the gate saw, against the hash of the tree once a
+// suite has written beside itself.
+const beforeSideEffect = suiteHash(entries);
+fs.writeFileSync(path.join(hashSuite, 'side.out'), 'written by the suite\n');
+check('a file the suite writes when it runs WOULD change the hash — hence "before the run"',
+  suiteHash(workingTreeEntries(hashRoot, SUITE)) !== beforeSideEffect);
+fs.rmSync(path.join(hashSuite, 'side.out'));
+
+// The committed side, which is what the dispatch gate will read: same formula, same answer, for
+// the two files that are actually on the branch.
+const committed = treeEntries(hashRoot, 'HEAD', SUITE);
+check('treeEntries reads the same suite out of a commit',
+  committed.map((e) => e.path).sort().join(',') === 'nested/deep.js,test.js',
+  JSON.stringify(committed));
+check('...with the same blob ids the working copy yields',
+  committed.every((c) => entries.some((e) => e.path === c.path && e.blob === c.blob)));
+
+check('isGitRepo is true for a repository', isGitRepo(hashRoot) === true);
+check('headCommit is the repository\'s HEAD', headCommit(hashRoot) === hashHead);
+const plainDir = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-plain-'));
+check('isGitRepo is false for a plain directory', isGitRepo(plainDir) === false);
+check('workingTreeEntries refuses a plain directory loudly rather than hashing nothing',
+  (() => { try { workingTreeEntries(plainDir, SUITE); return false; } catch { return true; } })());
+// An unborn HEAD is a legitimate state — a repository onboarded minutes ago — and `null` is the
+// honest answer. The wrong answer is a thrown error or the literal string git prints on stderr.
+const unborn = initFixtureRepo(fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-unborn-')));
+check('headCommit is null on an unborn HEAD, not a crash and not a string',
+  headCommit(unborn) === null, String(headCommit(unborn)));
+fs.rmSync(plainDir, { recursive: true, force: true });
+fs.rmSync(unborn, { recursive: true, force: true });
+
+// THE CRLF PAIR — the only fixture here that separates blob-id hashing from byte hashing. The
+// reference host's checkout is CRLF and the committed blob is LF, so a byte hash disagrees with
+// the branch on every freeze and the dispatch gate refuses every task it exists to admit.
+const crlfRoot = initFixtureRepo(fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-crlf-')), { crlf: true });
+const crlfSuite = path.join(crlfRoot, 'tests', 'acceptance', 'demo');
+fs.mkdirSync(crlfSuite, { recursive: true });
+fs.writeFileSync(path.join(crlfSuite, 'test.js'), '// a test\r\nprocess.exit(1);\r\n');
+commitAll(crlfRoot, 'crlf suite');
+const crlfCommitted = treeEntries(crlfRoot, 'HEAD', SUITE);
+const crlfWorking = workingTreeEntries(crlfRoot, SUITE);
+const crlfRawBlob = gitOut(crlfRoot, ['hash-object', '--no-filters', '--', 'tests/acceptance/demo/test.js']);
+check('CRLF fixture: the working copy really does carry \\r',
+  /\r\n/.test(fs.readFileSync(path.join(crlfSuite, 'test.js'), 'utf8')));
+check('CRLF fixture: the committed blob really does not',
+  !/\r/.test(git(crlfRoot, ['cat-file', '-p', crlfCommitted[0].blob]).stdout));
+check('CRLF fixture: the working-copy entries carry the COMMITTED blob ids',
+  suiteHash(crlfWorking) === suiteHash(crlfCommitted),
+  `${JSON.stringify(crlfWorking)} vs ${JSON.stringify(crlfCommitted)}`);
+check('CRLF fixture: and the raw bytes would have hashed to something else — the pair discriminates',
+  /^[0-9a-f]{40}$/.test(crlfRawBlob) && crlfRawBlob !== crlfCommitted[0].blob,
+  `${crlfRawBlob} vs ${crlfCommitted[0].blob}`);
+fs.rmSync(crlfRoot, { recursive: true, force: true });
+fs.rmSync(hashRoot, { recursive: true, force: true });
+
+// --- the gate writing it -----------------------------------------------------------------
+
+const RSTUB = `
+const fs = require('fs'); const path = require('path'); const p = process.argv[2];
+const mode = process.env.RSTUB_MODE || 'honest';
+if (process.env.RSTUB_LOG) fs.appendFileSync(process.env.RSTUB_LOG, p + '\\n');
+const isControl = /_control|freeze-gate-control/.test(p);
+const inProbe = fs.existsSync(path.join(process.cwd(), '.is-probe'));
+if (mode === 'always-green') process.exit(0);
+if (mode === 'always-red') process.exit(1);
+if (isControl) process.exit(0);
+if (inProbe) process.exit(mode === 'probe-red' ? 1 : 0);
+let n = 0; try { n = fs.readdirSync(p).length; } catch { n = 0; }
+process.exit(n > 0 ? 1 : 0);
+`;
+const rcRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-receipt-'));
+const rstubPath = path.join(rcRoot, 'stub.js');
+fs.writeFileSync(rstubPath, RSTUB);
+process.env.FREEZE_GATE_CMD = `${q(process.execPath)} ${q(rstubPath)}`;
+
+// A repo-shaped tree, `git: false` for a probe. The probe is deliberately NOT a repository:
+// only `--repo` is hashed, and requiring history of a throwaway probe would be a new cost for
+// nothing.
+function receiptFixture(name, { git: isGit = true, probe = false } = {}) {
+  const dir = path.join(rcRoot, name);
+  const suite = path.join(dir, 'tests', 'acceptance', 'demo');
+  const control = path.join(dir, 'tests', 'acceptance', '_control');
+  fs.mkdirSync(suite, { recursive: true });
+  fs.mkdirSync(control, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'pipeline.config.json'), JSON.stringify({ verifyCommand: 'stubbed' }));
+  fs.writeFileSync(path.join(suite, 'test.js'), '// a test\n');
+  fs.writeFileSync(path.join(control, 'c.js'), 'process.exit(0);\n');
+  if (probe) fs.writeFileSync(path.join(dir, '.is-probe'), '');
+  if (isGit) { initFixtureRepo(dir); commitAll(dir, 'fixture'); }
+  return dir;
+}
+const rcReceipt = (repo) => path.join(repo, 'tests', 'acceptance', 'demo', RECEIPT_NAME);
+const rcRead = (repo) => { try { return fs.readFileSync(rcReceipt(repo), 'utf8'); } catch { return null; } };
+const rcJson = (repo) => { try { return JSON.parse(rcRead(repo)); } catch { return null; } };
+
+const rcRepo = receiptFixture('target');
+const rcProbe = receiptFixture('probe', { git: false, probe: true });
+const RC_ARGS = ['--repo', rcRepo, '--tests', SUITE];
+const RC_GREEN = [...RC_ARGS, '--green', rcProbe];
+const rcSpec = path.join(rcRoot, 'spec.md');
+fs.writeFileSync(rcSpec, SPEC);
+
+const redRun = capture([...RC_GREEN, '--spec', rcSpec]);
+const rec = rcJson(rcRepo);
+check('a red verdict with a green probe writes the receipt', redRun.code === 0 && rec !== null,
+  `${redRun.code} / ${rcRead(rcRepo)}`);
+check('the receipt carries exactly the eight agreed keys',
+  rec !== null && Object.keys(rec).sort().join(',')
+    === 'brittleness,gateHead,gateVersion,guards,probeSupplied,suiteHash,verdict,writtenAt',
+  rec && Object.keys(rec).sort().join(','));
+check('gateVersion is the exported integer, not a retyped literal',
+  rec !== null && rec.gateVersion === RECEIPT_VERSION && Number.isInteger(RECEIPT_VERSION));
+check('the recorded verdict is the printed verdict', rec !== null && rec.verdict === 'red'
+  && /^RED:/m.test(redRun.out));
+check('probeSupplied is true when --green was given', rec !== null && rec.probeSupplied === true);
+check('gateHead is the target repository\'s HEAD',
+  rec !== null && rec.gateHead === gitOut(rcRepo, ['rev-parse', 'HEAD']));
+check('guards is the count of [guard] lines in --spec', rec !== null && rec.guards === 2,
+  rec && String(rec.guards));
+check('writtenAt is an ISO-8601 instant',
+  rec !== null && /^\d{4}-\d\d-\d\dT[\d:.]+Z$/.test(String(rec.writtenAt)), rec && rec.writtenAt);
+check('the gate SAYS it wrote the receipt, and where',
+  /receipt written: tests\/acceptance\/demo\/\.freeze-gate\.json/.test(redRun.out),
+  redRun.out.split('\n').slice(-4).join(' | '));
+
+// The hash on the artifact, against the formula recomputed here. Present-and-well-formed is
+// half a check; this is the other half.
+check('the recorded hash is the shared formula over the shared entries',
+  rec !== null && rec.suiteHash === suiteHash(workingTreeEntries(rcRepo, SUITE)),
+  `${rec && rec.suiteHash} vs ${suiteHash(workingTreeEntries(rcRepo, SUITE))}`);
+check('...and it is 64 lowercase hex', rec !== null && /^[0-9a-f]{64}$/.test(String(rec.suiteHash)));
+const secondRun = capture(RC_GREEN);
+check('a second run, with the first receipt on disk, agrees with the first',
+  secondRun.code === 0 && rcJson(rcRepo).suiteHash === rec.suiteHash);
+check('...and a re-run is not refused for a probe that lacks the receipt', secondRun.code === 0,
+  `${secondRun.code}: ${secondRun.out.slice(0, 200)}`);
+check('the probe never gains a receipt', !fs.existsSync(rcReceipt(rcProbe)));
+check('compareSuites does not call the receipt a file the probe is missing',
+  !compareSuites(path.join(rcRepo, 'tests', 'acceptance', 'demo'),
+    path.join(rcProbe, 'tests', 'acceptance', 'demo')).absent.includes(RECEIPT_NAME));
+check('...nor a file the probe added, when the probe is the side carrying one',
+  (() => {
+    fs.writeFileSync(rcReceipt(rcProbe), '{"stale":true}\n');
+    const d = compareSuites(path.join(rcRepo, 'tests', 'acceptance', 'demo'),
+      path.join(rcProbe, 'tests', 'acceptance', 'demo'));
+    fs.rmSync(rcReceipt(rcProbe));
+    return !d.extra.includes(RECEIPT_NAME) && !d.differing.includes(RECEIPT_NAME);
+  })());
+// Editing a test still moves the hash — the exclusion is the receipt and nothing else.
+fs.appendFileSync(path.join(rcRepo, 'tests', 'acceptance', 'demo', 'test.js'), '// one more byte\n');
+capture(RC_ARGS);
+check('one appended byte in a test moves the recorded hash',
+  rcJson(rcRepo).suiteHash !== rec.suiteHash);
+
+// Half-proven proceeds and is recorded as such. `guards: null` rather than 0 without --spec:
+// "no spec was read" and "a spec declaring no guards" are different facts.
+fs.rmSync(rcReceipt(rcRepo));
+const halfRun = capture(RC_ARGS);
+const half = rcJson(rcRepo);
+check('a half-proven verdict writes the receipt too — a freeze with no probe proceeds',
+  halfRun.code === 4 && half !== null, String(halfRun.code));
+check('...recorded as half-proven, with probeSupplied false',
+  half !== null && half.verdict === 'half-proven' && half.probeSupplied === false);
+check('...and guards null, never 0, when no --spec was read',
+  half !== null && half.guards === null, half && String(half.guards));
+
+// The three verdicts that do NOT proceed write nothing at all, and leave whatever is there
+// untouched: a stale receipt beside a failing verdict is the operator's evidence, and the
+// dispatch gate's hash comparison is what turns it into a refusal.
+for (const [mode, expected, label] of [
+  ['always-green', 1, 'green'], ['always-red', 2, 'indeterminate'], ['probe-red', 3, 'unreachable'],
+]) {
+  fs.writeFileSync(rcReceipt(rcRepo), 'SENTINEL');
+  process.env.RSTUB_MODE = mode;
+  const r = capture(RC_GREEN);
+  delete process.env.RSTUB_MODE;
+  check(`a ${label} verdict still exits ${expected}`, r.code === expected, String(r.code));
+  check(`a ${label} verdict leaves an existing receipt byte-identical`, rcRead(rcRepo) === 'SENTINEL');
+}
+fs.rmSync(rcReceipt(rcRepo));
+
+// The brittleness count is the lint's, and `null` — never 0 — when the lint could not run. A
+// count of zero from a pass that never executed is the silent false clean the printed
+// `unavailable` line exists to prevent; the artifact has to keep the two apart for the same
+// reason stdout does. Injected at the seam, exactly as the stdout half above is.
+fs.writeFileSync(path.join(rcRepo, 'tests', 'acceptance', 'demo', 'brittle.js'),
+  "assert.deepStrictEqual(keys, ['alpha', 'beta', 'gamma']);\n");
+const withFindings = capture(RC_ARGS);
+check('brittleness on the receipt is the count the report printed',
+  rcJson(rcRepo).brittleness === Number(withFindings.out.match(COUNT_LINE)[1])
+  && rcJson(rcRepo).brittleness >= 1, withFindings.out.match(COUNT_LINE)[0]);
+fs.rmSync(rcReceipt(rcRepo));
+const realStat = fs.statSync;
+let lintless;
+try {
+  fs.statSync = (p, ...rest) => {
+    if (String(p).replace(/\\/g, '/').includes('tests/acceptance/demo')) throw new Error('injected read failure');
+    return realStat(p, ...rest);
+  };
+  lintless = capture(RC_ARGS);
+} finally { fs.statSync = realStat; }
+check('a lint that could not run still leaves a receipt', lintless.code === 4 && rcJson(rcRepo) !== null,
+  String(lintless.code));
+check('...recording brittleness as null, never 0', rcJson(rcRepo) !== null
+  && rcJson(rcRepo).brittleness === null, JSON.stringify(rcJson(rcRepo)));
+
+// A --repo that is not a git repository: refused before a single verify run, and nothing
+// written. Every value on the receipt comes from git, so a plain directory could only produce a
+// receipt hashing nothing — present, well-formed and meaningless.
+const rcPlain = receiptFixture('plain', { git: false });
+const rcLog = path.join(rcRoot, 'runs.log');
+fs.writeFileSync(rcLog, '');
+process.env.RSTUB_LOG = rcLog;
+const notRepo = capture(['--repo', rcPlain, '--tests', SUITE]);
+delete process.env.RSTUB_LOG;
+check('a --repo that is not a git repository exits 2', notRepo.code === 2, String(notRepo.code));
+check('...and the refusal names the path and says why',
+  notRepo.out.includes(rcPlain) && /git repositor/i.test(notRepo.out), notRepo.out.slice(0, 200));
+check('...refused BEFORE any verify run', fs.readFileSync(rcLog, 'utf8').trim() === '',
+  fs.readFileSync(rcLog, 'utf8'));
+check('...and no receipt is written', !fs.existsSync(rcReceipt(rcPlain)));
+
+// A receipt that cannot be written is a failure of the whole invocation, not a warning under a
+// passing verdict: a verdict nothing recorded is a freeze the runner will refuse. Provoked
+// portably by making the path a DIRECTORY — chmod is unreadable in a container and ignored on
+// the Windows host.
+const rcBlocked = receiptFixture('blocked');
+fs.mkdirSync(rcReceipt(rcBlocked));
+const blockedRun = capture(['--repo', rcBlocked, '--tests', SUITE]);
+check('a receipt write that fails exits 2, not the verdict\'s own code', blockedRun.code === 2,
+  String(blockedRun.code));
+check('...and the message names the receipt path', blockedRun.out.includes(RECEIPT_NAME),
+  blockedRun.out.slice(-300));
+
+delete process.env.FREEZE_GATE_CMD;
+fs.rmSync(rcRoot, { recursive: true, force: true });
+
 process.exit(failed);
