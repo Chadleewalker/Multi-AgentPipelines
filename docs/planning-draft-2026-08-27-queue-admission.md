@@ -1,6 +1,7 @@
 # Draft for approval — the idea inbox and the run queue are the same list
 
-**Status:** proposal, not approved. Written 2026-08-27 after investigating why three
+**Status: APPROVED 2026-08-27** (Option A) — see the decision section at the foot of this
+file. Not yet specced or frozen. Written 2026-08-27 after investigating why three
 consecutive runs against the first real project dispatched nothing and said nothing.
 
 ---
@@ -119,3 +120,76 @@ independent mechanisms disagreeing about what the queue means is the thing worth
    spec them, or leave them as inbox items and let the queue forget them.
 3. **Does the same marker gate the live queue feed?** Under feeding, an unmarked issue
    filed mid-run would currently become eligible the moment a worker frees up.
+
+---
+
+## Approved — 2026-08-27
+
+**Option A approved by Chad.** The run queue becomes opt-in: an issue is dispatchable only
+if someone marked it ready at freeze time.
+
+The three open questions above are resolved as follows. Two of them are *how it is built*
+rather than *what is built*, so they are settled here rather than taken back to the user
+(hard rule 4). The third is a scoping call and is flagged for him.
+
+### 1. What is the marker — settled
+
+**A Beads label, applied in `PLANNING.md` step 6 in the same breath as pushing the suite.**
+
+Not a status: `open`/`in_progress`/`blocked`/`closed` already carry meaning the runner and
+`bd ready` both depend on, and overloading one of them would make "ready to run" and "not yet
+started" the same word. Not an issue type either: the playbook is explicit that type is *not*
+how work is kept out of a batch — *"anything in the list that is not meant to run this batch
+must be blocked or closed, not merely retyped"* — and the runner already filters `epic` by
+type, so a second type-based rule would put two unrelated decisions on one field.
+
+A label is additive, invisible to everything that does not look for it, and reversible
+without touching an issue's lifecycle. The queue's admission rule becomes: **typed
+`epic` → skipped; unlabelled → not in the queue at all; labelled but no frozen suite on the
+branch → `undispatchable`, loudly.**
+
+### 2. The five currently-open issues — needs Chad
+
+They are real work someone noticed and wrote down; none has a spec. Once the queue is
+opt-in they stop appearing in reports and simply wait in the inbox, which is the correct
+resting place for an unspecced idea.
+
+**Default if nothing is said: leave them unlabelled.** They stay open, stop being refused
+every run, and get picked up by whichever planning session wants them. The alternative —
+specc­ing all five now — is a planning session's worth of work and should be chosen
+deliberately, not inherited from a bug fix.
+
+### 3. Does the marker gate the live queue feed — settled: yes
+
+The feed re-reads the ready queue through `readyQueue(cfg)`, so it inherits the type filter,
+the ordering and the dispatch gate already. The label filter belongs in the same place, for
+the same reason: a run that admitted unlabelled work merely because it was still in flight
+would mean "approved" changed meaning halfway through a run, which is precisely what
+hard rule 3 forbids.
+
+### Not yet done
+
+This is an approved **direction**, not a spec. It still needs `PLANNING.md` steps 1–8: the
+spec drafted in a fresh context, the critic panel, acceptance tests proved red before green,
+and the user's approval of the plain-English "Done means" list before anything is frozen.
+
+### Mechanism, verified against the installed tracker — 2026-08-27
+
+Checked before writing the spec, because a label that the queue cannot filter on would
+change the design and the discovery belongs here, not in an implementation attempt.
+
+- Labels exist as a first-class concept: `bd label add` / `remove` / `list` / `list-all`.
+- **The ready query filters on them server-side**: `bd ready --label <name>` returns only
+  issues carrying it, and `--label-any` / `--exclude-label` also exist. Confirmed on a live
+  project: the unfiltered ready queue returned five issues, the same query filtered by a
+  label nobody has returned none, and the JSON shape was unchanged.
+- **Caveat the spec must handle: `bd ready --json` does not include a `labels` field.** The
+  filter therefore has to be applied *in the query*, not by inspecting the rows afterwards.
+  An implementation that read the queue and then filtered in JavaScript would silently
+  admit everything, and would pass any test whose fixture happened to label every issue.
+
+So the change is one flag on the existing call in `runner/queue.js`, which already goes
+through the `runner/bd.js` seam — the same seam `PIPELINE_BD_CMD` stubs, so it stays
+reachable from the Docker-free suites. That is a much smaller change than this draft
+assumed, and the acceptance tests should be built around the caveat above rather than
+around the happy path.
