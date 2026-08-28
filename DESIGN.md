@@ -245,6 +245,28 @@ new rule. What the receipt buys is that a freeze becomes a **fact the runner can
 rather than a step the playbook asks for: fourteen planning drafts on the first real
 project mentioned the gate zero times, and nothing could tell.
 
+*The first half is built* (change-log row `repo-i4b`); the receipt is declared and not
+built yet. Four mechanics of the guard subset are decisions rather than details, and each
+exists because the other reading is silently wrong. **When it runs:** once, and only from a
+fork point red at exactly 1 on a control proven green — the one state in which the
+suite-level observation is readable at all, so anywhere else a guard's red would be one
+more uninterpretable number rather than a finding. It reuses that tree's control result
+rather than taking one of its own, because the control answers a question about the tree
+and the command and was answered a moment ago by both. **Where it runs:**
+`<parent of --tests>/.freeze-gate-guards-<pid>-<seq>/`, a sibling of the suite at the same
+depth, handed to the project's own verify command as a repo-relative POSIX path. Every
+frozen suite resolves its own root as `path.resolve(__dirname, '..', '..', '..')`, so a
+guard judged from any other depth resolves a different tree and fails for a reason that has
+nothing to do with its pin. **What it reports:** `guard files: N` on every run, at zero
+too, on the `guards declared:` precedent — a count that appears only on the interesting
+branch cannot be told from one that never ran — plus the names, because the exit code says
+a guard is stale and not which one, and the subset's own stderr, which is the only place
+the failing assertion survives at all once the whole-suite run has drowned it in the
+ordinary criteria's failures. **What it does not change:** exits 0–4 keep their exact
+meanings, and a guard that is absent, green, or a call made without the argument all
+answer identically — otherwise the frozen suites that pinned the five-verdict table would
+quietly stop meaning what they meant, and none of them can be edited.
+
 **Upstream of step 1: the idea inbox.** Each repo — this one and every target — carries a
 `docs/IDEAS.md`, a flat list of parked notes saying *a design might be wanted here
 someday*. It is not part of the pipeline above and has no gate, no owner and no
