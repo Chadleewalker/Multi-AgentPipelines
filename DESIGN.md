@@ -385,6 +385,9 @@ fields:
 - `regressionCommand` (optional) — the project's standard test suite. Its *presence* is
   what "a standard suite exists" means; there is no auto-detection. See 4.4 for how its
   result is used.
+- `regressionPolicy` (optional) — `evidence` by default; `required` makes an exact
+  `regressions: pass` a host-side publication precondition. The runner reads this field
+  from the fork-point commit, never from the implementation's working tree.
 - `defaultBranch` (optional) — the project's integration branch. Real repositories are
   `master` as often as `main`, so the pipeline never assumes: this value wins, else the
   runner asks the remote for its HEAD, else `main`. It is what task branches fork from,
@@ -794,24 +797,29 @@ look.
 
 ## 4. The Implementation Phase (the execution layer)
 
-Carried over from v3, amended over two critic-review rounds; this section is the single
-source of truth.
+Carried over from v3, amended over two critic-review rounds; this section is the
+architectural source of truth. Stable enumerable runtime policy is owned by
+`contracts/control-plane.json`, persisted artifact shapes by `schemas/*.schema.json`, and
+project-specific verification policy by the target's `pipeline.config.json`. Runtime
+modules consume those machine-readable sources. Prose here explains decisions and
+algorithms; it is not a second live copy of their values (change-log row `repo-tg8-10`).
 
 1. **One orchestrator, on the host, outside every container.** A deterministic runner
    script — not an LLM. It enforces timeouts and kill switches; the enforcer cannot live
    inside the thing it may need to kill. **That includes the tools the runner itself
-   shells out to:** every runner `bd` call is bounded by `bdTimeoutMs` (4.12, default
-   60000ms) inside `runner/bd.js`, because `bd` has been observed printing its complete
+   shells out to:** every runner `bd` call is bounded by the contract's `bdTimeoutMs`
+   inside `runner/bd.js`, because `bd` has been observed printing its complete
    output and then never exiting, and two calls over one embedded Dolt database blocking
    on each other indefinitely. A call that exceeds the bound is killed and returns the
    ordinary non-zero status its caller already handles, with an error naming the bound
    that fired — never a silent empty result, which would be the quiet degradation the
-   bound exists to prevent. The same mandate covers the `git` calls the dispatch gate
-   makes (4.12): `gitTimeoutMs`, default 60000, and **every** spawn in that path is built
-   from one exported options builder, because a builder some spawn ignores is scaffolding.
-   `git fetch` against an unreachable host parks indefinitely in exactly the way an
-   unbounded `bd` once parked whole runs, and the gate runs *before* anything is claimed —
-   so an unbounded one parks a run that has not started work it could report.
+   bound exists to prevent. The same mandate covers **every runner Git call**:
+   `gitTimeoutMs`, default 60000. Docker probes, network scripts, GitHub CLI publication,
+   host-shell calls and the rate-limit probe use `lifecycleTimeoutMs`, default 120000.
+   Both produce the same timeout contract: status 124, `timedOut: true`, and a diagnostic
+   naming the command, duration and config key. `git fetch` against an unreachable host
+   parks indefinitely in exactly the way an unbounded `bd` once parked whole runs; a
+   timeout must therefore be a named failure, never an empty answer or policy fallback.
 2. **One fresh container per task, repo supplied by the host.** For each Beads issue the
    runner clones the target repo fresh **from the GitHub remote** (so every branch forks
    from the canonical `main`) into a per-task temp directory on the host, creates branch
@@ -824,15 +832,21 @@ source of truth.
    everything inside the container is disposable, so "kill the container" is always safe.
 3. **Inside the container, agents are ephemeral headless invocations** (`claude -p`,
    run with permissions bypassed — acceptable *only* because the container has a closed
-   network, a disposable filesystem, and no credentials) in a fixed sequence driven by the
-   entrypoint script: **code → verify → (retry, up to the attempt cap — default 3) → docs → commit**.
+   network, a disposable filesystem, and no git credentials) in a fixed sequence driven by the
+   entrypoint script: **code → verify → (retry, up to the attempt cap — default 3) →
+   implementation commit → docs-only agent → final verify → docs commit**.
    The agent command is read from the `PIPELINE_AGENT_CMD` environment variable,
    defaulting to the headless `claude -p` invocation when unset — this is the deliberate
    test seam that lets the E2E pass substitute deterministic stubs (see section 7). The docs phase is one agent invocation
    that writes the change summary into the status file and updates in-repo docs the change
-   affects; if the docs phase itself errors after verification has passed, the success
-   stands (docs failure is logged, never fatal). Phases of a task are scaffolding, not an
-   LLM decision. No leader agent inside. **Agent output is a contract artifact, so it is
+   affects. Its writable Git delta is limited by deterministic scaffolding to regular
+   root-level Markdown files and regular Markdown files beneath `docs/`; a symlink, source,
+   config, test or other path rejects the whole docs delta. An allowed delta is judged by a
+   second invocation of the same authoritative verifier before scaffolding authors the docs
+   commit. If the docs agent errors, crosses the path boundary, fails final verification or
+   cannot be committed, its entire delta is reset to the verified implementation commit and
+   success stands with `docsPhaseError` as evidence (change-log row `final-verification-boundary`). Phases of
+   a task are scaffolding, not an LLM decision. No leader agent inside. **Agent output is a contract artifact, so it is
    read structurally, never scraped.** When the entrypoint owns the invocation (no
    `PIPELINE_AGENT_CMD`) both agent phases request `--output-format json`, and the
    envelope reader (`pipeline/envelope.js`) takes the last line of the log that parses to
@@ -882,14 +896,28 @@ source of truth.
    it `git diff`s **all of `tests/acceptance/` plus the config's `frozenPaths`** (every
    frozen test and frozen helper, not just this issue's directory — during a run none of
    them may change, and untracked additions count) against the fork point (3.1); any
-   difference is the dedicated "tampered" outcome. When
-   `regressionCommand` is present it runs that too, as **recorded evidence, not a gate**:
-   acceptance tests decide pass/fail, and a passing task with failing regressions is
-   reported as "partial," never "done." The verifier writes machine-readable results to
+   difference is the dedicated "tampered" outcome. When `regressionCommand` is present
+   it runs that too. Under the default `regressionPolicy: evidence`, acceptance decides
+   the verifier exit code and a passing task with failing regressions is reported as
+   "partial," never "done." A project may set `regressionPolicy: required`; the verifier
+   still records the same evidence and exit code, but the host refuses publication unless
+   `regressions` is exactly `pass` (fail, absent, error or missing all retain the workspace
+   and leave Beads in progress). Both fields are read from the fork-point config, so the
+   implementation cannot weaken the gate it is running under. The verifier writes
+   machine-readable results to
    `/workspace/.run/verify.json` — schema `verify.schema.json`, checked into this repo,
    owned by the verifier task and cited as a frozen input by the runner and report tasks
    (mirroring `status.schema.json`) — and its output is fed into the next coding attempt
-   as feedback.
+   as feedback. The host validates both artifacts at collection time with those checked-in
+   schemas and requires their `issueId` to match the claimed task. Invalid raw bytes are
+   still copied into the run directory for diagnosis but are never exposed as structured
+   values to publication, memory, reporting or the pause scheduler. Exit 0 is only a success
+   *claim*: missing, malformed, schema-invalid or cross-task artifacts, or a verification
+   artifact whose acceptance verdict is not exactly `pass`, are deterministically relabelled
+   `failed` before the outcome contract can close an issue or open a PR. Nonzero execution
+   outcomes retain their existing meaning; malformed diagnostic evidence cannot turn stuck,
+   tampered, paused or failed into another class (change-log row
+   `runtime-artifact-schema-gate`).
 5. **Git isolation; the host pushes everything that exists, PRs only what passed.** Every
    task gets a fresh branch off `main`; nothing touches `main`. After the container exits,
    the runner pushes the task branch **whenever it has commits — including WIP commits
@@ -903,6 +931,27 @@ source of truth.
    The container holds no git credentials (a test asserts `git push` from inside fails).
    The PR body is assembled by the host from the issue spec, the change summary in the
    status file, and `verify.json` — nothing parses free-form agent prose.
+   Immediately before every push, the credentialed host scans **every Git object introduced
+   since the immutable fork point**: commits, trees and blobs, including objects that are no
+   longer reachable from the branch tip's file tree. It rejects the exact subscription
+   token injected into the container plus high-confidence private-key and provider-token
+   shapes. Scanning only `HEAD` would miss a credential committed and deleted later while
+   still publishing its historical blob; scanning raw trees also covers tracked filenames.
+   A finding reports only its kind, object type and abbreviated object id — never the
+   matching bytes — and is a recoverable publication failure: no push, no terminal Beads
+   transition, retained workspace. Enumeration, parsing, timeout and size-limit failures
+   fail closed (change-log row `credential-disclosure-publication-gate`).
+   **Publication, terminal task tracking, and cleanup are one ordered settlement**
+   (change-log row `transactional-task-completion`): first the branch push and required PR
+   must succeed, then every Beads note and the terminal `close` / `blocked` transition must
+   succeed, and only then may the runner discard the host workspace. A publication failure
+   never attempts a terminal Beads transition. A Beads failure may follow an already-durable
+   branch or PR, but it leaves the issue in progress and keeps the workspace. Either failure
+   is a named manifest/report error with `recoveryWorkspace`, and `task.finished` records
+   `beads: null`; `pushed: false` therefore never collapses "push rejected" into the valid
+   "no commits" no-op. A required regression verdict is checked at the start of this
+   settlement, before even a no-commit result is accepted: an unavailable mandatory
+   discriminator can never close the issue or publish a branch.
 6. **Budgets and hard exits — time and attempts, not money.** Two budgets only: max
    **active** wall-clock per task (host-enforced, default 4 hours, pause time excluded —
    see next item) and a per-task verify-attempt cap — default 3, tunable per run via `maxAttempts` in `run.config.json`, forwarded to the container as `PIPELINE_MAX_ATTEMPTS` (entrypoint-enforced, counted in the
@@ -983,7 +1032,7 @@ source of truth.
    outcome counts, and an **unconditional spec-concern headline** — how many concerns,
    raised by how many of how many tasks — printed for every run including one that raised
    none, and evidence only, exactly as 3.7 requires (change-log row `repo-uig`). Per task:
-   report status (see the 4.11 table), branch, what changed,
+   report status (see the 4.11 contract), branch, what changed,
    verification evidence, attempt notes. Ordered by scrutiny needed:
    **tampered > stuck > partial > failed > done-with-retries > done-first-try**, ties
    broken by attempt count then diff size. Within the partial band, a partial whose
@@ -1017,19 +1066,29 @@ source of truth.
     4.1's `bdTimeoutMs` — never an asynchronous spawn): in a single-threaded runner,
     blocking is what makes two `bd` calls unable to interleave over one embedded Dolt
     database, so the sole-writer guarantee survives §7's worker pool unchanged.
-11. **The outcome taxonomy — one table, cited by every component.** The contract between
-    entrypoint, runner, and report generator:
+    Each write result is checked. Notes precede the terminal transition and the first failed
+    note stops it; a failed `close` / `update` is a recoverable settlement failure, not a
+    successful task completion that happens to have noisy logs (change-log row
+    `transactional-task-completion`).
+11. **The outcome taxonomy — one machine-readable contract consumed by every component.**
+    `contracts/control-plane.json` owns the exit-code-to-task/Beads mapping, the
+    regression-failure refinement, the complete task-status vocabulary, and which
+    outcomes may open a PR. `runner/queue.js`, `runner/publish.js`, and the other consumers
+    import it through `runner/control-plane.js`; `schemas/run.schema.json` is checked
+    against it by the mandatory contract suite. The semantics below explain those values
+    without maintaining another executable-looking table.
 
-    | Outcome | Exit code | Report status | Beads status after | Branch pushed? | PR? | Failure class (change-log row `failure-class-design`) |
-    |---|---|---|---|---|---|---|
-    | Acceptance pass, regressions pass or absent | 0 | done | closed | yes | yes  | — (a `done` row carries no class) |
-    | Acceptance pass, regressions fail | 0 | partial | closed | yes | yes, flagged  | `regressions` |
-    | Bailed at the attempt cap (default 3) | 10 | stuck | blocked | yes (WIP) | no  | `identical-failures` / `attempts-exhausted` / `suite-error` / `unclassified` |
-    | Test tampering detected | 11 | tampered | blocked | yes (WIP) | no  | `tampered` |
-    | Usage limit hit | 20 | paused (transient) | in-progress (runner parks it) | not yet | not yet  | `paused` |
-    | Internal error | 30 | failed | blocked | if commits exist | no  | `internal` / `suite-error` |
-    | Wall-clock kill (host `docker kill`, no exit code) | — | failed, timeout noted | blocked | if commits exist | no  | `timeout` |
-    | Not dispatched: the frozen suite is absent from the fork branch, ungated, or changed since its receipt | — (never launched) | undispatchable | unchanged (`open`) | no | no  | `no-suite` / `no-receipt` / `receipt-mismatch` / `half-proven` |
+    The outcome mapping describes execution outcomes after a **successful settlement**. Publication
+    or Beads failure does not invent a new verifier outcome: the manifest keeps the original
+    `done`, `partial`, `stuck`, `tampered`, `failed`, or `paused` judgment, adds `error` and
+    `recoveryWorkspace`, leaves the issue in progress, and retains that workspace. This is
+    the compensating boundary between two durable systems; it does not pretend a Git remote
+    and a local Dolt database can share an atomic commit.
+
+    Under `regressionPolicy: required`, only an exact regression `pass` is
+    settlement-eligible. An acceptance pass with fail, absent, error or missing regression
+    evidence keeps its `partial` or `done` execution judgment for diagnosis, but publication
+    is refused, Beads remains in progress, and the recovery workspace is retained.
 
     **The last column is decided after the outcome, never with it** (change-log row
     `failure-class-design`). A `failureClass` is written onto every manifest row whose outcome
@@ -1068,12 +1127,14 @@ source of truth.
     `run.config.json` in this repo: target repo path and remote, image name, wall-clock
     default, the attempt cap (`maxAttempts`, default 3 — see 4.6), probe interval,
     the bound on every runner `bd` call (`bdTimeoutMs`, default 60000 — see 4.1;
-    validated, like the other numeric tunables, as a positive whole number), the same bound on
-    every `git` call the dispatch gate makes (`gitTimeoutMs`, default 60000, validated
-    identically),
-    network/proxy identifiers, and an optional `agentCommand`
-    override (passed into containers as `PIPELINE_AGENT_CMD` — how the E2E pass injects
-    its stubs). **The network and proxy names are per project and have no shared
+    validated, like the other numeric tunables, as a positive whole number), the bound on
+    every runner Git call (`gitTimeoutMs`, default 60000), the bound on short Docker,
+    GitHub and host-shell lifecycle calls (`lifecycleTimeoutMs`, default 120000; both
+    validated identically), network/proxy identifiers, an optional `agentCommand` override (passed
+    into containers as `PIPELINE_AGENT_CMD` — how the E2E pass injects its stubs), and an
+    optional `hostShell`. When `hostShell` is absent, startup resolves and verifies one;
+    when it is present, startup verifies that exact command rather than silently falling
+    back. **The network and proxy names are per project and have no shared
     default:** `network` / `proxyName` are used verbatim when a config gives them, and
     otherwise **derived from the project segment of the config's own file name**
     (`run.config.<project>.json`), sanitised to one lower-case DNS label because the proxy
@@ -1091,9 +1152,12 @@ source of truth.
     easy mistake to make, because the second run looks like it starts normally. Two
     runners draining one queue both read Beads' ready list, both can claim the same issue,
     and both push a branch for it: the sole-writer rule (4.10) assumes one writer, not two.
-    So the runner takes a lock on its target repo under `runs/` — beside the sweep lock
-    `scripts/test-all.sh` already takes — and a second run against the same repo is refused
-    by name, naming both the project and the run that holds it, and exits non-zero. The
+    So the runner takes a **host-global** lock on its target repo, under a per-user directory
+    outside any pipeline checkout, and a second run against the same repo is refused even
+    when it started from another checkout. A matching observer mirror remains under that
+    checkout's `runs/locks/` for the dashboard and sweep readers, but exclusion rests only
+    on the global authority. The refusal names both the project and the run that holds it,
+    and exits non-zero. The
     lock is acquired **before every other gate**, first and not merely early: it is the
     only purely local check, everything after it probes Docker or writes to Beads, and a
     refusal arriving after the stale-issue sweep has already reset another live run's
@@ -1120,7 +1184,34 @@ source of truth.
     own: a refused run must not free the lock it was just refused by. An operator stop that
     kills the process outright runs no handler and leaves the lock behind — that case is
     covered by takeover, not by release, which is why takeover is the mechanism and release
-    is the courtesy.
+    is the courtesy. A clean end removes the authority only when every claim settled. An
+    unfinished claim leaves a released ownership record for the next run to take over.
+
+    **The Beads checkout and publication remote are one project, proven before either is
+    touched.** `targetRepoPath` is the database side of the runner while
+    `targetRepoRemote` is the dispatch, clone, push and PR side. Preflight enumerates every
+    fetch remote of the local checkout and compares its credential-free canonical repository
+    identity with the configured remote, after Git has expanded `url.*.insteadOf` aliases.
+    Equivalent spellings collapse: an absolute path and `file://` URL match, as do GitHub
+    HTTPS and SSH locators. A mismatch, a non-repository path or a checkout with no fetch
+    remote aborts immediately after locking and before the host-shell probe, Docker,
+    networking, Beads recovery/queue reads or workspace creation. The refusal names both
+    config sides and the boundary it protected. Comparing only branch contents is not an
+    identity proof: two unrelated repositories can share a commit, especially an initial
+    scaffold, and then diverge after the runner has already closed the wrong issue.
+
+    **Claims and recovery use the same ownership proof.** Dispatch uses Beads' atomic
+    `bd update --claim`, never a status assignment. The claim transaction also sets a unique
+    per-run actor plus `pipeline_owner_token` and `pipeline_run_id` metadata, and only after
+    it succeeds does the lock's claim list gain the issue id. Takeover carries dead-run
+    tokens forward. Recovery may scan in-progress rows, but it reopens one only when status,
+    actor and both metadata fields still exactly match a token from a proven-dead owner; the
+    reset clears assignee and metadata in the same Beads update. Human work, a later run's
+    work and legacy unproven rows are therefore immutable. Failed recovery retains the token
+    for the next run instead of widening the reset. Terminal settlement likewise writes the
+    final status while clearing assignee and both metadata keys in one transaction; otherwise
+    reopening that finished row leaves the old runner actor behind and atomic `--claim`
+    correctly refuses every later run.
 
     **One run, N tasks at once — the bounded worker pool (§7's `concurrency` knob).**
     `concurrency` in `run.config.json` says how many task containers **one** runner process
@@ -1144,12 +1235,15 @@ source of truth.
       pull from one shared cursor and write into their own index, so the manifest reads the
       same at depth 3 as at depth 1 and a fast task cannot overtake its neighbours. Append-on-
       completion would have been the natural implementation and is the bug this pins shut.
-    - **The clone and the publish stay synchronous** (`spawnSync`: `git clone`, `git push`,
-      `gh pr create`), so they serialise across workers. Seconds against container times in
-      tens of minutes, against widening the change into four more runner files; the visible
-      cost is that a wall-clock kill timer can fire a few seconds late while another worker
-      clones. Stated so it is not mistaken for a defect. The same reasoning is why `bd()`
-      stays synchronous, where it is a guarantee rather than a rounding error (4.10).
+    - **Short host calls remain synchronous but are bounded.** Clone, branch inspection,
+      push, GitHub publication, Docker probes and shell lifecycle calls all terminate under
+      the configured Git/lifecycle deadlines, so they may briefly serialise orchestration
+      but cannot park every worker indefinitely. Active container deadlines do **not** share
+      that event loop: one worker thread per container owns its clock and bounded `docker
+      kill`, so another worker's synchronous clone or Beads write cannot make a task run
+      past its active budget (change-log row `bounded-lifecycle-and-independent-deadlines`).
+      `bd()` stays synchronous because its serialization is a guarantee (4.10), and keeps
+      its separate `bdTimeoutMs`.
     - **The rate-limit park is still per task.** At depth > 1, N parked tasks each run their
       own pause loop against one shared subscription window: wasteful, not corrupting, and
       unreachable at the default — which is what makes shipping the pool before the run-level
@@ -1226,10 +1320,31 @@ source of truth.
     RESULT column and the exit code still come from the suite's exit code and the `FAIL`
     grep, which already saw both vocabularies (change-log row `repo-0ay`).
 
+    **The host shell is an identity, not a PATH spelling.** On Windows, the first `bash`
+    found by the operating system may be the WSL launcher, even though the runner's host
+    tools and paths belong to Windows. Startup therefore accepts only a Git Bash-compatible
+    shell that can invoke the runner's exact host Node executable. An explicit `hostShell`
+    is checked first; otherwise the resolver checks standard Git for Windows locations and
+    then PATH candidates, rejecting WSL and shells that cannot run host Node. This happens
+    before Docker, network setup, or Beads recovery. Success is retained in the loaded
+    configuration and reused for task, probe, pause, and publication subprocesses; failure
+    releases the project lock and reports the `hostShell`/Git for Windows remedy without
+    launching work. Linux retains the portable `bash` default but must pass the same Node
+    capability probe (change-log row `verified-host-shell`).
+
+    **Lifecycle failure has one compensating path.** Any attempted network startup owns a
+    bounded teardown before preflight releases its lock, including a script that creates
+    half the plumbing and then fails. After successful preflight, the complete queue/report
+    body runs inside `try/finally`: `network down` is attempted first and lock release lives
+    in its own nested `finally`, so an unexpected exception—or even a teardown exception—
+    cannot strand the project lock. A teardown timeout is logged and makes the run nonzero;
+    it is never followed by a false `run.finished` event (change-log row
+    `bounded-lifecycle-and-independent-deadlines`).
+
     **The runner owns the rest of the run lifecycle end to end:** at run start it creates
     the internal network and proxy sidecar, invokes the pre-run egress check (aborting on
-    failure), and resets any issue left in-progress by an abnormal earlier end (operator
-    stop, crash) back to open with an attempt-log note; at run end it tears the network
+    failure), and resets only issues whose actor and metadata still prove ownership by a
+    dead runner back to open with an attempt-log note; at run end it tears the network
     and sidecar down — its own, and only its own. It names both in `run.log` where it
     brings them up, so a `docker ps` during two concurrent runs can be read against it. Task order: Beads' ready queue (open, unblocked, dependencies
     satisfied), **with `issue_type: "epic"` excluded**, ranked by Beads priority,
@@ -1281,12 +1396,11 @@ source of truth.
       suite present *locally*: in a commit nobody pushed, or untracked in someone's working
       copy. A check against the checkout passes all five and changes nothing at all.
       **Freezing locally is not freezing** — that sentence is the whole lesson and the check
-      has to encode it. Going by URL rather than by remote name closes a second gap in the
-      same move: `targetRepoPath` and `targetRepoRemote` are two independent config keys that
-      nothing relates (`runner/config.js`), so a working copy whose `origin` points elsewhere
-      would have the gate answering confidently about a different repository — non-empty,
-      well-formed and false, the failure family this design keeps paying for. Containers fork
-      from a clone of that URL (2); the gate asks that URL. One fetch per run, then one
+      has to encode it. Going by URL rather than by remote name keeps this gate aligned with
+      the containers, which fork from a clone of that URL (2). The separate preflight
+      repository-identity gate binds that publication side to `targetRepoPath`, where Beads
+      lives; without it a working copy whose origin points elsewhere would still let the
+      runner close issues in one project while publishing another. One fetch per run, then one
       `git ls-tree -d --name-only FETCH_HEAD -- tests/acceptance/<issue-id>` per candidate.
       The `-d` is not leniency to be tidied away later: a suite committed as a single *file*
       answers empty and is refused, which matches the verifier, whose `<verifyCommand>
@@ -1882,9 +1996,9 @@ exist. Thread: `docs/threads/merge-order.md`.
   interactive `claude` does not (known issue) — the pipeline is headless-only anyway.
 - **Runner implementation: Node.js.** Decision, for cross-platform reasons: `node` is
   the same command on Windows and Linux (no `python` vs `python3` split), handles JSON
-  natively for Beads/Claude output, and can enforce wall-clock timeouts with timers +
-  `docker kill` without relying on a platform `timeout` command. Plain JavaScript, no
-  framework.
+  natively for Beads/Claude output, and can enforce wall-clock timeouts with an independent
+  worker clock + bounded `docker kill` without relying on a platform `timeout` command.
+  Plain JavaScript, no framework.
 - **Image strategy: shared base + thin per-project layer.** The base image (Node, git,
   the Claude Code CLI, `bd` — **no pipeline scaffolding**; the entrypoint and verifier
   are mounted at runtime per 4.10) is maintained in this repo; each target project gets
@@ -2030,8 +2144,8 @@ absent from a new one. Three consequences settle the design:
   `live-queue-feed` sized and dismissed on evidence, the operator/working split having
   already put two host processes on `bd`.
 * **`runs/` must never be duplicated, and the tool refuses it by name.** `runs/locks/` holds
-  the per-project run lock (§4.12) that makes "one run per project" true; a second copy is a
-  second lock, and two runners can then drain one queue. It is also where every manifest and
+  the local observer mirror of §4.12's host-global lock; a second copy gives local readers a
+  false ownership view. It is also where every manifest and
   report lands, so a run launched from a worktree writes its history where `verdict.js`,
   `batch.js`, `audit-runs.js` and the dashboard will never look — it would work, and its
   results would be invisible. Hence the rule: **runs are launched from the main checkout
@@ -2055,7 +2169,7 @@ PR, and a tidy-up tool that also deletes branches is the original hazard in a ne
 branch containers fork from, so §4.12's second admission rule refuses that task until the
 branch is merged and pushed — correctly, and now more often, since parallel sessions leave
 more unmerged freeze branches outstanding at any moment. The remedy is the one already in the
-outcome table (freeze, PR, merge, run), plus feeding for a run already in flight. No gate
+outcome contract (freeze, PR, merge, run), plus feeding for a run already in flight. No gate
 changes.
 
 ## 7. Phasing
@@ -2075,7 +2189,13 @@ tampers — ending with the expected PR, WIP branches, and report, with zero int
 input. **Determinism comes from the 4.3 agent-command seam:** the bail and tamper scenarios
 substitute scripted stubs for the coding agent (a stub that never satisfies the tests; a
 stub that edits a frozen test file), so the E2E pass does not depend on model behavior or
-burn the usage window; the success scenario may run either a stub or the real model.
+burn the usage window; the success scenario may run either a stub or the real model. The
+harness refuses a dirty fixture checkout before any mutation, and remote cleanup authority
+is limited to branches derived from those three fixture issue IDs (plus numeric retry
+suffixes). A repository-wide `task/*` glob is not ownership evidence. Host commands,
+configuration fields, fixture identity, the Docker daemon, and both required images are
+pre-mutation prerequisites: the harness does not reset, update Beads, or push a receipt
+until every one is proven available.
 
 **Shadow-mode trial:** V1 then runs on tasks from an existing private project the user
 would have done anyway; after each run the output is graded against the user's own
@@ -2184,7 +2304,7 @@ proxy sidecar software and the empirical completion of the endpoint enumeration 
 4.8 policy); and pure naming/layout details with no cross-component reach — config key
 spellings, timestamp and trace-ID formats, report and Dockerfile file names, fixture-repo
 name, probe host choices. Anything touching **two or more separately-built components** is
-decided in this doc (the 4.11 table, `status.schema.json`, `verify.schema.json`,
+decided in this doc (the 4.11 contract, `status.schema.json`, `verify.schema.json`,
 `run.schema.json`, `events.schema.json` — §4.12, written by the runner and read by tools
 built separately from it — the 4.10 input contract incl. the `/pipeline` mount and
 `PIPELINE_AGENT_CMD`, the 3.4 config schema) — that is the dividing line.

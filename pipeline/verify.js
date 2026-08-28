@@ -11,7 +11,8 @@
 //   2. Tamper check: diff tests/acceptance/ + config.frozenPaths against the fork
 //      point; untracked additions count. Any difference → "tampered", tests not run.
 //   3. Run `<verifyCommand> tests/acceptance/<ISSUE_ID>/` — the authoritative gate.
-//   4. Run regressionCommand when present — recorded evidence only, never the gate.
+//   4. Run regressionCommand when present — the verifier records evidence; the host's
+//      fork-point regressionPolicy decides whether publication requires an exact pass.
 //   5. Write /workspace/.run/verify.json (schema: schemas/verify.schema.json).
 //
 // Exit codes (the entrypoint maps these to its §4.11 codes):
@@ -107,7 +108,8 @@ if (accVerdict.verdict === 'error') {
   writeResult(result, 4);
 }
 
-// --- Regression run: evidence only (§4.4) — result never changes the exit code. ---
+// --- Regression run: evidence (§4.4) — result never changes the verifier exit code. ---
+// The host publication boundary may still require this evidence to be an exact `pass`.
 if (config.regressionCommand) {
   const reg = spawnSync('sh', ['-c', config.regressionCommand],
     { cwd: WS, encoding: 'utf8', timeout: RUN_TIMEOUT_MS, maxBuffer: MAX_BUFFER });

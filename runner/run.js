@@ -28,12 +28,16 @@ const { createPauseGate } = require('./pause');
 const { createFeedSource, fixedSource, ENDINGS } = require('./feed');
 const { fileMemoryNotes, shouldFileMemory } = require('./memory');
 const { publish } = require('./publish');
+const { successfulArtifactFailure } = require('./artifact-schema');
+const { commandFor } = require('./host-shell');
+const { runSync, timeoutFor } = require('./process');
 const { writeManifest, writeReport } = require('./report');
 
 // Diff size on the branch — the report's final tie-breaker (§4.9).
-function diffLines(dir, forkPoint) {
-  const r = require('child_process').spawnSync('git', ['diff', '--shortstat', `${forkPoint}..HEAD`],
-    { cwd: dir, encoding: 'utf8' });
+function diffLines(cfg, dir, forkPoint) {
+  const r = runSync('git', ['diff', '--shortstat', `${forkPoint}..HEAD`], {
+    cfg, kind: 'git', cwd: dir, label: 'git diff summary',
+  });
   const m = /(\d+) insertion[^,]*(?:, (\d+) deletion)?/.exec(r.stdout || '');
   if (!m) return 0;
   return Number(m[1] || 0) + Number(m[2] || 0);
@@ -48,6 +52,31 @@ function parseArgs(argv) {
     else if (argv[i] === '--dry-run') out.dryRun = true;
   }
   return out;
+}
+
+// The successful-preflight ownership boundary. Network teardown is attempted first and
+// lock release lives in its `finally`, so a thrown or timed-out `down` can never strand the
+// project lock. The caller puts its whole post-preflight body inside a separate try/finally;
+// unexpected task, report, queue or publication failures therefore take this same path.
+function cleanupOwnedLifecycle(cfg, repoRoot, log, traceId, deps = {}) {
+  const down = deps.networkDown || networkDown;
+  const unlock = deps.releaseLock || releaseLock;
+  let error = null;
+  try {
+    const result = down(repoRoot, cfg);
+    if (result && result.ok === false) {
+      error = `network teardown failed: ${String(result.output || '').trim() || 'no diagnostic'}`;
+    }
+  } catch (e) {
+    error = `network teardown threw: ${e && e.message ? e.message : e}`;
+  } finally {
+    try { unlock(repoRoot, cfg.targetRepoPath, deps.ownership); } catch (e) {
+      const lockError = `project lock release threw: ${e && e.message ? e.message : e}`;
+      error = error ? `${error}; ${lockError}` : lockError;
+    }
+  }
+  if (error && log) log.error(traceId, error);
+  return { ok: !error, error };
 }
 
 // Placeholder task execution until T13/T14 land. PIPELINE_EXEC_STUB names a script
@@ -66,17 +95,29 @@ async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClo
     // because the existing Docker suites depend on both. Output is discarded rather than
     // piped: spawnSync's pipes were never read either, and an unread pipe would now block
     // a chatty stub instead of quietly filling a buffer nobody looks at.
-    const status = await new Promise((resolve) => {
-      const child = require('child_process').spawn('bash', [stub], {
+    const completed = await new Promise((resolve) => {
+      const child = require('child_process').spawn(commandFor(cfg), [stub], {
         cwd: ws.dir,
         stdio: ['ignore', 'ignore', 'ignore'],
         env: { ...process.env, ISSUE_ID: issue.id, TASK_DIR: taskDir, WORKSPACE: ws.dir, RUN_DIR: path.join(ws.dir, '.run') },
       });
-      child.on('error', () => resolve(null));      // same shape spawnSync reported: no status
-      child.on('close', (code) => resolve(code));  // null when a signal killed it
+      let finished = false;
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        try { child.kill('SIGKILL'); } catch { /* close/error settles the result */ }
+      }, timeoutFor(cfg, 'lifecycle'));
+      const settle = (code) => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        resolve({ code, timedOut });
+      };
+      child.on('error', () => settle(null));      // same shape spawnSync reported: no status
+      child.on('close', (code) => settle(code));  // null when a signal killed it
     });
-    log.info(traceId, `exec stub exited ${status}`);
-    return { exitCode: status === 124 ? 'killed' : status };
+    log.info(traceId, `exec stub exited ${completed.timedOut ? 'timeout' : completed.code}`);
+    return { exitCode: completed.timedOut || completed.code === 124 ? 'killed' : completed.code };
   }
   // Container names must be unique across relaunches (§4.7 resume).
   const attempt = (executeTask.counter = (executeTask.counter || 0) + 1);
@@ -92,10 +133,10 @@ async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClo
 }
 
 // ---- the bounded worker pool (§7, §4.12) ------------------------------------------
-// ONE runner process working N tasks of one project at once, never N runner processes:
-// the sole-Beads-writer rule (§4.10) and claim-based double-pick prevention survive only
-// inside a single process. Several runners, one per project, are a different thing and
-// already shipped (change-log row `repo-jur`).
+// ONE runner process working N tasks of one project at once. The host-global target lock is
+// the sole-writer boundary; atomic Beads claims are the final compare-and-set if a stale queue
+// row is ever observed by another actor. Several runners, one per project, are a different
+// thing and already shipped (change-log row `repo-jur`).
 //
 // `source` is either the ready queue as a plain ARRAY — the historic contract, and still
 // what every existing caller passes — or a live source from `runner/feed.js` that re-reads
@@ -226,7 +267,7 @@ function logConcerns(log, tr, status) {
 // `gate` is the RUN-level rate-limit park (§7), built once in main() and shared by every
 // task: this function asks it for admission before it starts and reports its own limits
 // into it, but never owns one.
-async function runOneTask(cfg, issue, log, token, gate) {
+async function runOneTask(cfg, issue, log, token, gate, ownership) {
   const tr = log.trace(issue.id);
   const taskDir = log.taskDir(issue.id);
 
@@ -256,31 +297,44 @@ async function runOneTask(cfg, issue, log, token, gate) {
   log.info(tr, `starting task (priority ${priority}): ${title}`,
     { event: 'task.started', data: { priority, title } });
 
-  if (!claim(cfg, issue.id)) {
-    log.error(tr, 'could not mark the issue in_progress; skipping');
+  if (!claim(cfg, issue.id, ownership)) {
+    log.error(tr, 'could not atomically claim the issue for this run; skipping');
     return null;
+  }
+  if (ownership && ownership.recordError) {
+    log.error(tr, `claim ownership mirror could not be updated (${ownership.recordError}); `
+      + 'the global owner token is retained for recovery');
+    delete ownership.recordError;
   }
   const exported = exportIssue(cfg, issue.id);
   if (!exported.ok) {
     log.error(tr, `could not export the issue: ${exported.error}`);
-    finish(cfg, issue.id, { status: 'failed', beads: 'blocked' },
-      [`run ${log.runId}: could not export issue spec — ${exported.error}`]);
-    return { issueId: issue.id, outcome: 'failed' };
+    const settled = finish(cfg, issue.id, { status: 'failed', beads: 'blocked' },
+      [`run ${log.runId}: could not export issue spec — ${exported.error}`], ownership);
+    if (!settled.ok) log.error(tr, `could not record export failure in Beads: ${settled.error}`);
+    return {
+      issueId: issue.id,
+      outcome: 'failed',
+      ...(!settled.ok ? { error: settled.error } : {}),
+    };
   }
   fs.writeFileSync(path.join(taskDir, 'issue.md'), exported.markdown);
 
   // ---- per-task workspace: fresh clone, task branch, issue mounted (§4.2, T13) ----
-  // Synchronous (spawnSync: git clone), so it blocks the other workers for its few
-  // seconds. Deliberate (§7): against container times measured in tens of minutes it is a
-  // rounding error, and making it async would widen this into four more runner files. The
-  // visible consequence is that a wall-clock kill timer can fire a few seconds late while
-  // another worker is cloning. Same for publish() below (git push, gh pr create).
+  // Clone remains synchronous and therefore serialises this orchestration thread briefly,
+  // but every Git call is bounded. Active container deadlines do not share this event loop:
+  // runner/deadline-watchdog.js owns each clock and bounded Docker kill independently.
   const ws = prepare(cfg, issue.id, exported.markdown, log, tr);
   if (!ws.ok) {
     log.error(tr, `workspace preparation failed: ${ws.reason}`);
-    finish(cfg, issue.id, { status: 'failed', beads: 'blocked' },
-      [`run ${log.runId}: workspace preparation failed — ${ws.reason}`]);
-    return { issueId: issue.id, outcome: 'failed' };
+    const settled = finish(cfg, issue.id, { status: 'failed', beads: 'blocked' },
+      [`run ${log.runId}: workspace preparation failed — ${ws.reason}`], ownership);
+    if (!settled.ok) log.error(tr, `could not record workspace failure in Beads: ${settled.error}`);
+    return {
+      issueId: issue.id,
+      outcome: 'failed',
+      ...(!settled.ok ? { error: settled.error } : {}),
+    };
   }
 
   // ---- run the task, pausing and resuming across usage windows (§4.7) ----
@@ -297,7 +351,7 @@ async function runOneTask(cfg, issue, log, token, gate) {
     if (remainingMinutes <= 0) {
       log.error(tr, 'active wall-clock budget exhausted across relaunches');
       exec = { exitCode: 'killed', killed: true, durationMs: 0 };
-      artifacts = collectArtifacts(ws.dir, taskDir);
+      artifacts = collectArtifacts(ws.dir, taskDir, issue.id);
       break;
     }
     exec = await executeTask(cfg, issue, taskDir, log, tr, ws, token, remainingMinutes);
@@ -313,7 +367,7 @@ async function runOneTask(cfg, issue, log, token, gate) {
         },
       });
     }
-    artifacts = collectArtifacts(ws.dir, taskDir);
+    artifacts = collectArtifacts(ws.dir, taskDir, issue.id);
 
     if (exec.exitCode !== 20) break;                       // not a rate limit — done
 
@@ -344,9 +398,24 @@ async function runOneTask(cfg, issue, log, token, gate) {
   logAttempts(log, tr, issue.id, artifacts.status, artifacts.verify);
   logConcerns(log, tr, artifacts.status);
 
-  const outcome = outcomeFor(exec.exitCode, artifacts.verify);
-  const commits = hasCommits(ws.dir, ws.forkPoint);
-  log.info(tr, `branch ${ws.branch}: ${commits ? 'has commits (push candidate)' : 'no commits (nothing to push)'}`);
+  // Exit 0 is only a success claim. The host accepts it as done/partial after both
+  // container artifacts validate against their checked-in schemas, belong to this issue,
+  // and the authoritative acceptance verdict is exactly pass. Invalid raw bytes remain in
+  // the run directory as evidence but cannot close an issue or reach a PR body.
+  const artifactError = successfulArtifactFailure(exec.exitCode, artifacts.contracts);
+  if (artifactError) log.error(tr, artifactError);
+  const outcome = artifactError
+    ? { status: 'failed', beads: 'blocked' }
+    : outcomeFor(exec.exitCode, artifacts.verify);
+  let commits = false;
+  let commitCheckError = null;
+  try {
+    commits = hasCommits(ws.dir, ws.forkPoint, cfg);
+    log.info(tr, `branch ${ws.branch}: ${commits ? 'has commits (push candidate)' : 'no commits (nothing to push)'}`);
+  } catch (e) {
+    commitCheckError = `publication precheck incomplete: ${e && e.message ? e.message : e}`;
+    log.error(tr, `${commitCheckError}; workspace retained and Beads stays in_progress`);
+  }
 
   // ---- memory out-channel (§3.6): file the agent's proposed notes, host as sole
   // Beads writer. Which outcomes qualify is memory.js's rule, not the runner's —
@@ -359,7 +428,9 @@ async function runOneTask(cfg, issue, log, token, gate) {
   }
 
   // ---- publish: push what exists, PR what passed (§4.5, T16) ----
-  const published = publish(cfg, {
+  const published = commitCheckError ? {
+    ok: false, pushed: false, branch: ws.branch, prUrl: null, error: commitCheckError,
+  } : publish(cfg, {
     ws,
     outcome,
     hasCommits: commits,
@@ -368,22 +439,46 @@ async function runOneTask(cfg, issue, log, token, gate) {
     verify: artifacts.verify,
     issue,
     runId: log.runId,
+    // Host-only exact-value discriminator. publish/credential-scan never logs its value.
+    secrets: [token],
   }, log, tr);
 
   const notes = attemptNotes(log.runId, outcome, artifacts.status, ws.memoryCount);
+  if (artifactError) notes.push(artifactError);
   if (published.prUrl) notes.push(`PR: ${published.prUrl}`);
   else if (published.pushed) notes.push(`branch pushed for review: ${ws.branch} (no PR — ${outcome.status})`);
-  finish(cfg, issue.id, outcome, notes);
+  // Publication and Beads are one settlement boundary. A push/PR failure never reaches a
+  // terminal Beads transition; a Beads failure never authorises deletion of the only
+  // recoverable workspace. Both remain visible as the task's original execution outcome
+  // plus a completion error instead of being relabelled as a verifier failure.
+  let completionError = null;
+  let settled;
+  if (!published.ok) {
+    completionError = `publication incomplete: ${published.error || 'unknown publication failure'}`;
+    notes.push(`completion pending: ${completionError}; recover from workspace ${ws.dir}`);
+    settled = finish(cfg, issue.id, { ...outcome, beads: null }, notes, ownership);
+    if (!settled.ok) completionError += `; ${settled.error}`;
+  } else {
+    settled = finish(cfg, issue.id, outcome, notes, ownership);
+    if (!settled.ok) completionError = `Beads completion incomplete: ${settled.error}`;
+  }
 
-  log.info(tr, `task finished: exit ${exec.exitCode} -> ${outcome.status}` +
-    (outcome.beads ? ` (issue ${outcome.beads})` : ' (issue stays in_progress)'), {
+  const appliedBeads = completionError ? null : (outcome.beads || null);
+  const finishedMessage = `task finished: exit ${exec.exitCode} -> ${outcome.status}` +
+    (completionError
+      ? ` (completion pending; issue stays in_progress; workspace kept at ${ws.dir})`
+      : (outcome.beads ? ` (issue ${outcome.beads})` : ' (issue stays in_progress)'));
+  const finishedMeta = {
     event: 'task.finished',
     // `beads` is null rather than absent when the issue stays in_progress: "no Beads
     // transition" is a fact about this task, and a missing key would make it read as a
     // ledger written before the field existed.
-    data: { exitCode: exec.exitCode, outcome: outcome.status, beads: outcome.beads || null },
-  });
+    data: { exitCode: exec.exitCode, outcome: outcome.status, beads: appliedBeads },
+  };
+  if (completionError) log.error(tr, finishedMessage, finishedMeta);
+  else log.info(tr, finishedMessage, finishedMeta);
   const v = artifacts.verify;
+  const rowError = [artifactError, completionError].filter(Boolean).join('; ') || null;
   const row = {
     issueId: issue.id,
     title: issue.title || '',
@@ -395,7 +490,7 @@ async function runOneTask(cfg, issue, log, token, gate) {
     attempts: ((artifacts.status && artifacts.status.attempts) || []).length,
     pauses,
     activeSeconds: Math.round(activeMs / 1000),
-    diffLines: diffLines(ws.dir, ws.forkPoint),
+    diffLines: diffLines(cfg, ws.dir, ws.forkPoint),
     ...(artifacts.status && artifacts.status.changeSummary ? { changeSummary: artifacts.status.changeSummary } : {}),
     ...(artifacts.status && artifacts.status.model ? { model: artifacts.status.model } : {}),
     ...(v ? {
@@ -413,9 +508,12 @@ async function runOneTask(cfg, issue, log, token, gate) {
       && artifacts.status.specConcerns.length
       ? { specConcerns: artifacts.status.specConcerns } : {}),
     attemptNotes: notes,
+    ...(rowError ? { error: rowError } : {}),
+    ...(completionError ? { recoveryWorkspace: ws.dir } : {}),
   };
 
-  if (process.env.PIPELINE_KEEP_WORKSPACE) log.info(tr, `workspace kept at ${ws.dir}`);
+  if (completionError) log.error(tr, `completion is recoverable; workspace kept at ${ws.dir}`);
+  else if (process.env.PIPELINE_KEEP_WORKSPACE) log.info(tr, `workspace kept at ${ws.dir}`);
   else discard(ws.dir);
   return row;
 }
@@ -448,29 +546,33 @@ async function main() {
   const pre = preflight(cfg, REPO_ROOT, log);
   if (!pre.ok) {
     log.error(t, `PREFLIGHT FAILED — no tasks launched: ${pre.reason}`);
-    // A run refused by the project lock started nothing (§4.12): the lock is the first
-    // gate, so there is no network of ours to tear down — and tearing one down here would
-    // be acting on plumbing that belongs to the run that holds the lock. Every other
-    // preflight failure has already released the lock itself.
-    if (!pre.locked) networkDown(REPO_ROOT, cfg);
-    process.exit(1);
-  }
-  // The lock is ours from here to process exit. Registered once, at the point it becomes
-  // true, so every later way out — the queue-read abort below, an unexpected throw, the
-  // normal end — leaves the project free for the next run rather than a stale lock for it
-  // to take over (§4.12). Best effort by construction: a process killed outright runs no
-  // handler, which is exactly the case takeover exists for.
-  process.on('exit', () => {
-    try { releaseLock(REPO_ROOT, cfg.targetRepoPath); } catch { /* never mask the real exit */ }
-  });
-  log.info(t, `preflight passed${pre.recovered.length ? ` (recovered: ${pre.recovered.join(', ')})` : ''}`);
-
-  if (args.dryRun) {
-    log.info(t, 'dry run: stopping before the task loop');
-    networkDown(REPO_ROOT, cfg);
-    log.info(t, `run finished; artifacts in ${log.dir}`, { event: 'run.finished', data: { dir: log.dir } });
+    // preflight owns compensation for every unsuccessful path after acquiring the lock.
+    // In particular, an `up` script may create half the plumbing and then fail; its own
+    // finally attempts `down` before releasing. A lock refusal never owned either resource.
+    process.exitCode = 1;
     return;
   }
+  // The network and lock are ours from here to process exit. The ordinary path below uses
+  // a finally; this synchronous exit handler is the last resort for code that calls
+  // process.exit directly. A process killed outright runs neither, which is exactly the
+  // case stale-lock takeover exists for.
+  const releaseOnExit = () => {
+    try { networkDown(REPO_ROOT, cfg); } catch { /* process exit: best effort only */ }
+    finally {
+      try { releaseLock(REPO_ROOT, cfg.targetRepoPath, pre.ownership); } catch { /* never mask the real exit */ }
+    }
+  };
+  process.on('exit', releaseOnExit);
+  log.info(t, `preflight passed${pre.recovered.length ? ` (recovered: ${pre.recovered.join(', ')})` : ''}`);
+
+  let completed = false;
+  let cleanup = { ok: true };
+  try {
+    completed = await (async () => {
+      if (args.dryRun) {
+        log.info(t, 'dry run: stopping before the task loop');
+        return true;
+      }
 
   // ---- the task loop (§4.12): drain the ready queue, one container per task ----
   const q = readyQueue(cfg);
@@ -484,8 +586,8 @@ async function main() {
     } else {
       log.error(t, `cannot read the Beads ready queue: ${q.error}`);
     }
-    networkDown(REPO_ROOT, cfg);
-    process.exit(1);
+    process.exitCode = 1;
+    return false;
   }
   // The summary line and its structured twin, from ONE call (change-log row `repo-3xw`).
   // `queueSummary` is no longer called here: two call sites would be two chances for the
@@ -533,7 +635,11 @@ async function main() {
     { event: 'feed.on', data: {} });
   }
 
-  const drained = await drainQueue(source, (issue) => runOneTask(cfg, issue, log, token, gate), cfg.concurrency);
+  const drained = await drainQueue(
+    source,
+    (issue) => runOneTask(cfg, issue, log, token, gate, pre.ownership),
+    cfg.concurrency
+  );
   const results = drained.filter(Boolean);
 
   // §4.12's second admission rule refused these before `claim()`, so Beads is untouched and
@@ -594,9 +700,19 @@ async function main() {
   });
   const reportFile = writeReport(log.dir, manifest);
   log.info(t, `run report: ${reportFile}`);
-
-  networkDown(REPO_ROOT, cfg);
-  log.info(t, `run finished; artifacts in ${log.dir}`, { event: 'run.finished', data: { dir: log.dir } });
+      return true;
+    })();
+  } finally {
+    cleanup = cleanupOwnedLifecycle(cfg, REPO_ROOT, log, t, { ownership: pre.ownership });
+    process.removeListener('exit', releaseOnExit);
+  }
+  if (!cleanup.ok) {
+    completed = false;
+    if (!process.exitCode) process.exitCode = 3;
+  }
+  if (completed) {
+    log.info(t, `run finished; artifacts in ${log.dir}`, { event: 'run.finished', data: { dir: log.dir } });
+  }
 }
 
 // Guarded, so `require('runner/run.js')` runs NOTHING and the scheduler above is reachable
@@ -622,4 +738,6 @@ if (require.main === module) {
 // reach one of at a time (a container writes one status file per task), and the answer that
 // matters most is the one for an attempt whose output did not survive. Driven directly, a
 // planted status object reaches all of them in a few lines and none of them needs a clone.
-module.exports = { drainQueue, executeTask, runOneTask, logAttempts, logConcerns };
+module.exports = {
+  drainQueue, executeTask, runOneTask, logAttempts, logConcerns, cleanupOwnedLifecycle,
+};

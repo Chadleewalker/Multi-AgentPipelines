@@ -113,7 +113,7 @@ neg "planted credential" "$TMP/f4"
 
 # case 5: a clean fixture must NOT fail — otherwise every case above passes vacuously
 mkdir -p "$TMP/f5"
-printf 'nothing to see here\ncontact t@test.local\n' > "$TMP/f5/readme.md"
+printf 'nothing to see here\ncontact t@test.local\nremote git@github.com:owner/repo.git\ntool C:\\Windows\\System32\\bash.exe\n' > "$TMP/f5/readme.md"
 O5="$(SANITIZE_FIXTURE_DIR="$TMP/f5" node "$CHECKER" 2>&1)"; R5=$?
 if [ "$R5" -eq 0 ]; then
   pass "clean fixture: checker exits 0 (rules are not matching everything)"
@@ -121,6 +121,14 @@ else
   echo "$O5"
   fail "clean fixture: checker exited $R5"
 fi
+
+# case 6: locator allowances must not exempt an ordinary mailbox at a real domain.
+# Assemble it so this tracked harness does not become its own planted finding.
+mkdir -p "$TMP/f6"
+MAILBOX='person'
+MAILHOST='real-domain.com'
+printf 'contact %s@%s for access\n' "$MAILBOX" "$MAILHOST" > "$TMP/f6/readme.md"
+neg "planted real email" "$TMP/f6"
 
 if [ "$FAIL" -eq 0 ]; then echo "== ALL PUBLICATION-HYGIENE CHECKS PASSED =="; else echo "== PUBLICATION-HYGIENE CHECKS FAILED =="; fi
 exit $FAIL

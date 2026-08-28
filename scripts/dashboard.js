@@ -53,6 +53,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const http = require('http');
+const CONTROL_PLANE = require('../runner/control-plane');
 
 const HOST = '127.0.0.1';
 const DEFAULT_PORT = 4770;
@@ -361,7 +362,7 @@ const QUEUE_SPLIT = ' — ';
 // live queue feed added `feed`; both write under `<runId>/<name>`, and a name not listed
 // here becomes a task row — a phantom task called `feed`, queued forever, in a tool whose
 // whole job is to say what is running.
-const PSEUDO_TASKS = new Set(['preflight', 'feed']);
+const PSEUDO_TASKS = new Set(CONTROL_PLANE.run.pseudoTasks);
 
 function readyQueueIds(events) {
   let ids = [];
@@ -1296,5 +1297,5 @@ if (require.main === module) main();
 // task — so the export is the only change the ledger asked of this reader.
 module.exports = {
   buildState, canonicalTarget, isHolderLive, readLog, readyQueueIds, readPark, readFeed,
-  resolveRoot, resolvePort, displayName, PAGE, P,
+  resolveRoot, resolvePort, displayName, PAGE, P, PSEUDO_TASKS,
 };

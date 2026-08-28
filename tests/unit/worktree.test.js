@@ -23,8 +23,8 @@
 //   2. A worktree that is CLEAN but carries a commit on no remote. Every dirtiness check in
 //      the world says this folder is safe to delete, and deleting it loses the commit.
 //   3. `runs/` named in .worktree-carry. An implementation that copies each entry in turn
-//      passes every other carry fixture and quietly breaks the per-project run lock
-//      (§4.12) three files away.
+//      passes every other carry fixture and quietly forks the evidence corpus and lock
+//      observer (§4.12) three files away.
 //   4. `new` invoked FROM INSIDE a worktree. The obvious way to find the checkout is
 //      `rev-parse --show-toplevel`, which is correct from the main checkout and wrong from
 //      a worktree — it would read the carry list from the worktree's own copy. Only a
@@ -210,10 +210,10 @@ check('carry: a named host-only FILE is copied',
   && fs.readFileSync(path.join(tree4, '.env.pipeline'), 'utf8') === 'TOKEN=fixture\n', rc.out);
 check('carry: a named host-only DIRECTORY is copied recursively',
   fs.existsSync(path.join(tree4, 'conf', 'local.json')), rc.out);
-check('carry: runs/ is NOT copied — a second run lock is a broken guarantee',
+check('carry: runs/ is NOT copied — a forked evidence corpus is a broken guarantee',
   !fs.existsSync(path.join(tree4, 'runs')), rc.out);
 check('carry: the refusal of runs/ is REPORTED, not silent',
-  /refused: runs/.test(rc.out) && /run lock/.test(rc.out), rc.out);
+  /refused: runs/.test(rc.out) && /lock observer/.test(rc.out), rc.out);
 check('carry: a missing entry is reported and is not fatal',
   /missing: absent\.json/.test(rc.out), rc.out);
 check('carry: an entry escaping the checkout is refused',

@@ -327,7 +327,11 @@ lock.release(fakeRoot, heldProj);
 // at the daemon gate where it is not — after it has already taken the lock.
 const abortProj = mk('preflight-abort');
 let aborted;
-try { aborted = preflight(cfgFor(abortProj), fakeRoot, mkLog('RUN-THAT-ABORTS')); }
+try {
+  aborted = preflight(cfgFor(abortProj), fakeRoot, mkLog('RUN-THAT-ABORTS'), {
+    verifyRepoIdentity: () => ({ ok: true, remoteName: 'fixture', identity: 'repo:fixture/project' }),
+  });
+}
 catch (e) { aborted = { __error: e.message }; }
 check('harness: preflight aborted at a gate after the lock', !!aborted && aborted.ok === false
   && !/is already being run/.test(String(aborted.reason || '')));

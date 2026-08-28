@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "configDefaults": {
+    "proxyPort": 3128,
+    "wallClockMinutes": 240,
+    "maxAttempts": 3,
+    "probeIntervalMinutes": 15,
+    "maxPauseCycles": 96,
+    "agentCommand": null,
+    "hostShell": null,
+    "bdTimeoutMs": 60000,
+    "gitTimeoutMs": 60000,
+    "lifecycleTimeoutMs": 120000,
+    "concurrency": 1,
+    "feedIdleGraceMinutes": 0,
+    "feedPollSeconds": 30,
+    "allowHalfProven": false,
+    "model": "opus"
+  },
+  "outcomes": {
+    "taskStatuses": [
+      "done",
+      "partial",
+      "stuck",
+      "tampered",
+      "failed",
+      "paused",
+      "undispatchable"
+    ],
+    "exitCodes": {
+      "0": { "status": "done", "beads": "closed" },
+      "10": { "status": "stuck", "beads": "blocked" },
+      "11": { "status": "tampered", "beads": "blocked" },
+      "20": { "status": "paused", "beads": null },
+      "30": { "status": "failed", "beads": "blocked" },
+      "killed": { "status": "failed", "beads": "blocked" }
+    },
+    "partialOnRegressionFailure": { "status": "partial", "beads": "closed" }
+  },
+  "beads": {
+    "ownerMetadata": {
+      "token": "pipeline_owner_token",
+      "runId": "pipeline_run_id"
+    }
+  },
+  "run": {
+    "pseudoTasks": ["preflight", "feed"]
+  },
+  "publication": {
+    "prEligibleOutcomes": ["done", "partial"]
+  },
+  "memory": {
+    "eligibleOutcomes": ["done", "partial", "failed", "stuck"]
+  }
+}

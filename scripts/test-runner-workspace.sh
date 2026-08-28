@@ -38,6 +38,7 @@ bdq init >/dev/null
 freeze() {
   mkdir -p "$TGT/tests/acceptance/$1"
   echo "exit 0" > "$TGT/tests/acceptance/$1/t.sh"
+  node "$ROOT/scripts/write-fixture-receipt.js" "$TGT" "$1" >/dev/null
   git -C "$TGT" add -A >/dev/null 2>&1
   git -C "$TGT" commit -qm "planning: freeze $1" >/dev/null 2>&1
   git -C "$TGT" push -q origin main >/dev/null 2>&1
@@ -64,7 +65,12 @@ EOF
 
 I1=$(bdq create "first task" -d x --acceptance ok --design "design-ref: 4.2" -p 0 --silent)
 freeze "$I1"
-run() { PIPELINE_EXEC_STUB="$1" RUN_ID="$2" PIPELINE_KEEP_WORKSPACE=1 node runner/run.js --config "$CFG" 2>&1; }
+run() {
+  # A verified commit must open a PR before the settlement can close Beads. The workspace
+  # suite uses a local bare remote, so isolate it from live GitHub through the host seam.
+  PIPELINE_EXEC_STUB="$1" PIPELINE_GH_CMD="printf 'https://example.test/pr/1\\n'" \
+    RUN_ID="$2" PIPELINE_KEEP_WORKSPACE=1 node runner/run.js --config "$CFG" 2>&1
+}
 
 # 1. Fresh clone from the remote, branch task/<id> off canonical main.
 OUT=$(run "$TMP/stub-work.sh" t13-basic)
@@ -133,6 +139,10 @@ WS1=$(echo "$OUT" | grep -o "workspace kept at .*" | head -1 | sed 's/workspace 
 # rather than being deleted.
 BADCFG="$TMP/bad.json"
 printf '{"targetRepoPath":"%s","targetRepoRemote":"%s/nope.git","image":"pipeline-base:local"}\n' "$TGTW" "$REMOTEW" > "$BADCFG"
+# Keep this a transport-failure discriminator, not a repository-identity mismatch: both config
+# sides name the same now-unreachable locator, so identity passes and the dispatch fetch is the
+# gate that must abort.
+git -C "$TGT" remote set-url origin "$REMOTEW/nope.git"
 I3=$(bdq create "unclonable" -d x --acceptance ok --design "design-ref: 4.2" -p 0 --silent)
 freeze "$I3"
 # tee to stderr streams the run live; stdout still captured, pipefail preserves RC.

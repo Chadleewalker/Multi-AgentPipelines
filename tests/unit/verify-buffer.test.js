@@ -110,7 +110,10 @@ function makeRepo(label, bytes, code) {
     + 'let written = 0;\n'
     + 'while (written < n) { process.stdout.write(line); written += line.length; }\n'
     + 'process.stdout.write("SUITE-DONE\\n");\n'
-    + 'process.exit(Number(process.argv[3]));\n');
+    // Setting exitCode lets Node drain piped stdout before it exits. process.exit()
+    // can truncate pending writes here, which made Linux CI lose SUITE-DONE while
+    // Windows happened to retain it.
+    + 'process.exitCode = Number(process.argv[3]);\n');
   fs.mkdirSync(path.join(dir, 'tests', 'acceptance', 'fix-001'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'tests', 'acceptance', 'fix-001', '01-case.sh'), '# fixture\n');
   fs.writeFileSync(path.join(dir, 'pipeline.config.json'), JSON.stringify({

@@ -19,19 +19,42 @@ trap cleanup EXIT
 echo "== T11 checks =="
 
 # --- Throwaway target repo with Beads (bd runs via the base image; host bd optional).
-TGT="$TMP/target"; mkdir -p "$TGT"; cd "$TGT"
-git init -q -b main . && git config user.email t@test.local && git config user.name tester
-echo x > f.txt && git add -A && git commit -qm init
-TGTW="$TGT"; command -v cygpath >/dev/null 2>&1 && TGTW="$(cygpath -m "$TGT")"
+# The working copy's origin is the same remote the run config names: repository identity is
+# now a preflight prerequisite, before the missing-image and happy-path gates below.
+REMOTE="$TMP/remote.git"; git init -q --bare -b main "$REMOTE"
+TGT="$TMP/target"; git clone -q "$REMOTE" "$TGT" 2>/dev/null; cd "$TGT"
+git config user.email t@test.local && git config user.name tester
+echo x > f.txt && git add -A && git commit -qm init && git push -q origin main
+TGTW="$TGT"; REMOTEW="$REMOTE"
+if command -v cygpath >/dev/null 2>&1; then
+  TGTW="$(cygpath -m "$TGT")"; REMOTEW="$(cygpath -m "$REMOTE")"
+fi
 BD=(docker run --rm -v "$TGTW:/repo" -w /repo pipeline-base:local bd)
 MSYS_NO_PATHCONV=1 "${BD[@]}" init >/dev/null 2>&1
 STALE=$(MSYS_NO_PATHCONV=1 "${BD[@]}" create "stranded task" -d x --silent 2>/dev/null | tr -d '\r')
-MSYS_NO_PATHCONV=1 "${BD[@]}" update "$STALE" --status in_progress >/dev/null 2>&1
+HUMAN=$(MSYS_NO_PATHCONV=1 "${BD[@]}" create "human work" -d x --silent 2>/dev/null | tr -d '\r')
+MSYS_NO_PATHCONV=1 "${BD[@]}" update "$HUMAN" --status in_progress >/dev/null 2>&1
 cd "$ROOT"
+
+# A dead runner record and the issue's atomic claim carry the same unique proof. Startup
+# may recover this issue and no other in-progress row — especially not HUMAN above.
+read -r OWNER_ACTOR OWNER_TOKEN < <(node - "$TGTW" "$STALE" <<'NODE'
+const lock = require('./runner/lock');
+const [target, issueId] = process.argv.slice(2);
+const held = lock.acquire(process.cwd(), target, 't11-dead-owner');
+if (!held.ok) process.exit(2);
+lock.recordClaim(held.ownership, issueId);
+process.stdout.write(`${held.ownership.actor} ${held.ownership.token}\n`);
+NODE
+)
+MSYS_NO_PATHCONV=1 "${BD[@]}" update "$STALE" --claim \
+  --actor "$OWNER_ACTOR" \
+  --set-metadata "pipeline_owner_token=$OWNER_TOKEN" \
+  --set-metadata "pipeline_run_id=t11-dead-owner" >/dev/null 2>&1
 
 mkcfg() { printf '%s\n' "$2" > "$1"; }
 GOOD="$TMP/good.json"
-mkcfg "$GOOD" "{\"targetRepoPath\":\"$TGTW\",\"targetRepoRemote\":\"https://example.invalid/r.git\",\"image\":\"pipeline-base:local\"}"
+mkcfg "$GOOD" "{\"targetRepoPath\":\"$TGTW\",\"targetRepoRemote\":\"$REMOTEW\",\"image\":\"pipeline-base:local\"}"
 
 # Every runner call below is wrapped `$(set -o pipefail; ... | tee /dev/stderr)`: tee
 # streams the output to the terminal live (stderr escapes $( )) while stdout is still
@@ -53,7 +76,7 @@ OUT=$(set -o pipefail; node runner/run.js --config "$TMP/nope.json" 2>&1 | tee /
   && pass "absent config: exit 2" || fail "absent-config handling (rc=$RC)"
 
 # 2. Missing image -> fail fast, runner never builds (3.4).
-mkcfg "$TMP/noimg.json" "{\"targetRepoPath\":\"$TGTW\",\"targetRepoRemote\":\"x\",\"image\":\"definitely-not-built:v0\"}"
+mkcfg "$TMP/noimg.json" "{\"targetRepoPath\":\"$TGTW\",\"targetRepoRemote\":\"$REMOTEW\",\"image\":\"definitely-not-built:v0\"}"
 OUT=$(set -o pipefail; node runner/run.js --config "$TMP/noimg.json" 2>&1 | tee /dev/stderr); RC=$?
 [ "$RC" = 1 ] && echo "$OUT" | grep -q "not found" && echo "$OUT" | grep -q "PREFLIGHT FAILED" \
   && pass "missing image: preflight aborts (exit 1), no build attempted" || fail "missing-image handling (rc=$RC)"
@@ -64,9 +87,12 @@ OUT=$(set -o pipefail; RUN_ID=t11-happy node runner/run.js --config "$GOOD" --dr
 echo "$OUT" | grep -q "image pipeline-base:local present" && pass "image asserted" || fail "image assert missing"
 echo "$OUT" | grep -q "network + proxy sidecar up" && pass "runner owns network/sidecar lifecycle" || fail "network not started by runner"
 echo "$OUT" | grep -q "egress check passed" && pass "egress gate runs before tasks" || fail "egress gate missing"
-echo "$OUT" | grep -q "recovered stale in_progress issue" && pass "stale in_progress issue recovered to open" || fail "stale recovery missing"
+echo "$OUT" | grep -q "recovered runner-owned in_progress issue" && pass "dead runner-owned issue recovered to open" || fail "owned recovery missing"
 STATUS=$(MSYS_NO_PATHCONV=1 "${BD[@]}" show "$STALE" --json 2>/dev/null | grep '"status"' | head -1)
 echo "$STATUS" | grep -q '"open"' && pass "recovered issue is open in Beads" || fail "issue not reopened ($STATUS)"
+HUMAN_STATUS=$(MSYS_NO_PATHCONV=1 "${BD[@]}" show "$HUMAN" --json 2>/dev/null | grep '"status"' | head -1)
+echo "$HUMAN_STATUS" | grep -q '"in_progress"' \
+  && pass "unowned human in_progress issue is untouched" || fail "human issue was reset ($HUMAN_STATUS)"
 
 # 4. Per-run log folder + trace IDs, git-ignored.
 RD="$ROOT/runs/t11-happy"

@@ -48,6 +48,7 @@ add_issue() {
   local id; id=$(bdq create "$1" -d "$1" --acceptance "tests pass" --design "design-ref: 4.7" -p 0 --silent)
   mkdir -p "$TGT/tests/acceptance/$id"
   printf '#!/bin/sh\n[ -f out.txt ] || { echo "out.txt missing"; exit 1; }\n' > "$TGT/tests/acceptance/$id/test.sh"
+  node "$ROOT/scripts/write-fixture-receipt.js" "$TGT" "$id" >/dev/null
   (cd "$TGT" && git add -A && git commit -qm "planning: frozen tests for $id" >/dev/null)
   echo "$id"
 }
@@ -55,6 +56,11 @@ RESET_ID=$(add_issue "reset-time pause task")
 PROBE_ID=$(add_issue "probe pause task")
 (cd "$TGT" && git push -q origin main)
 cd "$ROOT"
+
+# A verified task requires both a durable branch and a PR before Beads may close. This
+# suite exercises pause semantics against a local bare remote, so provide the documented
+# gh seam rather than accidentally turning every success into a publication failure.
+export PIPELINE_GH_CMD="printf 'https://example.test/pr/1\\n'"
 
 # In-container agent: call 1 does nothing (verify fails -> attempt 1), call 2 reports a
 # usage limit (exit 20, no attempt consumed), call 3+ satisfies the test.
@@ -134,7 +140,7 @@ echo "$OUT" | grep -q "exit 0 -> done" && pass "probe-path task completes" || fa
 
 # ---- Static guarantees ----
 grep -q "exitCode !== 20" "$ROOT/runner/run.js" && pass "exit 20 is the only pause trigger" || fail "pause trigger wrong"
-grep -q "20: { status: 'paused', beads: null }" "$ROOT/runner/queue.js" \
+node -e "const root=process.argv[1]; const c=require(root + '/runner/control-plane'); const q=require(root + '/runner/queue'); const paused=q.OUTCOMES['20']; if (q.OUTCOMES !== c.outcomes.exitCodes || paused.status !== 'paused' || paused.beads !== null) process.exit(1)" "$ROOT" \
   && pass "paused never writes a terminal Beads status" || fail "paused transition wrong"
 
 if [[ $FAIL -eq 0 ]]; then echo "== ALL T15 CHECKS PASSED =="; else echo "== T15 CHECKS FAILED =="; fi

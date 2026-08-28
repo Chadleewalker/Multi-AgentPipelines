@@ -37,6 +37,7 @@ bdq init >/dev/null
 freeze() {
   mkdir -p "$TGT/tests/acceptance/$1"
   echo "exit 0" > "$TGT/tests/acceptance/$1/t.sh"
+  node "$ROOT/scripts/write-fixture-receipt.js" "$TGT" "$1" >/dev/null
   git -C "$TGT" add -A >/dev/null 2>&1
   git -C "$TGT" commit -qm "planning: freeze $1" >/dev/null 2>&1
   git -C "$TGT" push -q origin main >/dev/null 2>&1
@@ -169,6 +170,25 @@ ISSUE_MD=$(find "$ROOT/runs/t12-order/tasks" -name issue.md | head -1)
 
 # 11. The container never touches Beads: no bd invocation outside the runner.
 grep -rq "bd " "$ROOT/pipeline/" && fail "container-side code invokes bd" || pass "container never writes Beads"
+
+# 12. Keep one deliberately UNRECEIPTED fixture. The shared generator above restores every
+# task this suite intends to dispatch; this one proves that doing so did not erase the rule
+# that prompted the repair. It is committed and pushed, so only the receipt is missing.
+H=$(bdq create "unreceipted task" -d x --acceptance ok --design "design-ref: 4.12" -p 0 --silent)
+mkdir -p "$TGT/tests/acceptance/$H"
+echo "exit 0" > "$TGT/tests/acceptance/$H/t.sh"
+git -C "$TGT" add -A >/dev/null 2>&1
+git -C "$TGT" commit -qm "planning: deliberately unreceipted $H" >/dev/null 2>&1
+git -C "$TGT" push -q origin main >/dev/null 2>&1
+OUT=$(runq "$TMP/stub-success.sh" t12-no-receipt)
+echo "$OUT" | grep -q "$H" && echo "$OUT" | grep -qi "no freeze receipt" \
+  && pass "a suite with no receipt is still reported undispatchable" \
+  || fail "the no-receipt refusal disappeared"
+echo "$OUT" | grep "starting task" | grep -q "$H" \
+  && fail "an unreceipted fixture reached the task runner" \
+  || pass "the unreceipted fixture was never dispatched"
+st "$H" | grep -q open && pass "the no-receipt refusal leaves Beads untouched" \
+  || fail "the refused issue did not stay open: $(st "$H")"
 
 if [[ $FAIL -eq 0 ]]; then echo "== ALL T12 CHECKS PASSED =="; else echo "== T12 CHECKS FAILED =="; fi
 exit $FAIL

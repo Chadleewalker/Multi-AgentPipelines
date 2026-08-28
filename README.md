@@ -7,8 +7,9 @@ much scrutiny each one needs.
 Your time goes into two moments: approving what gets built before a run, and reviewing
 what came back after. Nothing in between is interactive.
 
-**Status:** V1 complete and proven end to end. Shadow-mode trial underway on a real
-project. See [`docs/STATUS.md`](docs/STATUS.md).
+**Status:** V1 is implemented and the control plane is under active hardening. For the
+current operating contract and validation entry points, see
+[`docs/control-plane.md`](docs/control-plane.md).
 
 ## How it works, briefly
 
@@ -83,11 +84,12 @@ on the shared base image, and `bd init` — [`PLANNING.md`](PLANNING.md) walks t
 | Path | What's in it |
 |---|---|
 | `DESIGN.md` | the authoritative design — decisions, contracts, and the change-log convention (§12) |
+| `docs/control-plane.md` | current operator and agent guide, including the authority order for machine-readable policy |
 | `docs/change-log.md` | the change log itself — one appended row per design amendment, kept apart from `DESIGN.md` so it can be merged with `merge=union` |
 | `SETUP.md` | once per person: getting a new machine running the pipeline |
 | `ONBOARDING.md` | once per project: making a repo a valid pipeline target |
 | `PLANNING.md` | how a spec and its frozen tests get written and approved |
-| `docs/STATUS.md` | current state, gotchas, what's next |
+| `docs/STATUS.md` | historical status archive retained in place for stable links |
 | `advisors/` | the specialist registry — one charter per critic/advisor lens |
 | `runner/` | the host-side orchestrator — plain JavaScript, no dependencies, no LLM |
 | `pipeline/` | what runs *inside* a container: entrypoint, verifier, agent stubs |

@@ -1,8 +1,25 @@
 {
   "verifyCommand": "sh tools/run-acceptance.sh",
+  "regressionCommand": "bash scripts/test-ci.sh",
+  "regressionPolicy": "required",
   "defaultBranch": "main",
   "frozenPaths": [
-    "tools/run-acceptance.sh"
+    "tools/run-acceptance.sh",
+    "scripts/test-ci.sh",
+    "scripts/test-*.sh",
+    "scripts/e2e-scope.js",
+    "scripts/write-fixture-receipt.js",
+    "contracts/control-plane.json",
+    "runner/control-plane.js",
+    "runner/credential-scan.js",
+    "runner/artifact-schema.js",
+    "runner/host-shell.js",
+    "runner/repo-identity.js",
+    "runner/process.js",
+    "runner/deadline-watchdog.js",
+    "schemas/status.schema.json",
+    "schemas/verify.schema.json",
+    "tests/unit/"
   ],
   "dependencies": {}
 }

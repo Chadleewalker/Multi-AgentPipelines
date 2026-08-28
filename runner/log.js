@@ -30,12 +30,13 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const CONTROL_PLANE = require('./control-plane');
 
 // The trace is `<runId>/<issueId>` (§4.10), so the issue id is its tail — but only for a
 // real task. `preflight` and `feed` are PSEUDO-tasks: run-level work that borrows the trace
 // shape so its lines sort with everything else. Recording them as issue ids would invent
 // two issues that do not exist in Beads, which is worse than the null they get instead.
-const PSEUDO_TASKS = new Set(['preflight', 'feed']);
+const PSEUDO_TASKS = new Set(CONTROL_PLANE.run.pseudoTasks);
 
 function issueIdOf(runId, trace) {
   if (typeof trace !== 'string' || !trace) return null;
@@ -100,4 +101,4 @@ function startRun(repoRoot, stamp) {
   };
 }
 
-module.exports = { startRun, issueIdOf };
+module.exports = { startRun, issueIdOf, PSEUDO_TASKS };

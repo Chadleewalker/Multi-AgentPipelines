@@ -170,9 +170,14 @@ flowchart TB
   V -->|"fail, attempts &lt; 3"| FB["Commit the attempt<br/>feed failure output forward"]
   FB --> C1
   V -->|"fail on the 3rd attempt"| ST["Commit WIP + stuck state<br/>exit 10 — stuck"]
-  V -->|"pass"| ADV["SLOT 3 — declared advisors<br/>inspect the finished change<br/>notes only, cannot fail the task"]
-  ADV --> DP["Docs phase<br/>writes the change summary"]
-  DP --> OK["exit 0 — verified"]
+  V -->|"pass"| IC["Implementation commit<br/>verified recovery point"]
+  IC --> ADV["SLOT 3 — declared advisors<br/>inspect the finished change<br/>notes only, cannot fail the task"]
+  ADV --> DP["Docs phase<br/>root/docs Markdown only"]
+  DP --> FV{"Path boundary + final verifier<br/>judge the publishable tree"}
+  FV -->|"pass"| DC["Deterministic docs commit"]
+  FV -->|"docs error · forbidden path · final red"| RB["Restore implementation commit<br/>and verifier evidence"]
+  DC --> OK["exit 0 — verified"]
+  RB --> OK
 
   classDef specialist fill:#fdf4e3,stroke:#a86c17,stroke-width:1.5px,stroke-dasharray:5 3,color:#14181d
   class ADV specialist
@@ -212,12 +217,12 @@ flowchart LR
     G{"0 · Admit<br/>run-level pause gate"}
     A["1 · Claim<br/>status → in progress"]
     C["2 · Collect<br/>exit code + status.json"]
-    D["3 · Finish<br/>append notes,<br/>then close or block"]
+    D["3 · Finish<br/>append notes, then terminal status<br/>+ clear runner ownership"]
     R["Refused — never launched<br/>paused row, issue untouched"]
     Q[("Task list")]
   end
   subgraph CONT["Container — no queue access"]
-    B["code · verify · docs"]
+    B["code · verify · implementation commit<br/>docs-only · final verify · docs commit"]
   end
   G -->|"window open"| A
   G -->|"run-level cap fired"| R
@@ -240,17 +245,26 @@ launches and the queue is never touched, so its issue stays `open` for the next 
 than stranded `in_progress`. It still gets a `paused` row in the manifest, because a task
 missing from `run.json` after an unattended overnight run is a hole in the record.
 
-The claim in step 1 is what stops a task being picked twice, and it is why a crashed run
-leaves issues stranded `in progress` — the next run's preflight sweeps those back to
-`open`. The claim only holds while there is one writer, so preflight's **first** gate is a
-lock on the target repo: a second run against the same project is refused by name before
-it can read the queue, and a lock whose owning process is gone is taken over (change-log
-row `repo-os9`).
+The claim in step 1 is Beads' atomic `--claim`, with a unique run actor and owner token in
+the same transaction. A crash can therefore leave an issue `in progress`, but the next
+run reopens it only when actor, run id and token still match a lock owner proven dead — it
+never mass-resets human work. Preflight's **first** gate is a host-global lock on the target
+repo: a second run is refused even from another pipeline checkout. `runs/locks/` retains an
+observer mirror for local readers, not a second authority (change-log row
+`global-run-ownership-and-atomic-claims`).
+
+Before the shell/Docker/network gates, preflight also proves the local checkout's fetch
+remote and `targetRepoRemote` reduce to the same repository identity. This binds the task
+list the host writes to the code the runner fetches and publishes; a mismatch stops before
+Beads recovery, queue reads or workspace creation. Step 3 clears the unique runner assignee
+and both ownership metadata keys in the same transaction as `closed` or `blocked`, so a later
+reopen can be claimed atomically rather than inheriting a dead actor.
 
 The same drawing holds at `concurrency` > 1: **one** runner process holds up to N task
-containers of its project at once (default 1, ceiling 3 — change-log row `repo-teq`), and the
-host box is still the single writer. Never N runner processes against one queue — the claim
-in step 1 and the lock above it both assume one. Tasks in flight together share this diagram;
+containers of its project at once (default 1, no configured ceiling — change-log rows
+`repo-teq`, `concurrency-uncapped`), and the
+host box is still the single writer. The global lock excludes N runner processes against one
+queue, while atomic claim remains the final compare-and-set guard. Tasks in flight together share this diagram;
 the runner hands their results back in ready-queue order, so the manifest reads the same at
 any depth.
 
@@ -333,9 +347,20 @@ both dotted, which made a wall look like a doorway.)
 flowchart LR
   subgraph HOST["Your PC"]
     direction TB
+    HS{"Host shell preflight<br/>Windows: Git Bash + exact host Node"}
+    ABORT["Preflight abort — no task launched<br/>project lock released"]
     R["Runner — timers, budgets, kill switch"]
+    PB{"Bounded host process contract<br/>Git / Docker / GitHub / shell<br/>timeout → status 124"}
+    WD["Per-container deadline watchdog<br/>independent worker clock"]
+    FIN["Finally cleanup<br/>network down → lock release"]
     GH["git push + gh pr create"]
+    RG{"Fork-point regression policy<br/>required → exact pass"}
+    CS{"Introduced-object credential scan<br/>commits + trees + blobs"}
+    AC{"Runtime artifact contracts<br/>schemas + issue identity"}
     BD[("Task list")]
+    SET["Settlement — notes + terminal Beads transition"]
+    CLEAN["Discard host workspace"]
+    REC["Completion pending — issue stays in progress<br/>error + recoveryWorkspace in report<br/>workspace retained"]
   end
   subgraph NET["Sandbox — no route out"]
     direction TB
@@ -343,14 +368,32 @@ flowchart LR
     PX["Allowlist proxy"]
     REG["SLOT 3 registry, read-only"]
   end
+  HS -->|"verified before Docker / network / Beads"| R
+  HS -.->|"unsupported shell or Node toolchain"| ABORT
+  R -.->|"every short host call"| PB
+  R -->|"arm for each live task"| WD
+  WD --x|"active budget expires: bounded docker kill"| T
+  R -->|"normal return or exception"| FIN
   R -->|"fresh clone + issue.md + memory.md"| T
   T -->|"commits land on your disk"| R
+  T -->|"status.json + verify.json"| AC
+  AC -->|"valid structured values"| R
+  AC -.->|"invalid exit-0 claim → failed"| R
   T -->|"every request"| PX
   PX -->|"allowed"| AN["The three anthropic.com endpoints"]
   PX --x BL["Refused — github.com, npm, everything else"]
   REG -.-> T
-  R --> GH
-  R --> BD
+  R --> RG
+  RG -->|"pass, or evidence policy"| CS
+  RG -.->|"required verdict unavailable"| REC
+  CS -->|"clean"| GH
+  CS -.->|"finding or scan unavailable"| REC
+  R -->|"claim + issue export"| BD
+  GH -->|"publication durable"| SET
+  SET --> BD
+  SET -->|"all writes durable"| CLEAN
+  GH -.->|"push / required PR fails"| REC
+  SET -.->|"note / transition fails"| REC
 
   classDef specialist fill:#fdf4e3,stroke:#a86c17,stroke-width:1.5px,stroke-dasharray:5 3,color:#14181d
   classDef blocked fill:#f7e2df,stroke:#9d3a2f,stroke-width:2px,color:#14181d
@@ -365,6 +408,43 @@ side by side, and neither one's `up` or `down` touches the other's plumbing (cha
 row `repo-jur`). The proxy *image* is shared; only the running container and the network
 are per project.
 
+The shell node is a Windows host-identity gate, not merely a check that some executable
+named `bash` exists (change-log row `verified-host-shell`). The runner proves the shell is
+Git Bash-compatible and can launch the exact host Node binary before it creates Docker or
+Beads side effects, then reuses that resolved command throughout the run. A configured
+shell is authoritative and fails explicitly; automatic discovery may skip the WSL launcher
+and continue to a verified Git for Windows installation. Linux keeps the portable `bash`
+default with the same Node capability check.
+
+The process boundary and watchdog are separate on purpose (change-log row
+`bounded-lifecycle-and-independent-deadlines`). `gitTimeoutMs` bounds all Git work;
+`lifecycleTimeoutMs` bounds short Docker, GitHub and shell calls; both normalize timeout
+to status 124 with a named diagnostic. Synchronous orchestration can still serialize a
+worker briefly, but it cannot delay another task's active budget because that clock and
+bounded `docker kill` live in an independent worker thread. Every post-preflight exit crosses
+the cleanup node: network teardown is attempted first and lock release is in a nested
+`finally`, including when task/report code or teardown itself throws.
+
+The completion fan-out is deliberately asymmetric (change-log row
+`transactional-task-completion`). Git publication happens before the terminal Beads write;
+there is no cross-system atomic commit. The recovery invariant is instead that neither
+failure is reported as terminal success and neither permits the only host workspace to be
+discarded. A failed push does not close the issue; a failed Beads write may leave an already
+durable branch or PR, but the issue remains in progress and the report names the retained
+workspace.
+
+The pre-push scan is deliberately a history scan, not a working-tree scan (change-log row
+`credential-disclosure-publication-gate`). The range is the immutable fork point through
+the task tip, so historical baseline objects do not block a branch, but an introduced secret
+cannot be hidden by deleting it in a later commit. A refusal crosses the same recoverable
+settlement edge as a rejected push and never includes the matched bytes in logs.
+
+The artifact contract node is a host trust boundary (change-log row
+`runtime-artifact-schema-gate`). Invalid bytes remain evidence on disk, but only a
+schema-valid artifact whose issue identity matches the claimed task becomes structured
+input. Exit 0 with either contract unavailable—or with acceptance other than exact pass—
+enters the ordinary failed/blocked row, never done/closed.
+
 A specialist that needs a different model or a different tool changes nothing structural:
 the coding agent is already swappable through `agentCommand` → `PIPELINE_AGENT_CMD`, and
 the contract is only "a shell command that reads a prompt on stdin and edits files." A
@@ -373,18 +453,25 @@ place the closed-network policy would have to be revisited deliberately.
 
 ## What each outcome does
 
-| Outcome | Exit | Report status | Beads | Branch pushed | PR |
-|---|---|---|---|---|---|
-| Acceptance pass, regressions pass or absent | 0 | done | closed | yes | yes |
-| Acceptance pass, regressions fail | 0 | partial | closed | yes | yes, flagged |
-| Bailed after 3 attempts | 10 | stuck | blocked | yes, WIP | no |
-| Frozen tests modified | 11 | tampered | blocked | yes, WIP | no |
-| Usage limit hit | 20 | paused | stays in progress | not yet | not yet |
-| Internal error | 30 | failed | blocked | if commits exist | no |
-| Wall-clock kill | — | failed | blocked | if commits exist | no |
-| Not dispatched: the frozen suite is absent, ungated, or changed since its receipt | — never launched | undispatchable | untouched, stays `open` | no | no |
+The exact exit-code, report-status, Beads-status, PR-eligibility and memory-eligibility
+vocabularies live in `contracts/control-plane.json`; runtime modules consume that file and
+the mandatory contract suite pins its task statuses to `schemas/run.schema.json`. This
+section explains the exceptional paths without maintaining a second executable-looking
+table. Use `bash scripts/test-ci.sh --list` for the current regression roster and inspect
+the JSON contract for the current enumerable policy (change-log row `repo-tg8-10`).
 
-`undispatchable` is the one row here that touches Beads **not at all** (§4.11, §4.12,
+The outcome mapping assumes settlement succeeds. If publication or a terminal Beads write fails, the
+execution outcome remains unchanged, but Beads stays in progress, the manifest/report
+adds the error and `recoveryWorkspace`, and the host workspace is retained for recovery.
+With `regressionPolicy: required`, fail, absent, error or missing regression evidence takes
+that recovery path before push; only an exact regression pass may settle. Any branch that
+would otherwise push must then pass the introduced-object credential scan.
+
+The two exit-0 rows also assume schema-valid `status.json` and `verify.json`, matching issue
+identities, and `acceptance: pass`. Without those prerequisites the outcome is failed, the
+issue is never closed, and no PR is opened.
+
+`undispatchable` is the one outcome here that touches Beads **not at all** (§4.11, §4.12,
 change-log rows `dispatch-gate` and `repo-isq`). The ready queue's second and third admission
 rules refuse the issue before `claim()`, so it is never in progress, never blocked, and the
 next run picks it up unchanged the moment its suite — and its receipt — are pushed. The row
@@ -397,7 +484,7 @@ the report needs to see. Unlike the park's refusal below, it is a distinct outco
 than a reuse of an existing one: parking is scheduling, and this is a statement about the
 work itself.
 
-The table is unchanged by the run-level park, deliberately — parking is *scheduling*, never
+The outcome taxonomy is unchanged by the run-level park, deliberately — parking is *scheduling*, never
 *judgment*. A task the fired pause cap refused adds no outcome: it reports the existing
 `paused` status, and the only difference from the row above is that it never launched, so
 Beads is untouched and its issue stays `open` rather than in progress (§4.7).

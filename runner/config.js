@@ -7,41 +7,12 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const CONTROL_PLANE = require('./control-plane');
 
-const DEFAULTS = {
-  proxyPort: 3128,
-  wallClockMinutes: 240,        // §4.6 default 4 hours of ACTIVE time
-  maxAttempts: 3,               // §4.6 verify-attempt cap -> PIPELINE_MAX_ATTEMPTS
-  probeIntervalMinutes: 15,     // §4.7 rate-limit probe cadence
-  maxPauseCycles: 96,           // §4.7/§7 stop condition: total wait cycles per RUN (~24h at 15m)
-  agentCommand: null,           // optional override -> PIPELINE_AGENT_CMD (§4.3 seam)
-  bdTimeoutMs: 60000,           // §4.1 bound on every runner `bd` call (runner/bd.js)
-  gitTimeoutMs: 60000,          // §4.12 bound on the dispatch gate's git calls (runner/queue.js)
-  concurrency: 1,               // §7 how many task containers ONE runner works at once
-  // §4.12's live queue feed (change-log row `live-queue-feed`). 0 is OFF and is the default:
-  // the run reads the ready queue once, drains it and closes out — the behaviour that shipped
-  // before feeding existed, unchanged. Any positive value keeps the run up that many minutes
-  // with nothing to do, re-reading the queue, so an issue frozen mid-run is picked up by the
-  // next free worker instead of waiting for the next run.
-  feedIdleGraceMinutes: 0,
-  // The floor between two re-reads. NOT a timer: a re-read happens when a worker asks for
-  // work and finds none, so a busy run never polls at all. The floor is what stops N idle
-  // workers producing N `bd` calls — each is synchronous and blocks every other worker's
-  // container I/O for as long as `bd` and `git fetch` take.
-  feedPollSeconds: 30,
-  // §4.12's third admission rule (change-log row `repo-isq`). FALSE, and the default is the
-  // decision rather than a hedge: a `half-proven` receipt says the suite was red at the fork
-  // point and no probe was ever supplied, so nothing has shown an implementation can turn it
-  // green — the class that produced seven of the twelve stuck tasks the receipt exists to
-  // prevent. An operator who accepts that trade says so per project, in writing.
-  allowHalfProven: false,
-  // "opus" is an alias the CLI resolves to the CURRENT latest Opus, so the pipeline
-  // follows model releases without edits here. The entrypoint records the RESOLVED
-  // id (e.g. claude-opus-5) in the status file, so provenance stays exact even
-  // though the request is an alias (§4.3). Pin a concrete id instead when a run must
-  // be byte-reproducible against one specific model.
-  model: 'opus',
-};
+// Defaults are part of the public run-config contract. Their rationale and validation
+// remain here; their values come from contracts/control-plane.json so operator guides,
+// tests and runtime code cannot grow independent copies.
+const DEFAULTS = CONTROL_PLANE.configDefaults;
 const REQUIRED = ['targetRepoPath', 'targetRepoRemote', 'image'];
 // §7's concurrency knob has NO ceiling (change-log row `concurrency-uncapped`). The literal 3
 // that used to live here was a hedge against the shared subscription window, and the run-level
@@ -139,6 +110,13 @@ function loadConfig(file) {
   if (raw.gitTimeoutMs !== undefined && !(Number.isInteger(raw.gitTimeoutMs) && raw.gitTimeoutMs > 0)) {
     throw new Error(`run.config.json: 'gitTimeoutMs' must be a positive whole number`);
   }
+  // Docker probes, network scripts, GitHub CLI publication and other short-lived host
+  // lifecycle calls share one bound. The task container itself is deliberately excluded:
+  // its much longer active-time budget is enforced by the independent watchdog.
+  if (raw.lifecycleTimeoutMs !== undefined
+      && !(Number.isInteger(raw.lifecycleTimeoutMs) && raw.lifecycleTimeoutMs > 0)) {
+    throw new Error(`run.config.json: 'lifecycleTimeoutMs' must be a positive whole number`);
+  }
   // §7's concurrency knob: how many task containers ONE runner process holds at once.
   // Default 1 — strictly sequential, exactly as before the knob existed. Any whole number
   // from 1 up is accepted: the operator owns the trade (a run is bounded by its slowest task,
@@ -168,6 +146,10 @@ function loadConfig(file) {
   // discovered in the morning, with the config on screen appearing to say otherwise.
   if (raw.allowHalfProven !== undefined && typeof raw.allowHalfProven !== 'boolean') {
     throw new Error(`run.config.json: 'allowHalfProven' must be true or false`);
+  }
+  if (raw.hostShell !== undefined && raw.hostShell !== null
+      && (typeof raw.hostShell !== 'string' || !raw.hostShell.trim())) {
+    throw new Error(`run.config.json: 'hostShell' must be null or a non-empty executable path`);
   }
   for (const k of ['network', 'proxyName']) {
     if (raw[k] !== undefined && (typeof raw[k] !== 'string' || !raw[k].trim())) {

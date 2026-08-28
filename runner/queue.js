@@ -4,13 +4,18 @@
 // Beads queue integration — DESIGN.md §4.10, §4.11, §4.12 (T12).
 // The host runner is the SOLE Beads writer. Task order: the ready queue (open,
 // unblocked, dependencies satisfied), ranked by priority (0 = highest), FIFO within
-// the same priority. Terminal transitions come from the §4.11 outcome table.
+// the same priority. Terminal transitions come from the machine-readable outcome contract.
 'use strict';
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { bd, bdJson } = require('./bd');
+const { normalizeSpawnResult } = require('./process');
+const CONTROL_PLANE = require('./control-plane');
+const {
+  recordClaim, completeClaim, OWNER_TOKEN_KEY, OWNER_RUN_KEY,
+} = require('./lock');
 // ONE FORMULA, ONE FILE (§3.2, change-log row `receipt-design`). The freeze gate writes the
 // receipt's `suiteHash` with `suiteHash(workingTreeEntries(...))` and this module recomputes it
 // with `suiteHash(treeEntries(...))` from the fetched branch. A second copy of that formula
@@ -19,23 +24,16 @@ const { bd, bdJson } = require('./bd');
 // changed suite admitted.
 const { suiteHash, treeEntries, RECEIPT_NAME } = require('./suite-hash');
 
-// §4.11 outcome table: exit code -> {report status, Beads status}. 'killed' is the
+// §4.11 outcome contract: exit code -> {report status, Beads status}. 'killed' is the
 // host-observed wall-clock kill, which produces no exit code.
-const OUTCOMES = {
-  0: { status: 'done', beads: 'closed' },          // refined to 'partial' via verify.json
-  10: { status: 'stuck', beads: 'blocked' },
-  11: { status: 'tampered', beads: 'blocked' },
-  20: { status: 'paused', beads: null },           // stays in_progress; runner parks it
-  30: { status: 'failed', beads: 'blocked' },
-  killed: { status: 'failed', beads: 'blocked' },
-};
+const OUTCOMES = CONTROL_PLANE.outcomes.exitCodes;
 
 function outcomeFor(exitCode, verify) {
   const key = exitCode === 'killed' ? 'killed' : Number(exitCode);
   const base = OUTCOMES[key] || OUTCOMES[30];
   // done vs partial is decided by verify.json, not by the exit code (§4.11).
   if (base.status === 'done' && verify && verify.regressions === 'fail') {
-    return { status: 'partial', beads: 'closed' };
+    return { ...CONTROL_PLANE.outcomes.partialOnRegressionFailure };
   }
   return { ...base };
 }
@@ -76,7 +74,14 @@ function gitSpawnOptions(cfg, extra = {}) {
   return { encoding: 'utf8', timeout, killSignal: 'SIGKILL', ...extra };
 }
 
-const git = (cfg, args, extra) => spawnSync('git', args, gitSpawnOptions(cfg, extra));
+const git = (cfg, args, extra) => {
+  const options = gitSpawnOptions(cfg, extra);
+  return normalizeSpawnResult(spawnSync('git', args, gitSpawnOptions(cfg, extra)), {
+    timeoutMs: options.timeout,
+    label: `git ${args[0]}`,
+    configKey: 'gitTimeoutMs',
+  });
+};
 
 // WITHOUT A LITERAL FALLBACK, and failing to resolve aborts. Deliberately not
 // `runner/workspace.js`'s `detectDefaultBranch`, whose chain ends at the literal 'main':
@@ -486,8 +491,34 @@ function refusalFacts(u) {
   return facts;
 }
 
-function claim(cfg, issueId) {
-  return bd(cfg, ['update', issueId, '--status', 'in_progress']).status === 0;
+function claim(cfg, issueId, ownership, io = {}) {
+  // `--claim` is Beads' compare-and-set transition. A plain `--status in_progress` returns
+  // success even when another actor already owns the issue, which lets two stale queue reads
+  // both launch it. The unique actor also prevents a human using the configured default actor
+  // from being mistaken for this run. Owner metadata is written in the SAME transaction.
+  const args = ['update', issueId, '--claim'];
+  if (ownership && ownership.token && ownership.actor && ownership.runId) {
+    args.push(
+      '--actor', ownership.actor,
+      '--set-metadata', `${OWNER_TOKEN_KEY}=${ownership.token}`,
+      '--set-metadata', `${OWNER_RUN_KEY}=${ownership.runId}`
+    );
+  }
+  const write = io.bd || bd;
+  const rememberClaim = io.recordClaim || recordClaim;
+  const result = write(cfg, args);
+  if (result.status !== 0) return false;
+  if (ownership) {
+    try {
+      rememberClaim(ownership, issueId);
+    } catch (e) {
+      // Beads already carries the durable owner token. Make release retain the authority
+      // record so the next run can recover it even if the observer update failed.
+      ownership.keepForRecovery = true;
+      ownership.recordError = e && e.message ? e.message : String(e);
+    }
+  }
+  return true;
 }
 
 // Export the issue for the container: read-only file mounted at .run/issue.md (§4.10).
@@ -513,11 +544,59 @@ function exportIssue(cfg, issueId) {
 }
 
 // Terminal write-back after a container exits (§4.10: notes travel via the status file).
-function finish(cfg, issueId, outcome, notes) {
-  for (const n of notes.filter(Boolean)) bd(cfg, ['note', issueId, n]);
-  if (!outcome.beads) return;                       // paused: leave in_progress
-  if (outcome.beads === 'closed') bd(cfg, ['close', issueId]);
-  else bd(cfg, ['update', issueId, '--status', outcome.beads]);
+function bdFailure(result, action) {
+  const detail = String((result && (result.stderr || result.stdout)) || '').trim();
+  const status = result && result.status;
+  return `${action} failed${detail ? `: ${detail}` : ` (status ${status})`}`;
+}
+
+function finish(cfg, issueId, outcome, notes, ownership, io = {}) {
+  const write = io.bd || bd;
+  const settleClaim = io.completeClaim || completeClaim;
+  // Notes and the terminal transition form one ordered write protocol. A failed note
+  // must stop the close/update: otherwise the durable issue can say "complete" while
+  // losing the evidence that explains what was published.
+  for (const n of notes.filter(Boolean)) {
+    const result = write(cfg, ['note', issueId, n]);
+    if (result.status !== 0) {
+      return { ok: false, transition: null, error: bdFailure(result, `Beads note for ${issueId}`) };
+    }
+  }
+  if (!outcome.beads) return { ok: true, transition: null }; // paused: leave in_progress
+
+  // Terminal state and ownership cleanup are ONE Beads transaction. Leaving the unique
+  // runner actor or owner metadata on a closed/blocked row poisons a legitimate later reopen:
+  // Beads' atomic --claim sees the old assignee and refuses the new run. `bd update` supports
+  // the full status vocabulary, so both terminal outcomes can clear their proof alongside the
+  // transition without a second write or a race window.
+  const args = ['update', issueId, '--status', outcome.beads];
+  if (ownership && ownership.actor && ownership.token && ownership.runId) {
+    args.push(
+      '--assignee', '',
+      '--unset-metadata', OWNER_TOKEN_KEY,
+      '--unset-metadata', OWNER_RUN_KEY,
+      '--actor', ownership.actor
+    );
+  }
+  const result = write(cfg, args);
+  if (result.status !== 0) {
+    return {
+      ok: false,
+      transition: null,
+      error: bdFailure(result, `Beads ${outcome.beads} transition for ${issueId}`),
+    };
+  }
+  try {
+    settleClaim(ownership, issueId);
+  } catch (e) {
+    if (ownership) ownership.keepForRecovery = true;
+    return {
+      ok: false,
+      transition: outcome.beads,
+      error: `Beads ${outcome.beads} transition for ${issueId} succeeded, but ownership settlement failed: ${e && e.message ? e.message : e}`,
+    };
+  }
+  return { ok: true, transition: outcome.beads };
 }
 
 // Attempt-log line from the container's status file (§4.11).
@@ -572,4 +651,5 @@ module.exports = {
   EXCLUDED_TYPES, typeOf, gitSpawnOptions, undispatchableRow, DEFAULT_GIT_TIMEOUT_MS,
   logQueueRead, logUndispatched,
   REFUSAL, KNOWN_GATE_VERSIONS, RECEIPT_VERDICTS,
+  OWNER_TOKEN_KEY, OWNER_RUN_KEY,
 };
