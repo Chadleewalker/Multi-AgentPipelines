@@ -61,6 +61,13 @@ ck "gate: indeterminate is not a pass" "exit 2 — could not tell"
 ck "gate: the probe invocation is given" "[-]-green"
 ck "gate: unreachable is not a pass"  "exit 3 — unreachable"
 ck "gate: half-proven proceeds"       "exit 4 — half-proven"
+# The stale guard (change-log rows `stale-guard-design`, `repo-i4b`). A guard is the one
+# criterion that is SUPPOSED to be green at the fork point, so a red one has exactly one
+# meaning and the playbook has to state it — an exit code with no stated meaning sends a
+# reader to the source, and this one is the reader's only instruction to go and re-pin.
+ck "gate: stale-guard is a verdict"   "exit 5 — stale-guard"
+ck "gate: stale-guard is never a pass" "stale-guard[^|]*never a pass"
+ck "what declares a test file a guard" "first ten lines"
 ck "what a probe actually is"         "repo-shaped tree"
 ck "half-proven reaches the approval pass" "half-proven"
 ck "guards are labelled and counted" "\[guard\]"

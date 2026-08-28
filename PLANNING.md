@@ -280,6 +280,18 @@ means however crude, and hand it to `--green`. It is not an implementation and n
   pass the way the guard count is carried, so the user is approving a spec they know is proven
   on one side only. Prefer a probe for anything hard, anything whose tests build fixtures of
   their own, and anything where a criterion's *setup* could fail without the check noticing.
+- **exit 5 — stale-guard. Never a pass.** A test file that declares itself a guard — the
+  literal `[guard]` token on a comment line within its first ten lines, the same word the spec
+  uses — is run *alone* against the fork point, and this one came back red. A guard says
+  "existing behaviour X still holds", so it is the one kind of criterion that is *supposed* to
+  be green before any work exists: red here cannot mean the implementation is missing, because
+  there is nothing for it to be waiting for. It means the pin has already moved — the number,
+  the key or the file it names changed before you got here. It beats exits 0, 3 and 4 and
+  short-circuits the probe, and the report names the file. Re-read that guard against the tree
+  as it stands now, re-pin it or drop the criterion, and re-run the gate. A guard subset that
+  could not *run* is exit 2 naming the guard side, on the same reasoning that puts a malformed
+  probe on 2 rather than 3. The count of guard files is printed on every run, at zero too, and
+  belongs in the approval pass beside the count of `[guard]` labels in the spec.
 
 **Then read what the gate says, not only how it exited.** Below the verdict the same run
 prints a second, textual pass over the suite it is about to bless (§3.2, move 6; change-log
