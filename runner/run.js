@@ -394,6 +394,13 @@ async function main() {
     concurrency: cfg.concurrency,
     idleGraceMs: cfg.feedIdleGraceMinutes * 60000,
     pollMs: cfg.feedPollSeconds * 1000,
+    // The STARTUP roster's refusals, seeded here rather than left to the first poll. A
+    // non-fed run never polls at all, so without this the source's refusal map stays empty
+    // for the whole run and `source.undispatchable()` below hands back nothing: the manifest
+    // gets no row, the report reads "0 task(s): none", and a queue that was WHOLLY refused
+    // becomes indistinguishable from a queue nobody filled. Refusals stay live exactly as
+    // before — a poll still replaces this map wholesale.
+    undispatchable: q.undispatchable,
     // The sentinel is per RUN and lives beside that run's artifacts, so stopping a fed run
     // is `touch runs/<runId>/stop` from anywhere — no signal, no pid, and no killing a
     // process that is holding containers. Workers finish what they hold; nothing new starts.
