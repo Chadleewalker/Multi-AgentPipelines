@@ -7,12 +7,16 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const { spawn, spawnSync } = require('child_process');
+const { spawn } = require('child_process');
 const { toMountPath } = require('./bd');
+const { createDeadlineWatchdog } = require('./deadline-watchdog');
+const { timeoutFor } = require('./process');
 
 // Windows/Git Bash: Docker needs C:/... mount sources, and MSYS must not rewrite
 // container-side paths like /workspace into C:\Program Files\Git\workspace.
 const DOCKER_ENV = { ...process.env, MSYS_NO_PATHCONV: '1' };
+const WATCHDOG_DOCKER_ENV = { ...DOCKER_ENV };
+delete WATCHDOG_DOCKER_ENV.CLAUDE_CODE_OAUTH_TOKEN;
 
 // The container's inputs are exactly these (§4.10) — nothing else crosses the boundary.
 function buildArgs(cfg, opts) {
@@ -63,26 +67,48 @@ function runTask(cfg, opts, log, traceId) {
     child.stderr.pipe(logStream);
 
     let timedOut = false;
-    // Wall clock is a Node timer + `docker kill` — never a platform `timeout` (§6).
-    const timer = setTimeout(() => {
-      timedOut = true;
-      log.error(traceId, `wall-clock budget exhausted — killing ${opts.containerName}`);
-      spawnSync('docker', ['kill', opts.containerName], { env: DOCKER_ENV });
-    }, budgetMs);
+    let settled = false;
+    const deadlineAt = started + budgetMs;
+    const watchdogFactory = opts.watchdogFactory || createDeadlineWatchdog;
+    // The wall clock and kill live in a worker thread. A synchronous clone/push/Beads
+    // operation in another runner worker can block this thread's callbacks, but it cannot
+    // delay the independent deadline or its bounded Docker kill.
+    const watchdog = watchdogFactory({
+      delayMs: budgetMs,
+      command: 'docker',
+      args: ['kill', opts.containerName],
+      timeoutMs: timeoutFor(cfg, 'lifecycle'),
+      label: `docker kill ${opts.containerName}`,
+      env: WATCHDOG_DOCKER_ENV,
+      onDeadline() {
+        timedOut = true;
+        log.error(traceId, `wall-clock budget exhausted — killing ${opts.containerName}`);
+      },
+      onResult(result) {
+        if (!result.ok) log.error(traceId, `container kill did not complete: ${result.error}`);
+      },
+    });
+
+    async function finish(result) {
+      if (settled) return;
+      settled = true;
+      try { await watchdog.cancel(); }
+      catch (e) { log.error(traceId, `container deadline watchdog cleanup failed: ${e && e.message ? e.message : e}`); }
+      resolve(result);
+    }
 
     child.on('close', (code) => {
-      clearTimeout(timer);
       const durationMs = Date.now() - started;
-      resolve({
-        exitCode: timedOut ? 'killed' : code,
-        killed: timedOut,
+      const deadlineHit = timedOut || watchdog.fired || Date.now() >= deadlineAt;
+      finish({
+        exitCode: deadlineHit ? 'killed' : code,
+        killed: deadlineHit,
         durationMs,
       });
     });
     child.on('error', (err) => {
-      clearTimeout(timer);
       log.error(traceId, `docker run failed to start: ${err.message}`);
-      resolve({ exitCode: 30, killed: false, durationMs: Date.now() - started });
+      finish({ exitCode: 30, killed: false, durationMs: Date.now() - started });
     });
   });
 }

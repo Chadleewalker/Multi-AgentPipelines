@@ -431,8 +431,11 @@ const BD_STUB = [
   "if (/\\.js$/i.test(String(process.argv[1] || '').replace(/\\\\/g, '/').split('/').pop())) { /* stand aside */ } else {",
   "  const sfs = require('fs');",
   "  const a = process.argv.slice(1).map((s) => String(s).replace(/\\\\/g, '/').split('/').pop());",
+  "  if (process.env.BD_CALLS) sfs.appendFileSync(process.env.BD_CALLS, a.join(' ') + '\\n');",
   "  if (a.includes('show')) {",
   '    sfs.writeSync(1, JSON.stringify([{ id: process.env.BD_ISSUE_ID, title: "t", description: "d", acceptance_criteria: "a", design: "DESIGN.md 4.7" }]));',
+  "  } else if (process.env.BD_FAIL_TERMINAL && a[0] === 'update' && a.includes('--status') && (a.includes('closed') || a.includes('blocked'))) {",
+  "    sfs.writeSync(2, 'planted bd failure for terminal update'); process.exit(7);",
   "  } else { sfs.writeSync(1, '[]'); }",
   '  process.exit(0);',
   '}',
@@ -506,6 +509,99 @@ async function fixtureRun() {
     }
   }
   return { log, threw };
+}
+
+// A completed implementation must cross TWO durable boundaries before its workspace can be
+// discarded: publication, then the terminal Beads transition. These fixtures differ in one
+// switch each. They drive the real runOneTask body, local Git remote and process seams; a
+// pure decision-function test would stay green if the caller ignored its answer.
+const DELIVERY_STUB = [
+  '#!/bin/sh',
+  'mkdir -p "$RUN_DIR"',
+  'REGRESSION="${FIXTURE_REGRESSION:-pass}"',
+  'printf \'{"issueId":"%s","phase":"docs","attempts":[{"number":1,"verifierResult":"pass","timestamp":"2026-01-01T00:00:03.000Z"}]}\\n\' "$ISSUE_ID" > "$RUN_DIR/status.json"',
+  'if [ "${FIXTURE_ARTIFACT_MODE:-}" != "missing-verify" ]; then',
+  '  printf \'{"issueId":"%s","timestamp":"2026-01-01T00:00:03.000Z","acceptance":"pass","regressions":"%s"}\\n\' "$ISSUE_ID" "$REGRESSION" > "$RUN_DIR/verify.json"',
+  'fi',
+  'git config user.email fixture@test.local',
+  'git config user.name fixture',
+  'echo durable-work > delivered.txt',
+  'if [ -n "${FIXTURE_DISCLOSURE:-}" ]; then printf \'%s\\n\' "$FIXTURE_DISCLOSURE" > exposed.txt; fi',
+  'git add -A',
+  'git commit -qm "verified fixture work"',
+  'exit 0',
+  '',
+].join('\n');
+
+async function completionFailureFixture(kind) {
+  const tmp = fs.mkdtempSync(path.join(TMP, `settle-${kind}-`));
+  const { remote, seed } = seedRepo(tmp);
+  if (kind === 'regression') {
+    const projectCfg = JSON.parse(fs.readFileSync(path.join(seed, 'pipeline.config.json'), 'utf8'));
+    projectCfg.regressionCommand = 'bash scripts/test-ci.sh';
+    projectCfg.regressionPolicy = 'required';
+    fs.writeFileSync(path.join(seed, 'pipeline.config.json'), `${JSON.stringify(projectCfg, null, 2)}\n`);
+    spawnSync('git', ['-C', seed, '-c', 'user.name=fixture', '-c', 'user.email=fixture@test.local',
+      'commit', '-qam', 'require regression gate'], { encoding: 'utf8' });
+    spawnSync('git', ['-C', seed, 'push', '-q', 'origin', 'main'], { encoding: 'utf8' });
+  }
+  if (kind === 'push') {
+    const hook = path.join(remote, 'hooks', 'pre-receive');
+    fs.writeFileSync(hook, '#!/bin/sh\necho planted push rejection >&2\nexit 1\n');
+    fs.chmodSync(hook, 0o755);
+  }
+  const bdStub = path.join(tmp, 'bd-stub.js');
+  const execStub = path.join(tmp, 'delivery-stub.sh');
+  const calls = path.join(tmp, 'bd-calls.txt').split(path.sep).join('/');
+  fs.writeFileSync(bdStub, BD_STUB);
+  fs.writeFileSync(execStub, DELIVERY_STUB);
+
+  const saved = {};
+  const set = (k, v) => { saved[k] = process.env[k]; process.env[k] = v; };
+  const issueId = `settle-${kind}`;
+  set('PIPELINE_BD_CMD', process.execPath);
+  set('NODE_OPTIONS', `--require "${bdStub.split(path.sep).join('/')}"`);
+  set('BD_ISSUE_ID', issueId);
+  set('BD_CALLS', calls);
+  if (kind === 'tracking') set('BD_FAIL_TERMINAL', '1');
+  else { saved.BD_FAIL_TERMINAL = process.env.BD_FAIL_TERMINAL; delete process.env.BD_FAIL_TERMINAL; }
+  if (kind === 'regression') set('FIXTURE_REGRESSION', 'fail');
+  else { saved.FIXTURE_REGRESSION = process.env.FIXTURE_REGRESSION; delete process.env.FIXTURE_REGRESSION; }
+  const injected = ['settlement', '-', 'fixture', '-', 'S'.repeat(32)].join('');
+  if (kind === 'credential') set('FIXTURE_DISCLOSURE', injected);
+  else { saved.FIXTURE_DISCLOSURE = process.env.FIXTURE_DISCLOSURE; delete process.env.FIXTURE_DISCLOSURE; }
+  if (kind === 'artifact') set('FIXTURE_ARTIFACT_MODE', 'missing-verify');
+  else { saved.FIXTURE_ARTIFACT_MODE = process.env.FIXTURE_ARTIFACT_MODE; delete process.env.FIXTURE_ARTIFACT_MODE; }
+  set('PIPELINE_EXEC_STUB', execStub);
+  set('PIPELINE_GH_CMD', "printf 'https://example.test/pr/9\\n'");
+  saved.PIPELINE_KEEP_WORKSPACE = process.env.PIPELINE_KEEP_WORKSPACE;
+  delete process.env.PIPELINE_KEEP_WORKSPACE;
+
+  const log = logmod.startRun(path.join(tmp, 'runs-root'), `unit-settle-${kind}`);
+  const cfg = {
+    targetRepoPath: seed,
+    targetRepoRemote: remote,
+    image: 'unused:local',
+    wallClockMinutes: 60,
+    maxAttempts: 3,
+    probeIntervalMinutes: 15,
+    maxPauseCycles: 96,
+    concurrency: 1,
+  };
+  const gate = { admit: async () => true, reportLimit: async () => ({ resumed: false }) };
+  let row = null;
+  let threw = null;
+  try {
+    row = await runmod.runOneTask(cfg, { id: issueId, title: `${kind} fixture`, priority: 1 },
+      log, kind === 'credential' ? injected : 'tok', gate);
+  } catch (e) {
+    threw = e;
+  } finally {
+    for (const k of Object.keys(saved)) {
+      if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k];
+    }
+  }
+  return { tmp, remote, issueId, row, threw, calls: read(calls) || '', log, injected };
 }
 
 // ---- the checks over the fixture ---------------------------------------------------------
@@ -597,6 +693,100 @@ async function fixtureRun() {
     ev.findIndex((e) => e.event === 'attempt.finished') > ev.findIndex((e) => e.event === 'task.relaunched'));
   check('F the refused task reaches neither ledger-only fact — nothing ran, so nothing is known',
     by('attempt.finished').every((e) => e.issueId !== 'led-2') && by('concern.raised').length === 0);
+
+  // ---- S: completion is durable publication + durable task tracking -------------------
+  {
+    const pushFx = await completionFailureFixture('push');
+    const p = pushFx.row || {};
+    const pev = events(pushFx.log.dir).filter((e) => e.event === 'task.finished');
+    check('S a rejected push does not throw away the task result',
+      pushFx.threw === null && p.outcome === 'done', pushFx.threw && pushFx.threw.stack);
+    check('S a rejected push leaves the issue in_progress — no terminal transition was attempted',
+      /update settle-push --claim/.test(pushFx.calls)
+      && !/update settle-push --status (closed|blocked)/.test(pushFx.calls), pushFx.calls);
+    check('S a rejected push is a named manifest error, never a silent pushed:false',
+      p.pushed === false && typeof p.error === 'string' && /push|publication/i.test(p.error), JSON.stringify(p));
+    check('S the only recoverable workspace survives and is named on the row',
+      typeof p.recoveryWorkspace === 'string' && fs.existsSync(p.recoveryWorkspace)
+      && fs.existsSync(path.join(p.recoveryWorkspace, 'delivered.txt')), p.recoveryWorkspace);
+    check('S the task.finished ledger says no Beads transition happened',
+      pev.length === 1 && pev[0].level === 'ERROR' && pev[0].data.beads === null
+      && /workspace kept/i.test(pev[0].msg), JSON.stringify(pev[0] || null));
+    const pushedRef = spawnSync('git', ['--git-dir', pushFx.remote, 'rev-parse', '--verify', 'refs/heads/task/settle-push'], { encoding: 'utf8' });
+    check('S the rejected branch really is absent from the remote', pushedRef.status !== 0);
+    if (p.recoveryWorkspace) try { fs.rmSync(p.recoveryWorkspace, { recursive: true, force: true }); } catch { /* temp */ }
+
+    const trackingFx = await completionFailureFixture('tracking');
+    const t = trackingFx.row || {};
+    const tev = events(trackingFx.log.dir).filter((e) => e.event === 'task.finished');
+    check('S a failed terminal Beads write happens only after the branch and PR are durable',
+      trackingFx.threw === null && t.pushed === true && t.prUrl === 'https://example.test/pr/9'
+      && /update settle-tracking --status closed/.test(trackingFx.calls), JSON.stringify(t));
+    check('S a failed terminal Beads write is reported and retains the workspace for recovery',
+      typeof t.error === 'string' && /Beads|tracking|closed/i.test(t.error)
+      && typeof t.recoveryWorkspace === 'string' && fs.existsSync(t.recoveryWorkspace), JSON.stringify(t));
+    check('S a failed terminal Beads write is not logged as a successful transition',
+      tev.length === 1 && tev[0].level === 'ERROR' && tev[0].data.beads === null
+      && /workspace kept/i.test(tev[0].msg), JSON.stringify(tev[0] || null));
+    const trackedRef = spawnSync('git', ['--git-dir', trackingFx.remote, 'rev-parse', '--verify', 'refs/heads/task/settle-tracking'], { encoding: 'utf8' });
+    check('S the branch remains durable when only task tracking failed', trackedRef.status === 0);
+    if (t.recoveryWorkspace) try { fs.rmSync(t.recoveryWorkspace, { recursive: true, force: true }); } catch { /* temp */ }
+
+    const regressionFx = await completionFailureFixture('regression');
+    const g = regressionFx.row || {};
+    const gev = events(regressionFx.log.dir).filter((e) => e.event === 'task.finished');
+    check('S a required regression failure blocks publication and terminal Beads completion',
+      regressionFx.threw === null && g.outcome === 'partial' && g.pushed === false
+      && /required regression gate/i.test(g.error || '')
+      && !/update settle-regression --status (closed|blocked)/.test(regressionFx.calls), JSON.stringify(g));
+    check('S the required-regression failure retains and names the recoverable workspace',
+      typeof g.recoveryWorkspace === 'string' && fs.existsSync(g.recoveryWorkspace)
+      && gev.length === 1 && gev[0].level === 'ERROR' && gev[0].data.beads === null,
+      JSON.stringify(gev[0] || null));
+    const regressionRef = spawnSync('git', ['--git-dir', regressionFx.remote, 'rev-parse', '--verify',
+      'refs/heads/task/settle-regression'], { encoding: 'utf8' });
+    check('S a red mandatory regression never reaches the remote', regressionRef.status !== 0);
+    if (g.recoveryWorkspace) try { fs.rmSync(g.recoveryWorkspace, { recursive: true, force: true }); } catch { /* temp */ }
+
+    const credentialFx = await completionFailureFixture('credential');
+    const c = credentialFx.row || {};
+    const cev = events(credentialFx.log.dir).filter((e) => e.event === 'task.finished');
+    check('S credential disclosure is a recoverable security failure through the real task body',
+      credentialFx.threw === null && c.outcome === 'done' && c.pushed === false
+      && /credential disclosure scan rejected/i.test(c.error || '')
+      && typeof c.recoveryWorkspace === 'string' && fs.existsSync(c.recoveryWorkspace), JSON.stringify(c));
+    check('S credential refusal attempts no terminal Beads transition',
+      !/update settle-credential --status (closed|blocked)/.test(credentialFx.calls)
+      && /update settle-credential --claim/.test(credentialFx.calls), credentialFx.calls);
+    check('S credential refusal retains the evidence-bearing local commit and names no secret',
+      fs.existsSync(path.join(c.recoveryWorkspace || '', 'exposed.txt'))
+      && !JSON.stringify(c).includes(credentialFx.injected)
+      && !(read(credentialFx.log.logFile) || '').includes(credentialFx.injected), JSON.stringify(c));
+    check('S credential refusal records an ERROR settlement event with no Beads transition',
+      cev.length === 1 && cev[0].level === 'ERROR' && cev[0].data.beads === null,
+      JSON.stringify(cev[0] || null));
+    const credentialRef = spawnSync('git', ['--git-dir', credentialFx.remote, 'rev-parse', '--verify',
+      'refs/heads/task/settle-credential'], { encoding: 'utf8' });
+    check('S a secret-bearing branch never reaches the remote', credentialRef.status !== 0);
+    if (c.recoveryWorkspace) try { fs.rmSync(c.recoveryWorkspace, { recursive: true, force: true }); } catch { /* temp */ }
+
+    const artifactFx = await completionFailureFixture('artifact');
+    const a = artifactFx.row || {};
+    const aev = events(artifactFx.log.dir).filter((e) => e.event === 'task.finished');
+    check('S exit 0 with missing verification evidence is relabelled failed, never done',
+      artifactFx.threw === null && a.outcome === 'failed'
+      && /verification artifact missing/.test(a.error || ''), JSON.stringify(a));
+    check('S missing verification evidence blocks rather than closes the issue',
+      /update settle-artifact --status blocked/.test(artifactFx.calls)
+      && !/update settle-artifact --status closed/.test(artifactFx.calls), artifactFx.calls);
+    check('S the invalid success claim opens no PR but preserves its branch on the remote',
+      a.pushed === true && a.prUrl === null
+      && spawnSync('git', ['--git-dir', artifactFx.remote, 'rev-parse', '--verify',
+        'refs/heads/task/settle-artifact'], { encoding: 'utf8' }).status === 0, JSON.stringify(a));
+    check('S the settlement event records failed/blocked rather than done/closed',
+      aev.length === 1 && aev[0].data.outcome === 'failed' && aev[0].data.beads === 'blocked',
+      JSON.stringify(aev[0] || null));
+  }
 
   // ---- Q: the queue read and its refusals, through the exported helpers -----------------
   // The two events `main()` writes. `main()` sits behind the token load and the Docker

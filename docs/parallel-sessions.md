@@ -176,10 +176,11 @@ carried, what was missing, and what it refused. See `.worktree-carry.example`.
 
 | Path | Why |
 |---|---|
-| **`runs/`** | It holds the per-project run **lock** (`runs/locks/`, `DESIGN.md` §4.12), which is what makes "one run per project" true. A second copy is a second lock, and two runners can then drain one queue at once. `scripts/worktree.js` refuses this entry by name and prints the reason; it is not a matter of remembering. |
+| **`runs/`** | It holds every manifest, report and task artifact plus the local observer mirror of the host-global project lock (`runs/locks/`, `DESIGN.md` §4.12). Copying it forks the evidence corpus and gives dashboard/sweep readers a false lock view. `scripts/worktree.js` refuses this entry by name and prints the reason; it is not a matter of remembering. |
 
 **Consequence, and it is a rule, not a preference: launch pipeline runs from the main
-checkout only.** Not just because of the lock — `runs/` is also where every report, manifest
+checkout only.** The host-global authority prevents a duplicate target run, but `runs/` is
+where every report, manifest
 and artifact lands, so a run launched from a worktree writes its history into a folder that
 `verdict.js`, `batch.js`, `audit-runs.js` and the dashboard will never look in. The run
 would work and its results would be invisible.

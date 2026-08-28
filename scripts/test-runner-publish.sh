@@ -51,6 +51,7 @@ add_issue() { # add_issue <title> <regression-rc>
   mkdir -p "$TGT/tests/acceptance/$id"
   printf '#!/bin/sh\n[ -f out.txt ] || { echo "out.txt missing"; exit 1; }\nREGRESS_RC=%s; export REGRESS_RC\n' "$2" \
     > "$TGT/tests/acceptance/$id/test.sh"
+  node "$ROOT/scripts/write-fixture-receipt.js" "$TGT" "$id" >/dev/null
   (cd "$TGT" && git add -A && git commit -qm "planning: frozen tests for $id" >/dev/null)
   echo "$id"
 }
@@ -110,6 +111,7 @@ PART_ID=$(bdq create "partial task" -d "Widget with a broken neighbour" --accept
 mkdir -p "$TGT/tests/acceptance/$PART_ID"
 printf '#!/bin/sh\n[ -f out.txt ] || exit 1\n' > "$TGT/tests/acceptance/$PART_ID/test.sh"
 printf '#!/bin/sh\nexit 1\n' > "$TGT/tools/regress.sh"      # regressions now fail
+node "$ROOT/scripts/write-fixture-receipt.js" "$TGT" "$PART_ID" >/dev/null
 (cd "$TGT" && git add -A && git commit -qm "planning: partial fixture" >/dev/null && git push -q origin main)
 bdq update "$STUCK_ID" --status blocked >/dev/null
 rm -f "$GHLOG"/*
@@ -124,7 +126,7 @@ grep -q "PARTIAL" "$GHLOG"/title-*.txt 2>/dev/null && pass "partial PR title mar
 # ---- Static guarantees ----
 grep -rqE "push[^\n]*(--force|-f\b)|force-with-lease" "$ROOT/runner/" \
   && fail "runner can force-push" || pass "runner never force-pushes"
-grep -q "outcome.status !== 'done' && outcome.status !== 'partial'" "$ROOT/runner/publish.js" \
+node -e "const root=process.argv[1]; const c=require(root + '/runner/control-plane'); const p=require(root + '/runner/publish'); const got=[...p.PR_ELIGIBLE_OUTCOMES].sort(); const want=[...c.publication.prEligibleOutcomes].sort(); if (got.length !== want.length || got.some((value, index) => value !== want[index])) process.exit(1)" "$ROOT" \
   && pass "PR gate is exactly done|partial" || fail "PR gate wrong"
 grep -rqE '(^|[;&|(`"'"'"'[:space:]])gh[[:space:]]+(pr|repo|api|auth)\b' "$ROOT/pipeline/" \
   && fail "container-side code invokes gh" || pass "container holds no git/GitHub credentials"

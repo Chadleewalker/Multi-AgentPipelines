@@ -19,11 +19,10 @@
 //      and `.sanitize-denylist` are simply absent, and a session discovers this as a
 //      confusing failure some minutes later. The list is declared per project in
 //      `.worktree-carry`; absent, nothing is carried and that is said out loud.
-//   2. It REFUSES to carry a shared-exclusion directory. `runs/` holds the per-project run
-//      lock (§4.12) that makes "one run per project" true. Copied into a second worktree it
-//      becomes a second lock, and the guarantee silently stops holding — the failure mode
-//      being two runners draining one queue. Named in `.worktree-carry`, `runs/` is refused
-//      with the reason, not skipped quietly.
+//   2. It REFUSES to carry the run evidence directory. `runs/` holds every report and the
+//      local observer mirror of the host-global lock (§4.12). Copied into a second worktree
+//      it forks the corpus and gives dashboard/sweep readers a false ownership view. Named
+//      in `.worktree-carry`, `runs/` is refused with the reason, not skipped quietly.
 //   3. It REFUSES to remove a worktree that still holds work. Uncommitted changes, untracked
 //      files, or commits not on the remote all block removal, because the whole point of the
 //      tool is that one session cannot discard another's work — and a removal tool that
@@ -105,9 +104,9 @@ function validSlug(slug) {
 //
 // `runs/` and `.git` are refused rather than skipped. A quiet skip reads as "there was
 // nothing to do"; the whole reason the refusal exists is that copying `runs/` looks
-// reasonable and breaks an invariant three files away (§4.12's per-project run lock).
+// reasonable and breaks an invariant three files away (§4.12's run corpus and observer).
 const NEVER_CARRY = new Map([
-  ['runs', 'holds the per-project run lock (DESIGN.md §4.12) — a second copy means a second lock, and "one run per project" stops being true. Launch runs from the main checkout only.'],
+  ['runs', 'holds the run evidence corpus and lock observer mirror (DESIGN.md §4.12) — a second copy forks reports and gives readers a false ownership view. Launch runs from the main checkout only.'],
   ['.git', 'is the shared repository itself; the worktree already points at it.'],
 ]);
 

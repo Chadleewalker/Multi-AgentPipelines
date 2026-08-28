@@ -7,8 +7,8 @@
 #
 # Fixed sequence, scaffolding-driven (no LLM decides phases):
 #   code → verify → (retry, max PIPELINE_MAX_ATTEMPTS total — default 3 — carried
-#   across relaunches) → commit
-#   [T9 inserts the docs phase before the final commit; T10 inserts rate-limit exit 20]
+#   across relaunches) → implementation commit → docs-only phase → final verify → commit
+#   [T10 inserts rate-limit exit 20]
 #
 # Inputs (§4.10): /workspace mount (repo on task branch), /workspace/.run/issue.md,
 #   ISSUE_ID, PIPELINE_AGENT_CMD (test seam; defaults to headless claude), token+proxy env.
@@ -40,6 +40,44 @@ case "$MAX_ATTEMPTS" in
 esac
 
 die30() { echo "entrypoint: $1" >&2; exit 30; }
+
+# A successful implementation commit is the recovery point for the non-fatal docs phase.
+# Rejected docs work is removed as a whole; retaining its Markdown subset after the same
+# agent crossed into source would still trust a process that violated the boundary.
+restore_verified() { # restore_verified <commit> <had-verify-json> <verify-json>
+  git reset --hard "$1" >/dev/null 2>&1 || die30 "could not restore verified implementation"
+  git clean -fd >/dev/null 2>&1 || die30 "could not remove rejected docs-phase files"
+  if [ "$2" -eq 1 ]; then
+    printf '%s\n' "$3" > "$RUN/verify.json" || die30 "could not restore verifier evidence"
+  else
+    rm -f "$RUN/verify.json"
+  fi
+}
+
+# The docs agent gets a normal Git workspace because useful updates span root-level guides
+# and docs/. The boundary is enforced from Git's byte-safe path output, not from the prompt.
+# --no-renames makes a source->docs rename expose both the deleted source and new docs path.
+docs_paths_allowed() { # docs_paths_allowed <verified-commit>
+  {
+    git diff --no-renames --name-only -z "$1" -- || return 2
+    git ls-files --others --exclude-standard -z || return 2
+  } > "$RUN/docs-paths.z" || return 2
+  node -e '
+    const fs = require("fs");
+    const paths = [...new Set(fs.readFileSync(process.argv[1]).toString("utf8")
+      .split("\0").filter(Boolean).map((p) => p.replace(/\\/g, "/")))];
+    const markdown = (p) => /^[^/]+\.md$/i.test(p) || /^docs\/.+\.md$/i.test(p);
+    const unsafe = (p) => {
+      if (!markdown(p) || p.includes("../") || p.startsWith("/")) return true;
+      try { return fs.lstatSync(p).isSymbolicLink(); } catch { return false; }
+    };
+    const rejected = paths.filter(unsafe);
+    if (rejected.length) {
+      process.stdout.write(rejected.join(", "));
+      process.exit(1);
+    }
+  ' "$RUN/docs-paths.z"
+}
 
 [ -n "${ISSUE_ID:-}" ] || die30 "ISSUE_ID not set"
 cd "$WS" 2>/dev/null || die30 "workspace $WS missing"
@@ -161,8 +199,18 @@ while :; do
   case "$VRC" in
     0)
       node "$PIPE/status.js" append pass
-      git add -A
-      git commit -qm "Task $ISSUE_ID: implementation (verified on attempt $N)" || true
+      git add -A || die30 "could not stage verified implementation"
+      if ! git diff --cached --quiet; then
+        git commit -qm "Task $ISSUE_ID: implementation (verified on attempt $N)" \
+          || die30 "could not commit verified implementation"
+      fi
+      VERIFIED_HEAD=$(git rev-parse HEAD) || die30 "could not identify verified implementation"
+      VERIFIED_RESULT_PRESENT=0
+      VERIFIED_RESULT=""
+      if [ -f "$RUN/verify.json" ]; then
+        VERIFIED_RESULT=$(cat "$RUN/verify.json") || die30 "could not preserve verifier evidence"
+        VERIFIED_RESULT_PRESENT=1
+      fi
       # ---- docs phase (§4.3, T9): one agent invocation, non-fatal after success ----
       # Phase boundary (§4.11), non-fatal, and — like the code phase — written BEFORE
       # the `{ ... } > "$RUN/prompt-docs.md"` block rather than inside it. A write
@@ -171,8 +219,9 @@ while :; do
       node "$PIPE/status.js" set phase docs 2>/dev/null
       {
         echo "Verification for task $ISSUE_ID just passed. Two jobs:"
-        echo "1. Update any in-repo documentation affected by the change (README, docs/)."
-        echo "   NEVER touch tests/acceptance/ or any frozen path."
+        echo "1. Update any in-repo documentation affected by the change."
+        echo "   You may edit only root-level Markdown files and Markdown files under docs/."
+        echo "   NEVER touch source, configuration, tests/acceptance/, or any frozen path."
         echo "2. Your final output must be ONLY a concise change summary (2-4 sentences)"
         echo "   of what the implementation changed - it becomes the PR body."
         echo "Before that summary you may record any insight worth keeping for future tasks"
@@ -189,9 +238,51 @@ while :; do
       # body (§4.5), and CLI warnings on stderr used to lead every one of them. The file
       # is kept for debugging and, like everything under .run/, is never committed.
       if sh -c "$AGENT_CMD $AGENT_FORMAT" < "$RUN/prompt-docs.md" > "$RUN/docs-out.txt" 2> "$RUN/docs-err.txt"; then
+        docs_paths_allowed "$VERIFIED_HEAD" > "$RUN/docs-boundary.txt"
+        DOCS_BOUNDARY_RC=$?
+        if [ "$DOCS_BOUNDARY_RC" -ne 0 ]; then
+          REJECTED=$(cat "$RUN/docs-boundary.txt" 2>/dev/null)
+          restore_verified "$VERIFIED_HEAD" "$VERIFIED_RESULT_PRESENT" "$VERIFIED_RESULT"
+          if [ "$DOCS_BOUNDARY_RC" -eq 1 ]; then
+            node "$PIPE/status.js" set docsPhaseError \
+              "docs agent changed non-documentation paths; its entire docs delta was discarded: ${REJECTED:-unknown path}"
+          else
+            node "$PIPE/status.js" set docsPhaseError \
+              "docs boundary inspection failed; its entire docs delta was discarded"
+          fi
+          exit 0
+        fi
+
+        # The authoritative gate must judge the tree that can become the branch tip. Even
+        # allowed Markdown can affect a project's generated artifacts or acceptance rules.
+        node "$PIPE/status.js" set phase verify 2>/dev/null
+        node "$PIPE/verify.js"
+        DOCS_VERIFY_RC=$?
+        if [ "$DOCS_VERIFY_RC" -ne 0 ]; then
+          restore_verified "$VERIFIED_HEAD" "$VERIFIED_RESULT_PRESENT" "$VERIFIED_RESULT"
+          node "$PIPE/status.js" set docsPhaseError \
+            "docs delta failed final verification (rc=$DOCS_VERIFY_RC) and was discarded; verified implementation success stands"
+          exit 0
+        fi
+
+        node "$PIPE/status.js" set phase docs 2>/dev/null
         node "$PIPE/status.js" summary "$RUN/docs-out.txt" || true
-        git add -A
-        git commit -qm "Task $ISSUE_ID: docs" || true
+        # An agent-created commit is not trusted as a phase boundary. Collapse any such
+        # commit back onto VERIFIED_HEAD and let deterministic scaffolding author one delta.
+        if ! git reset --soft "$VERIFIED_HEAD" || ! git add -A; then
+          restore_verified "$VERIFIED_HEAD" "$VERIFIED_RESULT_PRESENT" "$VERIFIED_RESULT"
+          node "$PIPE/status.js" set docsPhaseError \
+            "docs delta could not be staged safely and was discarded; verified implementation success stands"
+          exit 0
+        fi
+        if ! git diff --cached --quiet; then
+          if ! git commit -qm "Task $ISSUE_ID: docs"; then
+            restore_verified "$VERIFIED_HEAD" "$VERIFIED_RESULT_PRESENT" "$VERIFIED_RESULT"
+            node "$PIPE/status.js" set docsPhaseError \
+              "docs delta could not be committed and was discarded; verified implementation success stands"
+            exit 0
+          fi
+        fi
       else
         node "$PIPE/status.js" set docsPhaseError "docs agent failed (see docs-out.txt / docs-err.txt); success stands"
       fi

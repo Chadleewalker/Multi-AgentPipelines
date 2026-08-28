@@ -17,6 +17,23 @@
 #
 # Exits 0 only if every assertion holds.
 set -u
+
+require_commands() {
+  local command missing=()
+  for command in node git gh docker sed; do
+    command -v "$command" >/dev/null 2>&1 || missing+=("$command")
+  done
+  if [ "${#missing[@]}" -gt 0 ]; then
+    echo "FAIL  live e2e host prerequisites are missing: ${missing[*]}"
+    echo "      Run this script from a shell whose PATH exposes Node.js, Git, GitHub CLI, Docker, and sed."
+    return 1
+  fi
+}
+
+# Configuration is executable authority: do not derive a fixture path or remote
+# until every command used to parse and validate it is known to exist.
+require_commands || exit 1
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CFG="$ROOT/run.config.fixture.json"
 # Git-ignored: it names a path on your disk and a repo that is probably private.
@@ -33,44 +50,132 @@ pass() { echo "PASS  $1"; }
 fail() { echo "FAIL  $1"; FAIL=1; }
 step() { echo; echo "=== $1"; }
 
-FIX=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).targetRepoPath)' "$CFG")
-IMAGE=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).image)' "$CFG")
+if ! FIX=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).targetRepoPath)' "$CFG") \
+  || [ -z "$FIX" ]; then
+  echo "FAIL  could not read targetRepoPath from $CFG; refusing every mutation"
+  exit 1
+fi
+if ! IMAGE=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).image)' "$CFG") \
+  || [ -z "$IMAGE" ]; then
+  echo "FAIL  could not read image from $CFG; refusing every mutation"
+  exit 1
+fi
 FIXW="$FIX"; command -v cygpath >/dev/null 2>&1 && FIX="$(cygpath -u "$FIX")"
+if ! git -C "$FIX" rev-parse --show-toplevel >/dev/null 2>&1; then
+  echo "FAIL  targetRepoPath is not a Git checkout: $FIX"
+  exit 1
+fi
 # Resolve the fixture's GitHub repo from the FIXTURE directory, not this one.
 REPO=$(git -C "$FIX" remote get-url origin 2>/dev/null | sed -E 's#.*github\.com[:/]##; s#\.git$##')
-[ -n "$REPO" ] || fail "could not resolve the fixture's GitHub repo (live PR checks would be skipped)"
+[ -n "$REPO" ] || { echo "FAIL  could not resolve the fixture's GitHub repo; refusing every mutation"; exit 1; }
 bdq() { MSYS_NO_PATHCONV=1 docker run --rm -v "$FIXW:/fix" -w /fix pipeline-base:local bd "$@" 2>/dev/null | tr -d '\r'; }
-status_of() { bdq show "$1" --json | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const a=JSON.parse(d||"[]");console.log((a[0]||{}).status||"?")})'; }
+status_of() {
+  local json
+  json=$(bdq show "$1" --json) || return 1
+  printf '%s' "$json" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const a=JSON.parse(d||"[]");console.log((a[0]||{}).status||"?")})'
+}
 issue_json() { bdq show "$1" --json; }
 
+if [ ! -f "$FIX/.fixture-ids" ]; then
+  echo "FAIL  fixture issue roster is missing: $FIX/.fixture-ids"
+  exit 1
+fi
 S=$(sed -n 1p "$FIX/.fixture-ids"); B=$(sed -n 2p "$FIX/.fixture-ids"); T=$(sed -n 3p "$FIX/.fixture-ids")
+if ! node "$ROOT/scripts/e2e-scope.js" patterns "$S" "$B" "$T" >/dev/null; then
+  echo "FAIL  fixture issue roster is invalid; refusing every mutation"
+  exit 1
+fi
 STAMP="e2e-$(date +%Y%m%d-%H%M%S)"
 
-cleanup_remote() {
-  cd "$FIX" || return
-  git fetch -q origin --prune 2>/dev/null
-  for br in $(git ls-remote --heads origin 'task/*' 2>/dev/null | sed 's|.*refs/heads/||'); do
-    if [ -n "$REPO" ]; then
-      PR=$(gh pr list --repo "$REPO" --head "$br" --state all --json number -q '.[0].number' 2>/dev/null || true)
-      [ -n "${PR:-}" ] && gh pr close "$PR" --repo "$REPO" >/dev/null 2>&1
-    fi
-    git push -q origin --delete "$br" >/dev/null 2>&1
+require_clean_fixture() {
+  local dirty
+  if ! dirty=$(git -C "$FIX" status --porcelain --untracked-files=all 2>&1); then
+    echo "FAIL  cannot inspect the fixture working tree; refusing every mutation"
+    echo "$dirty"
+    return 1
+  fi
+  if [ -n "$dirty" ]; then
+    echo "FAIL  fixture working tree is not clean; refusing every mutation"
+    echo "$dirty"
+    echo "      Preserve or deliberately discard those changes, then rerun."
+    return 1
+  fi
+}
+
+require_runtime() {
+  local image missing=()
+  if ! docker info >/dev/null 2>&1; then
+    echo "FAIL  Docker daemon is not reachable; refusing fixture reset and remote mutation"
+    echo "      Start Docker Desktop, wait for the Linux engine, then rerun."
+    return 1
+  fi
+  for image in pipeline-base:local "$IMAGE"; do
+    docker image inspect "$image" >/dev/null 2>&1 || missing+=("$image")
   done
-  cd "$ROOT"
+  if [ "${#missing[@]}" -gt 0 ]; then
+    echo "FAIL  live e2e Docker images are missing: ${missing[*]}"
+    echo "      Build the fixture images before allowing reset or remote mutation."
+    return 1
+  fi
+}
+
+cleanup_remote() {
+  local pattern_text branches br PR rc=0
+  local patterns=()
+  pattern_text=$(node "$ROOT/scripts/e2e-scope.js" patterns "$S" "$B" "$T") || return 1
+  while IFS= read -r br; do [ -n "$br" ] && patterns+=("$br"); done <<< "$pattern_text"
+  [ "${#patterns[@]}" -gt 0 ] || return 1
+  git -C "$FIX" fetch -q origin --prune 2>/dev/null || return 1
+  branches=$(git -C "$FIX" ls-remote --heads origin "${patterns[@]}" 2>/dev/null) || return 1
+  while IFS= read -r br; do
+    br="${br#*refs/heads/}"
+    [ -n "$br" ] || continue
+    node "$ROOT/scripts/e2e-scope.js" owns "$br" "$S" "$B" "$T" || continue
+    if [ -n "$REPO" ]; then
+      if ! PR=$(gh pr list --repo "$REPO" --head "$br" --state open --json number -q '.[0].number' 2>/dev/null); then
+        rc=1
+        continue
+      fi
+      if [ -n "${PR:-}" ] && ! gh pr close "$PR" --repo "$REPO" >/dev/null 2>&1; then
+        rc=1
+        continue
+      fi
+    fi
+    git -C "$FIX" push -q origin --delete "$br" >/dev/null 2>&1 || rc=1
+  done <<< "$branches"
+  return "$rc"
+}
+
+restore_fixture_export() {
+  if git -C "$FIX" ls-files --error-unmatch .beads/interactions.jsonl >/dev/null 2>&1; then
+    git -C "$FIX" restore --source=HEAD --worktree -- .beads/interactions.jsonl
+  fi
 }
 
 reset_fixture() {
-  for id in "$S" "$B" "$T"; do bdq update "$id" --status open >/dev/null 2>&1; done
-  (cd "$FIX" && git checkout -q main && git reset -q --hard origin/main)
-  cleanup_remote
+  git -C "$FIX" fetch -q origin --prune || return 1
+  (cd "$FIX" && git checkout -q main && git reset -q --hard origin/main) || return 1
+  for id in "$S" "$B" "$T"; do
+    bdq update "$id" --status open >/dev/null 2>&1 || return 1
+  done
+  for id in "$S" "$B" "$T"; do
+    node "$ROOT/scripts/write-fixture-receipt.js" "$FIX" "$id" >/dev/null || return 1
+  done
+  (cd "$FIX" && git add tests/acceptance && \
+    { git diff --cached --quiet || git commit -qm "planning: refresh fixture freeze receipts"; } && \
+    git push -q origin main) || return 1
+  cleanup_remote || return 1
 }
 
 # Run one scenario: park the other issues, point the agent command at a stub, run.
 run_scenario() { # run_scenario <target-issue> <stub-name> <run-id>
   local target="$1" stub="$2" runid="$3" tmpcfg="$ROOT/.e2e.config.json"
   for id in "$S" "$B" "$T"; do
-    [ "$id" = "$target" ] && bdq update "$id" --status open >/dev/null 2>&1 \
-                          || bdq update "$id" --status blocked >/dev/null 2>&1
+    if [ "$id" = "$target" ]; then
+      bdq update "$id" --status open >/dev/null 2>&1 || return 1
+    else
+      bdq update "$id" --status blocked >/dev/null 2>&1 || return 1
+    fi
   done
   node -e '
     const fs = require("fs");
@@ -78,8 +183,9 @@ run_scenario() { # run_scenario <target-issue> <stub-name> <run-id>
     cfg.agentCommand = "sh /pipeline/stubs/" + process.argv[2];
     fs.writeFileSync(process.argv[3], JSON.stringify(cfg, null, 2));
   ' "$CFG" "$stub" "$tmpcfg"
-  # tee to stderr: streams live to the terminal, stdout still captured by the caller's $( ).
-  ( set -o pipefail; RUN_ID="$runid" node "$ROOT/runner/run.js" --config "$tmpcfg" 2>&1 | tee /dev/stderr )
+  # The caller captures this stream for semantic assertions. Avoid /dev/stderr and
+  # /dev/tty: neither is guaranteed in non-interactive Git Bash sessions.
+  RUN_ID="$runid" node "$ROOT/runner/run.js" --config "$tmpcfg" 2>&1
 }
 
 echo "############################################################"
@@ -89,7 +195,13 @@ echo "# scenarios: $S success · $B bail · $T tamper"
 echo "############################################################"
 
 step "0. reset the fixture to its planning state"
-reset_fixture
+require_clean_fixture || exit 1
+require_runtime || exit 1
+if ! reset_fixture; then
+  fail "could not reset the dedicated fixture safely"
+  restore_fixture_export >/dev/null 2>&1 || true
+  exit 1
+fi
 OPEN_OK=1
 for id in "$S" "$B" "$T"; do [ "$(status_of "$id")" = "open" ] || OPEN_OK=0; done
 [ "$OPEN_OK" = 1 ] && pass "all three issues open, no stale task branches on the remote" \
@@ -180,10 +292,13 @@ if [ "$KEEP" = 1 ]; then
   echo; echo "(--keep: branches and PRs left on $REPO for inspection)"
 else
   step "cleanup"
-  cleanup_remote
-  for id in "$S" "$B" "$T"; do bdq update "$id" --status open >/dev/null 2>&1; done
-  pass "remote branches/PRs removed, issues reset to open"
+  cleanup_remote || fail "could not remove every e2e-owned remote branch/PR"
+  for id in "$S" "$B" "$T"; do
+    bdq update "$id" --status open >/dev/null 2>&1 || fail "could not reset fixture issue $id to open"
+  done
+  [ "$FAIL" -eq 0 ] && pass "e2e-owned remote branches/PRs removed, issues reset to open"
 fi
+restore_fixture_export || fail "could not restore the passive Beads interaction export"
 
 echo
 if [ "$FAIL" -eq 0 ]; then

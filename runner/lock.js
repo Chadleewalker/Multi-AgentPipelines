@@ -10,9 +10,10 @@
 // branch for it — the host being the sole Beads writer (§4.10) assumes one writer, not
 // two. Nothing about the second run looks wrong while it happens.
 //
-// So a run takes a lock on its target repo before it does anything else, and a second run
-// against the same repo is refused by name. This is the same move `scripts/test-all.sh`
-// already makes for test sweeps, and the lock lives beside that one, under `runs/`.
+// So a run takes a host-global lock on its target repo before it does anything else, and a
+// second run against the same repo is refused by name even when it started from another
+// pipeline checkout. A mirror remains under this checkout's `runs/locks/` for the dashboard
+// and sweep readers; it is evidence, not the exclusion primitive.
 //
 // Two properties do all the work here:
 //
@@ -40,9 +41,10 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const CONTROL_PLANE = require('./control-plane');
 
-// Beside `runs/.test-all.lock`, the sweep lock this is modelled on. `runs/` is
-// git-ignored, host-only, and already the home of everything a run produces.
+// Observer-mirror location. `runs/` is git-ignored, host-only, and already the home of
+// everything a run produces; the authoritative exclusion file is globalLockPath().
 const LOCK_SUBDIR = path.join('runs', 'locks');
 
 // The uptime counter can be read a moment apart in two processes; only a decrease well
@@ -53,6 +55,19 @@ const UPTIME_SLACK_MS = 5000;
 // a suspended-and-resumed machine looks briefly like a rebooted one, and mistaking a LIVE
 // holder for a dead one is the expensive direction of this error.
 const PRE_BOOT_GRACE_MS = 15 * 60 * 1000;
+const OWNER_TOKEN_KEY = CONTROL_PLANE.beads.ownerMetadata.token;
+const OWNER_RUN_KEY = CONTROL_PLANE.beads.ownerMetadata.runId;
+
+// One user on one host gets one authority directory, independent of which pipeline checkout
+// launched the runner. The user digest prevents a shared POSIX temp directory from merging
+// unrelated users' locks while keeping the path writable on the Windows reference host.
+// Tests may re-aim it, but a blank seam is deliberately treated as unset.
+function globalLockRoot() {
+  const explicit = String(process.env.PIPELINE_GLOBAL_LOCK_DIR || '').trim();
+  if (explicit) return path.resolve(explicit);
+  const userKey = crypto.createHash('sha256').update(os.homedir()).digest('hex').slice(0, 12);
+  return path.join(os.tmpdir(), `multi-agent-pipelines-${userKey}`, 'locks');
+}
 
 // ---- project identity ---------------------------------------------------------------
 
@@ -75,15 +90,23 @@ function canonicalTarget(targetRepoPath) {
   return p;
 }
 
-// A readable name for whoever finds the file, plus a digest of the canonical path so two
-// projects with the same basename cannot share a lock. The digest is what decides
-// identity; the slug is only there so `ls runs/locks` means something.
+// A readable observer-mirror name for whoever finds the file, plus a digest of the
+// canonical path. The authority uses the full digest; the slug is only there so
+// `ls runs/locks` means something.
 function lockPath(repoRoot, targetRepoPath) {
   const canon = canonicalTarget(targetRepoPath);
   const digest = crypto.createHash('sha1').update(canon).digest('hex').slice(0, 12);
   const slug = path.basename(canon).toLowerCase().replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '').slice(0, 32);
   return path.join(repoRoot, LOCK_SUBDIR, `${slug || 'project'}-${digest}.lock`);
+}
+
+// The authoritative path has no pipeline-repo argument on purpose. Two checkouts that name
+// the same canonical target must compute the same file or the lock protects only a folder.
+function globalLockPath(targetRepoPath) {
+  const canon = canonicalTarget(targetRepoPath);
+  const digest = crypto.createHash('sha256').update(canon).digest('hex');
+  return path.join(globalLockRoot(), `${digest}.lock`);
 }
 
 // ---- liveness -------------------------------------------------------------------------
@@ -133,6 +156,9 @@ function rebootedSince(rec) {
 // disprove counts as gone — a lock nobody can be shown to hold is the block-forever case.
 function isHolderLive(rec) {
   if (!rec || !Number.isInteger(rec.pid)) return false;
+  // A cleanly ended run with unfinished claims deliberately leaves its ownership record
+  // behind. It is recoverable immediately; the Node process need not have exited yet.
+  if (rec.releasedAt) return false;
   if (rebootedSince(rec)) return false;
   if (!pidAlive(rec.pid)) return false;
   // Where the OS will tell us when that pid started, a mismatch means the pid was
@@ -147,11 +173,17 @@ function isHolderLive(rec) {
 
 // ---- the record ------------------------------------------------------------------------
 
-function selfRecord(runId, canonTarget) {
+function selfRecord(runId, canonTarget, observerFile, recoveryOwners = []) {
+  const ownerToken = crypto.randomUUID();
   return {
     runId: String(runId),
+    ownerToken,
+    actor: `pipeline-run-${ownerToken.slice(0, 12)}`,
     pid: process.pid,
     target: canonTarget,
+    observerFile,
+    claims: [],
+    recoveryOwners,
     host: os.hostname(),
     platform: process.platform,
     startedAt: new Date().toISOString(),
@@ -170,6 +202,50 @@ function readRecord(file) {
   } catch {
     return null;                     // half-written by a run that died mid-acquire
   }
+}
+
+// Replace a record atomically. An in-place truncate creates a dangerous interval where a
+// live holder looks unreadable and a challenger may take it over. The temp file is in the
+// same directory so rename remains one filesystem operation.
+function writeRecord(file, rec) {
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const scratch = `${file}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+  try {
+    fs.writeFileSync(scratch, JSON.stringify(rec, null, 2) + '\n', { mode: 0o600 });
+    fs.renameSync(scratch, file);
+  } finally {
+    try { fs.unlinkSync(scratch); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  }
+}
+
+function removeFile(file) {
+  if (!file) return;
+  try { fs.unlinkSync(file); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+}
+
+function recoveryOwner(rec) {
+  if (!rec || !rec.ownerToken || !rec.runId || !rec.actor) return null;
+  return { runId: String(rec.runId), token: String(rec.ownerToken), actor: String(rec.actor) };
+}
+
+function recoveryOwnersAfter(rec) {
+  const owners = Array.isArray(rec && rec.recoveryOwners) ? rec.recoveryOwners.filter(Boolean) : [];
+  const prior = recoveryOwner(rec);
+  if (prior && !owners.some((o) => o && o.token === prior.token)) owners.push(prior);
+  return owners;
+}
+
+function ownershipOf(rec, authorityFile, observerFile) {
+  return {
+    runId: String(rec.runId),
+    token: String(rec.ownerToken),
+    actor: String(rec.actor),
+    target: String(rec.target),
+    authorityFile,
+    observerFile,
+    recoveryOwners: Array.isArray(rec.recoveryOwners) ? rec.recoveryOwners.map((o) => ({ ...o })) : [],
+    keepForRecovery: false,
+  };
 }
 
 // Exclusive create — the atom the whole thing rests on. Two processes racing here, one
@@ -198,7 +274,8 @@ function holderOf(rec, file) {
 
 // ---- the interface ---------------------------------------------------------------------
 
-// acquire(repoRoot, targetRepoPath, runId)
+// acquire(repoRoot, targetRepoPath, runId). repoRoot selects only the observer mirror;
+// the authoritative path deliberately does not depend on it.
 //   -> { ok: true,  tookOver: false }                        the project was free
 //   -> { ok: true,  tookOver: true, previous: {runId, pid} } the holder was gone; seized
 //   -> { ok: false, holder: {runId, pid, since, ...} }       someone live holds it
@@ -209,22 +286,59 @@ function holderOf(rec, file) {
 function acquire(repoRoot, targetRepoPath, runId) {
   if (!repoRoot || typeof repoRoot !== 'string') throw new Error('lock: a pipeline repo root is required');
   const canon = canonicalTarget(targetRepoPath);
-  const file = lockPath(repoRoot, targetRepoPath);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const observerFile = lockPath(repoRoot, targetRepoPath);
+  const file = globalLockPath(targetRepoPath);
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  fs.mkdirSync(path.dirname(observerFile), { recursive: true });
+
+  // Upgrade bridge: an older runner may already hold the checkout-local lock. Copy that
+  // record into the global authority with exclusive create before competing there. This
+  // makes a mixed-version rollout refuse safely instead of ignoring the live old process.
+  let unreadableLegacy = false;
+  if (!fs.existsSync(file) && fs.existsSync(observerFile)) {
+    const legacy = readRecord(observerFile);
+    if (legacy) {
+      const bridged = {
+        ...legacy,
+        target: canon,
+        observerFile,
+        claims: Array.isArray(legacy.claims) ? legacy.claims : [],
+        recoveryOwners: Array.isArray(legacy.recoveryOwners) ? legacy.recoveryOwners : [],
+      };
+      tryCreate(file, bridged);
+    } else {
+      unreadableLegacy = true;
+      removeFile(observerFile);
+    }
+  }
 
   // Bounded retry: each pass either settles or loses a race to another challenger, and a
   // challenger that wins becomes the live holder the next pass reports.
   let last = null;
   for (let attempt = 0; attempt < 3; attempt++) {
-    if (tryCreate(file, selfRecord(runId, canon))) return { ok: true, tookOver: false };
+    const rec = selfRecord(runId, canon, observerFile);
+    if (tryCreate(file, rec)) {
+      writeRecord(observerFile, rec);
+      return {
+        ok: true,
+        tookOver: unreadableLegacy,
+        ...(unreadableLegacy ? {
+          previous: { runId: '(unreadable lock record)', pid: null, since: null, ownerToken: null, actor: null, claims: [] },
+        } : {}),
+        ownership: ownershipOf(rec, file, observerFile),
+      };
+    }
 
     last = readRecord(file);
     if (isHolderLive(last)) return { ok: false, holder: holderOf(last, file) };
 
     // Gone, or unreadable: clear it and re-take it through the same exclusive create, so
     // a second challenger arriving mid-takeover still loses cleanly rather than sharing.
-    try { fs.unlinkSync(file); } catch (e) { if (e.code !== 'ENOENT') throw e; }
-    if (tryCreate(file, selfRecord(runId, canon))) {
+    removeFile(file);
+    const takeover = selfRecord(runId, canon, observerFile, recoveryOwnersAfter(last));
+    if (tryCreate(file, takeover)) {
+      if (last && last.observerFile && last.observerFile !== observerFile) removeFile(last.observerFile);
+      writeRecord(observerFile, takeover);
       return {
         ok: true,
         tookOver: true,
@@ -232,21 +346,87 @@ function acquire(repoRoot, targetRepoPath, runId) {
           runId: (last && last.runId) || '(unreadable lock record)',
           pid: (last && last.pid) || null,
           since: (last && last.startedAt) || null,
+          ownerToken: (last && last.ownerToken) || null,
+          actor: (last && last.actor) || null,
+          claims: Array.isArray(last && last.claims) ? [...last.claims] : [],
         },
+        ownership: ownershipOf(takeover, file, observerFile),
       };
     }
   }
   return { ok: false, holder: holderOf(readRecord(file) || last, file) };
 }
 
+function ownedRecord(ownership) {
+  if (!ownership || !ownership.authorityFile) throw new Error('lock: run ownership is required');
+  const rec = readRecord(ownership.authorityFile);
+  if (!rec || rec.pid !== process.pid || rec.runId !== ownership.runId
+      || rec.ownerToken !== ownership.token || rec.target !== ownership.target) {
+    throw new Error(`lock: run ${ownership.runId} no longer owns the target lock`);
+  }
+  return rec;
+}
+
+function persistOwned(ownership, rec) {
+  writeRecord(ownership.authorityFile, rec);
+  writeRecord(ownership.observerFile, rec);
+  ownership.recoveryOwners = Array.isArray(rec.recoveryOwners)
+    ? rec.recoveryOwners.map((o) => ({ ...o })) : [];
+}
+
+// Called only after the same Beads transaction atomically claimed the issue and wrote the
+// owner token. The lock-side list decides whether release may remove the proof record; the
+// metadata token remains the authoritative proof used by recovery.
+function recordClaim(ownership, issueId) {
+  const rec = ownedRecord(ownership);
+  const id = String(issueId);
+  if (!Array.isArray(rec.claims)) rec.claims = [];
+  if (!rec.claims.includes(id)) rec.claims.push(id);
+  persistOwned(ownership, rec);
+}
+
+// Remove a claim only after its terminal Beads transition succeeds. Publication failures,
+// pauses and write-back failures deliberately leave it present for the next run.
+function completeClaim(ownership, issueId) {
+  if (!ownership) return;
+  const rec = ownedRecord(ownership);
+  const id = String(issueId);
+  rec.claims = (Array.isArray(rec.claims) ? rec.claims : []).filter((v) => v !== id);
+  persistOwned(ownership, rec);
+}
+
+function clearRecoveryOwner(ownership, token) {
+  const rec = ownedRecord(ownership);
+  rec.recoveryOwners = (Array.isArray(rec.recoveryOwners) ? rec.recoveryOwners : [])
+    .filter((o) => o && o.token !== token);
+  persistOwned(ownership, rec);
+}
+
 // Release ours and only ours. A run that was refused still runs its exit path, and
 // removing the lock it was just refused by would hand the project to the next run to
 // ask — so the record has to say it is us before the file goes.
-function release(repoRoot, targetRepoPath) {
-  const file = lockPath(repoRoot, targetRepoPath);
+function release(repoRoot, targetRepoPath, ownership) {
+  const observerFile = lockPath(repoRoot, targetRepoPath);
+  const file = globalLockPath(targetRepoPath);
   const rec = readRecord(file);
   if (!rec || rec.pid !== process.pid) return;
-  try { fs.unlinkSync(file); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  const unfinished = (Array.isArray(rec.claims) && rec.claims.length > 0)
+    || (Array.isArray(rec.recoveryOwners) && rec.recoveryOwners.length > 0)
+    || rec.recoveryPending || (ownership && ownership.keepForRecovery);
+  if (unfinished) {
+    if (ownership && ownership.keepForRecovery) rec.recoveryPending = true;
+    rec.releasedAt = new Date().toISOString();
+    writeRecord(file, rec);
+    writeRecord(rec.observerFile || observerFile, rec);
+    return;
+  }
+  removeFile(file);
+  removeFile(rec.observerFile || observerFile);
+  if (observerFile !== rec.observerFile) removeFile(observerFile);
 }
 
-module.exports = { acquire, release, lockPath, canonicalTarget };
+module.exports = {
+  acquire, release, recordClaim, completeClaim, clearRecoveryOwner,
+  lockPath, globalLockPath, globalLockRoot, canonicalTarget, isHolderLive,
+  OWNER_TOKEN_KEY, OWNER_RUN_KEY,
+};

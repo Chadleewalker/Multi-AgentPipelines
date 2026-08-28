@@ -7,10 +7,12 @@
   "probeIntervalMinutes": 15,
   "bdTimeoutMs": 60000,
   "gitTimeoutMs": 60000,
+  "lifecycleTimeoutMs": 120000,
   "concurrency": 1,
   "feedIdleGraceMinutes": 0,
   "feedPollSeconds": 30,
   "allowHalfProven": false,
   "agentCommand": null,
+  "hostShell": null,
   "model": "opus"
 }

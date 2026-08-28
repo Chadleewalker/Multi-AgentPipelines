@@ -26,6 +26,10 @@ cat > tests/acceptance/T-3/test.sh <<'EOF'
 #!/bin/sh
 [ -f out.txt ] || { echo "out.txt missing"; exit 1; }
 grep -q done out.txt || { echo "out.txt lacks 'done'"; exit 1; }
+if [ -f README.md ] && grep -q BREAK_VERIFICATION README.md; then
+  echo "README carries the planted post-docs verification failure"
+  exit 1
+fi
 EOF
 git add -A && git commit -qm "planning: frozen tests + config"
 
@@ -61,6 +65,27 @@ cat > /tmp/stub-docsfail.sh <<'EOF'
 PROMPT=$(cat)
 case "$PROMPT" in
   *"change summary"*) exit 1 ;;
+  *)                  echo done > out.txt ;;
+esac
+EOF
+# A docs agent that crosses into source. The changed out.txt still satisfies the
+# acceptance test, so only an enforced docs boundary can prevent it reaching HEAD.
+cat > /tmp/stub-docs-source.sh <<'EOF'
+PROMPT=$(cat)
+case "$PROMPT" in
+  *"change summary"*) printf 'done\nunverified docs-phase source mutation\n' > out.txt
+                      echo "docs updated too" >> README.md
+                      printf 'Changed documentation and source.' ;;
+  *)                  echo done > out.txt ;;
+esac
+EOF
+# An allowed Markdown-only edit that makes the authoritative suite red. A path
+# allowlist alone would publish it; the second verification must reject and restore it.
+cat > /tmp/stub-docs-breakverify.sh <<'EOF'
+PROMPT=$(cat)
+case "$PROMPT" in
+  *"change summary"*) echo BREAK_VERIFICATION >> README.md
+                      printf 'Updated README.' ;;
   *)                  echo done > out.txt ;;
 esac
 EOF
@@ -174,6 +199,39 @@ cp /tmp/ws8/.run/status.json /out/e8-docsfail.json 2>/dev/null
 [ "$RC" = 0 ] && pass "docs-fail: exit still 0 (success stands)" || fail "docs-fail: rc=$RC"
 grep -q '"docsPhaseError"' /out/e8-docsfail.json \
   && pass "docs-fail: docsPhaseError recorded" || fail "docs-fail: error not recorded"
+
+# 8b. Docs phase crosses the documentation boundary: discard every docs-phase change,
+# keep the verified implementation, and explain why success contains no docs commit.
+new_ws /tmp/ws8b; run_ep /tmp/ws8b /tmp/stub-docs-source.sh
+cp /tmp/ws8b/.run/status.json /out/e8b-docs-source.json 2>/dev/null
+[ "$RC" = 0 ] && pass "docs-boundary: verified implementation still exits 0" \
+  || fail "docs-boundary: rc=$RC"
+grep -q '"docsPhaseError".*non-documentation' /out/e8b-docs-source.json \
+  && pass "docs-boundary: violation recorded" || fail "docs-boundary: error not recorded"
+grep -q 'unverified docs-phase source mutation' /tmp/ws8b/out.txt \
+  && fail "docs-boundary: unverified source mutation reached the branch tip" \
+  || pass "docs-boundary: unverified source mutation discarded"
+[ ! -e /tmp/ws8b/README.md ] \
+  && pass "docs-boundary: the entire untrusted docs delta was discarded" \
+  || fail "docs-boundary: part of the rejected docs delta survived"
+[ "$(cd /tmp/ws8b && git log -1 --format=%s)" = "Task T-3: implementation (verified on attempt 1)" ] \
+  && pass "docs-boundary: branch tip is the verified implementation commit" \
+  || fail "docs-boundary: branch tip moved past the verified implementation"
+
+# 8c. Even an allowed Markdown-only delta must survive a final authoritative verification.
+new_ws /tmp/ws8c; run_ep /tmp/ws8c /tmp/stub-docs-breakverify.sh
+cp /tmp/ws8c/.run/status.json /out/e8c-docs-reverify.json 2>/dev/null
+[ "$RC" = 0 ] && pass "docs-reverify: verified implementation still exits 0" \
+  || fail "docs-reverify: rc=$RC"
+grep -q '"docsPhaseError".*final verification' /out/e8c-docs-reverify.json \
+  && pass "docs-reverify: failed final verification recorded" \
+  || fail "docs-reverify: failure not recorded"
+[ ! -e /tmp/ws8c/README.md ] \
+  && pass "docs-reverify: failing Markdown delta discarded" \
+  || fail "docs-reverify: failing Markdown delta survived"
+grep -q '"acceptance": "pass"' /tmp/ws8c/.run/verify.json \
+  && pass "docs-reverify: original passing verifier evidence restored" \
+  || fail "docs-reverify: failed docs evidence replaced the successful result"
 
 # 9. Rate limit with reset time (T10): exit 20, reset recorded, zero attempts consumed.
 new_ws /tmp/ws9; run_ep /tmp/ws9 /tmp/stub-ratelimit.sh

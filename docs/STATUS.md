@@ -1,8 +1,9 @@
-# Status
+# Historical Status Archive
 
-Where the build actually is. Update this when something changes — it is the file a new
-session reads to pick up the thread, and unlike a machine-local memory folder it travels
-with the repo.
+This is the former live status narrative, retained in place so old links and incident
+references remain valid. It is no longer an operating source and should not receive new
+"current state" sections. Use `docs/control-plane.md` for current operator and agent
+guidance, checked-in contracts for machine policy, and Beads for live work state.
 
 _Last updated: 2026-08-28_
 
@@ -1341,9 +1342,9 @@ expected ones:
   database there. So N sessions do not mean N queues and hard rule 1 survives untouched.
   This was the question that could have sunk the design: a forked queue is precisely what
   that rule exists to prevent. `bd worktree info` reports what a folder resolved to.
-- **`runs/` is the one thing that must never be duplicated.** `runs/locks/` is what makes
-  "one run per project" true (§4.12), so a copy is a second lock and two runners can drain
-  one queue. It is also where every manifest and report lands, so a run launched from a
+- **`runs/` is the one thing that must never be duplicated.** `runs/locks/` is the local
+  observer mirror of §4.12's host-global lock, so a copy gives dashboard/sweep readers a
+  false ownership view. It is also where every manifest and report lands, so a run launched from a
   worktree would *work* and write its history where `verdict.js`, `batch.js`,
   `audit-runs.js` and the dashboard never look — invisible, not broken, which is worse.
   Hence: launch runs from the main checkout only. The tool refuses that carry entry by name.
@@ -1844,6 +1845,207 @@ gate is on the path of every run and the Docker suites that merely *touch* `runn
 have not seen it. (3) `docs/pipeline-map.html` is exempt from task docs phases and nothing else
 updates it; its dispatch panel now trails the queue by two admission rules.
 
+## The published branch is now the branch the verifier judged (`repo-tg8.1`, 2026-08-28)
+
+The docs agent used to run after the only authoritative verification with the same writable
+workspace as the code agent, followed by `git add -A`. That let a nominal documentation pass
+change source—or even commit it—and still exit 0 without another test. The implementation
+commit is now a recovery point. Deterministic scaffolding accepts only regular root-level
+Markdown and regular Markdown beneath `docs/`, rejects the entire delta if any other path or
+symlink changed, reruns the authoritative verifier over an allowed final tree, and collapses
+any agent-authored commit into one scaffolding-authored docs commit. A docs error, boundary
+violation, final-verifier failure or commit failure restores the implementation commit and its
+original verifier evidence, records `docsPhaseError`, and preserves the verified success.
+
+`scripts/test-entrypoint.sh` plants both discriminators: a docs agent changes source while
+leaving acceptance green, and an allowed README-only edit makes acceptance red. Neither delta
+survives; the ordinary README update still does. DESIGN.md records the boundary in change-log
+row `final-verification-boundary`.
+
+## Failed completion is now recoverable (`repo-tg8.2`, 2026-08-28)
+
+Task completion used to be three unrelated best-effort calls: `git push` / PR creation,
+Beads notes and terminal transition, then unconditional workspace deletion. A rejected push
+could therefore close a successful issue and erase its only local branch; a failed `bd close`
+was ignored and logged as if it succeeded. The runner now settles those systems in order:
+publication first, checked Beads writes second, cleanup last. Publication failure skips the
+terminal transition. Any publication or Beads failure emits an ERROR `task.finished` event
+with `beads: null`, leaves the issue in progress, records the cause plus
+`recoveryWorkspace` in the manifest/report, and retains that directory.
+
+`scripts/test-events.sh` proves both recoverable paths through the real task runner with a
+local bare remote: one server-side hook rejects the push, while a second fixture publishes
+the branch and PR before its Beads close is forced to fail. The first never attempts close;
+both retain the committed workspace and name it. `scripts/test-report.sh` additionally
+proves a failed push is not rendered as the valid “no commits” case. DESIGN.md records the
+boundary in change-log row `transactional-task-completion`.
+
+## The standard regression layer is now mandatory (`repo-tg8.3`, 2026-08-28)
+
+This repository no longer relies on someone remembering the full control-plane regression
+set. `scripts/test-ci.sh` is an explicit, fail-fast profile of the Docker-free leaf suites;
+the same command runs in GitHub Actions on every push and pull request and runs inside the
+pipeline verifier. `pipeline.config.json` sets `regressionPolicy: required`, read from the
+task's fork point, so anything other than an exact regression pass stops publication before
+push, leaves Beads in progress and retains the recovery workspace. The profile and every
+helper it executes are frozen paths, so a task cannot edit its mandatory discriminator.
+
+The receipt migration that exposed this gap is repaired at the fixture boundary rather than
+by weakening dispatch. `scripts/write-fixture-receipt.js` creates test-only receipts with the
+same shared blob-hash implementation as the runner. The five local runner fixtures generate
+and commit them before dispatch; the live e2e reset path does the same and pushes that fixture
+commit before taking its baseline. `test-runner-queue` deliberately keeps one unreceipted
+suite and proves it is still refused. The helper's unit suite proves exact fields, hash
+agreement, idempotence and regeneration after a suite edit.
+
+Validation on the reference host: all 31 mandatory Docker-free suites passed, followed by
+all five repaired local Docker suites (`runner-container`, `runner-pause`, `runner-publish`,
+`runner-queue`, `runner-workspace`). The external e2e fixture was not mutated during this
+repair; that final live run remains a separately authorized validation step. The full sweep
+also excludes aggregate entry points (`test-all.sh`, `test-ci.sh`) from dynamic leaf-suite
+discovery, preventing the CI profile from recursively duplicating its own children.
+
+## Publication now rejects credentials anywhere in introduced history (`repo-tg8.9`, 2026-08-28)
+
+The runner's credentialed host now scans the complete Git object graph introduced between a
+task's immutable fork point and `HEAD` immediately before every push. That distinction is
+the security boundary: a token committed once and deleted in a later commit is absent from
+the final checkout but remains in the historical blob a branch push publishes. Commit
+messages and raw tree objects are scanned too, so neither prose nor a tracked filename is an
+escape hatch. The exact OAuth value injected into the task container is the primary
+discriminator; high-confidence private-key, GitHub, AWS, Anthropic, OpenAI and bearer-token
+shapes provide defense in depth.
+
+Findings return only a credential kind, Git object type and abbreviated object id. Matching
+bytes never enter the result, error or log. Invalid fork points, Git failures, timeouts,
+malformed/truncated batches, object-count overflow and output-size overflow all fail closed.
+Rejection uses the transactional completion path: nothing is pushed, no terminal Beads
+transition is attempted, and the workspace remains named and recoverable. The scanner, its
+wrapper and its unit suite are frozen mandatory inputs.
+
+`scripts/test-credential-scan.sh` proves 19 cases against real temporary repositories and a
+bare remote: a credential committed then deleted, a credential in a tracked filename, one
+in a commit message, every provider-shaped discriminator, no false finding for ordinary
+credential vocabulary, malformed fork-point refusal, result/log redaction, absence of the
+rejected remote ref, and a clean control branch that still publishes. The existing event
+and settlement suite also passes with the scan in the real task path.
+
+## Runtime artifacts are enforced contracts (`repo-tg8.8`, 2026-08-28)
+
+`status.json` and `verify.json` are no longer parsed best-effort and then trusted. The host
+validates both at collection time against the checked-in schemas, including nested required
+fields, closed object shapes, enums, bounds and RFC3339 timestamps, then separately binds
+each artifact's `issueId` to the task being settled. No package download is involved: the
+runner carries the deliberately small JSON Schema subset these two contracts use, so the
+same check works on a fresh or closed-network host.
+
+Raw invalid files remain copied into `runs/<runId>/tasks/<issueId>/` as forensic evidence,
+but structured consumers receive `null` plus a named contract state: `missing`, `malformed`,
+`schema-invalid` or `issue-mismatch`. Most importantly, container exit 0 is no longer enough
+to become `done`: both contracts must be valid and the authoritative acceptance verdict must
+be exactly `pass`. Any other exit-0 claim becomes `failed`, cannot open a PR, and blocks
+rather than closes the issue. Existing valid `done` and failing-regression `partial` paths
+are unchanged, as are nonzero stuck/tampered/paused/failed outcomes.
+
+`scripts/test-artifact-contracts.sh` covers 55 schema and admission cases without Docker.
+The real task fixture adds four settlement checks proving missing verification on exit 0
+publishes only a failed evidence branch, opens no PR and writes `blocked`, never `close`.
+The schema module plus both input schemas are frozen mandatory inputs.
+
+## Windows startup now proves Git Bash and host Node agree (`repo-tg8.7`, 2026-08-28)
+
+Runner startup no longer assumes that an executable named `bash` is the right shell. On
+Windows that name commonly resolves to the WSL launcher, which cannot see the host's Node
+installation or Windows paths. Preflight now verifies both shell identity and capability:
+the candidate must be Git Bash-compatible and must launch the exact `process.execPath`
+used by the runner. A configured `hostShell` is authoritative; otherwise standard Git for
+Windows locations and then PATH candidates are tried in deterministic order. Linux retains
+the portable `bash` default with the same host-Node probe.
+
+Resolution happens after the project lock but before Docker, network, Beads recovery, or
+task launch. Failure releases the lock, skips teardown for infrastructure that never
+started, and names the precise Git for Windows or `hostShell` remedy. Success is stored in
+the loaded run configuration and reused by task execution, egress probes, pause handling,
+and PR publication, eliminating later drift back to whichever `bash` happens to be first
+on PATH. The shell resolver and its 27-check suite are frozen mandatory inputs.
+
+## Lifecycle calls are bounded and cleanup survives exceptions (`repo-tg8.6`, 2026-08-28)
+
+All short-lived runner subprocesses now have an explicit configuration boundary. Git clone,
+branch inspection, diff, push and dispatch use `gitTimeoutMs` (default 60 seconds); Docker
+probes, network scripts, host-shell/rate-limit probes and GitHub publication use
+`lifecycleTimeoutMs` (default 120 seconds). The shared result contract turns a kernel timeout
+into status 124 with `timedOut: true` and a bounded diagnostic naming the command, duration
+and config key. Workspace and publication paths consume that failure instead of treating an
+empty result as “no commits,” an evidence policy, or another successful no-op.
+
+Container active-time enforcement no longer depends on the orchestration event loop. Each
+live task has an independent worker-thread watchdog which owns the deadline and a bounded
+`docker kill`; a clone, Beads write, or other synchronous host operation in a sibling worker
+cannot delay it. The 29-check Docker-free suite proves this by blocking the main thread for
+400 ms while a 50 ms watchdog action still fires, and separately proves the watchdog's own
+wedged action normalizes to timeout 124. The real `runner-container` sweep passed all 21
+checks, including an actual hanging container killed at its active budget.
+
+Preflight now compensates any attempted network startup in `finally`, including partial
+startup followed by an exception, before releasing its project lock. Once preflight passes,
+the entire queue/report lifecycle has a second `finally`: bounded network teardown runs
+first and lock release is nested so even teardown failure cannot strand it. A cleanup failure
+makes the run nonzero and suppresses the success event. The process helper, watchdog, wrapper
+and unit suite are frozen mandatory inputs.
+
+## Global ownership and proof-scoped recovery (`repo-tg8.4`, 2026-08-28)
+
+The project lock's authority no longer lives inside one pipeline checkout. It is now stored
+once per user/host outside every checkout and keyed by the canonical target path, so two
+pipeline clones that point at the same target contend on the same exclusive file. The
+launching checkout still receives a `runs/locks/` mirror for the dashboard, sweep and human
+inspection. That mirror is observational; it cannot grant ownership.
+
+Queue claims now use Beads' atomic `--claim`. The same transaction assigns a unique run
+actor and writes `pipeline_owner_token` plus `pipeline_run_id` metadata. The lock records the
+issue only after that transaction wins, and removes it only after a terminal Beads write
+succeeds. Paused tasks and recoverable publication/tracking failures therefore make clean
+shutdown retain a released owner record; a crash naturally leaves its live record behind.
+
+Takeover carries those dead-owner tokens forward. Preflight may list in-progress issues, but
+it reopens only a row whose current status, unique assignee and both metadata fields still
+match one of them, clearing the proof in the same update. Human work, newer run ownership and
+legacy unproven rows are untouched. A read or write failure retains the recovery token for a
+later run rather than widening the reset.
+
+Validation: the Docker-free ownership suite is 32/32; the existing lock suite is 49/49;
+the event/task-body suite is 124/124 plus all three reader suites; and all 33 mandatory
+regression suites pass. Docker sweep `20260828-143133` is 20/20 and proves one owned row
+reopens while a human in-progress row does not. Sweep `20260828-143228` is 27/27 and proves
+terminal claims settle while a paused claim is handed to the next run and recovered. The
+publication sweep `20260828-144253` is 26/26 across done, stuck and partial outcomes.
+
+## Repository-bound control and publication planes (`repo-tg8.5`, 2026-08-28)
+
+Preflight now proves that the checkout named by `targetRepoPath` and the publication locator
+named by `targetRepoRemote` identify the same Git repository. It asks Git to expand configured
+URL aliases, enumerates every local fetch remote, and compares credential-free canonical
+identities. Local path and `file://` spellings match; GitHub HTTPS and SSH spellings match;
+credentials, transport and a network URL's conventional trailing `.git` do not become
+identity. Filesystem siblings `repo` and `repo.git` remain distinct. A checkout with no fetch
+remote is unprovable and is refused rather than trusted by proximity.
+
+This gate runs immediately after the host-global project lock and before the host-shell probe,
+Docker, networking, Beads recovery or queue reads. A mismatch therefore cannot claim, reopen,
+close or block an issue, and cannot create a task workspace or publish a branch. The 20-check
+Docker-free fixture runs the full runner against two real unrelated remotes and proves the
+local `.beads` tree is byte-for-byte unchanged and the controlled temp root has no workspace.
+
+The atomic-claim change exposed one adjacent lifecycle defect during the real workspace sweep:
+a terminal issue retained its unique runner assignee and owner metadata, so reopening it made
+the next `--claim` refuse an apparently already-owned row. Terminal status and ownership
+cleanup now share one Beads update. Ownership coverage is 32/32, event/task-body coverage
+remains 124/124, Docker bootstrap sweep `20260828-145326` is 20/20, and Docker workspace
+sweep `20260828-145751` is 23/23 including a settled issue reopened onto an `-r2` branch.
+Docker queue sweep `20260828-150141` is 27/27, publication sweep `20260828-150407` is
+26/26, and all 33 mandatory Docker-free suites pass.
+
 ## What's next
 
 **The live queue feed shipped on 2026-08-25** — a run re-reads the ready queue while it is
@@ -2047,6 +2249,7 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-agent-hooks.sh` | container hygiene — no tracked file configures an agent hook |
 | `scripts/test-network-names.sh` | per-project network and proxy names — derivation, and that they reach the scripts |
 | `scripts/test-lock.sh` | the per-project run lock — refusal, path identity, takeover, release |
+| `scripts/test-ownership.sh` | host-global run ownership, atomic Beads claims, and exact dead-owner recovery |
 | `scripts/test-sweep-hygiene.sh` | sweep hygiene — what the sweep reclaims after a suite, what it must never touch, and that reclaiming changes no verdict |
 | `scripts/test-concurrency.sh` | the §7 `concurrency` knob — the bound, the worker pool, ready-queue result ordering, and the asynchronous execution seam |
 | `scripts/test-pause-gate.sh` | the §7 run-level rate-limit park — one shared wait, one run-level cycle cap, the three admission states, and a refused task that never touches Beads |

@@ -57,7 +57,7 @@
           "issueId": { "type": "string" },
           "title": { "type": "string" },
           "outcome": {
-            "description": "Report status from the 4.11 table. 'undispatchable' is the one value that touches Beads not at all: the ready queue refused the issue before claim() because its frozen acceptance suite is absent from the branch its container would fork from (4.12), so it stays open.",
+            "description": "Task status from contracts/control-plane.json. 'undispatchable' is the one value that touches Beads not at all: the ready queue refused the issue before claim() because its frozen acceptance suite is absent from the branch its container would fork from (4.12), so it stays open.",
             "enum": ["done", "partial", "stuck", "tampered", "failed", "paused", "undispatchable"]
           },
           "refusal": {
@@ -86,7 +86,7 @@
             "additionalProperties": false,
             "properties": {
               "acceptance": { "enum": ["pass", "fail", "tampered", "error"] },
-              "regressions": { "enum": ["pass", "fail", "absent"] },
+              "regressions": { "enum": ["pass", "fail", "absent", "error"] },
               "evidence": { "type": "string" }
             }
           },
@@ -100,6 +100,10 @@
             "type": "array",
             "maxItems": 5,
             "items": { "type": "string", "maxLength": 1000 }
+          },
+          "recoveryWorkspace": {
+            "description": "Host workspace retained because publication or the terminal Beads transition did not complete. The issue remains in_progress and this path is the recovery source.",
+            "type": "string"
           },
           "error": { "type": "string" }
         }

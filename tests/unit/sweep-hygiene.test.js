@@ -137,6 +137,11 @@ function makeRoot(opts) {
   if (opts.preExisting) fs.writeFileSync(path.join(root, 'state', 'created'), '');
   fs.writeFileSync(path.join(root, 'scripts', 'test-stub.sh'),
     `#!/bin/sh\necho "PASS  stub ran"\n: > "${marker}"\nexit ${opts.suiteExit}\n`);
+  // Aggregate profiles match the test-*.sh glob but are not leaf suites. If test-all
+  // discovers this sentinel, every fake sweep turns red (and a real sweep recursively
+  // duplicates all of test-ci's children).
+  fs.writeFileSync(path.join(root, 'scripts', 'test-ci.sh'),
+    '#!/bin/sh\necho "FAIL aggregate test-ci ran recursively"\nexit 99\n');
 
   const rec = path.join(root, 'record.log');
   const stub = path.join(root, 'scripts', 'fake-docker.js');
@@ -260,6 +265,8 @@ function reclaimCli(fake, args, env) {
   const rec = read(fake.rec);
   check('harness: the sweep reached the stand-in (if this fails, ignore the rest)',
     rec.length > 0 && /(^|\n)ps /.test(rec));
+  check('aggregate test-ci profile is excluded from full-sweep discovery',
+    !/aggregate test-ci ran recursively/.test(r.stdout + r.stderr));
   check('harness: the sweep got past its own Docker precheck', /(^|\n)info/.test(rec));
   check('a container leaked by a suite that exited 1 is reclaimed, with no network in sight',
     /(^|\n)rm -f ccc9\b/.test(rec));

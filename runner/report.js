@@ -147,9 +147,14 @@ function renderReport(manifest) {
     if (t.title) L.push(`**${t.title}**`);
     L.push('');
     const facts = [];
-    if (t.branch) facts.push(`Branch: \`${t.branch}\`${t.pushed ? '' : ' (not pushed — no commits)'}`);
+    if (t.branch) {
+      const notPushed = t.pushed ? ''
+        : (t.recoveryWorkspace ? ' (not pushed — completion failed)' : ' (not pushed — no commits)');
+      facts.push(`Branch: \`${t.branch}\`${notPushed}`);
+    }
     if (t.prUrl) facts.push(`PR: ${t.prUrl}`);
     else if (t.pushed) facts.push('PR: none — review the branch directly');
+    if (t.recoveryWorkspace) facts.push(`Recovery workspace: \`${t.recoveryWorkspace}\``);
     if (t.attempts !== undefined) facts.push(`Attempts: ${t.attempts}`);
     if (t.pauses) facts.push(`Rate-limit pauses: ${t.pauses}`);
     if (t.activeSeconds !== undefined) facts.push(`Active time: ${t.activeSeconds}s`);

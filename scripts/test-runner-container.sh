@@ -54,6 +54,7 @@ add_issue() { # add_issue <title> <test-body>
   local id; id=$(bdq create "$1" -d "$1" --acceptance "acceptance tests pass" --design "design-ref: 4.3" -p 0 --silent)
   mkdir -p "$TGT/tests/acceptance/$id"
   printf '%s\n' "$2" > "$TGT/tests/acceptance/$id/test.sh"
+  node "$ROOT/scripts/write-fixture-receipt.js" "$TGT" "$id" >/dev/null
   (cd "$TGT" && git add -A && git commit -qm "planning: frozen tests for $id" >/dev/null)
   echo "$id"
 }
