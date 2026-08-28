@@ -245,6 +245,17 @@ new rule. What the receipt buys is that a freeze becomes a **fact the runner can
 rather than a step the playbook asks for: fourteen planning drafts on the first real
 project mentioned the gate zero times, and nothing could tell.
 
+*The writer is built* (change-log row `repo-erq`): `scripts/freeze-gate.js` writes the
+receipt on exit 0 and exit 4, refuses a `--repo` that is not a git repository before it runs
+anything, and fails the whole invocation at exit 2 if the receipt cannot be written — a
+verdict nothing recorded is a freeze the runner would refuse anyway. The formula lives in
+`runner/suite-hash.js` and the hash is taken *before* the suite is run, so a fixture that
+writes beside itself cannot pin a state only the planning machine has seen. *Not built yet:*
+the reader. §4.12's third admission rule below is the task after this one, and until it ships
+nothing consults the receipt — which is why the coverage for the writer is re-runnable
+(`tests/unit/freeze-gate.test.js`) rather than only frozen: the two halves ship a task apart,
+and the frozen directory that gated the writer never runs again.
+
 **Upstream of step 1: the idea inbox.** Each repo — this one and every target — carries a
 `docs/IDEAS.md`, a flat list of parked notes saying *a design might be wanted here
 someday*. It is not part of the pipeline above and has no gate, no owner and no
@@ -1349,7 +1360,9 @@ source of truth.
     importing the check rather than keeping a second copy.
 
     **A frozen suite without a matching receipt is never dispatched either — the third
-    admission rule** (change-log row `receipt-design`). The second rule proves a suite is
+    admission rule** (change-log row `receipt-design`). *Not built yet:* the receipt is
+    written (§3.2, change-log row `repo-erq`) and nothing reads it. Everything in this
+    paragraph is the design the next task implements. The second rule proves a suite is
     *present*; this one proves it was *gated*. Before claiming, the runner reads
     `tests/acceptance/<issue-id>/.freeze-gate.json` from the fetched integration branch and
     recomputes the suite's hash from that branch's blobs with the same `runner/suite-hash.js`
