@@ -1467,8 +1467,10 @@ source of truth.
       both push a branch for it, which is the failure the per-project run lock exists to
       prevent (change-log row `repo-os9`) reintroduced inside one process.
     - **A refusal becomes a wait rather than a verdict.** A task frozen mid-run is refused by
-      the second admission rule above for the minutes before its suite is pushed, which is
-      exactly right and exactly temporary. So refusals are re-evaluated on every poll, and
+      the second admission rule above for the minutes before its suite is pushed — and by the
+      third for as long as the receipt beside it is unpushed, which is a second way the same
+      few minutes look from in here — which is exactly right and exactly temporary. So
+      refusals are re-evaluated on every poll, carrying their `refusal` kind, and
       only what is **still** refused when the run closes is manufactured into a manifest row.
       Reporting a task as undispatchable when it later ran and has a PR would be a lie about a
       task the reviewer can see succeeded.

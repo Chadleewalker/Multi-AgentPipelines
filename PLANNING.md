@@ -430,7 +430,7 @@ install anything at run time):
   `bd ready` returns the parent alongside its children — but the runner filters entries
   typed `epic` out and names them in its `ready queue:` log line (§3.1, §4.12). Every
   other type (`bug`, `feature`, `chore`, `decision`) is *eligible* to run — subject to the
-  next bullet, which is the queue's second admission rule — so anything in the list
+  next two bullets, which are the queue's second and third admission rules — so anything in the list
   that is not meant to run this batch must be blocked or closed, not merely retyped.
   The *membership* half of this bullet is automated by the marker's own reader — see the
   last act below — which leaves you the half it cannot check: the **priority order**.

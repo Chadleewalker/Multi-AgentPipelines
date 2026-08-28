@@ -421,8 +421,16 @@ Two hard boundaries, both inherited:
   marker exists to remove, arriving through the marker itself. The fix is probably the same
   move again: import the dispatchability check rather than keeping a second copy, and report a
   third token beside `ready` / `not-ready`. Deliberately out of scope for the gate task, whose
-  design says nothing about `batch.js`. Related: DESIGN.md §3.9, §4.12, change-log rows
-  `repo-8v0` and `dispatch-gate`. 2026-08-21
+  design says nothing about `batch.js`. **Amended 2026-08-28 (`repo-isq`):** the gate shipped
+  and has since grown a *third* admission rule — the freeze receipt — so the reader now trails
+  by two rules rather than one, and the refusal it cannot predict has four kinds rather than
+  one shape. Two consequences for whoever picks this up. The check to import is no longer a
+  boolean about a directory: it reads `.freeze-gate.json` from the same fetched branch and
+  needs the run config's `allowHalfProven` to answer at all, so the third token probably wants
+  the refusal kind with it. And the runner's queue-summary `NOT DISPATCHABLE` clause was
+  deliberately left naming only the missing suite — that string and its grep sites belong to
+  this follow-up, so they move once. Related: DESIGN.md §3.9, §4.12, change-log rows
+  `repo-8v0`, `dispatch-gate` and `repo-isq`. 2026-08-21
 
 ### Agent ideas
 
