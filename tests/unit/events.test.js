@@ -32,8 +32,24 @@
 //     touching `P` and this goes red — which is the whole failure this ledger exists to
 //     stop happening quietly.
 //   * TYPES, not just keys. The frozen suite's inline validator checks that keys are
-//     declared; this one checks the declared TYPE of every value, because `priority: "1"`
-//     and `killed: "false"` are both non-empty, well-formed and wrong.
+//     declared; this one checks the declared TYPE of every value — and, since change-log row
+//     `repo-3xw`, the declared type of every ARRAY ITEM, because `queue.read`'s whole
+//     contract is that `ready` holds ids and never issue objects, and a reader that stops at
+//     "it is an array" makes the schema's `items` decoration rather than a rule.
+//
+// Change-log row `repo-3xw` added the three facts no other artifact carries, and with them
+// three shapes of coverage a fixture run cannot reach on its own:
+//
+//   * THE QUEUE READ AND ITS REFUSALS, through `runner/queue.js`'s exported emitters. `main()`
+//     writes them and `main()` sits behind the token load and the Docker preflight, so the
+//     helpers are the only reachable form — which is why they are helpers.
+//   * THE ATTEMPT TRICHOTOMY, driven directly. `[]`, a list and `null` are three facts, and a
+//     container writes ONE status file per task, so the shapes are planted rather than run.
+//     The expensive confusion is the third read as the first: an attempt that failed and whose
+//     output did not survive is not an attempt that failed nothing.
+//   * THE COLON FORM'S ONE-SIDEDNESS. `failingChecks` recognises `FAIL: <text>` and
+//     `countAssertions` must not, or every sweep number that has been stable since change-log
+//     row `repo-0ay` moves as a side effect.
 'use strict';
 const fs = require('fs');
 const os = require('os');
@@ -69,6 +85,7 @@ const NAMED = {
   lockHeld: 'lock.held',
   lockTookOver: 'lock.tookOver',
   readyQueue: 'queue.read',
+  undispatched: 'task.undispatched',
   starting: 'task.started',
   workspaceReady: 'workspace.ready',
   launching: 'container.launched',
@@ -85,10 +102,13 @@ const NAMED = {
   feedPickedUp: 'feed.pickedUp',
   feedClosed: 'feed.closed',
 };
-// Declared, not emitted: the ledger-only queue read with every refusal is the next task
-// (change-log row `events-ledger-design`). Naming it here is what stops "no call site emits
-// it" from reading as a defect in the checks below.
-const RESERVED = new Set(['queue.read']);
+// LEDGER-ONLY events (change-log row `repo-3xw`): facts with no prose form, emitted through
+// `log.event()` with `msg: null` and never echoed. They are in the schema enum and they are
+// deliberately NOT in `NAMED` above, because `NAMED` is the prose-line map — a dashboard
+// prefix for an event that writes no line would be a prefix that matches nothing forever.
+// The two structures are asserted exhaustive together further down, so an event cannot fall
+// between them.
+const LEDGER_ONLY = ['attempt.finished', 'concern.raised'];
 
 const events = (dir) => (read(path.join(dir, 'events.jsonl')) || '')
   .split('\n').filter(Boolean)
@@ -210,10 +230,13 @@ check('S the envelope declares and requires exactly the eight keys',
 check('S every dashboard prefix key has an event name, and there are no extras either way',
   JSON.stringify(Object.keys(P).sort()) === JSON.stringify(Object.keys(NAMED).sort()),
   Object.keys(P).sort().join(','));
-check('S every named event plus "log" is in the enum, and the enum holds nothing else',
+check('S every named and ledger-only event plus "log" is in the enum, and the enum holds nothing else',
   Array.isArray(ENUM)
-  && JSON.stringify([...ENUM].sort()) === JSON.stringify(['log', ...Object.values(NAMED)].sort()),
+  && JSON.stringify([...ENUM].sort())
+    === JSON.stringify(['log', ...Object.values(NAMED), ...LEDGER_ONLY].sort()),
   ENUM && ENUM.join(','));
+check('S no event is both prose-paired and ledger-only — the two maps do not overlap',
+  LEDGER_ONLY.every((n) => !Object.values(NAMED).includes(n)));
 check('S $defs.events is a map keyed by event name, with an entry for every one of them',
   !!DEFS && Array.isArray(ENUM)
   && Object.keys(DEFS).every((k) => ENUM.includes(k))
@@ -240,14 +263,32 @@ check('S the "log" event declares no data fields — nothing is inferred from a 
       emitted.get(m[1]).push({ file, before: text.slice(Math.max(0, m.index - 800), m.index) });
     }
   }
-  check('S every event name emitted in runner/ is in the schema enum',
-    Array.isArray(ENUM) && [...emitted.keys()].every((n) => ENUM.includes(n)),
-    [...emitted.keys()].filter((n) => !ENUM || !ENUM.includes(n)).join(','));
-  const shouldEmit = Object.values(NAMED).filter((n) => !RESERVED.has(n));
-  check('S every named event that is not reserved has a call site in runner/',
+  // Ledger-only facts are emitted the OTHER way — `log.event(trace, '<name>', data)` — so the
+  // `event: '<name>'` scan above cannot see them, and they carry no message for a prefix to
+  // match. Scanned separately, and held to the one rule that still applies: the name is in
+  // the enum, and every declared ledger-only event actually has a call site.
+  const ledgerSites = new Map();
+  for (const { file, text } of SRC) {
+    for (const m of text.matchAll(/\.event\(\s*[^,]+,\s*'([^']+)'/g)) {
+      if (!ledgerSites.has(m[1])) ledgerSites.set(m[1], []);
+      ledgerSites.get(m[1]).push(file);
+    }
+  }
+  check('S every event name emitted in runner/ is in the schema enum, both call forms',
+    Array.isArray(ENUM) && [...emitted.keys(), ...ledgerSites.keys()].every((n) => ENUM.includes(n)),
+    [...emitted.keys(), ...ledgerSites.keys()].filter((n) => !ENUM || !ENUM.includes(n)).join(','));
+  const shouldEmit = Object.values(NAMED);
+  check('S every prose-paired event has a call site in runner/ — nothing is declared and unwritten',
     shouldEmit.every((n) => emitted.has(n)), shouldEmit.filter((n) => !emitted.has(n)).join(','));
-  check('S the reserved event is declared and emitted by nothing yet',
-    [...RESERVED].every((n) => ENUM.includes(n) && !emitted.has(n)));
+  check('S every ledger-only event has a log.event() call site, and emits no prose event',
+    LEDGER_ONLY.every((n) => ledgerSites.has(n) && !emitted.has(n)),
+    LEDGER_ONLY.filter((n) => !ledgerSites.has(n)).join(','));
+  // `queue.read` was declared by the writer task and emitted by nothing (change-log row
+  // `repo-qzy`). It is emitted now, from the queue module, and this is the check that would
+  // have gone red had the declaration been left standing empty a second time.
+  check('S queue.read is no longer reserved: it has a call site, and it is in runner/queue.js',
+    emitted.has('queue.read') && emitted.get('queue.read').some((s) => s.file === 'queue.js'),
+    [...(emitted.get('queue.read') || [])].map((s) => s.file).join(','));
   const byName = Object.fromEntries(Object.entries(NAMED).map(([k, v]) => [v, P[k]]));
   const mismatched = [];
   for (const [name, sites] of emitted) {
@@ -257,6 +298,43 @@ check('S the "log" event declares no data fields — nothing is inferred from a 
   }
   check('S every emitting call site carries the dashboard prefix its event claims',
     mismatched.length === 0, mismatched.join(' | '));
+}
+
+// ---- V: the failing-check vocabulary the ledger imports ---------------------------------
+// `failingChecks` lives in scripts/sweep-assertions.js — the one file that owns this repo's
+// assertion-line constants — and `attempt.finished` is its only consumer (change-log row
+// `repo-3xw`). Covered from here as well as from that file's own suite because the JOIN is
+// what breaks: a name list that silently stops recognising a form is non-empty, well-formed
+// and stale, and only the ledger would carry the consequence.
+{
+  const sweep = require(path.join(ROOT, 'scripts', 'sweep-assertions.js'));
+  const fc = typeof sweep.failingChecks === 'function' ? sweep.failingChecks : null;
+  check('V scripts/sweep-assertions.js exports failingChecks', !!fc);
+  if (fc) {
+    check('V all three failure forms are recognised: node, shell and the colon form',
+      JSON.stringify(fc('FAIL - dash form\nFAIL\tshell form\nFAIL: colon form\n'))
+        === JSON.stringify(['colon form', 'dash form', 'shell form']));
+    // `FAIL - x` also satisfies `^FAIL[ \t]`, so the ORDER the forms are tried in is the whole
+    // difference between naming the check and naming `- x`. This is the check that catches it.
+    check('V the dash form is read as the dash form, never as the shell form with a stray dash',
+      JSON.stringify(fc('FAIL - b broke\n')) === JSON.stringify(['b broke']));
+    check('V a file-level FAIL: <path> is a name like any other — the path IS what failed',
+      JSON.stringify(fc('FAIL: tests/acceptance/x/t.js\n')) === JSON.stringify(['tests/acceptance/x/t.js']));
+    check('V sorted and de-duplicated: two attempts that failed the same set match as sets',
+      JSON.stringify(fc('FAIL - z\nFAIL - a\nFAIL - z\n')) === JSON.stringify(['a', 'z']));
+    check('V anchored at column 0 and CRLF-tolerant, exactly like countAssertions',
+      JSON.stringify(fc('  FAIL - indented decoy\nFAIL - real\r\n')) === JSON.stringify(['real']));
+    check('V a log with no failures is [] and junk input does not throw',
+      JSON.stringify(fc('ok - a\nPASS b\n')) === '[]'
+      && [undefined, null, 42, '', {}].every((j) => JSON.stringify(fc(j)) === '[]'));
+    // The constraint that keeps every existing sweep number where it is: the colon form is
+    // `failingChecks`' alone. A shared constant would move `failed` on logs that have been
+    // reporting the same number since change-log row `repo-0ay`.
+    const ca = sweep.countAssertions('ok - a\nFAIL: colon\nPASS b\n');
+    check('V the colon form is invisible to countAssertions, so no suite\'s number moved',
+      ca.count === 1 && ca.failed === 0 && JSON.stringify(ca.counts) === JSON.stringify({ node: 1, shell: 1 }),
+      JSON.stringify(ca));
+  }
 }
 
 // The validator, types included. Dependency-free on purpose: the schema is the contract for
@@ -272,8 +350,23 @@ function typeOk(value, spec) {
   return want.some((t) => {
     if (t === 'null') return value === null;
     if (t === 'integer') return Number.isInteger(value);
-    if (t === 'array') return Array.isArray(value);
-    if (t === 'object') return !!value && typeof value === 'object' && !Array.isArray(value);
+    // ITEMS, not just `array`. `queue.read`'s whole contract is that `ready` holds ids and
+    // never issue objects, and a reader that stops at "it is an array" cannot say so — which
+    // makes the schema's `items` declaration decoration rather than a rule.
+    if (t === 'array') {
+      return Array.isArray(value) && (!spec.items || value.every((x) => typeOk(x, spec.items)));
+    }
+    if (t === 'object') {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+      if (spec.additionalProperties === false && spec.properties) {
+        for (const k of Object.keys(value)) if (!(k in spec.properties)) return false;
+      }
+      for (const k of (spec.required || [])) if (!(k in value)) return false;
+      for (const [k, s] of Object.entries(spec.properties || {})) {
+        if (k in value && !typeOk(value[k], s)) return false;
+      }
+      return true;
+    }
     if (t === 'boolean') return typeof value === 'boolean';
     if (t === 'string') return typeof value === 'string';
     if (t === 'number') return typeof value === 'number';
@@ -492,6 +585,198 @@ async function fixtureRun() {
     && by('task.started')[0].issueId === 'led-1');
   check('F unnamed lines are event "log" with empty data, and there are some',
     by('log').length > 0 && by('log').every((e) => JSON.stringify(e.data) === '{}'));
+  // The ledger-only facts from the REAL task body, which is the only thing that proves
+  // `runOneTask` emits them at all — and emits them ONCE. This fixture pauses and relaunches,
+  // so it collects its status file twice; an implementation that emitted inside the loop
+  // writes attempt 1 twice here and nowhere else.
+  check('F the paused-and-relaunched task emits ONE attempt.finished per attempt, not one per collection',
+    by('attempt.finished').length === 1 && by('attempt.finished')[0].data.number === 1
+    && by('attempt.finished')[0].data.issueId === 'led-1'
+    && by('attempt.finished')[0].msg === null, JSON.stringify(by('attempt.finished').map((e) => e.data)));
+  check('F ...after the relaunch, never before it',
+    ev.findIndex((e) => e.event === 'attempt.finished') > ev.findIndex((e) => e.event === 'task.relaunched'));
+  check('F the refused task reaches neither ledger-only fact — nothing ran, so nothing is known',
+    by('attempt.finished').every((e) => e.issueId !== 'led-2') && by('concern.raised').length === 0);
+
+  // ---- Q: the queue read and its refusals, through the exported helpers -----------------
+  // The two events `main()` writes. `main()` sits behind the token load and the Docker
+  // preflight, so the helpers in runner/queue.js are the only reachable form of them — which
+  // is precisely why they are helpers (change-log row `repo-3xw`).
+  {
+    const queue = require(path.join(ROOT, 'runner', 'queue.js'));
+    const log = logmod.startRun(path.join(TMP, 'queue'), 'unit-events-q');
+    const q = {
+      ok: true,
+      issues: [{ id: 'q-1', title: 'one', issue_type: 'task' }, { id: 'q-2', title: 'two', issue_type: 'bug' }],
+      skipped: [{ id: 'e-1', title: 'epic', issue_type: 'EPIC ' }],
+      undispatchable: [
+        { issue: { id: 'u-1', title: 'u' }, reason: 'no frozen acceptance suite at tests/acceptance/u-1/ on main' },
+        { issue: { id: 'u-2', title: 'v' }, reason: 'the suite changed since the gate ran', refusal: 'receipt-mismatch' },
+      ],
+    };
+    queue.logQueueRead(log, q);
+    for (const u of q.undispatchable) queue.logUndispatched(log, u);
+
+    const qev = events(log.dir);
+    const qln = lines(log.dir);
+    const qr = qev.filter((e) => e.event === 'queue.read');
+    check('Q queue.read is written once, as the TWIN of the ready-queue line: one ts, one call',
+      qr.length === 1 && String(qr[0].msg).startsWith(P.readyQueue)
+      && qln[0].startsWith(`${qr[0].ts} INFO `) && qln[0].endsWith(qr[0].msg),
+      JSON.stringify(qr[0] || null));
+    check('Q ...traced to preflight, so its issueId is null — a queue read belongs to no issue',
+      qr.length === 1 && qr[0].trace === 'unit-events-q/preflight' && qr[0].issueId === null);
+    check('Q ready is a list of IDS, never issue objects — a bd issue carries prose the ledger must not',
+      qr.length === 1 && JSON.stringify(qr[0].data.ready) === JSON.stringify(['q-1', 'q-2']));
+    check('Q skipped carries the id and the NORMALISED type that removed it, not the raw field',
+      qr.length === 1 && JSON.stringify(qr[0].data.skipped) === JSON.stringify([{ id: 'e-1', type: 'epic' }]),
+      JSON.stringify(qr.length && qr[0].data.skipped));
+    // `refusal` is a KIND and the gate names none today: carried when present, ABSENT when
+    // not. A `refusal: null` on every line would be a field a later reader has to learn to
+    // ignore, and defaulting it to a string would fix a vocabulary this task does not own.
+    check('Q refused carries id and reason always, and the refusal kind only where one was given',
+      qr.length === 1 && JSON.stringify(qr[0].data.refused) === JSON.stringify([
+        { id: 'u-1', reason: 'no frozen acceptance suite at tests/acceptance/u-1/ on main' },
+        { id: 'u-2', reason: 'the suite changed since the gate ran', refusal: 'receipt-mismatch' },
+      ]), JSON.stringify(qr.length && qr[0].data.refused));
+
+    const ud = qev.filter((e) => e.event === 'task.undispatched');
+    check('Q task.undispatched is one ERROR twin per refused issue, prefixed as the table says',
+      ud.length === 2 && ud.every((e) => e.level === 'ERROR' && String(e.msg).startsWith(P.undispatched)),
+      JSON.stringify(ud.map((e) => e.msg)));
+    // The whole reason it is traced to the issue: `issueId` is the trace's tail, so a
+    // run-level trace would file every refusal under nothing and the reader asking "what
+    // happened to u-2" would find an empty answer rather than the reason.
+    check('Q ...each traced to ITS OWN issue, so issueId files it where a reader will look',
+      ud.length === 2 && ud[0].issueId === 'u-1' && ud[1].issueId === 'u-2'
+      && ud[0].data.id === 'u-1' && ud[1].data.refusal === 'receipt-mismatch'
+      && !('refusal' in ud[0].data));
+    const qbad = qev.map(validate).filter(Boolean);
+    check('Q every queue event validates against the schema, types included', qbad.length === 0, qbad.join(' | '));
+    // The negative side of the ids-only rule, which is the one the schema is there to hold.
+    // The negatives, one rule per planted line, so a rejection names what caught it. Without
+    // these "everything validates" is a statement about the validator, not about the ledger.
+    const qrejects = {
+      'a ready list holding issue objects rather than ids': { ready: [{ id: 'q-1' }], skipped: [], refused: [] },
+      'a skipped entry with no type — the id alone does not say what removed it': { ready: [], skipped: [{ id: 'e-1' }], refused: [] },
+      'a refused entry carrying a whole issue alongside the reason': { ready: [], skipped: [], refused: [{ id: 'u-1', reason: 'r', issue: { id: 'u-1' } }] },
+      'a refused entry with no reason': { ready: [], skipped: [], refused: [{ id: 'u-1' }] },
+      'a ready list that is a count rather than a list': { ready: 2, skipped: [], refused: [] },
+    };
+    for (const [why, data] of Object.entries(qrejects)) {
+      check(`Q the validator rejects ${why}`, validate({ ...qr[0], data }) !== null, JSON.stringify(data));
+    }
+    check('Q an empty queue is still a queue read: three empty lists, not a missing event',
+      (() => {
+        const l2 = logmod.startRun(path.join(TMP, 'queue2'), 'unit-events-q2');
+        queue.logQueueRead(l2, { ok: true, issues: [], skipped: [], undispatchable: [] });
+        const e = events(l2.dir)[0];
+        return !!e && e.event === 'queue.read' && validate(e) === null
+          && JSON.stringify(e.data) === JSON.stringify({ ready: [], skipped: [], refused: [] });
+      })());
+  }
+
+  // ---- A: the attempt trichotomy, driven directly -------------------------------------
+  // `[]`, a list, and `null` are THREE facts, and the expensive confusion is the third read
+  // as the first: a reader asking "did the last two attempts fail the same checks?" would
+  // score two attempts that recorded nothing as identical. A fixture run writes one status
+  // file, so the shapes are planted here instead.
+  {
+    const log = logmod.startRun(path.join(TMP, 'att'), 'unit-events-att');
+    const tr = log.trace('a-9');
+    runmod.logAttempts(log, tr, 'a-9', {
+      attempts: [
+        { number: 1, verifierResult: 'fail', feedback: 'ok - a\nFAIL - alpha\nFAIL: tests/acceptance/z/t.js\n' },
+        { number: 2, verifierResult: 'fail', feedback: 'ok - a\nok - b\n' },
+        { number: 3, verifierResult: 'fail' },
+      ],
+    }, { acceptanceOutput: 'ok - a\nFAIL - from the verifier output\n' });
+    const at = events(log.dir).filter((e) => e.event === 'attempt.finished');
+    check('A one attempt.finished per attempt, ledger-only: msg null, INFO, no run.log line',
+      at.length === 3 && lines(log.dir).length === 0
+      && at.every((e) => e.msg === null && e.level === 'INFO' && e.issueId === 'a-9' && e.data.issueId === 'a-9'),
+      JSON.stringify(at.map((e) => e.data)));
+    check('A a failing attempt\'s names come from its own feedback, sorted, the colon form included',
+      at.length === 3 && JSON.stringify(at[0].data.failingChecks)
+        === JSON.stringify(['alpha', 'tests/acceptance/z/t.js']), JSON.stringify(at[0] && at[0].data));
+    check('A feedback present with nothing failing is [] — text was read and named nothing',
+      at.length === 3 && JSON.stringify(at[1].data.failingChecks) === '[]');
+    // The path the frozen suite could not reach: its own fixture's verify.json is written by
+    // a printf that turns `\n` into a real newline, so the document does not parse and
+    // `collectArtifacts` drops it. Here verify is handed in as an object, and the output
+    // CARRIES a failure — so an implementation that skipped the fallback answers null and a
+    // wrong one that reported [] is caught too. Neither is possible to tell apart with a
+    // passing verifier's output.
+    check('A the FINAL attempt with no feedback falls back to verify.acceptanceOutput',
+      at.length === 3 && JSON.stringify(at[2].data.failingChecks)
+        === JSON.stringify(['from the verifier output']), JSON.stringify(at[2] && at[2].data));
+    check('A every attempt event validates, and number/verifierResult are typed as declared',
+      at.length === 3 && at.map(validate).filter(Boolean).length === 0
+      && at.map((e) => e.data.number).join(',') === '1,2,3');
+    check('A the validator rejects a failingChecks list holding anything but check names',
+      at.length === 3 && validate({ ...at[0], data: { ...at[0].data, failingChecks: [{ name: 'x' }] } }) !== null);
+    check('A ...and an attempt event missing a required field',
+      at.length === 3 && validate({ ...at[0], data: { issueId: 'a-9', number: 1, verifierResult: 'fail' } }) !== null);
+  }
+  {
+    const log = logmod.startRun(path.join(TMP, 'att2'), 'unit-events-att2');
+    runmod.logAttempts(log, log.trace('a-9'), 'a-9', {
+      attempts: [
+        { number: 1, verifierResult: 'fail' },
+        { number: 2, verifierResult: 'pass' },
+      ],
+    }, null);
+    const at = events(log.dir).filter((e) => e.event === 'attempt.finished');
+    // The two answers a lazy implementation collapses onto each other. A killed container
+    // leaves a half-written verify.json that collectArtifacts drops on purpose, so "it
+    // failed and the output is gone" is a real state — and it is NOT "nothing failed".
+    check('A a FAILING attempt whose output did not survive is null: unknown, never []',
+      at.length === 2 && at[0].data.failingChecks === null, JSON.stringify(at[0] && at[0].data));
+    check('A a PASSING attempt with no text is [] : the suite ran and every check in it passed',
+      at.length === 2 && JSON.stringify(at[1].data.failingChecks) === '[]');
+    check('A ...and the two are distinguishable, which is the whole point of the third answer',
+      at.length === 2 && at[0].data.failingChecks !== at[1].data.failingChecks);
+    check('A the null answer still validates — the schema declares array|null, not array',
+      at.map(validate).filter(Boolean).length === 0, at.map(validate).filter(Boolean).join(' | '));
+    check('A no attempts, no events — an empty list is not an attempt',
+      (() => {
+        const l2 = logmod.startRun(path.join(TMP, 'att3'), 'unit-events-att3');
+        runmod.logAttempts(l2, l2.trace('a-9'), 'a-9', { attempts: [] }, null);
+        runmod.logAttempts(l2, l2.trace('a-9'), 'a-9', null, null);
+        return events(l2.dir).length === 0;
+      })());
+  }
+
+  // ---- C: the spec-concern channel (§3.7) ----------------------------------------------
+  {
+    const log = logmod.startRun(path.join(TMP, 'con'), 'unit-events-con');
+    runmod.logConcerns(log, log.trace('a-9'), {
+      // Hostile and INTERLEAVED, per repo-iok's lesson: junk at the head passes an
+      // implementation that stops at the first bad entry, so it is scattered among real ones.
+      specConcerns: ['the spec is wrong because X', 42, 'a second one\nwith a newline', null, { no: 1 }],
+    });
+    const co = events(log.dir).filter((e) => e.event === 'concern.raised');
+    check('C one concern.raised per string entry, VERBATIM — never summarised, never counted',
+      co.length === 2 && co[0].data.text === 'the spec is wrong because X'
+      && co[1].data.text === 'a second one\nwith a newline', JSON.stringify(co.map((e) => e.data)));
+    check('C ...ledger-only and traced to the issue, with no run.log line',
+      co.every((e) => e.msg === null && e.level === 'INFO' && e.issueId === 'a-9') && lines(log.dir).length === 0);
+    // `String(x)` on a stray object would file `[object Object]` as a concern a human then has
+    // to go and disprove: a non-empty, well-formed, false entry in the channel whose whole
+    // value is that a person reads it.
+    check('C non-string entries are skipped, never coerced into a concern nobody raised',
+      co.length === 2 && !co.some((e) => /object Object|^42$/.test(e.data.text)));
+    check('C a multi-line concern is still ONE ledger line, and it validates',
+      co.length === 2 && co.map(validate).filter(Boolean).length === 0
+      && (read(path.join(log.dir, 'events.jsonl')) || '').split('\n').filter(Boolean).length === 2);
+    check('C no concerns, no events', (() => {
+      const l2 = logmod.startRun(path.join(TMP, 'con2'), 'unit-events-con2');
+      runmod.logConcerns(l2, l2.trace('a-9'), { specConcerns: [] });
+      runmod.logConcerns(l2, l2.trace('a-9'), { specConcerns: 'nope' });
+      runmod.logConcerns(l2, l2.trace('a-9'), null);
+      return events(l2.dir).length === 0;
+    })());
+  }
 
   // ---- the feed's event, from a real source -------------------------------------------
   {
@@ -546,6 +831,19 @@ async function fixtureRun() {
       fake.error(fake.trace('x'), 'c', { event: 'task.refused', data: {} });
     } catch (e) { threw = e; }
     check('F a log object that ignores the third argument still works', threw === null, threw && threw.message);
+    // And the harder half, which the third argument's absent-safety does NOT cover: that
+    // stand-in has no `event()` AT ALL, and calling a method that is not there throws — from
+    // inside the task body, after the container has run and before the outcome is written.
+    // Four other suites hand `runOneTask` exactly this object, so the ledger-only emitters ask
+    // for the writer before using it. Both emitters, because guarding one is the likely bug.
+    let ledgerThrew = null;
+    try {
+      runmod.logAttempts(fake, fake.trace('x'), 'x',
+        { attempts: [{ number: 1, verifierResult: 'fail', feedback: 'FAIL - a\n' }] }, null);
+      runmod.logConcerns(fake, fake.trace('x'), { specConcerns: ['a concern'] });
+    } catch (e) { ledgerThrew = e; }
+    check('F ...and a log object with NO event() at all is survivable, not a mid-task throw',
+      ledgerThrew === null, ledgerThrew && ledgerThrew.message);
   }
 
   try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* temp */ }

@@ -79,6 +79,11 @@ const P = {
   lockHeld: 'project lock held for ',
   lockTookOver: 'project lock: took over the lock on ',
   readyQueue: 'ready queue: ',
+  // §4.12's second admission rule, one line per refused issue. Parsed by nothing here — the
+  // dashboard reads refusals out of the queue-summary line above — but the table is also the
+  // ledger's prefix-to-event map (change-log rows `repo-qzy`, `repo-3xw`), and an event whose
+  // line has no entry here is an event nothing can prove still describes its own line.
+  undispatched: 'not dispatched: ',
   starting: 'starting task (priority ',
   workspaceReady: 'workspace ready: ',
   launching: 'launching container ',

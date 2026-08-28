@@ -581,8 +581,22 @@ guarded('G9', () => {
   const gitBranch = at < 0 ? '' : code.slice(at, code.indexOf('} else {', at));
   check('G9c the git channel says nothing about Beads',
     !!gitBranch && !/Beads|\bbd\b/.test(gitBranch) && /log\.error\(/.test(gitBranch));
-  check('G9d the summary line is passed the third population',
-    /queueSummary\(\s*q\.issues,\s*q\.skipped,\s*q\.undispatchable\s*\)/.test(code));
+  // The third population reaches the summary line THROUGH `logQueueRead` since change-log row
+  // `repo-3xw`: the prose line and its `queue.read` ledger twin are written by one call from
+  // one timestamp, so `run.js` no longer calls `queueSummary` itself — two call sites would be
+  // two chances for the line and the event to describe different queues. The property this
+  // check has always guarded is unchanged and now spans two files, so it is asserted in both:
+  // `run.js` hands over the WHOLE queue result, and the helper hands all three populations to
+  // `queueSummary`. Asserting only the first would pass a helper that dropped the refusals.
+  check('G9d run.js hands the whole queue result — third population included — to logQueueRead',
+    /logQueueRead\(\s*log\s*,\s*q\s*\)/.test(code) && !/queueSummary\(/.test(code));
+  {
+    const qsrc = fs.readFileSync(path.join(ROOT, 'runner', 'queue.js'), 'utf8')
+      .split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+    check('G9d\' ...and logQueueRead passes all three populations on to the summary line',
+      /queueSummary\(\s*issues\s*,\s*skipped\s*,\s*refused\s*\)/.test(qsrc)
+      && /q\.undispatchable/.test(qsrc));
+  }
   check('G9e refused rows are manufactured through the exported pure function',
     /undispatchableRow\(/.test(code) && /require\('\.\/queue'\)/.test(src));
   check('G9f the manufactured rows reach the manifest',

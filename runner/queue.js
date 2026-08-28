@@ -263,6 +263,68 @@ function queueSummary(issues, skipped, undispatchable) {
   return line;
 }
 
+// ---- the ledger's two queue facts (§4.12, §5; change-log row `repo-3xw`) ----------------
+// What the run decided about its own queue is the fact no reader can get today: the summary
+// line above is prose, and the per-issue refusals reach `run.log` and nowhere else. Both now
+// have a structured twin.
+//
+// They are HELPERS HERE rather than inline code in `run.js` for the reason `queueSummary`
+// and `undispatchableRow` already are: `main()` sits behind the token load and the Docker
+// preflight, so anything written there is unreachable to every Docker-free test — and an
+// event that is emitted by nobody's test is an event that stops being emitted quietly.
+//
+// IDS, NEVER ISSUE OBJECTS. A `bd` issue carries a title, a description and whatever fields a
+// future `bd` adds; putting one in the ledger would make every event line grow without anyone
+// deciding to, and would put issue prose into an artifact whose whole value is that it can be
+// read by machine. The id is the join key; a reader that wants the title has `run.json`.
+
+// One call, one timestamp, two records: the `ready queue: ` line a human reads and the
+// structured twin a reader joins on. Building the message here — rather than logging the
+// summary in `run.js` and the event separately — is what makes "the two cannot disagree"
+// true by construction rather than by discipline.
+function logQueueRead(log, q) {
+  const issues = (q && Array.isArray(q.issues)) ? q.issues : [];
+  const skipped = (q && Array.isArray(q.skipped)) ? q.skipped : [];
+  const refused = (q && Array.isArray(q.undispatchable)) ? q.undispatchable : [];
+  log.info(log.trace('preflight'), queueSummary(issues, skipped, refused), {
+    event: 'queue.read',
+    data: {
+      ready: issues.map((i) => String((i && i.id) || '')),
+      // The type is carried because it is WHY the entry was skipped, and the deny-list can
+      // grow: an id alone would say an issue vanished without saying what removed it.
+      skipped: skipped.map((i) => ({ id: String((i && i.id) || ''), type: typeOf(i) })),
+      refused: refused.map(refusalFacts),
+    },
+  });
+}
+
+// The per-issue refusal, paired with the `not dispatched: ` ERROR line it already writes.
+// Traced to the ISSUE, not to `preflight`: a refusal is a fact about one task, and the
+// ledger's `issueId` is the trace's tail, so tracing it run-level would file it under no
+// issue at all — the reader asking "what happened to r-4" would find nothing.
+function logUndispatched(log, u) {
+  const facts = refusalFacts(u);
+  log.error(log.trace(facts.id), `not dispatched: ${facts.reason} — Beads untouched, the issue stays open`, {
+    event: 'task.undispatched',
+    data: facts,
+  });
+}
+
+// `refusal` is the refusal KIND — a short machine token, where `reason` is the sentence a
+// human reads. Nothing produces one yet (the gate has exactly one way to refuse), so it is
+// carried only when present rather than defaulted: a `refusal: null` on every line would be a
+// field a later reader has to learn to ignore, and inventing a kind here would fix the
+// vocabulary before the task that owns it has chosen one.
+function refusalFacts(u) {
+  const issue = (u && u.issue) || {};
+  const facts = {
+    id: String(issue.id || (u && u.id) || ''),
+    reason: String((u && u.reason) || ''),
+  };
+  if (u && typeof u.refusal === 'string' && u.refusal) facts.refusal = u.refusal;
+  return facts;
+}
+
 function claim(cfg, issueId) {
   return bd(cfg, ['update', issueId, '--status', 'in_progress']).status === 0;
 }
@@ -342,4 +404,5 @@ function attemptNotes(runId, outcome, status, memoryIn) {
 module.exports = {
   readyQueue, queueSummary, claim, exportIssue, finish, outcomeFor, attemptNotes, OUTCOMES,
   EXCLUDED_TYPES, typeOf, gitSpawnOptions, undispatchableRow, DEFAULT_GIT_TIMEOUT_MS,
+  logQueueRead, logUndispatched,
 };
