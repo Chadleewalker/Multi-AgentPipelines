@@ -78,7 +78,8 @@ async function waitForWindow(cfg, status, log, traceId, opts = {}) {
   for (let i = spent + 1; i <= maxPauses; i++) {
     const plan = waitPlan(status, cfg, now());
     if (plan.kind === 'reset-time') {
-      log.info(traceId, `paused: waiting until reported reset ${plan.until} (${Math.round(plan.ms / MINUTE)}m)`);
+      log.info(traceId, `paused: waiting until reported reset ${plan.until} (${Math.round(plan.ms / MINUTE)}m)`,
+        { event: 'park.waiting', data: { until: String(plan.until) } });
     } else {
       log.info(traceId, `paused: no reset time reported; probing every ${cfg.probeIntervalMinutes}m (attempt ${i})`);
     }
@@ -171,7 +172,8 @@ function createPauseGate(cfg, log, opts = {}) {
         log.error(traceId, `run-level park: no more waits this run — ${reason}`);
         return { resumed: false, cycles: gate.cycles, exhausted: true, reason };
       }
-      log.info(traceId, `run-level park: the window reopened (${gate.cycles}/${maxPauses} wait cycles spent)`);
+      log.info(traceId, `run-level park: the window reopened (${gate.cycles}/${maxPauses} wait cycles spent)`,
+        { event: 'park.reopened', data: {} });
       return { resumed: true, cycles: gate.cycles };
     })();
     waitPromise = p;
@@ -200,7 +202,8 @@ function createPauseGate(cfg, log, opts = {}) {
       log.error(traceId, `run-level park: ${reason}`);
       return Promise.resolve({ resumed: false, cycles: gate.cycles, joined: false, exhausted: true, reason });
     }
-    log.info(traceId, `rate limit: opening the run-level wait (${gate.cycles}/${maxPauses} cycles spent)`);
+    log.info(traceId, `rate limit: opening the run-level wait (${gate.cycles}/${maxPauses} cycles spent)`,
+      { event: 'park.opened', data: { cycles: gate.cycles, max: maxPauses } });
     return openWait(status, traceId).then((r) => ({ ...r, joined: false }));
   }
 

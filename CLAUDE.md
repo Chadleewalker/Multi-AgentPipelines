@@ -207,7 +207,7 @@ bash scripts/test-runner-container.sh
 # Host-only: needs `cd tools/mapbuild && npm install` once, and never runs in a container.
 node scripts/build-pipeline-map.js   # writes docs/pipeline-map.built.html + a per-diagram node count
 
-# the twenty suites that need no Docker — seconds, safe to run anywhere, even in a container
+# the twenty-one suites that need no Docker — seconds, safe to run anywhere, even in a container
 bash scripts/test-runner-memory.sh
 bash scripts/test-changelog.sh     # docs/change-log.md row identity (CHANGELOG_FILE re-aims it)
 bash scripts/test-sanitize.sh      # publication hygiene (SANITIZE_FIXTURE_DIR re-aims it)
@@ -228,6 +228,7 @@ bash scripts/test-batch.sh         # the batch marker reader — the marker shap
 bash scripts/test-dispatch-gate.sh # the ready queue's SECOND admission rule — a task whose frozen suite is not on the fork branch is never dispatched (change-log rows `dispatch-gate`, `repo-5yu`)
 bash scripts/test-feed.sh       # the live queue feed — work frozen mid-run is picked up by the next free worker (change-log row `live-queue-feed`)
 bash scripts/test-worktree.sh   # one folder per agent session — what a worktree carries, what it refuses to carry, and what it refuses to delete (change-log row `parallel-sessions`)
+bash scripts/test-events.sh     # the event ledger — one writer, one clock, a named typed event per parsed line, and the three run.log readers still green (change-log row `repo-qzy`)
 ```
 
 Reading the corpus itself is `node scripts/audit-runs.js` — a pure reader that prints one
@@ -562,6 +563,22 @@ the pipeline working on the pipeline's own code. The rules:
   broken implementation that git happened to catch — the mutation pass found both. It also
   inherits `repo-5yu`'s lesson in a `master` fixture with no resolvable `origin/HEAD`: the
   default branch is resolved or the tool aborts, never guessed as the literal `main`.
+  And `sh scripts/test-events.sh` (`tests/unit/events.test.js`), which needs git and node
+  only and builds throwaway runs roots and repositories under the OS temp dir: run it if
+  you touch `runner/log.js` or `schemas/events.schema.json`, and equally if you touch **the
+  wording of any `log.info`/`log.error` line under `runner/`** or `scripts/dashboard.js`'s
+  exported prefix table `P` — the ledger names events at call sites, and a message reworded
+  without its prefix keeps writing a well-formed event that no longer describes the line it
+  came from. Its load-bearing checks are the ones a plausible implementation passes by
+  accident otherwise. `Date` is replaced for the length of one call by a counter that
+  answers a DIFFERENT instant on every construction, because "the two records carry the same
+  timestamp" is satisfied by two clock reads a microsecond apart on most machines and by
+  neither on a loaded one. The park's three events come from the real `createPauseGate` with
+  only `sleepFn` injected, and the feed's from a real poll, because those are the call sites
+  no fixture with a fake gate can reach. The validator checks declared TYPES, not just
+  declared keys: `priority: "1"` and `killed: "false"` are non-empty, well-formed and wrong.
+  And it runs the three `run.log` readers' own suites from inside itself, because "`run.log`
+  is unchanged" is a claim about files the ledger's suite never opens.
   Any new Docker-free suite belongs beside them in
   `tests/unit/`, and its seam stub must be a `.js` file invoked through
   `process.execPath`, never a `#!/bin/sh` script: `spawnSync` without a shell fails such a

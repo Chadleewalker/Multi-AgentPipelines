@@ -43,6 +43,7 @@ flowchart TB
   K -.-> AUD["Across ALL past runs — node scripts/audit-runs.js<br/>joins the corpus, prints one report, changes nothing"]
   AUD -.-> B
   J -.-> DASH["While THIS run is in flight — node scripts/dashboard.js<br/>localhost only · serves /state from runs/ · changes nothing"]
+  J -.-> LED["Every run.log line, structured — runs/&lt;runId&gt;/events.jsonl<br/>one writer, one timestamp · named typed events · schemas/events.schema.json<br/>host-only · append-only · no reader reads it yet"]
 
   classDef specialist fill:#fdf4e3,stroke:#a86c17,stroke-width:1.5px,stroke-dasharray:5 3,color:#14181d
   class SP1,SP2 specialist
@@ -59,6 +60,17 @@ serves it as `/state` on loopback. Both arrows are dotted for the same reason an
 leaves either node — a watcher that could reach a run would be a route around hard rule 1,
 and one that could gate would violate hard rule 5. The dashboard's own page is not built
 yet; the frozen JSON contract it serves is.
+
+The third dotted branch off the run is `events.jsonl` (§4.12, change-log rows
+`events-ledger-design` and `repo-qzy`). It is drawn as a *sibling* of the two readers rather
+than as something either of them consumes, because no arrow reaches it yet: `runner/log.js`
+writes one JSON object per `run.log` line — from the same call and the same clock read, so the
+two cannot disagree — and every existing reader still parses the prose. That is deliberate.
+The lines those readers match by prefix are now also named events with typed fields, so each
+reader can move across on its own, in its own task, keeping its own suite green; a flag day
+would have put three readers and the writer in one change nobody could review. The container
+side of the diagram is untouched: nothing in a task container writes an event, and nothing
+in `pipeline/` knows the file exists.
 
 The dotted branch off the freeze gate is its second, textual pass (§3.2 "below the panel",
 moves 1 and 6; change-log rows `freeze-gate-red` and `repo-uw6`). The solid path is the

@@ -1411,10 +1411,11 @@ frozen criterion accepts either form — which is the concrete argument for why 
 `tests/unit/`" was a deliverable of this task and not a nicety.
 
 **Gap worth knowing, found while doing this and deliberately not fixed here.**
-`scripts/test-freeze-gate.sh` is missing from the "All but twenty drive real Docker"
+`scripts/test-freeze-gate.sh` is missing from the "All but N drive real Docker"
 exception list below *and* from the suite table, and so are `scripts/test-spec-lint.sh` and
 `scripts/test-planning-playbook.sh` — all three were run Docker-free inside a task container
-during this task (46/28/42 checks, all green), so the real count is at least twenty-three.
+during this task (46/28/42 checks, all green), so the real count is three higher than
+whatever that sentence says.
 Fixing the number needs the whole list re-derived rather than three names appended, which is
 a different piece of work; the count sentence is left alone rather than made confidently
 wrong. `test-planning-playbook.sh` additionally needs `bash`, not `sh` — under dash it dies
@@ -1503,6 +1504,80 @@ nothing else updates it; its planning panel still shows the approval pass with n
 at all, and is now three moves behind. Redraw with `node scripts/build-pipeline-map.js` after
 editing; the builder needs `tools/mapbuild/node_modules` and cannot run in a container.
 
+## Every `run.log` line has a structured twin (`repo-qzy`, 2026-08-28)
+
+`runner/log.js` now appends `runs/<runId>/events.jsonl` beside `run.log`: one JSON object per
+line, **written by the same call from the same clock read** (§4.12, change-log rows
+`events-ledger-design` and `repo-qzy`). The envelope is closed and always eight keys — `ts`,
+`level`, `runId`, `issueId`, `trace`, `event`, `msg`, `data` — with
+`schemas/events.schema.json` as the contract. `info()` and `error()` take an optional third
+argument `{event, data}` and default to `event: "log"` with empty `data`; `event()` records a
+fact with no prose form (`msg: null`, never echoed, always INFO), and **this task emits
+none** — the channel exists for the tasks that carry the queue read, the per-attempt verifier
+result and the spec concerns across.
+
+Every line the dashboard's prefix table parses is now a named typed event. `queue.read` is
+**declared in the schema and emitted by nothing**, reserved for the next task; the unit suite
+asserts that on purpose, so "no call site writes it" reads as the design rather than as a
+hole. `run.log` is byte-identical, the container writes none of this, and the only reader edit
+is `scripts/dashboard.js` exporting its prefix table `P` — no reader reads the ledger yet, and
+each will move across in its own task with its own suite staying green.
+
+**Three things worth carrying forward.**
+
+*The timestamp guarantee is cheaper to hold than to check.* Two writers with two clocks would
+have to be joined back together by a value neither of them owns. One function, one
+`new Date()`, both appends — and the property is then true by construction rather than
+asserted. The frozen suite compares the two `ts` values for equality, which two clock reads a
+microsecond apart satisfy on most machines; `tests/unit/events.test.js` replaces `Date` for
+the length of one call with a counter that answers a **different** instant every time it is
+constructed, so a two-read writer is red every run instead of on an unlucky one.
+
+*Events are named at call sites, never inferred from message prefixes.* Inferring would have
+moved the fragility the ledger exists to remove — from three readers into one writer — and it
+would have made the ledger wrong in exactly the situation it is for. The cost is that a
+reworded message and a stale prefix table can drift apart silently, so the suite reads the
+source: for every named event, the dashboard's prefix for it must appear in the text of the
+call that emits it. That check is why `scripts/dashboard.js` exports `P` at all.
+
+*A suite proves what it opens.* "`run.log` is unchanged" is a claim about files
+`tests/unit/events.test.js` never reads, so `scripts/test-events.sh` runs
+`test-dashboard.sh`, `test-batch.sh` and `test-audit-runs.sh` from inside itself, with
+`NODE_OPTIONS` and every `PIPELINE_*` and `BD_*` variable stripped from the child environment
+first — an inherited `--require` stub preloads into every one of their node children and kills
+them before their first line.
+
+**Seven mutations, seven kills**, each on a copy of the implementation: two clock reads, a
+reworded `task.started` message, the abbreviated fork point in `data`, the pseudo-tasks
+recorded as issue ids, the ledger rewritten rather than appended, the third argument dropped
+on the floor, and the dashboard's `P` export removed.
+
+**A frozen criterion that diffs a *committed range* sees nothing, and this task's did.**
+Criterion 5 asked that `git diff <merge-base integration HEAD>..HEAD -- runner/` remove no
+line containing `log.info(` or `log.error(`. In a task container the host commits the agent's
+work only *after* the container exits — this workspace's reflog holds exactly one commit,
+authored `pipeline` and timestamped after the run — so at verify time `HEAD` **is** the fork
+point, that diff is empty, and the check passes having observed nothing. Run against the
+committed branch afterwards it fails instead, because `git diff` is line-based: a call site
+that gains the permitted third argument emits a `-` line carrying `log.info(` beside a `+`
+line with the same wording, so the guard contradicts the constraint it exists to protect
+(*"a call site may gain a third argument and nothing else"*). Both readings are wrong in the
+same place. The property itself holds and is proved elsewhere in the same criterion — the
+`log.info(`/`log.error(` count is identical file by file across all seven changed `runner/`
+files, and A5's literal whole-`run.log` expectation is what actually pins the wording. Two
+rules for the next spec: a criterion about what the change did to tracked files reads the
+**working tree** (`git diff <fork>`, no `..HEAD`), never a committed range; and "the diff
+removes no line matching X" is the wrong shape even when it can see the diff — assert
+per-file counts of X, or pair each removed line with an added one carrying the same message.
+This is the vacuous-pass family from CLAUDE.md reached from its other side: not a plausible
+wrong artifact, but an empty one read as proof.
+
+**Known-stale, not fixed here.** `docs/pipeline-map.html` is exempt from task docs phases and
+nothing else updates it; none of its panels show the ledger. `docs/pipeline-diagram.md` gained
+its node in this PR. Two suites — `test-feed.sh` and `test-worktree.sh` — had shipped with no
+row in the table below and got one here, which is the same rot repo-4d8 recorded: grep the
+table for every `scripts/test-*.sh` that exists, because a missing row is invisible to a
+count.
 ## A `[guard]` test red at the fork point is a stale pin (`repo-i4b`, 2026-08-28)
 
 **Proven.** `scripts/freeze-gate.js` gains `guardFiles(dir)`, `withGuardDir(...)`, a sixth
@@ -1766,14 +1841,15 @@ design's central bet, and it is the first day it paid out repeatedly.
 
 ## Test suites
 
-All but twenty drive real Docker and share one network, so they must never run concurrently
+All but twenty-one drive real Docker and share one network, so they must never run
+concurrently
 (`test-runner-memory.sh`, `test-changelog.sh`, `test-sanitize.sh`,
 `test-agent-hooks.sh`, `test-network-names.sh`, `test-lock.sh`,
 `test-sweep-hygiene.sh`, `test-concurrency.sh`, `test-pause-gate.sh`,
 `test-sweep-assertions.sh`, `test-trace.sh`, `test-verdict.sh`, `test-audit-runs.sh`,
 `test-dashboard.sh`, `test-verify-buffer.sh`, `test-pipeline-map.sh`,
-`test-batch.sh`, `test-dispatch-gate.sh`, `test-feed.sh` and `test-worktree.sh` are the
-exceptions — see below; they need neither).
+`test-batch.sh`, `test-dispatch-gate.sh`, `test-feed.sh`, `test-worktree.sh` and
+`test-events.sh` are the exceptions — see below; they need neither).
 **`scripts/test-all.sh` is the sweep** — it holds a lock, runs every suite sequentially,
 kills one that hangs (`--timeout`, default 900s), **reclaims what each suite leaked after
 every suite** (change-log row `repo-zje`), and writes per-suite logs plus a summary table
@@ -1815,8 +1891,11 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-batch.sh` | the batch marker reader (change-log rows `repo-0b3`, `repo-8v0`) — the marker name anchored at both ends, the manifest-less run dated from `run.log`, the conservative `run-time-unknown` direction, the degraded labels, byte-identical repeat output, the pure-reader contract checked by sha1 snapshot and parsed `require` specifiers, and the live-queue reconciliation driven through the `PIPELINE_BD_CMD` seam: the runner's own epic filter, the `-C` slot, a queue past 1 MiB, and every degraded reason against the reconciled one |
 | `scripts/test-freeze-gate.sh` | the fork-point red gate, its GREEN-side probe, its guard subset, its receipt and its brittleness lint (change-log rows `freeze-gate-red`, `repo-uw6`, `repo-inj`, `repo-i4b`) — every verdict from a real command line including `unreachable` 3, `half-proven` 4 and `stale-guard` 5, the broken-probe/red-probe **pair** that separates 2 from 3, a probe refused by name for every unusable path, a probe missing the runner under the REAL verify command, and — the nine-row decision table from every side, the control convention, the empty-probe fallback cleaned up even on a throw, and for the lint the **near-miss pairs first**: two computed digests and git against a self-created ref (the house patterns a `createHash`- or `git diff`-keyed detector flags), `> 0` / `=== 0` / `=== 1` against `=== N`, an input list against an expected one, plus line numbers over CRLF, a split assertion reported where it starts, the three skip reasons, and a lint that throws printing `unavailable` rather than a `0`; and for the guard subset the near-miss pairs again — a token on the tenth line against one on the eleventh, a token on a comment line against the same token inside a STRING (which is what a test *about* guards looks like), a nested file against a top-level one, and a binary file against a readable one — plus the invocation counts that are the only evidence the subset ran at all (three without a probe, five with, three again behind a stale guard) and `guard files: 0` printed for a suite that has none |
 | `scripts/test-dispatch-gate.sh` | the ready queue's second admission rule (change-log rows `dispatch-gate`, `repo-5yu`) — the origin-versus-`targetRepoRemote` pair that discriminates this design from a working-tree check, the `ls-remote --symref` link of the branch chain against a `master` project, an unresolvable branch aborting rather than guessing, a sibling id that merely extends another, the `-d`, the throwaway repository removed on the abort path too, `gitTimeoutMs` at the spawn and at config load, and every `spawnSync` in `runner/queue.js` built from one exported builder |
+| `scripts/test-feed.sh` | the live queue feed (change-log row `live-queue-feed`) — a poll that keeps returning an already-dispatched issue, one idle worker beside a working one at concurrency 2, a throwing poll beside one returning `ok:false`, and the manifest's `feed` block against the ending vocabulary; `now` and `wait` injected, so nothing turns on wall clock |
+| `scripts/test-worktree.sh` | one folder per agent session (change-log row `parallel-sessions`) — a worktree dirty with only an untracked file beside one with a tracked modification, a clean worktree holding a commit on no remote, `new` invoked from inside a worktree, and two refusals pinned by *this tool's* message rather than by an exit code git would have produced anyway |
+| `scripts/test-events.sh` | the event ledger (change-log rows `events-ledger-design`, `repo-qzy`) — the twin-per-line join including `ts`, a `Date` replaced by a counter so one clock read is proved rather than coincided into, `issueId` null for the two pseudo-tasks, the park's three events from the real gate and the feed's from a real poll, a type-checking validator against `schemas/events.schema.json` with eight planted rejections, the source-level guard that every emitting call site carries the dashboard prefix its event claims, and the three `run.log` reader suites run from inside it |
 
-**`scripts/test-runner-memory.sh` is one of the eighteen suites that need no Docker**
+**`scripts/test-runner-memory.sh` is one of the twenty-one suites that need no Docker**
 (repo-dhp): it
 drives both §3.6 memory channels plus the `shouldFileMemory` outcome gate through the
 `PIPELINE_BD_CMD` seam, so it runs anywhere — including inside a task container, where

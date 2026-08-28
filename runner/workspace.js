@@ -108,7 +108,11 @@ function prepare(cfg, issueId, issueMarkdown, log, traceId) {
   else log.info(traceId, 'memory: no notes recorded yet — container gets the empty marker');
 
   const forkPoint = git(dir, ['rev-parse', 'HEAD']).stdout.trim();
-  log.info(traceId, `workspace ready: ${dir} on ${branch} (fork point ${forkPoint.slice(0, 8)})`);
+  // The ledger carries the WHOLE fork point; the line keeps its eight characters, which is
+  // what a human reads. A structured record that had also been abbreviated would need the
+  // repository to disambiguate it — the one thing a later reader of the ledger may not have.
+  log.info(traceId, `workspace ready: ${dir} on ${branch} (fork point ${forkPoint.slice(0, 8)})`,
+    { event: 'workspace.ready', data: { dir, branch, forkPoint } });
   // memoryCount travels with the workspace so the attempt log can record what went IN
   // as well as what came OUT; null means the export failed rather than found nothing.
   return { ok: true, dir, branch, forkPoint, defaultBranch, memoryCount: mem.ok ? mem.count : null };

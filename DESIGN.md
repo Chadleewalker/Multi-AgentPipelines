@@ -1525,8 +1525,22 @@ source of truth.
     ledger-only events with `msg: null`. `schemas/events.schema.json` is the contract.
     `run.log` stays byte-identical for humans; the readers move onto the ledger one at a
     time, each keeping its suite green. Append-only, host-only: nothing in a container
-    writes an event. The
-    container-side isolation assertions (no `git push`, read-only verifier, no
+    writes an event.
+
+    **The writer is built** (change-log row `repo-qzy`): `runner/log.js` appends both files
+    from one clock read, `info()` and `error()` take an optional `{event, data}` third
+    argument, and `event()` records a fact with no prose form. Every line the dashboard's
+    prefix table parses is a named typed event; `queue.read` is declared in the schema and
+    reserved for the task that carries the queue read across. `issueId` is the trace's tail,
+    and null for the two PSEUDO-tasks — `preflight` and `feed` — because they are run-level
+    work borrowing the trace shape rather than Beads issues, and recording them as issue ids
+    would invent two issues that do not exist. `scripts/dashboard.js` exports its prefix
+    table so a suite can check the two vocabularies against each other rather than keeping a
+    second copy; no reader reads the ledger yet. `scripts/test-events.sh` runs the writer's
+    suite and, from the same script, the three reader suites — because "`run.log` is
+    unchanged" is a claim about files the writer's own suite never opens.
+
+    The container-side isolation assertions (no `git push`, read-only verifier, no
     non-allowlisted egress) live in this repo and run as part of the E2E pass and on
     demand.
 
@@ -2128,7 +2142,8 @@ proxy sidecar software and the empirical completion of the endpoint enumeration 
 spellings, timestamp and trace-ID formats, report and Dockerfile file names, fixture-repo
 name, probe host choices. Anything touching **two or more separately-built components** is
 decided in this doc (the 4.11 table, `status.schema.json`, `verify.schema.json`,
-`run.schema.json`, the 4.10 input contract incl. the `/pipeline` mount and
+`run.schema.json`, `events.schema.json` — §4.12, written by the runner and read by tools
+built separately from it — the 4.10 input contract incl. the `/pipeline` mount and
 `PIPELINE_AGENT_CMD`, the 3.4 config schema) — that is the dividing line.
 
 ## 11. Readiness Bar

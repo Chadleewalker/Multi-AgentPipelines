@@ -91,7 +91,7 @@ on the shared base image, and `bd init` — [`PLANNING.md`](PLANNING.md) walks t
 | `advisors/` | the specialist registry — one charter per critic/advisor lens |
 | `runner/` | the host-side orchestrator — plain JavaScript, no dependencies, no LLM |
 | `pipeline/` | what runs *inside* a container: entrypoint, verifier, agent stubs |
-| `schemas/` | the three frozen contracts between separately-built components |
+| `schemas/` | the frozen contracts between separately-built components — the status file, the verify result, the run manifest, and the event ledger a run appends beside its log |
 | `docker/` | the pinned base image and the allowlist proxy sidecar |
 | `scripts/` | one test suite per build task, the end-to-end pass, and the host-side readers — `audit-runs.js` joins every past run into one report, `dashboard.js` serves the run in flight on localhost, `batch.js` says which frozen batches have never been launched and how the live queue differs from what was frozen; all change nothing |
 | `tests/` | `acceptance/` — per-task tests, frozen at approval; `unit/` — Docker-free suites |
