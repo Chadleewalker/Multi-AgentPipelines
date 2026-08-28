@@ -159,6 +159,24 @@ coverage that matters is of the area about to be tasked out, not of the whole sy
       in another language sees its suite listed as skipped rather than silently blessed. That
       is the honest answer, not a fault to fix: the exit-code half of the gate is unaffected
       and works on any language.
+
+      **The same run also runs your guards alone** (§3.2 "the stale guard"; change-log rows
+      `stale-guard-design`, `repo-i4b`). A test file that declares itself a guard — the literal
+      `[guard]` token, any case, on a comment line within its first ten lines — is copied into a
+      scratch directory alongside the suite and run through your `verifyCommand` by itself,
+      where it must be **green**: a guard says "existing behaviour still holds", so red before
+      any work exists means the pin has already moved. That is `stale-guard`, exit 5, and it is
+      never a pass. Three onboarding consequences. Guards are found by the same reader as the
+      lint above — **top-level files in the suite directory, in those same extensions**, so a
+      nested file or a suite in another language declares no guards and the run prints
+      `guard files: 0` rather than pretending otherwise; the count prints on every run, at zero
+      too. A guard file must resolve whatever it needs **relative to its own `__dirname`** at the
+      suite's depth (`path.resolve(__dirname, '..', '..', '..')` for the project root, the
+      convention every frozen suite here already follows), because the scratch directory is a
+      sibling of the suite at the same depth and nothing else about the tree moves. And the
+      directory — `.freeze-gate-guards-<pid>-<seq>/`, removed in a `finally` — is built inside
+      the repo for the same reason the empty control is, so an interrupted gate can leave one
+      obviously disposable folder next to your suite.
 - [ ] Create `docs/IDEAS.md` — the project's own idea inbox. Copy the structure from
       this pipeline repo's `docs/IDEAS.md`: a flat list of parked "this should probably
       become a design someday" notes, plus **Promoted** and **Dropped** tables. It costs
