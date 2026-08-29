@@ -20,7 +20,8 @@ const folder = path.join(tmp, 'issue-tree');
 fs.mkdirSync(folder);
 const cfg = { targetRepoPath: tmp, targetRepoRemote: 'x', image: 'x', wallClockMinutes: 2, model: 'sonnet', testAuthorModel: 'opus' };
 const built = (state = 'write', extra = {}) => ({
-  ok: true, state, cfg: { ...cfg, ...(extra.cfg || {}) }, branch: 'master', text: 'THE BRIEF',
+  ok: true, state, cfg: { ...cfg, ...(extra.cfg || {}) }, branch: 'master', id: 'app-7',
+  policy: { verifyCommand: 'sh tools/run-acceptance.sh' }, text: 'THE BRIEF',
   folder: state === 'ready' ? null : { dir: folder, branch: 'freeze-7', exists: true }, ...extra,
 });
 
@@ -77,10 +78,31 @@ for (const state of ['ready', 'freeze', 're-gate']) {
   let call;
   const r = A.launchAuthor(built('write'), 'opus', (cmd, args, opts) => { call = { cmd, args, opts }; return { status: 0 }; });
   check('E1 Claude receives the prompt on stdin, not in a shell string', r.status === 0 && call.opts.input === 'THE BRIEF\n');
-  check('E2 model alias is an explicit argv value', JSON.stringify(call.args) === JSON.stringify(['-p', '--model', 'opus']));
-  check('E3 host session does not bypass permissions', !call.args.includes('--dangerously-skip-permissions'));
-  check('E4 session cwd is the dedicated worktree', call.opts.cwd === folder);
-  check('E5 session is bounded by wallClockMinutes', call.opts.timeoutMs === 120000);
+  check('E2 model alias is an explicit argv value', call.args[call.args.indexOf('--model') + 1] === 'opus');
+  check('E3 restricted mode and acceptEdits are both explicit', call.args.includes('--restricted')
+    && call.args[call.args.indexOf('--permission-mode') + 1] === 'acceptEdits');
+  check('E4 host session does not bypass permissions', !call.args.includes('--dangerously-skip-permissions')
+    && !call.args.includes('bypassPermissions'));
+  check('E5 only read/edit/search and Bash tools are exposed', call.args[call.args.indexOf('--tools') + 1] === A.AUTHOR_TOOLS);
+  const allowed = call.args[call.args.indexOf('--allowedTools') + 1];
+  check('E6 only the issue verifier is pre-authorized for Bash',
+    allowed === 'Read,Edit,Write,Glob,Grep,Bash(sh tools/run-acceptance.sh tests/acceptance/app-7/)');
+  check('E6b the verifier rule is exact, so a chained command cannot match its prefix',
+    allowed.endsWith('Bash(sh tools/run-acceptance.sh tests/acceptance/app-7/)'));
+  const denied = call.args[call.args.indexOf('--disallowedTools') + 1];
+  for (const operation of ['commit', 'push', 'merge', 'rebase', 'reset']) {
+    check(`E7 git ${operation} is explicitly denied`, denied.includes(`git ${operation}*`));
+  }
+  check('E8 Beads writes and freeze are explicitly denied', denied.includes('Bash(bd') && denied.includes('freeze.js'));
+  check('E9 sessions are not persisted outside the issue tree', call.args.includes('--no-session-persistence'));
+  check('E10 session cwd is the dedicated worktree', call.opts.cwd === folder);
+  check('E11 session is bounded by wallClockMinutes', call.opts.timeoutMs === 120000);
+  check('E12 validated hostEnv reaches the verifier without authorizing shell setup', (() => {
+    let env;
+    A.launchAuthor(built('write', { cfg: { hostEnv: { FIXTURE_BIN: '/fixture/bin' } } }), 'opus',
+      (cmd, args, opts) => { env = opts.env; return { status: 0 }; });
+    return env.FIXTURE_BIN === '/fixture/bin';
+  })());
 }
 
 {

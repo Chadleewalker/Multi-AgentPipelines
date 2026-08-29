@@ -1629,7 +1629,11 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     alias comes from the optional planning-only `testAuthorModel`, falling back to `model`, and
     is always explicit so host-global CLI preferences cannot select the author. The session is
     bounded by the run's wall clock and the shared host-process output cap, uses argv spawning
-    without a shell, and retains normal host permissions. Ready, freeze and re-gate states do
+    without a shell, and runs in Claude's restricted mode with `acceptEdits`. Restricted mode
+    confines file tools to the issue worktree and protects Git/configuration files; the launcher
+    exposes only read/edit/search plus Bash, pre-authorizes only the target's exact verifier, and
+    explicitly denies Git mutation, Beads, and freeze commands. Every other Bash command remains
+    unapproved in the noninteractive session. Ready, freeze and re-gate states do
     not launch a writer. Success and failure both stop at a report and the mandatory human
     approval step; the command never invokes the freeze/commit/push path.
 

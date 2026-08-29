@@ -18,6 +18,14 @@ const EXIT_SETUP = 3;
 const EXIT_AGENT = 4;
 const MAX_BUFFER = 64 * 1024 * 1024;
 const USAGE = 'usage: node scripts/author-tests.js <issue-id> --config run.config.<project>.json';
+const AUTHOR_TOOLS = 'Read,Edit,Write,Glob,Grep,Bash';
+const DENIED_TOOLS = [
+  'Bash(git commit*)', 'Bash(git push*)', 'Bash(git merge*)',
+  'Bash(git rebase*)', 'Bash(git reset*)', 'Bash(git * commit*)',
+  'Bash(git * push*)', 'Bash(git * merge*)', 'Bash(git * rebase*)',
+  'Bash(git * reset*)', 'Bash(bd *)', 'Bash(bd*)',
+  'Bash(node *freeze.js*)',
+].join(',');
 
 function parseArgs(argv) {
   const opts = { id: null, config: null };
@@ -60,10 +68,20 @@ function launchAuthor(built, model, run = runSync) {
   // -p reads the prompt from stdin when no prompt argv follows it. That avoids both a shell and
   // Windows' command-line length limit. Permissions stay at the host user's normal policy.
   const timeoutMs = Math.max(1, Number(built.cfg.wallClockMinutes) || 240) * 60 * 1000;
-  return run(process.env.PIPELINE_TEST_AUTHOR_CMD || 'claude',
-    ['-p', '--model', model], {
+  const suite = `tests/acceptance/${built.id}/`;
+  const verifier = `${built.policy.verifyCommand} ${suite}`;
+  const allowed = `Read,Edit,Write,Glob,Grep,Bash(${verifier})`;
+  return run(process.env.PIPELINE_TEST_AUTHOR_CMD || 'claude', [
+    '-p', '--model', model,
+    '--restricted', '--permission-mode', 'acceptEdits',
+    '--tools', AUTHOR_TOOLS,
+    '--allowedTools', allowed,
+    '--disallowedTools', DENIED_TOOLS,
+    '--no-session-persistence',
+  ], {
       cfg: built.cfg, cwd: built.folder.dir, input: `${built.text}\n`, timeoutMs,
-      label: 'Claude test-author session', maxBuffer: MAX_BUFFER, env: process.env,
+      label: 'Claude test-author session', maxBuffer: MAX_BUFFER,
+      env: { ...process.env, ...(built.cfg.hostEnv || {}) },
     });
 }
 
@@ -137,4 +155,7 @@ function main(argv, io = {}, seams = {}) {
 
 if (require.main === module) process.exit(main(process.argv.slice(2)));
 
-module.exports = { main, parseArgs, ensureWorktree, launchAuthor, nextStep, failureStep, EXIT_USAGE, EXIT_SETUP, EXIT_AGENT };
+module.exports = {
+  main, parseArgs, ensureWorktree, launchAuthor, nextStep, failureStep,
+  AUTHOR_TOOLS, DENIED_TOOLS, EXIT_USAGE, EXIT_SETUP, EXIT_AGENT,
+};

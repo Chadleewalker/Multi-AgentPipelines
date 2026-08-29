@@ -407,7 +407,7 @@ function buildBrief(opts) {
   if (!state.ok) return { ok: false, kind: 'unknown', error: state.error };
 
   if (state.state === 'ready') {
-    return { ok: true, state: state.state, cfg, branch, text: null, folder: null };
+    return { ok: true, state: state.state, cfg, branch, id: opts.id, policy, text: null, folder: null };
   }
 
   // An existing worktree is REUSED, never re-created. Matched on the branch a session folder
@@ -438,7 +438,7 @@ function buildBrief(opts) {
     : state.state === 'freeze' ? freezeBrief(ctx)
       : reGateBrief(ctx);
 
-  return { ok: true, state: state.state, cfg, branch, folder, text: lines.join('\n') };
+  return { ok: true, state: state.state, cfg, branch, id: opts.id, policy, folder, text: lines.join('\n') };
 }
 
 function main(argv, out = console.log, err = console.error) {
