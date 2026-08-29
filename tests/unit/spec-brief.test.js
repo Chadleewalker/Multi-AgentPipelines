@@ -51,7 +51,7 @@ function git(cwd, args) {
 function initRepo(dir, branch) {
   fs.mkdirSync(dir, { recursive: true });
   if (git(dir, ['init', '-q', '--initial-branch', branch, '.']).status !== 0) git(dir, ['init', '-q', '.']);
-  for (const kv of [['user.email', 'f@t.local'], ['user.name', 'f'], ['commit.gpgsign', 'false'],
+  for (const kv of [['user.email', 'fixture@test.local'], ['user.name', 'f'], ['commit.gpgsign', 'false'],
     ['core.autocrlf', 'false'], ['core.eol', 'lf']]) git(dir, ['config', ...kv]);
 }
 
