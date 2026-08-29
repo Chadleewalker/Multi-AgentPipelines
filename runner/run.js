@@ -21,6 +21,7 @@ const { release: releaseLock } = require('./lock');
 const {
   readyQueue, claim, exportIssue, finish, outcomeFor, attemptNotes,
   undispatchableRow, logQueueRead, logUndispatched,
+  queueExitCode,
 } = require('./queue');
 const { prepare, hasCommits, collectArtifacts, discard } = require('./workspace');
 const { runTask } = require('./container');
@@ -610,6 +611,11 @@ async function main() {
   const source = createFeedSource(q.issues, {
     poll: () => readyQueue(cfg),
     concurrency: cfg.concurrency,
+    // What the run decided about its own queue, as numbers rather than prose (change-log row
+    // `refused-exit-design`). The summary line says it in English and the log can be truncated,
+    // rotated or unread; a reader comparing two runs of one queue has no other way to tell "there
+    // was nothing to do" from "there was work and none of it could start".
+    queue: queueCounts,
     idleGraceMs: cfg.feedIdleGraceMinutes * 60000,
     pollMs: cfg.feedPollSeconds * 1000,
     // The STARTUP roster's refusals, seeded here rather than left to the first poll. A
@@ -670,6 +676,25 @@ async function main() {
   // wholly refused is true and reads like an empty queue — the closing line is where an
   // operator skimming the log stops.
   log.info(t, `queue drained: ${[...results, ...refusedRows].map((r) => `${r.issueId}=${r.outcome}`).join(', ') || '(nothing ran)'}`);
+
+  // §4.12's exit codes, through the pure function rather than an inline comparison here: this
+  // sits behind the token load and the Docker preflight, so a condition written inline is one no
+  // Docker-free test can ever reach — the reason `queueSummary` was lifted out of `main()` too.
+  const queueCounts = {
+    ready: results.length + stillRefused.length,
+    dispatched: results.length,
+    refused: stillRefused.length,
+  };
+  const queueExit = queueExitCode(queueCounts.dispatched, queueCounts.refused);
+  // NO NEW LEDGER EVENT. `queue.read` already carries the ready, skipped and refused populations
+  // and the manifest now carries the counts, so an event here would be a third statement of one
+  // fact — and a vocabulary entry every later reader has to learn in order to ignore it. This line
+  // exists for the person watching the log; the exit code is what a script reads.
+  if (queueExit && !process.exitCode) {
+    log.error(t, `run dispatched nothing: ${queueCounts.refused} candidate(s) were all refused — `
+      + 'ask before launching with `node scripts/freeze.js status --config <config>`');
+    process.exitCode = queueExit;
+  }
 
   // ---- manifest + report (§4.9, §4.12) ----
   const { manifest } = writeManifest(log.dir, {

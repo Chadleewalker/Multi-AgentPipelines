@@ -373,7 +373,10 @@ function readyQueueIds(events) {
     let body = dash < 0 ? tail : tail.slice(dash + QUEUE_SPLIT.length);
     const semi = body.indexOf(';');
     if (semi >= 0) body = body.slice(0, semi);
-    ids = body.split(',').map((s) => s.trim()).filter((s) => s && s !== '(empty)');
+    // A LEADING PARENTHESIS, never the literal `(empty)`: the placeholder gained a second form
+    // when a wholly-refused queue stopped calling itself empty, and a reader pinned to one
+    // spelling silently reports `(none` as an issue id.
+    ids = body.split(',').map((s) => s.trim()).filter((s) => s && !s.startsWith('('));
   }
   return ids;                                    // the LAST queue line wins
 }

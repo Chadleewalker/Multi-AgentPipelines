@@ -406,7 +406,16 @@ function queueSummary(issues, skipped, undispatchable) {
   const list = Array.isArray(issues) ? issues : [];
   const out = Array.isArray(skipped) ? skipped : [];
   const refused = Array.isArray(undispatchable) ? undispatchable : [];
-  let line = `ready queue: ${list.length} task(s) — ${list.map((i) => i.id).join(', ') || '(empty)'}`;
+  // THE COUNT THAT MATTERS LEADS (§4.12, change-log row `refused-exit-design`). The line used to
+  // open `ready queue: 0 task(s) — (empty)` for a queue of eight that could dispatch none of
+  // them: *empty* is the first word a skimming operator reads, and the load-bearing half waited
+  // after a semicolon at the end of a long line. Three consecutive runs were read that way.
+  //
+  // The ID SLOT after the em dash is deliberately unchanged, because it is the contract:
+  // `scripts/dashboard.js` finds ` — ` and reads ids up to the first `;`, and every log already
+  // on disk is parsed by that same reader. Only the words before the dash moved.
+  const total = list.length + refused.length;
+  let line = `ready queue: ${list.length} of ${total} dispatchable — ${list.map((i) => i.id).join(', ') || '(none)'}`;
   if (out.length) {
     line += `; skipped ${out.length} by type: ${out.map(describe).join(', ')}`;
   }
@@ -422,13 +431,35 @@ function queueSummary(issues, skipped, undispatchable) {
   // name rather than under the missing freeze.
   if (refused.length) {
     const ids = refused.map((u) => (u && u.issue && u.issue.id) || String(u && u.id || '')).join(', ');
-    line += `; NOT DISPATCHABLE ${refused.length}: ${ids}`
-      + ' — no frozen suite at tests/acceptance/<issue-id>/ on the integration branch;'
-      + ' freeze and push it, then re-run (the issues stay open, untouched)';
+    // BY KIND, now that there is more than one. `no-suite` is still the common case and still
+    // carries the remedy, but a receipt that was never pushed and a suite edited after the gate
+    // blessed it send a person to different places, and a single sentence naming only the first
+    // sends them to the wrong one.
+    const kinds = [...new Set(refused.map((u) => (u && u.refusal) || REFUSAL.NO_SUITE))].join(", ");
+    line += `; NOT DISPATCHABLE ${refused.length} (${kinds}): ${ids}`
+      + ' — ask before launching with `node scripts/freeze.js status --config <config>`,'
+      + ' and freeze with `node scripts/freeze.js commit <id> --config <config>`'
+      + ' (the issues stay open, untouched)';
   }
   return line;
 }
 
+// The run's exit code, as a PURE FUNCTION of what the drain actually did (§4.12, change-log row
+// `refused-exit-design`). A run that read eight ready issues and dispatched none exited 0, which
+// no script could tell from a run with nothing to do — a lie told to the operator session that
+// launches runs on "go", and the property that turned a missing freeze from a mistake somebody
+// made once into a class that recurs.
+//
+// NARROW ON PURPOSE. An empty queue is a legitimate no-op and stays 0: a drained project is the
+// normal end state, and failing there would make the code meaningless. 4 rather than 2 because 2
+// is already a bad config or a missing token, and an exit code that means two things means neither.
+//
+// A function of COUNTS, not of the queue result, so it is reachable to a Docker-free test: it is
+// used behind the token load and the Docker preflight, where nothing else can go.
+const EXIT_NOTHING_DISPATCHABLE = 4;
+function queueExitCode(dispatched, refused) {
+  return (dispatched === 0 && refused > 0) ? EXIT_NOTHING_DISPATCHABLE : 0;
+}
 // ---- the ledger's two queue facts (§4.12, §5; change-log row `repo-3xw`) ----------------
 // What the run decided about its own queue is the fact no reader can get today: the summary
 // line above is prose, and the per-issue refusals reach `run.log` and nowhere else. Both now
@@ -650,6 +681,12 @@ module.exports = {
   readyQueue, queueSummary, claim, exportIssue, finish, outcomeFor, attemptNotes, OUTCOMES,
   EXCLUDED_TYPES, typeOf, gitSpawnOptions, undispatchableRow, DEFAULT_GIT_TIMEOUT_MS,
   logQueueRead, logUndispatched,
+  // Exported for `scripts/freeze.js`, which asks the dispatch question BEFORE a launch and
+  // proves a freeze landed AFTER a push. Both are the same question a run asks, and a second
+  // implementation of it that agreed on the day it was written is the exact failure that
+  // command exists to prevent — so it reaches in here rather than restating the rule.
+  partitionByFreeze, resolveBranch,
+  queueExitCode, EXIT_NOTHING_DISPATCHABLE,
   REFUSAL, KNOWN_GATE_VERSIONS, RECEIPT_VERDICTS,
   OWNER_TOKEN_KEY, OWNER_RUN_KEY,
 };

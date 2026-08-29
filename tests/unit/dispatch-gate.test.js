@@ -540,22 +540,64 @@ guarded('G6', () => {
 guarded('G7', () => {
   const dispatchable = [issue('x-one'), issue('x-two', { issue_type: 'bug' })];
   const skipped = [issue('e-one', { issue_type: 'epic' })];
-  const historic = 'ready queue: 2 task(s) — x-one, x-two; skipped 1 by type: e-one (epic); running 1 non-task: x-two (bug)';
-  check('G7a with no refusals the line is byte-identical to the historic one',
-    queue.queueSummary(dispatchable, skipped, []) === historic);
-  check('G7b and identical again when the third argument is omitted entirely',
-    queue.queueSummary(dispatchable, skipped) === historic);
-  check('G7c an empty queue still reads `(empty)`',
-    queue.queueSummary([], [], []) === 'ready queue: 0 task(s) — (empty)');
 
-  const refused = [{ issue: issue('r-one'), reason: 'no suite' }, { issue: issue('r-two'), reason: 'no suite' }];
+  // THE LINE NOW LEADS WITH THE COUNT THAT MATTERS (change-log row `refused-exit-design`).
+  // It used to open `ready queue: 2 task(s)`, which is true and, on the runs this exists for,
+  // useless: a queue of eight that dispatched none of them read `0 task(s) — (empty)`, and
+  // *empty* is the first word a skimming operator takes in while the load-bearing half waits
+  // after a semicolon at the end of a long line. Three consecutive runs were read that way.
+  const clean = 'ready queue: 2 of 2 dispatchable — x-one, x-two; skipped 1 by type: e-one (epic); running 1 non-task: x-two (bug)';
+  check('G7a with no refusals the total equals the dispatchable count',
+    queue.queueSummary(dispatchable, skipped, []) === clean);
+  check('G7b and identical again when the third argument is omitted entirely',
+    queue.queueSummary(dispatchable, skipped) === clean);
+  check('G7c a genuinely empty queue says so as 0 of 0, and never claims a refusal',
+    queue.queueSummary([], [], []) === 'ready queue: 0 of 0 dispatchable — (none)');
+
+  const refused = [{ issue: issue('r-one'), refusal: 'no-suite', reason: 'no suite' },
+    { issue: issue('r-two'), refusal: 'no-receipt', reason: 'no receipt' }];
   const line = queue.queueSummary(dispatchable, skipped, refused);
-  check('G7d the historic line is a PREFIX of the one carrying refusals',
-    line.startsWith(historic));
-  check('G7e the refusal clause names every refused id and the remedy path',
-    line.includes('r-one') && line.includes('r-two') && line.includes('tests/acceptance'));
-  check('G7f no refused id reaches the segment the dashboard parses',
+  check('G7d the denominator counts the refused candidates, so 2 of 4 is visible at a glance',
+    line.startsWith('ready queue: 2 of 4 dispatchable — x-one, x-two;'));
+  check('G7e the refusal clause names every refused id',
+    line.includes('r-one') && line.includes('r-two'));
+  // BY KIND, which the third admission rule deliberately left to this task: a receipt that was
+  // never pushed and a suite edited after the gate blessed it send a person to different places,
+  // and one sentence naming only the common case sends them to the wrong one.
+  check('G7f the clause names the refusal kinds, not just a count',
+    /NOT DISPATCHABLE 2 \(no-suite, no-receipt\)/.test(line));
+  check('G7g and the remedy is a command the reader can type, not a description of one',
+    line.includes('scripts/freeze.js status') && line.includes('scripts/freeze.js commit'));
+
+  // THE ID SLOT IS THE CONTRACT. `scripts/dashboard.js` finds the first ` — ` and reads ids up
+  // to the first `;`, and every log already on disk is parsed by that same reader — so the words
+  // before the dash could move and the slot after it could not. Both halves are asserted here
+  // because the wording change that broke either would look harmless in a diff.
+  check('G7h no refused id reaches the segment the dashboard parses',
     !line.split(';')[0].includes('r-one') && !line.split(';')[0].includes('r-two'));
+  {
+    const D = require(path.join(ROOT, 'scripts', 'dashboard.js'));
+    const ev = (msg) => ({ msg, issueId: 'preflight' });
+    check('G7i the dashboard still reads the dispatchable ids out of the new wording',
+      D.readyQueueIds([ev(line)]).join(',') === 'x-one,x-two');
+    check('G7j and reads no id at all out of a wholly-refused queue',
+      D.readyQueueIds([ev(queue.queueSummary([], [], refused))]).length === 0);
+  }
+
+  // ---- the exit code, as the pure function the design names -------------------------------
+  // A run that read eight ready issues and dispatched none exited 0, which no script could tell
+  // from a run with nothing to do. Narrow on purpose: an empty queue is a legitimate no-op and
+  // must stay 0, or the code means nothing on a drained project — which is most days.
+  check('G7k a queue that dispatched nothing but refused something exits 4',
+    queue.queueExitCode(0, 8) === 4);
+  check('G7l a genuinely empty queue is still a no-op at 0',
+    queue.queueExitCode(0, 0) === 0);
+  check('G7m and any dispatch at all is a run that did work, however much it refused',
+    queue.queueExitCode(1, 7) === 0 && queue.queueExitCode(8, 0) === 0);
+  // 4 and not 2: 2 is already a bad config and a missing token, and an exit code that means two
+  // things means neither.
+  check('G7n the code is 4, which is not one already taken by a config or token failure',
+    queue.EXIT_NOTHING_DISPATCHABLE === 4);
 
   // The dashboard reads ids from the first ` — ` to the first `;` and is DOWNSTREAM of this
   // wording. It is required here rather than trusted, because an appended clause that leaked
@@ -649,6 +691,29 @@ guarded('G9', () => {
     /tasks:\s*\[\s*\.\.\.results,\s*\.\.\.refusedRows\s*\]/.test(code));
   check('G9g the drain\'s closing line names the refusals too',
     /queue drained[\s\S]{0,120}refusedRows/.test(code));
+
+  // THE SIGNAL AUTOMATION NEEDED. A run that refused all eight of its candidates exited 0 and
+  // was, to any script, indistinguishable from a run with nothing to do — a lie told to the
+  // operator session that launches runs on "go", and the property that turned a missing freeze
+  // from a mistake somebody made once into a class that recurs.
+  //
+  // Through the PURE FUNCTION, never an inline comparison: `main()` sits behind the token load
+  // and the Docker preflight, so a condition written there is one no Docker-free test can
+  // execute — the same reason `queueSummary` was lifted out of it. The decision itself is
+  // asserted at G7k-n, where it can be called rather than read.
+  check('G9h the run takes its queue exit code from the exported pure function',
+    /queueExitCode\(/.test(code) && /queueExitCode,/.test(src));
+  check('G9i and sets it through process.exitCode, so the manifest, report and lock release still happen',
+    /process\.exitCode = queueExit/.test(code) && !/process\.exit\(queueExit/.test(code));
+  check('G9j and never overwrites an exit code an earlier failure already set',
+    /queueExit && !process\.exitCode/.test(code));
+  // The counts are recorded as NUMBERS as well as prose. A log can be truncated, rotated or
+  // simply unread; a reader comparing two runs of one queue has no other way to tell "there was
+  // nothing to do" from "there was work and none of it could start".
+  check('G9k the queue counts reach the manifest',
+    /queue: queueCounts/.test(code)
+    && /ready: results\.length \+ stillRefused\.length/.test(code)
+    && /refused: stillRefused\.length/.test(code));
 });
 
 // =======================================================================================

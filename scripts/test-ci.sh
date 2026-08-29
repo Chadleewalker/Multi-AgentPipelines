@@ -28,6 +28,7 @@ SUITES=(
   test-events.sh
   test-feed.sh
   test-fixture-receipts.sh
+  test-freeze.sh
   test-freeze-gate.sh
   test-host-shell.sh
   test-lifecycle-bounds.sh

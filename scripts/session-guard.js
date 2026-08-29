@@ -473,6 +473,13 @@ function otherSessionReason(folder) {
     'into one looks harmless and is not: whoever is working in there has uncommitted files',
     'with no copy anywhere, on a branch that is not yours. Make the change in your own',
     'folder, or ask for theirs to be merged.',
+    '',
+    'IF YOU JUST CREATED IT: that is this same refusal, and it is not wrong — this guard has no',
+    'way to tell a folder you cut seconds ago from one someone else is working in, and guessing',
+    'would open exactly the hole it exists to close. You are not stuck and you do not need the',
+    'exemption marker. A worktree is a session folder: open a session with that folder as its',
+    'working directory and write from there, which is what `node scripts/worktree.js new` tells',
+    'you to do on the line after it prints the path.',
   ].join('\n');
 }
 
