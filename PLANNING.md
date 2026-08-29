@@ -186,6 +186,31 @@ specs actually get skipped. This is the only thing that makes the panel auditabl
 critic that never gates leaves no other trace (§3.2, move 4).
 
 ### 3. Write the acceptance tests
+
+**Generate the brief rather than writing one.** The instructions for this step are the same
+every time, wrapped around six facts that change per issue and per project — the integration
+branch, the verify command, the frozen paths, the host environment a headless run needs, which
+folder the agent works in, and where the gate has to be pointed:
+
+```bash
+node scripts/spec-brief.js <issue-id> --config run.config.<project>.json
+```
+
+Every one of those six is already recorded — in the run config, the target's
+`pipeline.config.json`, git's worktree registry and Beads — so none of them is retyped, and the
+brief quotes the issue's own criteria rather than the planning draft that produced them. Hand
+the output to a fresh session opened **in the folder it names**.
+
+It works out which of three states the issue is in first, because the instructions differ:
+write the tests, freeze a suite the working tree already holds, or re-gate one that is on the
+branch without a readable receipt. The last two need no drafting at all, and a report that does
+not separate them makes a nearly-finished task look like an untouched one.
+
+A machine-specific path — a binary that is not on `PATH` — belongs in the run config's optional
+`hostEnv`, never in the target's `pipeline.config.json`: run configs are host-local and
+git-ignored, which is exactly where a path that is true on one machine should live. The brief
+emits it as an `export` line. Nothing at run time reads it; a container gets its dependencies
+from the image.
 Claude writes the tests **now, before any code exists**, from the spec alone (§2, §4.4):
 - They live at `tests/acceptance/<issue-id>/` in the target repo (§3.1) — create the
   issue id first if needed by doing step 6 early, or use a placeholder directory and
@@ -385,6 +410,27 @@ the prose alone may. Claude offers, never insists.
 
 ### 6. Freeze
 On approval, in the target repo:
+
+**One command does all of this, and the last thing it does is check its own work:**
+
+```bash
+node scripts/freeze.js commit <issue-id> [<issue-id>...] --config run.config.<project>.json
+```
+
+It gates the suite, commits it and its receipt to the integration branch under a generated
+message, pushes, and then asks the **runner's own dispatch gate** whether the branch it just
+wrote will be accepted — so a freeze it reports as done is one a launch will take, rather than
+one this session believes it made. Add `--probe <dir>` to hand the gate the tree from step 4,
+`--dry-run` to gate and report without writing anything, and pass several ids to freeze a batch
+in one commit. It refuses before touching anything if any suite in the batch fails its gate, if
+the target checkout has staged work, or if that checkout is parked on another branch: a
+half-done freeze is worse than none, because the operator then has a tree they did not make.
+
+**It will not write the tests.** The suite is the spec (§2, hard invariant 3), and an issue whose
+`tests/acceptance/<issue-id>/` does not exist is refused naming step 3. That refusal is the tool
+working.
+
+The manual sequence it replaces, which is what it does and the reason each part matters:
 1. Commit the acceptance tests **to the project's integration branch** (its
    `defaultBranch` — §3.4; `main` only if none is configured) and push. Frozen means:
    the test paths as they exist at the task branch's fork point from that branch —
@@ -425,6 +471,21 @@ install anything at run time):
    The runner only asserts the image exists; it never builds.
 
 ### 8. Pre-run checklist
+
+**Ask what a run would actually do, before launching one:**
+
+```bash
+node scripts/freeze.js status --config run.config.<project>.json
+```
+
+It prints the two populations a launch would produce — dispatchable and refused, each refusal
+with its reason and its remedy — using the runner's own gate against the same branch, and
+writes nothing anywhere. It exits **1 when the queue has candidates and none of them can be
+dispatched**, which is the state a run reports as success while doing no work at all.
+
+This is the first two bullets below, automated and answered in seconds. Run it; then read the
+bullets for the halves it cannot check — the **priority order**, the image, and whether the task
+has everything it needs to know.
 - `bd ready` (in the target repo's working copy) lists exactly the tasks meant to run,
   in the intended priority order. An **epic** may appear in that list and is expected to —
   `bd ready` returns the parent alongside its children — but the runner filters entries
@@ -439,6 +500,9 @@ install anything at run time):
   refuses what it cannot find (§4.12, change-log row `repo-5yu`), which turns the old
   silent three-attempt failure into an `undispatchable` row naming the remedy — but it
   refuses *per issue*, so an unpushed freeze still costs you that task's slot in the batch.
+  **A run that dispatches nothing from a non-empty queue now exits 2**, where it used to exit 0
+  and read as a quiet day. That is the signal for anything scripting the loop; a genuinely empty
+  queue is still a legitimate no-op at exit 0.
   Two things the gate does *not* soften. An unreachable `targetRepoRemote`, or a default
   branch it cannot resolve, **aborts the whole run before anything is claimed** rather
   than failing one task. And `node scripts/batch.js show`'s `ready` verdict, below, is

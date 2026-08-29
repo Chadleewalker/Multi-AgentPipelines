@@ -105,7 +105,7 @@ echo "$ORDER" | grep -q "$B, $D, $A" && pass "ready queue ordered by priority (0
   || fail "ordering wrong: $ORDER"
 echo "$ORDER" | grep -q "$C" && fail "blocked task appeared in the ready queue" \
   || pass "dependency-gated task excluded from ready queue"
-echo "$OUT" | grep -q "ready queue: 3 task" && pass "queue size correct (3 of 4)" || fail "queue size wrong"
+echo "$OUT" | grep -q "ready queue: 3 of 3 dispatchable" && pass "queue size correct (3 of 4)" || fail "queue size wrong"
 
 # 2. Sequential execution: one task at a time, in order, all three ran.
 [ "$(echo "$OUT" | grep -c 'starting task')" = 3 ] && pass "all ready tasks ran sequentially" || fail "task count wrong"
@@ -121,7 +121,7 @@ bdq show "$B" --json | grep -q "outcome done" && pass "attempt notes appended to
 
 # 5. Drained queue is empty next run (closed issues leave ready).
 OUT2=$(runq "$TMP/stub-success.sh" t12-empty)
-echo "$OUT2" | grep -q "ready queue: 1 task" && pass "unblocked dependent task now ready (C after B closed)" \
+echo "$OUT2" | grep -q "ready queue: 1 of 1 dispatchable" && pass "unblocked dependent task now ready (C after B closed)" \
   || fail "dependency did not unlock: $(echo "$OUT2" | grep -o 'ready queue: .*')"
 
 # 6. Partial: acceptance pass + regressions fail -> partial, still closed.

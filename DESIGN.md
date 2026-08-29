@@ -1528,6 +1528,7 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     move twice.
 
     **The run's process exit codes, in one place** (change-log row `refused-exit-design`).
+    *Built* (change-log row `freeze-command`).
     Before this row they were scattered: 1 for an unreadable queue or a failed preflight, 2
     for a bad config or a missing token, 0 for everything else — including a run that read
     eight ready issues and dispatched none, which no script could tell from a run with
@@ -1541,6 +1542,85 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     id slot, which is unchanged so the dashboard's parser and every log already on disk keep
     reading. Five grep sites in `scripts/test-runner-queue.sh` pin the historic prefix, not
     six as earlier rows say.
+
+    **The freeze is a command, and it proves its own work** (change-log row
+    `freeze-command`). Every enforcement point around the freeze sat at the *end* of the loop.
+    `bd create` is one line, always available, needs no tests, and produces an issue that reads
+    `ready` in `bd ready` forever; the gate above is invoked by hand and nothing records whether
+    it ever ran; the admission rules refuse minutes into a launch. Between "an issue exists" and
+    "a run refuses it" there was no moment at which a missing suite was anyone's problem — so a
+    queue of eight dispatched zero, three runs running, and the person who filed them had done
+    nothing any tool could complain about at the time. The detection was never the gap: the
+    summary line said the right thing in good English. What no one could do was **ask in
+    advance**, and what the system did not do was **fail**.
+
+    `scripts/freeze.js` closes both halves with two verbs. `status` answers "what would a run
+    dispatch right now?" without launching one, printing the dispatchable and refused
+    populations with each refusal's kind and remedy, and exiting 1 when a non-empty queue can
+    dispatch nothing. `commit` performs PLANNING.md step 6: it runs the gate over each named
+    suite, commits the suites and their receipts to the integration branch under a generated
+    message, pushes, and then **asks the runner's own `partitionByFreeze` whether the branch it
+    just wrote will be accepted** — so what it reports is the runner's verdict and not its own
+    belief. Both verbs import that gate rather than restating it; a second implementation of
+    "is this frozen?" would agree on the day it was written, and the entire value of asking in
+    advance is that the answer is the one the run will give.
+
+    Four refusals are structural rather than advisory, each because the alternative leaves a
+    tree nobody made. A batch is gated **in full before anything is staged**, so a refusal on
+    the fourth id cannot leave the first three committed. A target checkout with **anything
+    already staged** is refused, because this commits the index and another session's staged
+    file would ride into a freeze commit under its message. A checkout **parked on another
+    branch** is refused rather than switched: moving a working tree this command does not own
+    is the collision the session guard exists to prevent, approached from inside a tool.
+    And `--allow-half-proven` **without `allowHalfProven` in the run config** is refused up
+    front, because that pair produces a freeze this command calls done and the third admission
+    rule refuses at dispatch — the exact outcome it exists to make impossible, reached through
+    its own flag.
+
+    **It does not write the tests, and that is not a gap.** The acceptance suite is the spec
+    (§2, hard invariant 3); a machine that drafts it decides what "done" means with nobody in
+    the room. An issue whose `tests/acceptance/<issue-id>/` does not exist is refused naming
+    PLANNING.md step 3, and an existing directory holding no test files is refused separately,
+    because that one is the vacuous freeze the gate exists to prevent rather than an absent one.
+
+    A re-freeze of an **unchanged** suite makes no commit. The gate stamps the moment it ran
+    into the receipt, so re-running it over a suite nobody touched yields a file differing in
+    one timestamp — and an operator re-runs a freeze constantly, after a refusal, after a
+    rebase, to check. Equal `suiteHash` and equal verdict means the gate judged the identical
+    suite, the committed receipt is restored byte for byte, and there is nothing to stage.
+
+    **The brief that sends an agent to write a spec's tests is generated** (change-log row
+    `spec-brief`). PLANNING.md step 3 is the step that gets skipped, and the reason is not that
+    it is hard to describe — it is the same eight paragraphs every time. What changes per issue
+    and per project is six facts: the integration branch, the verify command, the frozen paths,
+    the host environment a headless run needs, which folder the agent works in, and where the
+    freeze gate is pointed. Written by hand the first time, four of those six were wrong — a
+    binary path that had moved, a `scripts/` directory the target repo does not have, a `--repo`
+    aimed at the shared checkout rather than the worktree, and a worktree the brief said to
+    create when one already existed. **Three of the four produce a gate result that looks like
+    an answer**: a missing binary false-fails every test into a red the control fixture
+    certifies as discriminating, and a `--repo` aimed at the wrong tree grades a directory that
+    is not there. At one issue that is a wasted morning; at twenty it is why the tests do not
+    get written.
+
+    Every one of the six is already recorded where the host can read it — the run config, the
+    target's `pipeline.config.json`, git's own worktree registry, Beads — so
+    `scripts/spec-brief.js` retypes none of them, and quotes the issue's criteria rather than
+    the planning draft, because the issue is canonical from freeze onward. It reads only.
+
+    **Three states, three briefs**, decided before a word is written: `write` (no suite
+    anywhere), `freeze` (a suite in the working tree the branch has never seen — a session that
+    stopped one step short, which no branch-side check can see) and `re-gate` (on the branch,
+    refused for its receipt rather than its absence). The last two need no drafting, and a
+    report that does not separate them makes a nearly-finished task indistinguishable from an
+    untouched one. The state comes from the runner's own `partitionByFreeze`, never a second
+    reading of the rule.
+
+    A machine-specific path lives in the run config's optional `hostEnv`, not in the target's
+    `pipeline.config.json`: run configs are host-local and git-ignored, and a path true on one
+    machine must not be committed to a repository other machines clone. Nothing at run time
+    reads it — a container takes its dependencies from the image — so it is validated as
+    strings and consumed only by this brief.
 
     **The ready queue is re-read while the run is in flight** (change-log row
     `live-queue-feed`). Until this, a run's roster was decided once: `readyQueue()` at the
