@@ -147,6 +147,20 @@ function loadConfig(file) {
   if (raw.allowHalfProven !== undefined && typeof raw.allowHalfProven !== 'boolean') {
     throw new Error(`run.config.json: 'allowHalfProven' must be true or false`);
   }
+  // Host-only environment a headless acceptance run needs — a binary that is not on PATH, a
+  // display variable, a licence key path. STRINGS ONLY, and read by NOTHING at run time: this is
+  // consumed by `scripts/spec-brief.js` to tell an agent what to export before running the
+  // project's verifier by hand, and it is in the run config rather than `pipeline.config.json`
+  // precisely because a machine-specific path must not be committed to the target repo. A
+  // container gets its dependencies from the image and never reads this.
+  if (raw.hostEnv !== undefined) {
+    if (!raw.hostEnv || typeof raw.hostEnv !== 'object' || Array.isArray(raw.hostEnv)) {
+      throw new Error(`run.config.json: 'hostEnv' must be an object of NAME: value strings`);
+    }
+    for (const [k, v] of Object.entries(raw.hostEnv)) {
+      if (typeof v !== 'string') throw new Error(`run.config.json: hostEnv.${k} must be a string`);
+    }
+  }
   if (raw.hostShell !== undefined && raw.hostShell !== null
       && (typeof raw.hostShell !== 'string' || !raw.hostShell.trim())) {
     throw new Error(`run.config.json: 'hostShell' must be null or a non-empty executable path`);

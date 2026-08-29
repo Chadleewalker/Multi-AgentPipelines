@@ -1589,6 +1589,39 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     rebase, to check. Equal `suiteHash` and equal verdict means the gate judged the identical
     suite, the committed receipt is restored byte for byte, and there is nothing to stage.
 
+    **The brief that sends an agent to write a spec's tests is generated** (change-log row
+    `spec-brief`). PLANNING.md step 3 is the step that gets skipped, and the reason is not that
+    it is hard to describe — it is the same eight paragraphs every time. What changes per issue
+    and per project is six facts: the integration branch, the verify command, the frozen paths,
+    the host environment a headless run needs, which folder the agent works in, and where the
+    freeze gate is pointed. Written by hand the first time, four of those six were wrong — a
+    binary path that had moved, a `scripts/` directory the target repo does not have, a `--repo`
+    aimed at the shared checkout rather than the worktree, and a worktree the brief said to
+    create when one already existed. **Three of the four produce a gate result that looks like
+    an answer**: a missing binary false-fails every test into a red the control fixture
+    certifies as discriminating, and a `--repo` aimed at the wrong tree grades a directory that
+    is not there. At one issue that is a wasted morning; at twenty it is why the tests do not
+    get written.
+
+    Every one of the six is already recorded where the host can read it — the run config, the
+    target's `pipeline.config.json`, git's own worktree registry, Beads — so
+    `scripts/spec-brief.js` retypes none of them, and quotes the issue's criteria rather than
+    the planning draft, because the issue is canonical from freeze onward. It reads only.
+
+    **Three states, three briefs**, decided before a word is written: `write` (no suite
+    anywhere), `freeze` (a suite in the working tree the branch has never seen — a session that
+    stopped one step short, which no branch-side check can see) and `re-gate` (on the branch,
+    refused for its receipt rather than its absence). The last two need no drafting, and a
+    report that does not separate them makes a nearly-finished task indistinguishable from an
+    untouched one. The state comes from the runner's own `partitionByFreeze`, never a second
+    reading of the rule.
+
+    A machine-specific path lives in the run config's optional `hostEnv`, not in the target's
+    `pipeline.config.json`: run configs are host-local and git-ignored, and a path true on one
+    machine must not be committed to a repository other machines clone. Nothing at run time
+    reads it — a container takes its dependencies from the image — so it is validated as
+    strings and consumed only by this brief.
+
     **The ready queue is re-read while the run is in flight** (change-log row
     `live-queue-feed`). Until this, a run's roster was decided once: `readyQueue()` at the
     top of the task loop, then the pool walked that array to its end. An issue made ready a

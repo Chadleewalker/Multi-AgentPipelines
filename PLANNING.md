@@ -186,6 +186,31 @@ specs actually get skipped. This is the only thing that makes the panel auditabl
 critic that never gates leaves no other trace (§3.2, move 4).
 
 ### 3. Write the acceptance tests
+
+**Generate the brief rather than writing one.** The instructions for this step are the same
+every time, wrapped around six facts that change per issue and per project — the integration
+branch, the verify command, the frozen paths, the host environment a headless run needs, which
+folder the agent works in, and where the gate has to be pointed:
+
+```bash
+node scripts/spec-brief.js <issue-id> --config run.config.<project>.json
+```
+
+Every one of those six is already recorded — in the run config, the target's
+`pipeline.config.json`, git's worktree registry and Beads — so none of them is retyped, and the
+brief quotes the issue's own criteria rather than the planning draft that produced them. Hand
+the output to a fresh session opened **in the folder it names**.
+
+It works out which of three states the issue is in first, because the instructions differ:
+write the tests, freeze a suite the working tree already holds, or re-gate one that is on the
+branch without a readable receipt. The last two need no drafting at all, and a report that does
+not separate them makes a nearly-finished task look like an untouched one.
+
+A machine-specific path — a binary that is not on `PATH` — belongs in the run config's optional
+`hostEnv`, never in the target's `pipeline.config.json`: run configs are host-local and
+git-ignored, which is exactly where a path that is true on one machine should live. The brief
+emits it as an `export` line. Nothing at run time reads it; a container gets its dependencies
+from the image.
 Claude writes the tests **now, before any code exists**, from the spec alone (§2, §4.4):
 - They live at `tests/acceptance/<issue-id>/` in the target repo (§3.1) — create the
   issue id first if needed by doing step 6 early, or use a placeholder directory and
