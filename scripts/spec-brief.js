@@ -388,39 +388,26 @@ function reGateBrief(ctx) {
 
 // ---- entry -------------------------------------------------------------------------------------
 
-function main(argv, out = console.log, err = console.error) {
-  if (!argv.length || argv[0] === '--help' || argv[0] === '-h') {
-    out(USAGE);
-    return argv.length ? EXIT_OK : EXIT_USAGE;
-  }
-  const opts = parseArgs(argv);
-  if (opts.error) { err(`spec-brief: ${opts.error}`); err(USAGE); return EXIT_USAGE; }
-  if (!opts.id) { err('spec-brief: needs an issue id'); err(USAGE); return EXIT_USAGE; }
-  if (!opts.config) { err('spec-brief: --config names the run.config.<project>.json a launch would type'); return EXIT_USAGE; }
-
+function buildBrief(opts) {
   let cfg;
   const configPath = path.resolve(opts.config);
-  try { cfg = loadConfig(configPath); } catch (e) {
-    err(`spec-brief: cannot read ${opts.config}: ${(e && e.message) || String(e)}`);
-    return EXIT_USAGE;
-  }
+  try { cfg = loadConfig(configPath); } catch (e) { return { ok: false, kind: 'config', error: (e && e.message) || String(e) }; }
 
   const policy = targetPolicy(cfg);
-  if (!policy.ok) { err(`spec-brief: ${policy.error}`); return EXIT_UNKNOWN; }
+  if (!policy.ok) return { ok: false, kind: 'unknown', error: policy.error };
 
   const resolved = resolveBranch(cfg);
-  if (!resolved.ok) { err(`spec-brief: ${resolved.error}`); return EXIT_UNKNOWN; }
+  if (!resolved.ok) return { ok: false, kind: 'unknown', error: resolved.error };
   const branch = resolved.branch;
 
   const found = issue(cfg, opts.id);
-  if (!found.ok) { err(`spec-brief: cannot read ${opts.id} from Beads: ${found.error}`); return EXIT_UNKNOWN; }
+  if (!found.ok) return { ok: false, kind: 'issue', error: found.error };
 
   const state = classify(cfg, opts.id, branch);
-  if (!state.ok) { err(`spec-brief: ${state.error}`); return EXIT_UNKNOWN; }
+  if (!state.ok) return { ok: false, kind: 'unknown', error: state.error };
 
   if (state.state === 'ready') {
-    out(`${opts.id} is already frozen and the runner will dispatch it. Nothing to brief.`);
-    return EXIT_OK;
+    return { ok: true, state: state.state, cfg, branch, text: null, folder: null };
   }
 
   // An existing worktree is REUSED, never re-created. Matched on the branch a session folder
@@ -451,16 +438,40 @@ function main(argv, out = console.log, err = console.error) {
     : state.state === 'freeze' ? freezeBrief(ctx)
       : reGateBrief(ctx);
 
-  const text = lines.join('\n');
+  return { ok: true, state: state.state, cfg, branch, folder, text: lines.join('\n') };
+}
+
+function main(argv, out = console.log, err = console.error) {
+  if (!argv.length || argv[0] === '--help' || argv[0] === '-h') {
+    out(USAGE);
+    return argv.length ? EXIT_OK : EXIT_USAGE;
+  }
+  const opts = parseArgs(argv);
+  if (opts.error) { err(`spec-brief: ${opts.error}`); err(USAGE); return EXIT_USAGE; }
+  if (!opts.id) { err('spec-brief: needs an issue id'); err(USAGE); return EXIT_USAGE; }
+  if (!opts.config) { err('spec-brief: --config names the run.config.<project>.json a launch would type'); return EXIT_USAGE; }
+
+  const built = buildBrief(opts);
+  if (!built.ok) {
+    const prefix = built.kind === 'config' ? `cannot read ${opts.config}`
+      : built.kind === 'issue' ? `cannot read ${opts.id} from Beads` : '';
+    err(`spec-brief: ${prefix ? `${prefix}: ` : ''}${built.error}`);
+    return built.kind === 'config' ? EXIT_USAGE : EXIT_UNKNOWN;
+  }
+  if (built.state === 'ready') {
+    out(`${opts.id} is already frozen and the runner will dispatch it. Nothing to brief.`);
+    return EXIT_OK;
+  }
+
   if (opts.out) {
-    fs.writeFileSync(path.resolve(opts.out), `${text}\n`);
-    out(`brief written: ${path.resolve(opts.out)}  (${state.state})`);
+    fs.writeFileSync(path.resolve(opts.out), `${built.text}\n`);
+    out(`brief written: ${path.resolve(opts.out)}  (${built.state})`);
   } else {
-    out(text);
+    out(built.text);
   }
   return EXIT_OK;
 }
 
 if (require.main === module) process.exit(main(process.argv.slice(2)));
 
-module.exports = { main, parseArgs, classify, exampleSuite, worktrees, envLines };
+module.exports = { main, buildBrief, parseArgs, classify, exampleSuite, worktrees, envLines };

@@ -187,24 +187,29 @@ critic that never gates leaves no other trace (§3.2, move 4).
 
 ### 3. Write the acceptance tests
 
-**Generate the brief rather than writing one.** The instructions for this step are the same
-every time, wrapped around six facts that change per issue and per project — the integration
-branch, the verify command, the frozen paths, the host environment a headless run needs, which
-folder the agent works in, and where the gate has to be pointed:
+**Launch the test author from the generated brief.** The planning command computes the same
+deterministic brief, creates or reuses the issue's dedicated worktree, and opens one headless
+Claude session there with an explicit model alias:
 
 ```bash
-node scripts/spec-brief.js <issue-id> --config run.config.<project>.json
+node scripts/author-tests.js <issue-id> --config run.config.<project>.json
 ```
 
 Every one of those six is already recorded — in the run config, the target's
 `pipeline.config.json`, git's worktree registry and Beads — so none of them is retyped, and the
-brief quotes the issue's own criteria rather than the planning draft that produced them. Hand
-the output to a fresh session opened **in the folder it names**.
+brief quotes the issue's own criteria rather than the planning draft that produced them. Set
+the optional `testAuthorModel` in the run config when the test author should differ from the
+implementation `model`; otherwise the launcher uses `model`. It passes that alias explicitly,
+never inheriting a global CLI selection. `scripts/spec-brief.js` remains the read-only command
+for inspecting or saving the brief without opening a session.
 
 It works out which of three states the issue is in first, because the instructions differ:
 write the tests, freeze a suite the working tree already holds, or re-gate one that is on the
 branch without a readable receipt. The last two need no drafting at all, and a report that does
 not separate them makes a nearly-finished task look like an untouched one.
+
+The launcher stops when the agent exits. It never calls `freeze.js`, commits, or pushes. Read
+the agent's report and review the suite before the human-approved freeze in step 6.
 
 A machine-specific path — a binary that is not on `PATH` — belongs in the run config's optional
 `hostEnv`, never in the target's `pipeline.config.json`: run configs are host-local and

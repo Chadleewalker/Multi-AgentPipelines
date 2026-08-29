@@ -1,0 +1,120 @@
+#!/usr/bin/env node
+// Copyright 2026 Chad Walker
+// SPDX-License-Identifier: Apache-2.0
+'use strict';
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { loadConfig } = require('../../runner/config');
+const A = require('../../scripts/author-tests');
+
+let failures = 0;
+function check(label, ok) { console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}`); if (!ok) failures += 1; }
+function capture() {
+  const out = []; const err = [];
+  return { out, err, io: { out: (s) => out.push(String(s)), err: (s) => err.push(String(s)) } };
+}
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'author-tests-'));
+const folder = path.join(tmp, 'issue-tree');
+fs.mkdirSync(folder);
+const cfg = { targetRepoPath: tmp, targetRepoRemote: 'x', image: 'x', wallClockMinutes: 2, model: 'sonnet', testAuthorModel: 'opus' };
+const built = (state = 'write', extra = {}) => ({
+  ok: true, state, cfg: { ...cfg, ...(extra.cfg || {}) }, branch: 'master', text: 'THE BRIEF',
+  folder: state === 'ready' ? null : { dir: folder, branch: 'freeze-7', exists: true }, ...extra,
+});
+
+check('A1 missing arguments are usage errors', A.main([], capture().io) === A.EXIT_USAGE);
+check('A2 unknown options are named', /unknown option/.test(A.parseArgs(['x', '--wat']).error));
+
+{
+  const c = capture(); let launch = 0;
+  const rc = A.main(['app-7', '--config', 'x.json'], c.io, {
+    buildBrief: () => built('write'),
+    launchAuthor: (b, model) => { launch += 1; return { status: 0, stdout: 'agent report', stderr: '' }; },
+  });
+  check('B1 write state launches exactly once and succeeds', rc === 0 && launch === 1);
+  check('B2 selected testAuthorModel is reported explicitly', c.out.some((s) => s.includes('opus')));
+  check('B3 worktree and agent output are reported', c.out.some((s) => s.includes(folder)) && c.out.includes('agent report'));
+  check('B4 mandatory human freeze step is reported', c.out.some((s) => /Human approval is mandatory/.test(s)));
+  check('B5 launcher states that it did not commit or push', c.out.some((s) => /No commit or push/.test(s)));
+}
+
+for (const state of ['ready', 'freeze', 're-gate']) {
+  const c = capture(); let launch = 0;
+  const rc = A.main(['app-7', '--config', 'x.json'], c.io, {
+    buildBrief: () => built(state), launchAuthor: () => { launch += 1; return { status: 0 }; },
+  });
+  check(`C ${state} state does not launch an author`, rc === 0 && launch === 0 && c.out.some((s) => /no launch/.test(s)));
+}
+
+{
+  const c = capture();
+  const rc = A.main(['app-7', '--config', 'x.json'], c.io, {
+    buildBrief: () => built('write', { cfg: { model: null, testAuthorModel: null } }),
+  });
+  check('D1 no model fails before launch and names both config choices', rc === A.EXIT_SETUP && /testAuthorModel or model/.test(c.err.join('\n')));
+}
+
+{
+  const c = capture();
+  const rc = A.main(['app-404', '--config', 'x.json'], c.io, {
+    buildBrief: () => ({ ok: false, kind: 'issue', error: 'bd returned no issue for app-404' }),
+  });
+  check('D2 unknown issue is a setup failure and is named', rc === A.EXIT_SETUP && /app-404/.test(c.err.join('\n')));
+}
+
+{
+  const c = capture();
+  const rc = A.main(['app-7', '--config', 'x.json'], c.io, {
+    buildBrief: () => built('write'), launchAuthor: () => ({ status: null, stdout: '', stderr: '', error: { code: 'ENOENT', message: 'spawnSync claude ENOENT' } }),
+  });
+  check('D3 missing Claude executable is a distinct agent failure with useful detail', rc === A.EXIT_AGENT && /ENOENT/.test(c.err.join('\n')));
+  check('D4 a failed author is explicitly kept away from freeze', /Do not freeze/.test(c.err.join('\n')));
+}
+
+{
+  let call;
+  const r = A.launchAuthor(built('write'), 'opus', (cmd, args, opts) => { call = { cmd, args, opts }; return { status: 0 }; });
+  check('E1 Claude receives the prompt on stdin, not in a shell string', r.status === 0 && call.opts.input === 'THE BRIEF\n');
+  check('E2 model alias is an explicit argv value', JSON.stringify(call.args) === JSON.stringify(['-p', '--model', 'opus']));
+  check('E3 host session does not bypass permissions', !call.args.includes('--dangerously-skip-permissions'));
+  check('E4 session cwd is the dedicated worktree', call.opts.cwd === folder);
+  check('E5 session is bounded by wallClockMinutes', call.opts.timeoutMs === 120000);
+}
+
+{
+  const calls = [];
+  const b = built('write', { folder: { dir: path.join(tmp, 'new-tree'), branch: 'freeze-8', exists: false } });
+  const result = A.ensureWorktree(b, (cmd, args) => { calls.push([cmd, args]); return { status: calls.length === 1 ? 1 : 0 }; });
+  check('F1 missing branch is created from the resolved integration branch', result.ok && calls[1][1].join(' ') === `worktree add -b freeze-8 ${b.folder.dir} master`);
+  calls.length = 0;
+  const reused = A.ensureWorktree(b, (cmd, args) => { calls.push([cmd, args]); return { status: calls.length === 1 ? 0 : 0 }; });
+  check('F2 an existing issue branch is attached, never recreated', reused.ok && calls[1][1].join(' ') === `worktree add ${b.folder.dir} freeze-8`);
+}
+
+{
+  const c = capture(); let builds = 0; let launchedText = null;
+  const absent = built('write', { folder: { dir: folder, branch: 'freeze-9', exists: false }, text: 'create it first' });
+  const present = built('write', { folder: { dir: folder, branch: 'freeze-9', exists: true }, text: 'work here now' });
+  const rc = A.main(['app-9', '--config', 'x.json'], c.io, {
+    buildBrief: () => (++builds === 1 ? absent : present),
+    runSync: (cmd, args) => ({ status: args[0] === 'show-ref' ? 1 : 0 }),
+    launchAuthor: (b) => { launchedText = b.text; return { status: 0, stdout: '', stderr: '' }; },
+  });
+  check('F3 a newly created worktree causes the brief to be rebuilt from git registry', rc === 0 && builds === 2);
+  check('F4 the agent receives the refreshed work-here brief, not stale creation instructions', launchedText === 'work here now');
+}
+
+{
+  const base = { targetRepoPath: tmp, targetRepoRemote: 'x', image: 'x' };
+  const file = path.join(tmp, 'config.json');
+  const rejects = (key, value) => { fs.writeFileSync(file, JSON.stringify({ ...base, [key]: value })); try { loadConfig(file); return false; } catch { return true; } };
+  check('G1 testAuthorModel rejects empty/non-string aliases', rejects('testAuthorModel', '') && rejects('testAuthorModel', 7));
+  check('G2 existing model field uses the same validation', rejects('model', '') && rejects('model', false));
+  fs.writeFileSync(file, JSON.stringify({ ...base, model: 'sonnet' }));
+  check('G3 model-only configs remain valid for fallback', loadConfig(file).model === 'sonnet');
+}
+
+console.log(failures ? `\n${failures} check(s) failed` : '\nall checks passed');
+process.exit(failures ? 1 : 0);

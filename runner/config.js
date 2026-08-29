@@ -165,6 +165,16 @@ function loadConfig(file) {
       && (typeof raw.hostShell !== 'string' || !raw.hostShell.trim())) {
     throw new Error(`run.config.json: 'hostShell' must be null or a non-empty executable path`);
   }
+  // Model aliases are handed to CLIs as argv values. Empty or non-string values would either
+  // silently unpin the session or make spawn reject its argument list late, after planning has
+  // already created a worktree. testAuthorModel is deliberately separate from the autonomous
+  // implementation model; when absent, the planning launcher falls back to model.
+  for (const k of ['model', 'testAuthorModel']) {
+    if (raw[k] !== undefined && raw[k] !== null
+        && (typeof raw[k] !== 'string' || !raw[k].trim())) {
+      throw new Error(`run.config.json: '${k}' must be null or a non-empty model alias`);
+    }
+  }
   for (const k of ['network', 'proxyName']) {
     if (raw[k] !== undefined && (typeof raw[k] !== 'string' || !raw[k].trim())) {
       throw new Error(`run.config.json: '${k}' must be a non-empty string when present`);

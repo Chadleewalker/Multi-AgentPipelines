@@ -14,5 +14,6 @@
   "allowHalfProven": false,
   "agentCommand": null,
   "hostShell": null,
-  "model": "opus"
+  "model": "opus",
+  "testAuthorModel": "opus"
 }

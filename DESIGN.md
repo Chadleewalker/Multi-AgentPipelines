@@ -1622,6 +1622,17 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     reads it — a container takes its dependencies from the image — so it is validated as
     strings and consumed only by this brief.
 
+    **The skipped handoff is now a bounded planning command** (change-log row
+    `test-author-launcher`). `scripts/author-tests.js` consumes the brief builder's structured
+    state rather than parsing its prose, creates or reuses only the issue worktree named by
+    that builder, and launches `claude -p --model <alias>` there with the brief on stdin. The
+    alias comes from the optional planning-only `testAuthorModel`, falling back to `model`, and
+    is always explicit so host-global CLI preferences cannot select the author. The session is
+    bounded by the run's wall clock and the shared host-process output cap, uses argv spawning
+    without a shell, and retains normal host permissions. Ready, freeze and re-gate states do
+    not launch a writer. Success and failure both stop at a report and the mandatory human
+    approval step; the command never invokes the freeze/commit/push path.
+
     **The ready queue is re-read while the run is in flight** (change-log row
     `live-queue-feed`). Until this, a run's roster was decided once: `readyQueue()` at the
     top of the task loop, then the pool walked that array to its end. An issue made ready a
