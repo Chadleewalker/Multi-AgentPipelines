@@ -191,6 +191,38 @@ function ignored(root, abs) {
 
 // ---- shell parsing -------------------------------------------------------------------
 
+// Drop the BODY of every here-document, keeping the command line that introduces it.
+//
+// A here-document body is data being written, not commands being run, and a guard that
+// reads it as commands refuses the wrong thing with total confidence. This is not a
+// hypothetical: writing this repository's own pull-request description was refused,
+// because the description contains a table listing the commands the guard blocks. The
+// same mistake in the host's earlier substring-matching check is what made that check
+// worth replacing, so inheriting it here would have been the whole exercise wasted.
+//
+// The introducer's own line is kept, so `cat > tracked.md <<EOF` is still judged on its
+// redirect target — the file is genuinely being written, whatever the body says. An
+// unterminated body runs to the end of the command, which is the reading a shell would
+// take too.
+function stripHeredocs(command) {
+  const lines = command.split('\n');
+  const kept = [];
+  let terminator = null;
+  for (const line of lines) {
+    if (terminator !== null) {
+      if (line.trim() === terminator) terminator = null;
+      continue;
+    }
+    kept.push(line);
+    // <<WORD, <<-WORD, <<'WORD', <<"WORD" — last one on the line wins, which is what a
+    // shell does with a single command; multiple here-docs on one line are rare enough
+    // that reading only the last is a safe simplification for a guard.
+    const intro = [...line.matchAll(/<<-?\s*(["']?)([A-Za-z_][A-Za-z0-9_]*)\1/g)].pop();
+    if (intro) terminator = intro[2];
+  }
+  return kept.join('\n');
+}
+
 // A small tokeniser: enough to find the operands of a redirect, a `tee` or a `sed -i`,
 // and no more. It is not a shell. Anything it cannot read becomes an allowed command,
 // per the fail-open rule at the top.
@@ -279,6 +311,74 @@ function destructiveGit(tokens) {
     }
     if (sub === 'clean') {
       return '`git clean` permanently deletes untracked files, which is where another session\'s brand-new work lives before its first commit.';
+    }
+  }
+  return null;
+}
+
+// ---- machine-level refusals ------------------------------------------------------------
+// These are about the HOST, not about any repository, so they apply in every folder — a
+// project that carries no guard of its own, a folder that is not a repository at all, and
+// a folder holding the off marker, which exempts the one-folder rule and was never meant to
+// exempt formatting a disk.
+//
+// They live here rather than in the harness bridge so that there is exactly one command
+// parser. The host's earlier check matched these as plain substrings, which refused
+// `rm -rf /tmp/scratch` for containing `rm -rf /` and refused any command whose text merely
+// mentioned one of them. Every rule below reads parsed words instead.
+
+function homeDir() {
+  return process.env.SESSION_GUARD_HOME || require('os').homedir();
+}
+
+// `/`, a bare drive root, or the home directory — the three operands that turn a delete
+// into a machine rebuild. `~` is expanded because the shell would; `$HOME` is matched by
+// name because this is not a shell and does not expand variables.
+function catastrophicTarget(token) {
+  if (token === '~' || token === '$HOME' || token === '${HOME}') return true;
+  if (/^~[\\/]?$/.test(token)) return true;
+  let abs;
+  try {
+    abs = path.resolve(token.replace(/^~(?=[\\/])/, homeDir()));
+  } catch {
+    return false;
+  }
+  if (norm(abs) === norm(homeDir())) return true;
+  return norm(abs) === norm(path.parse(abs).root);
+}
+
+function hostDangerous(tokens) {
+  for (let i = 0; i < tokens.length; i += 1) {
+    const t = tokens[i];
+    const rest = [];
+    for (let j = i + 1; j < tokens.length && !CONTROL.has(tokens[j]); j += 1) rest.push(tokens[j]);
+
+    if (t === 'git') {
+      const sub = rest.find((x) => !isFlag(x));
+      const flags = rest.filter(isFlag);
+      const short = flags.filter((f) => !f.startsWith('--')).join('').replace(/-/g, '');
+      // `--force-with-lease` is deliberately NOT here. It is still a rewrite, but it
+      // refuses when the remote has moved, which is the case this rule is protecting; a
+      // guard that also blocked the safe form would be the over-blocking that gets a guard
+      // switched off.
+      if (sub === 'push' && (flags.includes('--force') || short.includes('f'))) {
+        return 'force-pushing rewrites history that other people and other clones already have, and there is no undo on the remote. If a branch genuinely needs replacing, say so and do it deliberately.';
+      }
+    }
+
+    if (t === 'rm') {
+      const recursive = rest.some((f) => isFlag(f) && (/^--recursive$/.test(f) || (!f.startsWith('--') && /r/i.test(f))));
+      if (!recursive) continue;
+      for (const operand of rest) {
+        if (isFlag(operand)) continue;
+        if (catastrophicTarget(operand)) {
+          return `\`rm\` on \`${operand}\` recursively would delete the whole home directory or the whole drive. Name the directory you actually mean.`;
+        }
+      }
+    }
+
+    if (t === 'diskpart' || t === 'Format-Volume' || /^mkfs(\.|$)/.test(t)) {
+      return `\`${t}\` formats or repartitions a disk. Nothing an agent session is doing needs that.`;
     }
   }
   return null;
@@ -400,14 +500,24 @@ function main() {
 
   const cwd = payload && payload.cwd ? String(payload.cwd) : process.cwd();
   const place = locate(cwd);
-  if (!place) allow(); // not in a git repository at all
+
+  // Machine-level rules are settled before anything repository-shaped is consulted: they
+  // hold in a folder that is not a repository, in a project that carries no guard of its
+  // own, and in a folder that has switched the one-folder rule off.
+  const tokens = payload.action === 'shell' && String(payload.command || '').trim()
+    ? tokenise(stripHeredocs(String(payload.command)))
+    : null;
+  if (tokens) {
+    const host = hostDangerous(tokens);
+    if (host) refuse(host);
+  }
+
+  if (!place) allow(); // not in a git repository — nothing project-shaped left to say
 
   if (fs.existsSync(path.join(place.root, MARKER))) allow();
 
   if (payload.action === 'shell') {
-    const command = String(payload.command || '');
-    if (!command.trim()) allow();
-    const tokens = tokenise(command);
+    if (!tokens) allow();
 
     const destructive = destructiveGit(tokens);
     if (destructive) refuse(destructive);

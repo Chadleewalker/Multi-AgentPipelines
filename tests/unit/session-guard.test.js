@@ -50,6 +50,7 @@ function check(name, cond, detail) { (cond ? pass : (n) => fail(n, detail))(name
 // ---- harness -------------------------------------------------------------------------
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-test-'));
+const MARKER_NAME = '.session-guard-off';
 
 function git(args, cwd) {
   const r = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 60000, windowsHide: true });
@@ -303,6 +304,106 @@ refused(
   'shared main checkout'
 );
 
+// ---- 6b. here-document bodies are data, not commands ------------------------------------
+// The failure this prevents happened: writing this repository's own pull-request
+// description was refused, because the description contains a table listing the commands
+// the guard blocks. Reading a document's text as commands is the exact flaw in the
+// substring check this guard replaces, so inheriting it would waste the whole exercise.
+console.log('== here-documents ==');
+
+const doc = (target) => [
+  `cat > ${target} <<'EOF'`,
+  '| Anywhere | `git add -A`, `git commit -a`, `git reset --hard`, `git clean` |',
+  'and `rm -rf ~` and `git push --force` for good measure',
+  'EOF',
+].join('\n');
+
+allowed('a document quoting the blocked commands is written, not refused', {
+  cwd: F.main, action: 'shell', command: doc(path.join(OUTSIDE, 'notes.md').split(path.sep).join('/')),
+});
+allowed('the same document written from a worktree is allowed', {
+  cwd: F.tree, action: 'shell', command: doc('NOTES.md'),
+});
+refused(
+  'but the redirect target is still judged — the file really is being written',
+  { cwd: F.main, action: 'shell', command: doc('TRACKED.md') },
+  'shared main checkout'
+);
+refused(
+  'a real command AFTER the body ends is still read as a command',
+  {
+    cwd: F.main,
+    action: 'shell',
+    command: `${doc(path.join(OUTSIDE, 'notes.md').split(path.sep).join('/'))}\ngit add -A`,
+  },
+  'stage the FOLDER'
+);
+allowed('an unterminated body does not leak into the command stream', {
+  cwd: F.main,
+  action: 'shell',
+  command: `cat > ${path.join(OUTSIDE, 'x.md').split(path.sep).join('/')} <<'EOF'\ngit add -A\n`,
+});
+
+// ---- 6c. machine-level rules, everywhere -------------------------------------------------
+// These are about the host, not about a project, so they hold in a folder that is not a
+// repository, in a project carrying no guard, and in a folder that has switched the
+// one-folder rule off. That last one matters: the marker exempts the folder rule and was
+// never meant to exempt formatting a disk.
+console.log('== machine-level refusals ==');
+
+const HOME = path.join(TMP, 'fake-home');
+fs.mkdirSync(HOME, { recursive: true });
+const anywhere = (name, command, expect) => {
+  for (const [label, cwd] of [['main checkout', F.main], ['worktree', F.tree], ['no repository', OUTSIDE]]) {
+    const r = spawnSync(process.execPath, [GUARD], {
+      input: JSON.stringify({ cwd, action: 'shell', command }),
+      encoding: 'utf8', timeout: 60000, windowsHide: true,
+      env: { ...process.env, SESSION_GUARD_HOME: HOME },
+    });
+    const err = (r.stderr || '').trim();
+    if (!check(`${name} (${label})`, r.status === 2, `exit ${r.status}; stderr: ${err || '(empty)'}`)) continue;
+    if (expect && !err.includes(expect)) fail(`${name} (${label}) — reason names the problem`, err);
+  }
+};
+
+anywhere('force-pushing is refused', 'git push --force origin main', 'rewrites history');
+anywhere('the short force flag is refused', 'git push -f origin main', 'rewrites history');
+anywhere('deleting the home directory is refused', 'rm -rf ~', 'home directory');
+anywhere('deleting the drive root is refused', 'rm -rf /', 'whole drive');
+anywhere('deleting $HOME by name is refused', 'rm -rf $HOME', 'home directory');
+anywhere('a disk partitioner is refused', 'diskpart /s script.txt', 'formats or repartitions');
+
+console.log('== and their near neighbours are not ==');
+
+const anywhereAllowed = (name, command) => {
+  const r = spawnSync(process.execPath, [GUARD], {
+    input: JSON.stringify({ cwd: OUTSIDE, action: 'shell', command }),
+    encoding: 'utf8', timeout: 60000, windowsHide: true,
+    env: { ...process.env, SESSION_GUARD_HOME: HOME },
+  });
+  check(name, r.status === 0, (r.stderr || '').trim() || `exit ${r.status}`);
+};
+
+// The substring check this replaces refused this one, for containing the text `rm -rf /`.
+anywhereAllowed('deleting a named directory under a root is allowed', 'rm -rf /tmp/scratch/build');
+anywhereAllowed('deleting a named directory under home is allowed', 'rm -rf ~/projects/thing/node_modules');
+anywhereAllowed('an ordinary push is allowed', 'git push origin main');
+anywhereAllowed('force-with-lease is allowed — it refuses when the remote moved', 'git push --force-with-lease origin main');
+anywhereAllowed('a command that merely mentions one of them is allowed', 'grep -rn "rm -rf /" docs/');
+
+{
+  // The off marker exempts the folder rule and nothing above it.
+  const off = path.join(F.main, MARKER_NAME);
+  fs.writeFileSync(off, 'off\n');
+  const r = spawnSync(process.execPath, [GUARD], {
+    input: JSON.stringify({ cwd: F.main, action: 'shell', command: 'rm -rf ~' }),
+    encoding: 'utf8', timeout: 60000, windowsHide: true,
+    env: { ...process.env, SESSION_GUARD_HOME: HOME },
+  });
+  check('the off marker does not exempt the machine-level rules', r.status === 2, `exit ${r.status}`);
+  fs.rmSync(off);
+}
+
 // ---- 7. fail open ----------------------------------------------------------------------
 // A guard nobody can work around is a guard that stops twenty sessions when it breaks.
 console.log('== fails open ==');
@@ -347,6 +448,29 @@ console.log('== harness bridge ==');
 
   r = b({ tool_name: 'Bash' });
   check('bridge survives a payload with no input', r.status === 0, `exit ${r.status}`);
+
+  // The fallback. Without it, replacing the host's standalone command check with this
+  // would silently remove force-push and delete-your-home protection from every OTHER
+  // project on the machine — the regression that matters most and shows up nowhere.
+  const hooks = path.join(TMP, 'hooks-dir');
+  fs.mkdirSync(hooks, { recursive: true });
+  fs.copyFileSync(BRIDGE, path.join(hooks, 'session-guard.js'));
+  const installedBridge = path.join(hooks, 'session-guard.js');
+
+  r = ask({ cwd: OUTSIDE, tool_name: 'Bash', tool_input: { command: 'rm -rf ~' } }, installedBridge);
+  check('with no fallback beside it, a guardless project is unguarded', r.status === 0, `exit ${r.status}`);
+
+  fs.copyFileSync(GUARD, path.join(hooks, 'session-guard-policy.js'));
+  r = ask({ cwd: OUTSIDE, tool_name: 'Bash', tool_input: { command: 'rm -rf ~' } }, installedBridge);
+  check('the fallback keeps the machine-level rules in a project carrying no guard', r.status === 2, `exit ${r.status}`);
+
+  r = ask({ cwd: OUTSIDE, tool_name: 'Bash', tool_input: { command: 'git status' } }, installedBridge);
+  check('the fallback still says nothing about ordinary commands', r.status === 0, (r.err || `exit ${r.status}`));
+
+  // A project's own guard wins, so a project can evolve its policy without the machine
+  // copy overriding it.
+  r = ask({ cwd: F.main, tool_name: 'Write', tool_input: { file_path: 'TRACKED.md' } }, installedBridge);
+  check('a project carrying its own guard is judged by that one', r.status === 2, `exit ${r.status}`);
 }
 
 // ---- 9. the installer ------------------------------------------------------------------
@@ -371,6 +495,8 @@ console.log('== installer ==');
   let r = run();
   check('installer exits 0', r.status === 0, (r.stderr || '') + (r.stdout || ''));
   check('installer wrote the bridge', fs.existsSync(path.join(cfg, 'hooks', 'session-guard.js')));
+  check('installer wrote the machine-wide fallback policy',
+    fs.existsSync(path.join(cfg, 'hooks', 'session-guard-policy.js')));
 
   const settingsOf = () => JSON.parse(fs.readFileSync(path.join(cfg, 'settings.json'), 'utf8'));
   let s = settingsOf();
@@ -394,9 +520,35 @@ console.log('== installer ==');
   check('--uninstall removes our entry', ours(s).length === 0, JSON.stringify(s.hooks));
   check('--uninstall leaves the unrelated hook alone', JSON.stringify(s.hooks).includes('other-check'));
   check('--uninstall removes the bridge', !fs.existsSync(path.join(cfg, 'hooks', 'session-guard.js')));
+  check('--uninstall removes the fallback policy too',
+    !fs.existsSync(path.join(cfg, 'hooks', 'session-guard-policy.js')));
 
   r = run('--status');
   check('--status reports NOT installed after removal', r.status !== 0);
+
+  // A hook this supersedes is REPORTED, never removed. An installer that quietly deletes
+  // somebody else's safety check because it believes it has replaced it is the exact
+  // hazard refused everywhere else here, so the assertion is both halves: it says so, and
+  // the entry is still there afterwards.
+  const cfg2 = path.join(TMP, 'config-with-old-check');
+  fs.mkdirSync(cfg2, { recursive: true });
+  fs.writeFileSync(
+    path.join(cfg2, 'settings.json'),
+    // A placeholder path, not a synthetic home directory: publication hygiene scans this
+    // tracked file and a fixture that looks like somebody's machine is a finding.
+    JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'powershell -NoProfile -File path/to/hooks/safety-check.ps1' }] }] } }, null, 2)
+  );
+  const r2 = spawnSync(process.execPath, [INSTALLER], {
+    encoding: 'utf8', timeout: 60000, windowsHide: true,
+    env: { ...process.env, SESSION_GUARD_CONFIG_DIR: cfg2 },
+  });
+  const said = (r2.stdout || '') + (r2.stderr || '');
+  check('installing names the check it supersedes', /safety-check/.test(said), said);
+  check('and says its rules are covered rather than assuming the reader knows',
+    /now covered here/.test(said), said);
+  const after = JSON.parse(fs.readFileSync(path.join(cfg2, 'settings.json'), 'utf8'));
+  check('and does not remove it — that is a person\'s decision',
+    JSON.stringify(after.hooks).includes('safety-check.ps1'), JSON.stringify(after.hooks));
 }
 
 // ---- teardown --------------------------------------------------------------------------

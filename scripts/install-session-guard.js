@@ -43,6 +43,9 @@ const os = require('os');
 
 const ROOT = path.resolve(__dirname, '..');
 const BRIDGE_SRC = path.join(ROOT, 'scripts', 'session-guard-bridge.js');
+// The machine-wide fallback policy: the same guard, used in folders that carry none of
+// their own. It is what keeps the host-level rules in force in every other project.
+const POLICY_SRC = path.join(ROOT, 'scripts', 'session-guard.js');
 
 // Claude Code reads CLAUDE_CONFIG_DIR when set, and ~/.claude otherwise. The test seam is
 // separate from it so a test run cannot be confused by the host's own override.
@@ -98,6 +101,24 @@ function stripOurs(settings) {
   return { settings, removed };
 }
 
+// Other PreToolUse commands whose job this guard has taken over. Matched by name because
+// that is all a settings file offers; the result is a printed sentence, never an edit.
+const SUPERSEDED = /safety-check/i;
+
+function supersededHooks(settings) {
+  const groups = (settings.hooks && settings.hooks.PreToolUse) || [];
+  const found = new Set();
+  for (const group of groups) {
+    for (const h of (group && group.hooks) || []) {
+      const command = String((h && h.command) || '');
+      if (command.includes(SIGIL)) continue;
+      const m = SUPERSEDED.exec(command);
+      if (m) found.add(path.basename(command.replace(/["']/g, '').split(/\s+/).find((w) => SUPERSEDED.test(w)) || m[0]));
+    }
+  }
+  return [...found];
+}
+
 function backup(file) {
   if (!fs.existsSync(file)) return null;
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -116,6 +137,7 @@ function main() {
   const dir = configDir();
   const settingsFile = path.join(dir, 'settings.json');
   const bridgeDst = path.join(dir, 'hooks', 'session-guard.js');
+  const policyDst = path.join(dir, 'hooks', 'session-guard-policy.js');
   // Forward slashes work in every shell this repo supports and survive JSON without the
   // backslash doubling a Windows path would need.
   const command = `node "${bridgeDst.split(path.sep).join('/')}"`;
@@ -128,8 +150,9 @@ function main() {
     );
     console.log(`config dir : ${dir}`);
     console.log(`bridge     : ${fs.existsSync(bridgeDst) ? 'present' : 'MISSING'}  ${bridgeDst}`);
+    console.log(`fallback   : ${fs.existsSync(policyDst) ? 'present' : 'MISSING'}  ${policyDst}`);
     console.log(`hook entry : ${installed ? 'present' : 'MISSING'}  ${settingsFile}`);
-    process.exit(installed && fs.existsSync(bridgeDst) ? 0 : 1);
+    process.exit(installed && fs.existsSync(bridgeDst) && fs.existsSync(policyDst) ? 0 : 1);
   }
 
   if (mode === '--uninstall') {
@@ -138,18 +161,21 @@ function main() {
     const saved = backup(settingsFile);
     writeJson(settingsFile, settings);
     if (fs.existsSync(bridgeDst)) fs.rmSync(bridgeDst);
+    if (fs.existsSync(policyDst)) fs.rmSync(policyDst);
     if (saved) console.log(`previous settings kept at ${saved}`);
-    console.log(`removed ${removed} hook entr${removed === 1 ? 'y' : 'ies'} and the bridge`);
-    console.log('sessions started from now on are no longer guarded');
+    console.log(`removed ${removed} hook entr${removed === 1 ? 'y' : 'ies'}, the bridge and the fallback policy`);
+    console.log('sessions started from now on are no longer guarded, in this project or any other');
     process.exit(0);
   }
 
   if (mode !== '--install') die(`unknown option ${mode} (use --status or --uninstall)`);
 
   if (!fs.existsSync(BRIDGE_SRC)) die(`${BRIDGE_SRC} is missing — is this the repo root?`);
+  if (!fs.existsSync(POLICY_SRC)) die(`${POLICY_SRC} is missing — is this the repo root?`);
 
   fs.mkdirSync(path.dirname(bridgeDst), { recursive: true });
   fs.copyFileSync(BRIDGE_SRC, bridgeDst);
+  fs.copyFileSync(POLICY_SRC, policyDst);
 
   const { settings, removed } = stripOurs(readJson(settingsFile));
   if (!settings.hooks || typeof settings.hooks !== 'object') settings.hooks = {};
@@ -163,8 +189,23 @@ function main() {
   writeJson(settingsFile, settings);
 
   console.log(`bridge   -> ${bridgeDst}`);
+  console.log(`fallback -> ${policyDst}`);
   console.log(`settings -> ${settingsFile}${removed ? `  (replaced ${removed} earlier entry)` : ''}`);
   if (saved) console.log(`previous settings kept at ${saved}`);
+
+  // A hook this now supersedes is REPORTED, never removed. It is somebody else's entry in
+  // somebody else's configuration file, and an installer that quietly deletes a safety
+  // check because it believes it has replaced it is the exact hazard this repo refuses
+  // everywhere else. Removing it is a person's decision, so it gets a person's sentence.
+  for (const name of supersededHooks(settings)) {
+    console.log('');
+    console.log(`Note: a separate command check is still configured (${name}).`);
+    console.log('Its rules — force-pushing, deleting a home directory or a whole drive,');
+    console.log('formatting a disk — are now covered here, and covered by reading parsed');
+    console.log('words rather than matching text, so it no longer refuses a command that');
+    console.log('merely mentions one of them. Nothing breaks if you keep both. Remove it');
+    console.log(`by deleting its entry from ${settingsFile}.`);
+  }
   console.log('');
   console.log('Active in sessions started from now on. Already-open sessions keep the old');
   console.log('configuration until they restart.');

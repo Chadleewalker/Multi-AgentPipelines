@@ -2219,6 +2219,28 @@ rather than a wrong result reaching `main`. And its allowlist **is `.gitignore`*
 through `git check-ignore` rather than restated, so it cannot drift from the file that
 already answers "would this merge?" — the second-source rule applied to a checker.
 
+**Text is not a command, and the distinction is the whole reason this layer replaced
+something.** The check it supersedes on the reference host matched its banned commands as
+plain substrings, which refused `rm -rf /tmp/scratch` for containing `rm -rf /` and refused
+any command line whose *text* merely mentioned one of them — including, on its first
+encounter with this work, the act of writing this repository's own pull-request description,
+whose body contains a table listing the commands being blocked. That is not a cosmetic
+defect. A guard that is confidently wrong on ordinary work is a guard that gets switched off,
+and a switched-off guard is indistinguishable from one that was never written. So every rule
+here reads parsed words, and here-document bodies are dropped before parsing: a document
+being written is data, whatever it says. The introducing line survives that, so a document
+redirected *into* a tracked file is still judged on where it lands.
+
+A second consequence of replacing that check: it applied to every project on the machine,
+and this one, by design, says nothing in a repository that does not carry it. Retiring the
+old one as-is would therefore have removed force-push and delete-your-home protection from
+every other project on the host — a regression with no symptom until the day it mattered.
+The refusals that are about the *machine* rather than about a project therefore live in the
+guard but are evaluated before any repository question, and the installer places a copy of
+the guard beside the bridge to answer in folders that carry none. A project's own copy still
+wins, so a project can evolve its policy. The off marker exempts the folder rule and nothing
+above it; it was never meant to exempt formatting a disk.
+
 It is a guard and not a sandbox: a session determined to route around it can, and that is not
 the failure mode it exists for. Its enforcement point is therefore host-side and
 harness-specific, which is why the rule itself is a dependency-free script speaking its own

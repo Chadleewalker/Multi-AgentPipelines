@@ -42,10 +42,10 @@ else
 fi
 
 CHECKS="$(echo "$OUT" | grep -c '^PASS  ')"
-if [ "$CHECKS" -ge 70 ]; then
+if [ "$CHECKS" -ge 105 ]; then
   pass "checker ran $CHECKS checks"
 else
-  fail "checker ran only $CHECKS checks (expected at least 70)"
+  fail "checker ran only $CHECKS checks (expected at least 105)"
 fi
 
 # The guard must stay installable by the installer and by nothing else. A tracked hook

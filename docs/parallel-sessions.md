@@ -286,6 +286,21 @@ command, or git is unavailable, or it crashes, the write goes through. A checker
 closed stops every session on its first bad day and gets uninstalled that afternoon, and
 then nothing is watching at all.
 
+It also carries a short list of refusals that have nothing to do with this project and
+everything to do with the machine: force-pushing, deleting a home directory or a whole
+drive, formatting a disk. Those hold in **every** folder — a project that carries no guard
+of its own, a folder that is not a repository at all, and a folder that has switched the
+one-folder rule off, because the off marker was never meant to exempt formatting a disk.
+That coverage is why installing puts a copy of the guard beside the bridge as well: it is
+what answers in your other projects.
+
+Everything is matched on parsed words rather than on text. That distinction is the reason
+this replaced an earlier check: `rm -rf /tmp/scratch` contains the characters `rm -rf /`,
+and a document that *quotes* a dangerous command is a document, not a command. Both used to
+be refused. Here-document bodies are skipped for the same reason — writing this project's
+own pull-request description was refused once, because the description contains a table
+listing the commands the guard blocks.
+
 If it is wrong about your folder, put a file named `.session-guard-off` in that folder and
 it stands down there. That file is git-ignored, so the exemption is yours and travels
 nowhere. To take it off the machine entirely:

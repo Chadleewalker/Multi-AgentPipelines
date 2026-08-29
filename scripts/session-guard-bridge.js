@@ -22,9 +22,14 @@
 // the host's agent-config directory and adds the hook entry there, where the config is
 // git-ignored and the container never sees it.
 //
-// It answers for EVERY repository the host opens, so its first job is to have no opinion
-// about repositories that do not carry the guard: no `scripts/session-guard.js` above the
-// working directory means exit 0, immediately, with nothing spawned.
+// It answers for EVERY folder the host opens, and it resolves the policy in two steps. A
+// project carrying `scripts/session-guard.js` is judged by its own copy, on the branch the
+// session is actually on — so a session changing the guard tests the change on itself. Any
+// other folder falls back to the copy installed beside this file, which carries the
+// machine-level rules that are about the host rather than about a project: force-pushing,
+// deleting a home directory or a whole drive, formatting a disk. Those have to keep
+// applying everywhere, or replacing the host's earlier standalone check with this would
+// have quietly removed protection from every other project on the machine.
 //
 // Fails open at every step, for the reason the guard does — see the header there.
 'use strict';
@@ -82,6 +87,15 @@ function main() {
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
+  }
+  // No project guard above the working directory: fall back to the copy installed beside
+  // this bridge. That copy is what keeps the machine-level rules — force-pushing, deleting
+  // a home directory or a whole drive, formatting a disk — in force in every OTHER project
+  // on this host, which is the coverage the standalone check it replaces used to provide.
+  // A project carrying its own guard wins, so a project can still evolve its own policy.
+  if (!guard) {
+    const fallback = path.join(__dirname, 'session-guard-policy.js');
+    if (fs.existsSync(fallback)) guard = fallback;
   }
   if (!guard) return 0;
 
