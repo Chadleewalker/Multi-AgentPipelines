@@ -2165,6 +2165,68 @@ deliberately — deleting a branch is a second irreversible act belonging to who
 PR, and a tidy-up tool that also deletes branches is the original hazard in a new hat.
 `--force` exists, does what it says, and is the only path that destroys work.
 
+**Where the folders live, and why that is a design question at all.** They sit inside the
+main checkout, under one git-ignored container directory, rather than beside it. Nesting was
+refused originally for a specific and correct reason: a worktree inside the repository puts
+every one of its files into the parent's `git status` as untracked, which is precisely the
+noise that gets `git add -A` typed and so re-creates the incident this section exists to
+prevent. Ignoring one directory answers that reason at its root, and the cost of the
+alternative grows with the thing being designed for — twenty sibling folders spread through
+the person's projects directory, every one of them a copy of this project, is unusable in a
+different way. So the allowance is made **conditional on the ignore actually being in place**,
+asked of `git check-ignore` rather than inferred from the folder's name: a repository that
+stopped ignoring the container directory would otherwise bring the original hazard back
+silently, and the tool refuses to create anything there instead. The layout is a default, not
+a constraint — an explicit root still places a folder outside the repository, keeping the
+repository's name in the folder's, because a folder beside unrelated projects has to say which
+project it belongs to.
+
+That choice has one consequence the guard below has to answer for. A session folder is inside
+the repository and the repository ignores it, so "would git track this file?" — the question
+that decides whether a write in the main checkout is safe — answers *no* for every file in
+every session folder, and would wave through exactly the collision the folders exist to
+prevent. The guard therefore learns the other folders from git's own worktree registry rather
+than from the ignore rule or a naming convention, which is also what makes it correct for the
+sibling layout and for any future rename of the container directory.
+
+**Why the folder rule is now enforced at the write.** Everything above makes the collision
+impossible *once a session is in its own folder*, and says nothing about how it gets there.
+That step was prose — this section, `docs/parallel-sessions.md`, and three lines in
+CLAUDE.md — and prose is advice a session weighs against the task in front of it. The
+specific way it loses is a session handed a change it judges too small to be worth a frozen
+spec and a run: the pipeline is the expensive path, the file is right there, and editing the
+shared checkout is locally the reasonable act. At two sessions that is usually survivable. At
+twenty it is the ordinary case, and the same three failures return in full — one file
+overwritten with no conflict raised, `git add -A` sweeping nineteen sessions' work into one
+commit, and one branch per folder so no one change can be reviewed or reverted on its own.
+`scripts/session-guard.js` moves the rule from the reader to the write: in the main checkout
+it refuses a write to anything git would track, names the one command that fixes it, and
+leaves every host-only path — `runs/`, the local configs, everything `.gitignore` covers —
+writable, because those are what the operator session legitimately writes and none of them
+merge. Inside a worktree it refuses only the reverse reach back into the shared checkout, and
+the work-destroying commands, everywhere.
+
+Three properties do the load-bearing work, and each is a consequence of what the thing is
+for. It **judges the write, not the tool**: a `sed -i` or a `>` redirect is checked exactly as
+the file-editing tool is, because an agent steered towards shell commands reaches for
+`sed -i` first, and a guard watching only file tools would enforce nothing in precisely the
+configuration it was built for. It **fails open** — an unparseable command, a missing `git`,
+its own crash, all allow the write — because a checker that fails closed stops twenty
+sessions on its first bad day and is uninstalled that afternoon, after which nothing is
+watching at all; the reasoning that makes §4.4's gates fail *closed* inverts here, because
+this one guards working practice rather than publication, and its adversary is inattention
+rather than a wrong result reaching `main`. And its allowlist **is `.gitignore`**, read
+through `git check-ignore` rather than restated, so it cannot drift from the file that
+already answers "would this merge?" — the second-source rule applied to a checker.
+
+It is a guard and not a sandbox: a session determined to route around it can, and that is not
+the failure mode it exists for. Its enforcement point is therefore host-side and
+harness-specific, which is why the rule itself is a dependency-free script speaking its own
+vocabulary, and the small bridge that translates one agent CLI's tool-call hook is installed
+rather than committed. Committing that bridge's *configuration* would put it in every task
+container, where there is no agent CLI and no network for it to run in — the boundary
+`tests/unit/agent-hooks.test.js` holds, and which a checklist step has already lost once.
+
 **Where this meets the dispatch gate.** A spec frozen on a worktree branch is not on the
 branch containers fork from, so §4.12's second admission rule refuses that task until the
 branch is merged and pushed — correctly, and now more often, since parallel sessions leave

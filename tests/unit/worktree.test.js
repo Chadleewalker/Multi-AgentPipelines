@@ -151,11 +151,41 @@ check('new: it says nothing was carried when there is no .worktree-carry',
 const r1b = cli(['new', 'idea-one', '--root', TMP], proj.dir);
 check('new: a name already in use is refused', r1b.status !== 0 && /already exists/.test(r1b.out), r1b.out);
 
-// Refusing to nest a worktree inside the checkout — nested, every file in it shows up as
-// untracked in the parent, which is the noise that gets `git add -A` typed.
+// Nesting a worktree inside the checkout is allowed in exactly one place: a directory the
+// repository ignores. That condition is the whole safety argument — an un-ignored nested
+// worktree puts every one of its files into the parent's `git status` as untracked, which
+// is the noise that gets `git add -A` typed. So it is refused, and the remedy is named.
 const r1c = cli(['new', 'nested', '--root', path.join(proj.dir, 'inside')], proj.dir);
-check('new: refuses to create a worktree inside the checkout',
-  r1c.status !== 0 && /inside the checkout/.test(r1c.out), r1c.out);
+check('new: refuses to nest a worktree in a directory the repository does not ignore',
+  r1c.status !== 0 && /does not ignore/.test(r1c.out), r1c.out);
+check('new: and names the remedy rather than only the refusal',
+  /\.gitignore/.test(r1c.out) && /--root/.test(r1c.out), r1c.out);
+
+// The default location, which is the one every session actually uses: inside the checkout,
+// under the ignored container directory, named for the idea alone.
+const nestProj = makeProject('alpha-nest', 'main');
+fs.appendFileSync(path.join(nestProj.dir, '.gitignore'), '.worktrees/\n');
+git(['add', '.gitignore'], nestProj.dir);
+git(['commit', '-m', 'ignore worktrees'], nestProj.dir);
+const r1d = cli(['new', 'inside-idea'], nestProj.dir);
+const nested = path.join(nestProj.dir, '.worktrees', 'inside-idea');
+check('new: with no --root the folder lands under .worktrees/ inside the checkout',
+  r1d.status === 0 && fs.existsSync(nested), r1d.out);
+check('new: the nested folder is a worktree, not a clone',
+  fs.existsSync(path.join(nested, '.git')) && fs.statSync(path.join(nested, '.git')).isFile());
+check('new: the nested folder is named for the idea alone, with no repository prefix',
+  fs.existsSync(nested) && !fs.existsSync(path.join(nestProj.dir, '.worktrees', 'alpha-nest-inside-idea')));
+// The load-bearing consequence, and the reason nesting was refused before: the main
+// checkout's own status has to stay clean with a session folder sitting inside it.
+const nestStatus = git(['status', '--porcelain'], nestProj.dir).out;
+check('new: a nested worktree leaves the main checkout status clean',
+  nestStatus === '', `main checkout status: ${nestStatus}`);
+// And the allowance has to depend on the ignore rather than on the folder's name, or the
+// check above is decorative the day someone edits .gitignore.
+fs.writeFileSync(path.join(nestProj.dir, '.gitignore'), '');
+const r1e = cli(['new', 'second-idea'], nestProj.dir);
+check('new: the nesting allowance depends on the ignore, not on the folder name',
+  r1e.status !== 0 && /does not ignore/.test(r1e.out), r1e.out);
 
 // ---- 3. LOAD-BEARING: the default branch is resolved, never guessed --------------------
 // Inherited from change-log row `repo-5yu`. A `master` project is the only fixture that
