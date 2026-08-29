@@ -40,6 +40,7 @@ SUITES=(
   test-repo-identity.sh
   test-runner-memory.sh
   test-sanitize.sh
+  test-session-guard.sh
   test-spec-lint.sh
   test-sweep-assertions.sh
   test-sweep-hygiene.sh

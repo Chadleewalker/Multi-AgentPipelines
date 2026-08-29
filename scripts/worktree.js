@@ -41,7 +41,7 @@
 //
 // Seams for the test suite (tests/unit/worktree.test.js), which builds throwaway
 // repositories under the OS temp dir and needs git and node only:
-//   WORKTREE_ROOT   default parent directory for new worktrees
+//   WORKTREE_ROOT   parent directory for new worktrees, overriding the in-repo default
 //   WORKTREE_GIT    the git binary to spawn
 'use strict';
 
@@ -69,6 +69,21 @@ function git(args, cwd) {
 function die(msg) {
   console.error(`worktree: ${msg}`);
   process.exit(1);
+}
+
+// The container directory session folders go in, inside the main checkout. One name, used
+// by the tool that creates them and named in the `.gitignore` line that makes it safe.
+const NEST = '.worktrees';
+
+// Does git ignore this path? Asked of git rather than matched against the name, so that
+// "the repository ignores the folder I am about to fill" is a fact rather than a hope.
+// A `git` that cannot answer counts as "not ignored": the failure mode being avoided is a
+// nested worktree the repository can see, so uncertainty resolves towards refusing.
+function ignoredByGit(mainRoot, target) {
+  const rel = path.relative(mainRoot, target).split(path.sep).join('/');
+  if (!rel || rel.startsWith('..')) return true;
+  const r = git(['check-ignore', '-q', '--', rel], mainRoot);
+  return r.ok;
 }
 
 // ---- locating the main checkout ------------------------------------------------------
@@ -221,17 +236,35 @@ function cmdNew(slug, opts, cwd) {
   const mainRoot = mainCheckout(cwd);
   if (!mainRoot) die('not inside a git repository with a working copy.');
 
-  const root = opts.root
+  const explicitRoot = opts.root
     ? path.resolve(opts.root)
-    : (process.env.WORKTREE_ROOT ? path.resolve(process.env.WORKTREE_ROOT) : path.dirname(mainRoot));
+    : (process.env.WORKTREE_ROOT ? path.resolve(process.env.WORKTREE_ROOT) : null);
+  const root = explicitRoot || path.join(mainRoot, NEST);
 
-  // Sibling of the main checkout by default, never inside it: a worktree nested in the
-  // repository shows up in `git status` as a mountain of untracked files, which is the
-  // noise that gets `git add -A` typed in the first place.
-  const treeRoot = path.join(root, `${path.basename(mainRoot)}-${slug}`);
+  // Inside the checkout by default, in one ignored container directory. Twenty session
+  // folders scattered through the projects directory is its own kind of unusable, and
+  // every one of them is a copy of THIS repository, so this is where they belong.
+  //
+  // Nesting was originally refused for one specific reason: a worktree inside the
+  // repository shows up in `git status` as a mountain of untracked files, which is exactly
+  // the noise that gets `git add -A` typed. Ignoring the container directory answers that
+  // reason, so the check below is now that the ignore is really in place — asked of git
+  // rather than assumed, because a nested worktree in a repository that had stopped
+  // ignoring it would bring the original hazard back silently and at twenty folders.
+  //
+  // Under an explicit --root the folder keeps the repository prefix in its name: one
+  // sitting beside unrelated projects has to say which project it belongs to, while one
+  // inside the repository already has.
+  const leaf = explicitRoot ? `${path.basename(mainRoot)}-${slug}` : slug;
+  const treeRoot = path.join(root, leaf);
   if (fs.existsSync(treeRoot)) die(`${treeRoot} already exists. Pick another name, or remove it first.`);
-  if (path.resolve(treeRoot).startsWith(path.resolve(mainRoot) + path.sep)) {
-    die(`refusing to create a worktree inside the checkout (${treeRoot}). Use --root to put it beside the repository.`);
+
+  const inside = path.resolve(treeRoot).startsWith(path.resolve(mainRoot) + path.sep);
+  if (inside && !ignoredByGit(mainRoot, treeRoot)) {
+    die(
+      `refusing to create a worktree at ${treeRoot}: this repository does not ignore that path, so every file in the new folder would appear as untracked in the main checkout.\n` +
+      `        Add a line reading ${NEST}/ to .gitignore, or pass --root <dir> to put the folder outside the repository.`
+    );
   }
 
   // The base branch, resolved rather than guessed. A literal fallback to 'main' is what
@@ -373,8 +406,9 @@ const USAGE = `one folder per agent session (DESIGN.md §6.2)
   node scripts/worktree.js list
   node scripts/worktree.js remove <idea-name> [--force]
 
-new     makes a sibling folder and a branch of the same name off the default branch,
-        and copies in the git-ignored host-only files named in .worktree-carry.
+new     makes a folder under .worktrees/ and a branch of the same name off the default
+        branch, and copies in the host-only files named in .worktree-carry.
+        --root <dir> puts the folder outside the repository instead.
 list    every worktree, its branch, and whether it holds uncommitted or unpushed work.
 remove  deletes the folder, refusing while it still holds work. The branch survives.`;
 

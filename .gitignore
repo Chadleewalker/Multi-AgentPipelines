@@ -37,3 +37,14 @@ docs/user-profile.md
 # (docs/parallel-sessions.md §7). It names local paths, so it is host-only itself; copy
 # .worktree-carry.example to make your own.
 .worktree-carry
+
+# Turns the one-session-one-folder write guard off for the folder that holds it
+# (docs/parallel-sessions.md §8). Local by definition — an exemption one machine grants
+# itself must never travel to anyone else's checkout.
+.session-guard-off
+
+# One folder per interactive session, kept inside the repository rather than scattered
+# through the projects directory (docs/parallel-sessions.md §2). This line is what makes
+# nesting safe — without it every session's files would show as untracked in the main
+# checkout, and `scripts/worktree.js` refuses to create one here if it goes missing.
+.worktrees/

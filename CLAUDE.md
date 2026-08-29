@@ -33,7 +33,11 @@ Assume other work exists. Use one worktree per interactive session. Stage named 
 never use `git add -A`, `git add .`, or `git commit -a`. Never discard, stash, clean, or
 rewrite work you did not create. If unrelated changes overlap the task, stop and report
 them. Launch pipeline runs only from the main checkout so the host-local `runs/` corpus
-and lock observer mirror remain coherent.
+and lock observer mirror remain coherent. A change too small to be worth a pipeline run is
+still too big to make in the shared checkout: take a worktree for it. The host guard
+installed by `scripts/install-session-guard.js` refuses those writes rather than trusting
+this paragraph — `docs/parallel-sessions.md` §8 says what it allows and how to stand it
+down.
 
 Fresh-context subagents are pre-authorized only for the independent spec draft and critic
 panel steps explicitly required by `PLANNING.md`. This is not authorization to fan out
@@ -69,6 +73,10 @@ node scripts/verdict.js pending
 node scripts/worktree.js new <idea-name>
 node scripts/worktree.js list
 node scripts/worktree.js remove <idea-name>
+
+# enforce one-session-one-folder at the write; once per machine, not per worktree
+node scripts/install-session-guard.js
+node scripts/install-session-guard.js --status
 ```
 
 Do not maintain an individual test list here. Select a focused wrapper from

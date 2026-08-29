@@ -35,11 +35,23 @@ folder on its own branch. Each folder has its own files and its own staging area
 share commits, branches and tags.
 
 ```
-<wherever you keep projects>/
-    MyProject/                  <- the main checkout. Shared history lives here.
-    MyProject-flight-tuning/    <- session A. Branch: flight-tuning
-    MyProject-save-format/      <- session B. Branch: save-format
+MyProject/                        <- the main checkout. Shared history lives here.
+    .worktrees/
+        flight-tuning/            <- session A. Branch: flight-tuning
+        save-format/              <- session B. Branch: save-format
 ```
+
+They sit **inside** the project, in one directory, because twenty session folders spilled
+across the projects directory is its own kind of unusable and every one of them is a copy of
+this project anyway. One line in `.gitignore` covering `.worktrees/` is what makes that safe:
+without it, every file in every session folder would show up as untracked in the main
+checkout's `git status`, which is exactly the noise that gets `git add -A` typed. The tool
+checks that the ignore is really in place before it creates anything there, and refuses with
+the remedy if it is not — so the arrangement cannot quietly stop being safe.
+
+`--root <dir>` still puts a folder outside the project if you want one there; it keeps the
+project name in the folder name, since a folder sitting beside unrelated projects has to say
+which one it belongs to.
 
 Session A cannot see, stage, commit or delete session B's files, because they are not in
 its folder. `git add -A` in A stages A's folder and nothing else. `git checkout --` in A
@@ -72,7 +84,7 @@ Options you will rarely need:
 | Flag | What it does |
 |---|---|
 | `--from <branch>` | Branch from something other than the project's default branch. Needed only if the tool cannot work the default out, in which case it says so rather than guessing. |
-| `--root <dir>` | Put the folder somewhere other than beside the main checkout. |
+| `--root <dir>` | Put the folder outside the project instead of under `.worktrees/`. |
 
 ## 4. Work in it
 
@@ -228,3 +240,77 @@ have to survive being followed at speed:
 Worktrees make the *blast radius* of breaking these rules your own folder instead of
 someone else's. That is a large improvement and it is not a licence — inside one folder,
 `git add -A` will still sweep up whatever you left half-done an hour ago.
+
+### The part prose could not do
+
+Everything above makes the collision impossible **once a session is in its own folder**. It
+says nothing about how a session gets there, and that step was advice.
+
+Advice loses in one specific way, and it is not carelessness. A session is handed a change
+it judges too small to be worth a frozen spec and a pipeline run. The pipeline is the
+expensive path, the file is right in front of it, and editing the checkout it is already
+standing in is locally the reasonable thing to do. At two sessions you get away with that.
+At twenty it is the ordinary case, and the three failures in §1 come straight back.
+
+So the rule now sits at the write:
+
+```bash
+node scripts/install-session-guard.js            # once per machine
+node scripts/install-session-guard.js --status   # is it on?
+```
+
+Once per **machine**, not once per worktree — a guard the twentieth session has to opt into
+is a guard the twentieth session does not have. It installs into your agent CLI's own
+configuration directory, so a worktree you create an hour from now is already covered with
+nothing to set up. It stays silent in every project that does not carry
+`scripts/session-guard.js`, so your other repositories are unaffected.
+
+What it refuses:
+
+| Where | What | Why |
+|---|---|---|
+| The main checkout | Writing a file git tracks, or would track | Everyone else has that file open in that same folder |
+| A worktree | Writing back into the main checkout | Same collision, approached from the other side |
+| Anywhere | Writing into another session's folder | That folder is git-ignored, so "would git track this?" says no for every file in it — and someone is working in there right now |
+| Anywhere | `git add -A` / `.`, `git commit -a`, `git checkout --`, `git restore`, `git stash`, `git reset --hard`, `git clean` | The list above, made mechanical |
+
+What it does **not** touch. Host-only paths in the main checkout stay writable — `runs/`,
+the local configs, everything `.gitignore` covers. Those are what an operator session
+legitimately writes, and none of them merge, so none of them can collide. Anything outside
+the repository is none of its business. And inside your own worktree you work normally: that
+is the whole point of having one.
+
+It judges the **write**, not the tool, so a `sed -i` or a `>` redirect into the shared
+checkout is refused exactly as an editor write is. It **fails open** — if it cannot parse a
+command, or git is unavailable, or it crashes, the write goes through. A checker that fails
+closed stops every session on its first bad day and gets uninstalled that afternoon, and
+then nothing is watching at all.
+
+It also carries a short list of refusals that have nothing to do with this project and
+everything to do with the machine: force-pushing, deleting a home directory or a whole
+drive, formatting a disk. Those hold in **every** folder — a project that carries no guard
+of its own, a folder that is not a repository at all, and a folder that has switched the
+one-folder rule off, because the off marker was never meant to exempt formatting a disk.
+That coverage is why installing puts a copy of the guard beside the bridge as well: it is
+what answers in your other projects.
+
+Everything is matched on parsed words rather than on text. That distinction is the reason
+this replaced an earlier check: `rm -rf /tmp/scratch` contains the characters `rm -rf /`,
+and a document that *quotes* a dangerous command is a document, not a command. Both used to
+be refused. Here-document bodies are skipped for the same reason — writing this project's
+own pull-request description was refused once, because the description contains a table
+listing the commands the guard blocks.
+
+If it is wrong about your folder, put a file named `.session-guard-off` in that folder and
+it stands down there. That file is git-ignored, so the exemption is yours and travels
+nowhere. To take it off the machine entirely:
+
+```bash
+node scripts/install-session-guard.js --uninstall
+```
+
+It is a guard, not a sandbox. It stops the honest default and names the command that fixes
+it; a session determined to route around it can, and that is not what it is for. The checks
+are `bash scripts/test-session-guard.sh`, and half of them assert that ordinary work still
+goes through — a guard that refused everything would pass every "it blocks X" case and be
+worthless.
