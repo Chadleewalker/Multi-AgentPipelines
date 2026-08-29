@@ -17,7 +17,11 @@ related:  PLANNING.md §1 (sizing, where dependencies are first noticed), §6 (f
           run concurrently);
           docs/threads/merge-order.md (the same question asked after the PRs exist);
           docs/parallel-sessions.md (one worktree per session — the structure that
-          creates the blindness)
+          creates the blindness);
+          contracts/control-plane.json (the exit-code outcomes — exit 0 maps to Beads
+          `closed`, independent of merge state);
+          docs/IDEAS.md ("Re-read the ready queue when a worker goes idle…" — the entry
+          this thread's closed-versus-merged finding makes conditional on merge state)
 ```
 
 **The question this thread has to answer:** where a dependency between two tasks filed by
@@ -114,7 +118,38 @@ A task that wrote outside its declared set is a finding worth having, and it is 
 escalation-ladder move this repo already uses — a convention becomes a declaration, the
 declaration becomes checkable, and only what proves fragile becomes a test.
 
-### 5. What this does not fix
+### 5. Closing an issue is not the same as delivering its code
+
+There is a second, sharper version of the same blindness, and it is a fact about the code
+rather than a proposal: a task's Beads issue is closed by the outcome contract on exit code
+0 — the mapping lives in `contracts/control-plane.json` under the exit-code outcomes, and
+`runner/queue.js` applies it in its terminal write-back after the container exits. That
+closing happens once the task's pull request has opened. It does not wait for a human to
+merge it. Meanwhile the code that pull request carries is not in the integration branch —
+it is sitting on its own branch until someone merges it — and `runner/workspace.js` clones
+every task fresh and branches off the integration branch, so a dependent task only receives
+the work once that pull request has actually been merged, not once Beads says the
+dependency is done.
+
+Today this gap costs nothing, and only by an accident of scheduling rather than by any
+check that closes it. `runner/run.js` reads the ready queue exactly once, before its worker
+pool starts, and drains that one snapshot for the whole run. A task unblocked by a sibling's
+closing cannot be picked up until a later run is started, and by the time a human starts
+one, they will ordinarily have already merged the sibling's pull request — so the window
+where "closed" and "merged" disagree is never actually exercised.
+
+That accident is exactly what the `docs/IDEAS.md` entry proposing to re-read the ready
+queue when a worker goes idle would remove. Under that idea, the dependent task would
+unblock and get claimed mid-run, the moment the dependency's issue closes — before a human
+has looked at its pull request, let alone merged it. Its clone would branch off an
+integration branch that does not yet contain the dependency's work, and it would fail for a
+reason that reads nothing like a dependency problem: a missing file, a broken import, a
+compile error. The idle-worker-requeue idea is therefore not simply free once the queue
+re-read is built; its requeue has to be conditioned on the dependency's pull request having
+merged, not on its issue having closed, or it converts this thread's rare failure mode into
+a routine one.
+
+### 6. What this does not fix
 
 - It does nothing for two tasks **being drafted simultaneously** in two sessions. Nothing
   can, short of a claim registry, and that is a heavier mechanism than the problem has so
@@ -154,6 +189,11 @@ declaration becomes checkable, and only what proves fragile becomes a test.
   place both tasks are simultaneously visible. Identified the one prerequisite: file
   ownership has to become machine-readable, which it is not today despite being the
   mechanism that has prevented every code collision measured so far.
+- 2026-08-29 — Found, by reading the outcome contract's exit-code table and the runner's
+  terminal write-back, that a task's Beads issue closes on exit code 0 at pull-request-open
+  time, not at merge time, while a dependent task's clone only picks up merged code. Makes
+  the `docs/IDEAS.md` idle-worker requeue idea conditional on merge state rather than on
+  issue state.
 
 ## Outcome
 
