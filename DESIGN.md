@@ -1657,13 +1657,16 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
 
     A suite already committed on the integration branch appears in every worktree that inherited
     that commit, so directory presence alone is not an ownership claim. For `re-gate` only, a
-    legacy worktree is ignored when its committed suite tree is byte-identical to the **exact
-    `FETCH_HEAD` tree the dispatch gate just judged** and its suite path is clean of tracked,
-    untracked and ignored changes. The gate carries that tree object id out of its throwaway
+    legacy worktree is ignored when its committed test content has the same receipt-independent
+    suite hash as the **exact `FETCH_HEAD` tree the dispatch gate just judged** and its suite path
+    is clean of tracked, untracked and ignored changes. The hash is the receipt formula from
+    §3.2, so adding only `.freeze-gate.json` cannot manufacture a legacy ownership claim. The
+    gate carries both that hash and the diagnostic raw tree object id out of its throwaway
     repository; the brief never resolves a local branch name a second time, because a local ref
-    may be ahead of or behind the remote decision. A different tree, any local suite byte, or any
-    Git uncertainty remains a collision. `write` and `freeze` keep the original conservative
-    rule because there is no remote suite whose inheritance could explain the second copy.
+    may be ahead of or behind the remote decision. Different test content, any local suite byte,
+    a missing identity, or any Git uncertainty remains a collision. `write` and `freeze` keep the
+    original conservative rule because there is no remote suite whose inheritance could explain
+    the second copy.
 
     A machine-specific path lives in the run config's optional `hostEnv`, not in the target's
     `pipeline.config.json`: run configs are host-local and git-ignored, and a path true on one
@@ -1703,9 +1706,11 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
 
     Managed proof comparison normalizes one host-only Godot artifact: a strict generated
     `<script>.gd.uid` sidecar in another suite when Git proves it is ignored and untracked, it is
-    a regular non-symlink file, and its `.gd` companion remains in the protected manifest. The
-    suite under proof, tracked or staged sidecars, malformed or orphan sidecars, every source
-    file, and every uncertain Git result remain protected and fail closed.
+    a regular non-symlink file, its `.gd` companion remains in the protected manifest, and its
+    body is Godot's variable-width generated form: `uid://`, one through thirteen characters
+    from the engine's `a`-`y` plus `0`-`8` alphabet, and an optional final newline. The suite
+    under proof, tracked or staged sidecars, malformed or orphan sidecars, every source file,
+    and every uncertain Git result remain protected and fail closed.
 
     The strongest batch result is deliberately **proven-at-base**. A proof is bound to the exact
     integration HEAD and protected-tree manifest, so freezing one suite makes every other old

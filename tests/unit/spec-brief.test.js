@@ -287,9 +287,12 @@ const ISSUE = (id, extra = {}) => ({
   const original = '# inherited from integration\n';
   fs.mkdirSync(suite, { recursive: true });
   fs.writeFileSync(path.join(suite, 'acceptance.sh'), original);
+  fs.writeFileSync(path.join(suite, 'helper.gd'), 'extends RefCounted\n');
   git(w.target, ['add', relative]);
   git(w.target, ['commit', '-qm', 'an inherited acceptance suite']);
   const integrationTree = git(w.target, ['rev-parse', `HEAD:${fwd(relative)}`]).out.trim();
+  const { suiteHash, treeEntries } = require(path.join(ROOT, 'runner', 'suite-hash.js'));
+  const integrationHash = suiteHash(treeEntries(w.target, 'HEAD', fwd(relative)));
 
   const legacyA = path.join(w.base, 'legacy-inherited-a');
   const legacyB = path.join(w.base, 'legacy-inherited-b');
@@ -305,6 +308,18 @@ const ISSUE = (id, extra = {}) => ({
   check('D6b local/write resolution keeps the original conservative collision', (() => {
     const local = B.resolveIssueFolder({ targetRepoPath: w.target }, id, registered);
     return !local.ok && local.kind === 'collision';
+  })());
+
+  // The integration branch later gains only the receipt. Its raw suite tree changes, but the
+  // receipt-independent suite identity does not; older worktrees remain inherited, not claims.
+  fs.writeFileSync(path.join(suite, '.freeze-gate.json'), '{}\n');
+  git(w.target, ['add', relative]);
+  git(w.target, ['commit', '-qm', 'add only the freeze receipt']);
+  const receiptTree = git(w.target, ['rev-parse', `HEAD:${fwd(relative)}`]).out.trim();
+  check('D6b1 a receipt-only integration change does not create a false legacy collision', (() => {
+    const found = B.resolveIssueFolder({ targetRepoPath: w.target }, id, id, registered,
+      { suiteId: id, tree: receiptTree, suiteHash: integrationHash });
+    return receiptTree !== integrationTree && found.ok && found.folder && found.folder.exists === false;
   })());
 
   const legacyFile = path.join(legacyA, relative, 'acceptance.sh');
@@ -331,6 +346,20 @@ const ISSUE = (id, extra = {}) => ({
     return !found.ok && found.kind === 'collision';
   })());
   fs.rmSync(ignored); fs.rmSync(path.join(legacyA, '.gitignore'));
+
+  const generatedUid = path.join(legacyA, relative, 'helper.gd.uid');
+  fs.appendFileSync(path.join(legacyA, '.gitignore'), '\n*.uid\n');
+  fs.writeFileSync(generatedUid, 'uid://b123456780a\n');
+  check('D6e1 a canonical ignored Godot sidecar does not make an inherited suite collide', (() => {
+    const found = B.resolveIssueFolder({ targetRepoPath: w.target }, id, registered, integrationTree);
+    return found.ok && found.folder && found.folder.exists === false;
+  })());
+  fs.writeFileSync(generatedUid, 'not-a-generated-uid\n');
+  check('D6e2 a malformed ignored UID sidecar remains a collision', (() => {
+    const found = B.resolveIssueFolder({ targetRepoPath: w.target }, id, registered, integrationTree);
+    return !found.ok && found.kind === 'collision';
+  })());
+  fs.rmSync(generatedUid); fs.rmSync(path.join(legacyA, '.gitignore'));
 
   fs.appendFileSync(legacyFile, '# committed divergence\n');
   git(legacyA, ['add', relative]);

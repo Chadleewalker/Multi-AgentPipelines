@@ -41,6 +41,8 @@ const { loadConfig } = require('../runner/config');
 const { bdJson } = require('../runner/bd');
 const { partitionByFreeze, resolveBranch, gitSpawnOptions, REFUSAL } = require('../runner/queue');
 const { failureText } = require('../runner/process');
+const { suiteHash: hashSuite, treeEntries } = require('../runner/suite-hash');
+const { generatedGodotUid } = require('./protected-tree');
 
 const EXIT_OK = 0;
 const EXIT_USAGE = 2;
@@ -216,6 +218,7 @@ function classifyBranch(cfg, id) {
     return {
       ok: true, state: 're-gate', refusal, reason: row.reason,
       suiteTree: row.suiteTree,
+      suiteHash: row.suiteHash,
     };
   }
   return { ok: true, state: 'local' };
@@ -368,18 +371,42 @@ function suiteTree(cfg, cwd, ref, id) {
   return r.status === 0 && /^[0-9a-f]{40,64}$/i.test(oid) ? oid : null;
 }
 
+function committedSuiteHash(cfg, cwd, ref, id) {
+  try {
+    return hashSuite(treeEntries(cwd, ref, `tests/acceptance/${id}`, {
+      timeoutMs: gitSpawnOptions(cfg).timeout,
+    }));
+  } catch { return null; }
+}
+
 // A committed suite appears in every worktree whose branch inherited that commit. Directory
 // presence alone therefore cannot mean that the other worktree owns unpublished test work. The
 // exemption is deliberately narrow: the complete committed suite tree must equal the resolved
 // integration branch, and Git must see no tracked, untracked OR ignored working-tree bytes under
 // it. Any uncertainty remains a collision so divergent/manual evidence is never adopted or lost.
-function inheritedSuite(cfg, id, folder, integrationTree) {
-  if (!integrationTree || suiteTree(cfg, folder.dir, 'HEAD', id) !== integrationTree) return false;
+function inheritedSuite(cfg, id, folder, integrationTree, integrationHash) {
+  // The receipt records the suite hash and is deliberately excluded from it. Compare that same
+  // identity here when available: a later integration commit that adds only the receipt must
+  // not turn every older, otherwise identical worktree into an unpublished-work collision.
+  // The raw tree OID remains a compatibility fallback for older callers and fails closed.
+  if (integrationHash) {
+    if (committedSuiteHash(cfg, folder.dir, 'HEAD', id) !== integrationHash) return false;
+  } else if (!integrationTree || suiteTree(cfg, folder.dir, 'HEAD', id) !== integrationTree) {
+    return false;
+  }
   const suite = `tests/acceptance/${id}`;
   const clean = git(cfg, [
     'status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored=matching', '--', suite,
   ], { cwd: folder.dir });
-  return clean.status === 0 && !String(clean.stdout || '').length;
+  if (clean.status !== 0) return false;
+  const changes = String(clean.stdout || '').split('\0').filter(Boolean);
+  const run = (_cmd, args, extra) => git(cfg, args, extra);
+  return changes.every((entry) => {
+    if (!entry.startsWith('!! ')) return false;
+    const rel = entry.slice(3).split(path.sep).join('/');
+    const companion = rel.replace(/\.uid$/, '');
+    return generatedGodotUid(folder.dir, rel, fs.existsSync(path.join(folder.dir, ...companion.split('/'))), run);
+  });
 }
 
 // Resolve one and only one place for an issue.  A worktree containing the suite under any
@@ -406,12 +433,14 @@ function resolveIssueFolder(cfg, canonicalId, requestedId = canonicalId, registe
   // of or behind the remote commit that partitionByFreeze actually judged.
   const integrationTree = inherited && typeof inherited.tree === 'string'
     && /^[0-9a-f]{40,64}$/i.test(inherited.tree) ? inherited.tree.toLowerCase() : null;
+  const integrationHash = inherited && typeof inherited.suiteHash === 'string'
+    && /^[0-9a-f]{64}$/i.test(inherited.suiteHash) ? inherited.suiteHash.toLowerCase() : null;
   const integrationSuiteId = inherited && inherited.suiteId;
   const adoptedLegacy = exact.length === 0 && legacyExact.length === 1 ? legacyExact[0] : null;
   const ownedBranches = new Set([names.branch, ...(adoptedLegacy ? [legacyNames.branch] : [])]);
   const legacy = carrying.filter((w) => !ownedBranches.has(w.branch))
     .filter((w) => !(integrationSuiteId
-      && inheritedSuite(cfg, integrationSuiteId, w, integrationTree)));
+      && inheritedSuite(cfg, integrationSuiteId, w, integrationTree, integrationHash)));
   if (exact.length > 1) {
     return { ok: false, kind: 'collision', error: `multiple worktrees claim exact branch ${names.branch}: ${exact.map((w) => w.dir).join(', ')}` };
   }
@@ -752,7 +781,8 @@ function buildBrief(opts) {
   try {
     located = resolveIssueFolder(cfg, canonicalId, opts.id, undefined,
       remoteState.state === 're-gate'
-        ? { suiteId: remoteState.suiteId, tree: remoteState.suiteTree } : null);
+        ? { suiteId: remoteState.suiteId, tree: remoteState.suiteTree,
+          suiteHash: remoteState.suiteHash } : null);
   }
   catch (e) { return { ok: false, kind: 'unknown', error: (e && e.message) || String(e) }; }
   if (!located.ok) return { ok: false, kind: located.kind, error: located.error };

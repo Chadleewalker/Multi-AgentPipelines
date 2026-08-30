@@ -758,6 +758,9 @@ guarded('G10', () => {
     has(res.issues, 'gated') && !has(res.undispatchable, 'gated'));
   check('G10c a suite the gate never blessed is refused `no-receipt`',
     kindOf('ungated') === 'no-receipt' && /no freeze receipt/.test(reasonOf('ungated')));
+  check('G10c1 an ungated suite carries its receipt-independent content identity for planning',
+    /^[0-9a-f]{64}$/.test(((res.undispatchable || [])
+      .find((x) => x.issue && x.issue.id === 'ungated') || {}).suiteHash || ''));
   check('G10d a suite edited after its receipt was written is refused `receipt-mismatch`',
     kindOf('moved') === 'receipt-mismatch' && /receipt does not match/.test(reasonOf('moved')));
   check('G10e a half-proven receipt is refused `half-proven` by default',

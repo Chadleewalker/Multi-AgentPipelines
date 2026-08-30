@@ -271,9 +271,16 @@ function judge(cfg, probe, issue, branch) {
   if (!raw.ok) return { abort: raw.error };
   const parsed = parseReceipt(raw.text);
   if (!parsed.ok) {
+    // Planning still needs a receipt-independent content identity to distinguish a clean
+    // inherited suite from unpublished work in an older worktree. Preserve the first-refusal
+    // rule here: an unreadable/missing receipt remains `no-receipt`; if this auxiliary hash
+    // cannot be read, omit it and let planning fail closed instead of changing the runner's
+    // operator diagnosis.
+    const hashed = branchSuiteHash(cfg, probe, issue.id);
     return {
       refusal: REFUSAL.NO_RECEIPT,
       suiteTree,
+      ...(hashed.ok ? { suiteHash: hashed.hash } : {}),
       reason: `no freeze receipt the runner can read at ${suitePath(issue.id)}/${RECEIPT_NAME} on ${branch} of ${cfg.targetRepoRemote} — ${parsed.detail}`,
     };
   }
@@ -284,6 +291,7 @@ function judge(cfg, probe, issue, branch) {
     return {
       refusal: REFUSAL.MISMATCH,
       suiteTree,
+      suiteHash: hashed.hash,
       reason: `the freeze receipt does not match the suite at ${where}: the gate blessed `
         + `${parsed.receipt.suiteHash.slice(0, 12)} and the branch now holds ${hashed.hash.slice(0, 12)}`,
     };
@@ -297,12 +305,13 @@ function judge(cfg, probe, issue, branch) {
     return {
       refusal: REFUSAL.HALF_PROVEN,
       suiteTree,
+      suiteHash: hashed.hash,
       reason: `the freeze receipt for ${where} records a half-proven freeze — the suite was red `
         + 'at the fork point but no probe was supplied, so nothing has ever shown an '
         + 'implementation can turn it green, and this run does not admit half-proven suites',
     };
   }
-  return { dispatch: true, suiteTree };
+  return { dispatch: true, suiteTree, suiteHash: hashed.hash };
 }
 
 // Split the candidates into what may be dispatched and what may not. LAZY at the caller:
@@ -327,6 +336,7 @@ function partitionByFreeze(cfg, candidates) {
       else undispatchable.push({
         issue, reason: answer.reason, refusal: answer.refusal,
         ...(answer.suiteTree ? { suiteTree: answer.suiteTree } : {}),
+        ...(answer.suiteHash ? { suiteHash: answer.suiteHash } : {}),
       });
     }
     return { ok: true, issues, undispatchable, branch };

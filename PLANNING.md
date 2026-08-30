@@ -220,9 +220,10 @@ host mount other than that disposable clone, then feeds its evidence into the ne
  attempt. The whole acceptance tree, `pipeline.config.json` and every configured frozen Git
  pathspec are hashed before the agent and checked after both the agent and gate. Wildcard matches,
  ignored additions and file modes count, except a strict ignored-and-untracked Godot `.gd.uid`
- sidecar beside its unchanged `.gd` companion in another suite. The suite under proof, malformed,
- orphan or tracked sidecars, and any uncertain Git query remain protected. Any changed protected
- byte is a refusal.
+ sidecar beside its unchanged `.gd` companion in another suite. That generated UID body is
+ variable-width (one through thirteen engine-alphabet characters), not fixed-width. The suite
+ under proof, malformed, orphan or tracked sidecars, and any uncertain Git query remain protected.
+ Any changed protected byte is a refusal.
 
 Only a gate exit 0 is a launcher success. The ownership-marked baseline and probe are retained,
 and the reported human command includes `--probe <dir>` so the approved freeze re-runs the same

@@ -163,10 +163,18 @@ fs.rmSync(path.join(target, 'scripts', 'test-ignored.sh'));
   check('E4 a proven managed probe recognizes the untouched integration fork point',
     managed.ok && managed.managed && managed.needsPromotion);
   const generatedUid = path.join(target, 'tests', 'acceptance', '_control', 'helper.gd.uid');
-  fs.writeFileSync(generatedUid, 'uid://c123456789abc\n');
-  const withGeneratedUid = P.validateManagedProbe(prepared.probe, target, ['app-7'], 'a'.repeat(40));
-  check('E4b an ignored untracked Godot sidecar beside an unchanged script does not stale a proof',
-    withGeneratedUid.ok && withGeneratedUid.managed && withGeneratedUid.needsPromotion);
+  for (const uid of ['a', 'b123456780a', 'c123456780ab', 'd123456780abc']) {
+    fs.writeFileSync(generatedUid, `uid://${uid}\n`);
+    const withGeneratedUid = P.validateManagedProbe(prepared.probe, target, ['app-7'], 'a'.repeat(40));
+    check(`E4b an ignored untracked ${uid.length}-character Godot sidecar does not stale a proof`,
+      withGeneratedUid.ok && withGeneratedUid.managed && withGeneratedUid.needsPromotion);
+  }
+  for (const uid of ['e123456780abcd', 'z123456780ab', '9123456780ab']) {
+    fs.writeFileSync(generatedUid, `uid://${uid}\n`);
+    check(`E4b1 non-generated UID form ${uid} remains protected`,
+      !P.validateManagedProbe(prepared.probe, target, ['app-7'], 'a'.repeat(40)).ok);
+  }
+  fs.writeFileSync(generatedUid, 'uid://c123456780ab\n');
   const uidManifest = P.protectedManifest(target, built.policy, 'app-7');
   const failedGitManifest = P.normalizedManagedManifest(target, uidManifest, 'app-7',
     (_cmd, args) => args[0] === 'check-ignore' ? { status: 0 } : { status: 128 });

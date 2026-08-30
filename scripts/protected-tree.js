@@ -13,6 +13,11 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const RECEIPT_NAME = '.freeze-gate.json';
+// ResourceUID::id_to_text emits a variable-width base-34 number. Godot's generator alphabet
+// is a-y plus 0-8 and the engine caps the encoded number at 13 characters. Shorter values are
+// normal (and present in real projects), so exact-width validation would turn generated cache
+// sidecars into protected test evidence.
+const GENERATED_GODOT_UID = /^uid:\/\/[a-y0-8]{1,13}\r?\n?$/;
 
 function sha(bytes) { return crypto.createHash('sha256').update(bytes).digest('hex'); }
 function normalize(rel) { return String(rel).split(path.sep).join('/').replace(/^\.\//, '').replace(/\/+$/, ''); }
@@ -144,6 +149,24 @@ function manifestDifference(want, got) {
   return changed.sort();
 }
 
+function generatedGodotUid(repoRoot, rel, companionPresent, run = spawnSync) {
+  if (!/^tests\/acceptance\/[^/]+\/.+\.gd\.uid$/.test(rel) || !companionPresent) return false;
+  const file = path.resolve(repoRoot, ...rel.split('/'));
+  if (!within(repoRoot, file)) return false;
+  let stat; let bytes;
+  try { stat = fs.lstatSync(file); bytes = fs.readFileSync(file, 'utf8'); }
+  catch { return false; }
+  if (!stat.isFile() || stat.isSymbolicLink() || !GENERATED_GODOT_UID.test(bytes)) return false;
+  const ignored = run('git', ['check-ignore', '--quiet', '--', rel], {
+    cwd: repoRoot, encoding: 'utf8', maxBuffer: 1024 * 1024, timeout: 5000,
+  });
+  const tracked = run('git', ['ls-files', '--error-unmatch', '--', rel], {
+    cwd: repoRoot, encoding: 'utf8', maxBuffer: 1024 * 1024, timeout: 5000,
+  });
+  return ignored.status === 0 && !ignored.error && !ignored.signal
+    && tracked.status === 1 && !tracked.error && !tracked.signal;
+}
+
 // Godot writes ignored `<script>.uid` sidecars when it scans a project. They are not part of
 // Git's integration tree, so a long-lived host checkout can have them while clean proof clones
 // do not. Managed-proof comparisons normalize only strict generated sidecars in OTHER suites.
@@ -158,27 +181,13 @@ function normalizedManagedManifest(repoRoot, manifest, issueId, run = spawnSync)
     if (!match || match[1] === issueId || !entries.has(`tests/acceptance/${match[1]}/${match[2]}`)) {
       answer.push([rel, value]); continue;
     }
-    const file = path.resolve(repoRoot, ...rel.split('/'));
-    let stat; let bytes;
-    try { stat = fs.lstatSync(file); bytes = fs.readFileSync(file, 'utf8'); }
-    catch { answer.push([rel, value]); continue; }
-    if (!stat.isFile() || stat.isSymbolicLink() || !/^uid:\/\/[a-z0-9]{13}\r?\n?$/.test(bytes)) {
-      answer.push([rel, value]); continue;
-    }
-    const ignored = run('git', ['check-ignore', '--quiet', '--', rel], {
-      cwd: repoRoot, encoding: 'utf8', maxBuffer: 1024 * 1024, timeout: 5000,
-    });
-    const tracked = run('git', ['ls-files', '--error-unmatch', '--', rel], {
-      cwd: repoRoot, encoding: 'utf8', maxBuffer: 1024 * 1024, timeout: 5000,
-    });
-    const safelyIgnoredAndUntracked = ignored.status === 0 && !ignored.error && !ignored.signal
-      && tracked.status === 1 && !tracked.error && !tracked.signal;
-    if (!safelyIgnoredAndUntracked) answer.push([rel, value]);
+    if (!generatedGodotUid(repoRoot, rel,
+      entries.has(`tests/acceptance/${match[1]}/${match[2]}`), run)) answer.push([rel, value]);
   }
   return answer;
 }
 
 module.exports = {
-  protectedManifest, manifestHash, manifestDifference, normalizedManagedManifest,
+  protectedManifest, manifestHash, manifestDifference, normalizedManagedManifest, generatedGodotUid,
   safePattern, regexFor, within, sha,
 };
