@@ -163,6 +163,18 @@ function snapshotBatch(cfg, ids, configPath, seams = {}) {
     snapshots.push(classified);
   }
   const byFolder = new Map();
+  const byCanonical = new Map();
+  for (const item of snapshots.filter((s) => s.built && s.built.canonicalId)) {
+    const key = process.platform === 'win32'
+      ? item.built.canonicalId.toLowerCase() : item.built.canonicalId;
+    const prior = byCanonical.get(key);
+    if (prior && prior.id !== item.id) {
+      for (const collided of [prior, item]) {
+        collided.outcome = 'collision'; delete collided.action;
+        collided.error = `batch inputs ${prior.id} and ${item.id} resolve to canonical issue ${item.built.canonicalId}`;
+      }
+    } else byCanonical.set(key, item);
+  }
   for (const item of snapshots.filter((s) => s.built && s.built.folder)) {
     const key = path.resolve(item.built.folder.dir).toLowerCase();
     const prior = byFolder.get(key);
@@ -189,6 +201,8 @@ function prepareWorktrees(snapshots, configPath, seams = {}, expectedHead = null
       const refreshed = builder({ id: item.id, config: configPath });
       const next = classifyBuilt(item.id, refreshed);
       if (!refreshed.ok || next.action !== item.action || !refreshed.folder.exists
+          || refreshed.canonicalId !== item.built.canonicalId
+          || refreshed.suiteId !== item.built.suiteId
           || (expectedCfg && !sameConfigIdentity(expectedCfg, refreshed.cfg))) {
         item.outcome = 'collision'; delete item.action;
         item.error = refreshed.error || (expectedCfg && !sameConfigIdentity(expectedCfg, refreshed.cfg)

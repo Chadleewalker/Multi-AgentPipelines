@@ -1647,6 +1647,14 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     untouched one. The state comes from the runner's own `partitionByFreeze`, never a second
     reading of the rule.
 
+    The operator may look an issue up by a short Beads alias, but the `id` returned by `bd show`
+    is the canonical filesystem identity. New suite paths and branches use that canonical id.
+    One uniquely registered legacy `freeze-<requested-id>` worktree may be reused to preserve
+    unfinished local work, but canonical-plus-alias branches or suite directories, duplicate
+    aliases, and two batch inputs resolving to the same canonical issue are collisions. A suite
+    already published only under an alias must be re-cut under the canonical path because the
+    runner dispatches only `tests/acceptance/<canonical-id>/`.
+
     A suite already committed on the integration branch appears in every worktree that inherited
     that commit, so directory presence alone is not an ownership claim. For `re-gate` only, a
     legacy worktree is ignored when its committed suite tree is byte-identical to the **exact
@@ -1692,6 +1700,12 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     separate `acknowledge-interrupted` verb before retry. Config secrets and `hostEnv` values are
     neither persisted nor included in the durable config hash, and their values are scrubbed from
     persisted worker evidence and errors.
+
+    Managed proof comparison normalizes one host-only Godot artifact: a strict generated
+    `<script>.gd.uid` sidecar in another suite when Git proves it is ignored and untracked, it is
+    a regular non-symlink file, and its `.gd` companion remains in the protected manifest. The
+    suite under proof, tracked or staged sidecars, malformed or orphan sidecars, every source
+    file, and every uncertain Git result remain protected and fail closed.
 
     The strongest batch result is deliberately **proven-at-base**. A proof is bound to the exact
     integration HEAD and protected-tree manifest, so freezing one suite makes every other old

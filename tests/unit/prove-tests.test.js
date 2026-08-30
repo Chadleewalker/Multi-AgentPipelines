@@ -29,10 +29,11 @@ for (const root of [target, author]) {
   }));
   fs.writeFileSync(path.join(root, 'tools', 'run-acceptance.sh'), '# runner\n');
   fs.writeFileSync(path.join(root, 'tests', 'acceptance', '_control', 'pass.js'), '// pass\n');
+  fs.writeFileSync(path.join(root, 'tests', 'acceptance', '_control', 'helper.gd'), '# helper\n');
   fs.writeFileSync(path.join(root, 'tests', 'acceptance', 'app-7', 'test.js'), '// exact judge\n');
   fs.writeFileSync(path.join(root, 'scripts', 'test-core.sh'), '# frozen wildcard\n');
 }
-fs.writeFileSync(path.join(target, '.gitignore'), 'scripts/test-ignored.sh\n');
+fs.writeFileSync(path.join(target, '.gitignore'), 'scripts/test-ignored.sh\n*.uid\n*.tmp\n');
 spawnSync('git', ['init', '-q', '--initial-branch', 'main', '.'], { cwd: target });
 spawnSync('git', ['config', 'user.email', 'fixture@test.local'], { cwd: target });
 spawnSync('git', ['config', 'user.name', 'fixture'], { cwd: target });
@@ -161,6 +162,27 @@ fs.rmSync(path.join(target, 'scripts', 'test-ignored.sh'));
   const managed = P.validateManagedProbe(prepared.probe, target, ['app-7'], 'a'.repeat(40));
   check('E4 a proven managed probe recognizes the untouched integration fork point',
     managed.ok && managed.managed && managed.needsPromotion);
+  const generatedUid = path.join(target, 'tests', 'acceptance', '_control', 'helper.gd.uid');
+  fs.writeFileSync(generatedUid, 'uid://c123456789abc\n');
+  const withGeneratedUid = P.validateManagedProbe(prepared.probe, target, ['app-7'], 'a'.repeat(40));
+  check('E4b an ignored untracked Godot sidecar beside an unchanged script does not stale a proof',
+    withGeneratedUid.ok && withGeneratedUid.managed && withGeneratedUid.needsPromotion);
+  const uidManifest = P.protectedManifest(target, built.policy, 'app-7');
+  const failedGitManifest = P.normalizedManagedManifest(target, uidManifest, 'app-7',
+    (_cmd, args) => args[0] === 'check-ignore' ? { status: 0 } : { status: 128 });
+  check('E4b2 a failed tracked-state query cannot hide an ignored Godot sidecar',
+    failedGitManifest.some(([rel]) => rel.endsWith('helper.gd.uid')));
+  fs.rmSync(generatedUid);
+  const ignoredOther = path.join(target, 'tests', 'acceptance', '_control', 'scratch.tmp');
+  fs.writeFileSync(ignoredOther, 'not a Godot uid\n');
+  check('E4c other ignored additions under acceptance remain protected',
+    !P.validateManagedProbe(prepared.probe, target, ['app-7'], 'a'.repeat(40)).ok);
+  fs.rmSync(ignoredOther);
+  const orphanUid = path.join(target, 'tests', 'acceptance', '_control', 'missing.gd.uid');
+  fs.writeFileSync(orphanUid, 'uid://no-source\n');
+  check('E4d an ignored uid without an unchanged adjacent source remains protected',
+    !P.validateManagedProbe(prepared.probe, target, ['app-7'], 'a'.repeat(40)).ok);
+  fs.rmSync(orphanUid);
   const promoted = P.promoteManagedSuite(managed, target);
   check('E5 promotion copies only the exact proven suite into the integration checkout',
     promoted.ok && promoted.promoted

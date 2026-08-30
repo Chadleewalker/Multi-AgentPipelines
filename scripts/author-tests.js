@@ -75,7 +75,7 @@ function launchAuthor(built, model, run = runSync) {
   // -p reads the prompt from stdin when no prompt argv follows it. That avoids both a shell and
   // Windows' command-line length limit. Permissions stay at the host user's normal policy.
   const timeoutMs = Math.max(1, Number(built.cfg.wallClockMinutes) || 240) * 60 * 1000;
-  const suite = `tests/acceptance/${built.id}/`;
+  const suite = `tests/acceptance/${built.suiteId || built.id}/`;
   const verifier = `${built.policy.verifyCommand} ${suite}`;
   const allowed = `Read,Edit,Write,Glob,Grep,Bash(${verifier})`;
   return run(process.env.PIPELINE_TEST_AUTHOR_CMD || 'claude', [
@@ -117,7 +117,7 @@ function auditAuthorTree(built, run = runSync) {
     cfg: built.cfg, kind: 'git', cwd: built.folder.dir, label: 'audit test-author worktree',
   });
   if (result.status !== 0) return { ok: false, error: failureText(result, 'git status failed') };
-  const suite = `tests/acceptance/${built.id}`;
+  const suite = `tests/acceptance/${built.suiteId || built.id}`;
   const outside = statusPaths(result.stdout).map((p) => p.split('\\').join('/'))
     .filter((p) => p !== suite && !p.startsWith(`${suite}/`));
   return outside.length
@@ -207,7 +207,7 @@ function authorIssue(built, configPath, io = {}, seams = {}) {
   out(`Outcome: fully proven — RED at the fork point and GREEN in the protected probe (attempt ${proof.attempt}).`);
   out(`Probe retained for the human-approved freeze: ${proof.probe}`);
   out('No freeze, commit or push was performed by the launcher.');
-  out(nextStep(built.id, resolvedConfig, proof.probe));
+  out(nextStep(built.suiteId || built.id, resolvedConfig, proof.probe));
   return { ok: true, outcome: 'proven', kind: 'proven', attempt: proof.attempt,
     probe: proof.probe, container: proof.container || null, evidence: proof.evidence || '',
     agentOutput: proof.agentOutput || '', exitCode: EXIT_OK };
@@ -266,7 +266,7 @@ function main(argv, io = {}, seams = {}) {
     if (built.state !== 'write') {
       out(`Worktree: ${built.folder.dir}`);
       out(`Outcome: no launch — state is ${built.state}; writing tests is unnecessary.`);
-      out(nextStep(opts.id, configPath));
+      out(nextStep(built.suiteId || opts.id, configPath));
       return EXIT_OK;
     }
     const made = ensureWorktree(built, seams.runSync || runSync);

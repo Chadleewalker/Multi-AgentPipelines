@@ -26,6 +26,7 @@ function validateJob(job) {
   if (!SAFE_ACTIONS.has(job.action)) return 'action must be author-proof or proof';
   const built = job.built;
   if (!built || typeof built !== 'object' || !proof.validIssueId(built.id)) return 'job has no safe issue id';
+  if (built.suiteId !== undefined && !proof.validIssueId(built.suiteId)) return 'job has no safe canonical suite id';
   if (!built.cfg || typeof built.cfg !== 'object' || !built.policy || typeof built.policy !== 'object') {
     return 'job has no immutable config/policy snapshot';
   }
@@ -100,7 +101,7 @@ function execute(job, seams = {}) {
   if (answer.ok && answer.probe) {
     const head = currentHead(job.built, seams.runSync || runSync);
     const checked = head && (seams.validateManagedProbe || proof.validateManagedProbe)(
-      answer.probe, job.built.cfg.targetRepoPath, [job.built.id], head);
+      answer.probe, job.built.cfg.targetRepoPath, [job.built.suiteId || job.built.id], head);
     if (!checked || !checked.ok || !checked.managed) {
       answer = { ok: false, outcome: 'unproven', kind: 'proof-validation', probe: answer.probe,
         error: checked ? checked.error || 'proof is not a managed probe' : 'integration HEAD could not be read' };

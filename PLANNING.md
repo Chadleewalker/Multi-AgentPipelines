@@ -219,7 +219,10 @@ verifier inside the project's configured image with no network, credentials, cap
 host mount other than that disposable clone, then feeds its evidence into the next bounded
  attempt. The whole acceptance tree, `pipeline.config.json` and every configured frozen Git
  pathspec are hashed before the agent and checked after both the agent and gate. Wildcard matches,
- ignored additions and file modes count. Any changed protected byte is a refusal.
+ ignored additions and file modes count, except a strict ignored-and-untracked Godot `.gd.uid`
+ sidecar beside its unchanged `.gd` companion in another suite. The suite under proof, malformed,
+ orphan or tracked sidecars, and any uncertain Git query remain protected. Any changed protected
+ byte is a refusal.
 
 Only a gate exit 0 is a launcher success. The ownership-marked baseline and probe are retained,
 and the reported human command includes `--probe <dir>` so the approved freeze re-runs the same
@@ -244,11 +247,14 @@ node scripts/prepare-batch.js status <batch>
 ```
 
 The coordinator snapshots every issue, its dependencies, criteria, integration HEAD and
-host-local run policy before it starts a worker. It reads Beads serially, creates or reuses only
-the exact registered `freeze-<full-issue-id>` worktree, and then runs at most two test authors by
-default (three at the explicit maximum). Workers receive the immutable snapshot on stdin; they
-cannot re-read Beads or choose another worktree. The same target-global lock excludes a normal
-pipeline run and either standalone author/proof command while preparation owns the target.
+host-local run policy before it starts a worker. It reads Beads serially and uses the canonical
+id returned by `bd show` for new suite and worktree paths. One unique exact legacy alias worktree
+may be reused to preserve unfinished work; dual or ambiguous carriers fail closed, and a
+published alias suite must be re-cut under the canonical path the runner dispatches. It then runs
+at most two test authors by default (three at the explicit maximum). Workers receive the immutable
+snapshot on stdin; they cannot re-read Beads or choose another worktree. The same target-global
+lock excludes a normal pipeline run and either standalone author/proof command while preparation
+owns the target.
 
 State is durable under `runs/preparations/<batch>/`. `resume <batch>` reports or continues work
 whose ownership is unambiguous; a worker that may still be alive is never duplicated, and a

@@ -106,6 +106,21 @@ function issueNames(id) {
   return { branch: stem, dirSuffix: stem };
 }
 
+function canonicalIssueId(data, requestedId) {
+  const canonical = data && data.id;
+  if (!validIssueId(canonical)) {
+    return { ok: false, error: `bd returned an unsafe canonical issue id for ${requestedId}` };
+  }
+  if (canonical !== requestedId && !canonical.endsWith(`-${requestedId}`)) {
+    return { ok: false, error: `bd resolved ${requestedId} to unrelated issue ${canonical}` };
+  }
+  return { ok: true, id: canonical };
+}
+
+function suiteCandidates(canonicalId, requestedId) {
+  return [...new Set([canonicalId, requestedId])];
+}
+
 // ---- the six facts -------------------------------------------------------------------------
 
 // The target's own verifier contract. Never defaulted: a brief that guessed the verify command
@@ -206,28 +221,52 @@ function classifyBranch(cfg, id) {
   return { ok: true, state: 'local' };
 }
 
-function classifyLocal(cfg, id, folder) {
+function classifyLocal(cfg, canonicalId, requestedId, folder) {
+  const candidates = suiteCandidates(canonicalId, requestedId);
   // Nothing on the branch. The working tree decides between "write them" and "freeze what is
   // already written" — a distinction no branch-side check can make, and the state a planning
   // session that stopped one step early leaves behind.
   if (!folder || !folder.exists) {
     // Only branch absence makes this interesting. A suite which is already frozen normally
     // exists in the shared checkout and returned above; here it is unowned local planning work.
-    if (suiteFiles(cfg.targetRepoPath, id) !== null) {
-      return { ok: false, kind: 'collision', error: `the shared checkout contains tests/acceptance/${id}/ but no exact ${issueNames(id).branch} worktree owns it` };
+    const shared = candidates.filter((id) => suiteFiles(cfg.targetRepoPath, id) !== null);
+    if (shared.length) {
+      return { ok: false, kind: 'collision', error: `the shared checkout contains ${shared.map((id) => `tests/acceptance/${id}/`).join(' and ')} but no issue worktree owns it` };
     }
-    return { ok: true, state: 'write', local: null };
+    return { ok: true, state: 'write', local: null, suiteId: canonicalId };
   }
-  const files = suiteFiles(folder.dir, id);
-  if (files === null) return { ok: true, state: 'write', local: null };
-  if (!files.length) return { ok: true, state: 'write', local: 'empty' };
-  return { ok: true, state: 'freeze', local: files };
+  const present = candidates.map((id) => ({ id, files: suiteFiles(folder.dir, id) }))
+    .filter((value) => value.files !== null);
+  if (present.length > 1) {
+    return { ok: false, kind: 'collision', error: `the issue worktree contains both canonical and alias suite directories: ${present.map((value) => `tests/acceptance/${value.id}/`).join(', ')}` };
+  }
+  if (!present.length) return { ok: true, state: 'write', local: null, suiteId: canonicalId };
+  const selected = present[0];
+  if (!selected.files.length) return { ok: true, state: 'write', local: 'empty', suiteId: selected.id };
+  return { ok: true, state: 'freeze', local: selected.files, suiteId: selected.id };
 }
 
 function classify(cfg, id, branch, folder = null) { // branch retained for the public seam
   const remote = classifyBranch(cfg, id);
   if (!remote.ok || remote.state !== 'local') return remote;
-  return classifyLocal(cfg, id, folder);
+  return classifyLocal(cfg, id, id, folder);
+}
+
+function classifyBranchCandidates(cfg, canonicalId, requestedId) {
+  const rows = suiteCandidates(canonicalId, requestedId)
+    .map((suiteId) => ({ suiteId, result: classifyBranch(cfg, suiteId) }));
+  const failed = rows.find((row) => !row.result.ok);
+  if (failed) return failed.result;
+  const existing = rows.filter((row) => row.result.state !== 'local');
+  if (existing.length > 1) {
+    return { ok: false, kind: 'collision', error: `both canonical and alias suites exist on the integration branch: ${existing.map((row) => `tests/acceptance/${row.suiteId}/`).join(', ')}` };
+  }
+  if (existing.length === 1 && existing[0].suiteId !== canonicalId) {
+    return { ok: false, kind: 'collision',
+      error: `legacy alias suite tests/acceptance/${existing[0].suiteId}/ exists on the integration branch; the runner requires canonical tests/acceptance/${canonicalId}/, so re-cut it under the canonical id` };
+  }
+  if (existing.length === 1) return { ...existing[0].result, suiteId: existing[0].suiteId };
+  return { ok: true, state: 'local', suiteId: canonicalId };
 }
 
 // THE MAIN CHECKOUT of this repo, not the folder this script happens to be running from. The
@@ -347,29 +386,54 @@ function inheritedSuite(cfg, id, folder, integrationTree) {
 // other branch is evidence from an older/manual session, not permission to take that session
 // over.  Likewise, a directory at the path we intend to create which Git does not register is
 // a collision, never an existing worktree to trust by filename.
-function resolveIssueFolder(cfg, id, registered = worktrees(cfg), inheritedTree = null) {
-  const names = issueNames(id);
+function resolveIssueFolder(cfg, canonicalId, requestedId = canonicalId, registered = null, inherited = null) {
+  // Preserve the public test/tool seam from the preceding release:
+  // resolveIssueFolder(cfg, id, registered, inheritedTree).
+  if (Array.isArray(requestedId)) {
+    inherited = typeof registered === 'string' ? { suiteId: canonicalId, tree: registered } : null;
+    registered = requestedId; requestedId = canonicalId;
+  }
+  if (!Array.isArray(registered)) registered = worktrees(cfg);
+  const names = issueNames(canonicalId);
+  const legacyNames = issueNames(requestedId);
   const exact = registered.filter((w) => w.branch === names.branch);
-  const carrying = registered.filter((w) => suiteFiles(w.dir, id) !== null);
+  const legacyExact = names.branch === legacyNames.branch ? []
+    : registered.filter((w) => w.branch === legacyNames.branch);
+  const candidates = suiteCandidates(canonicalId, requestedId);
+  const carrying = registered.filter((w) => candidates.some((id) => suiteFiles(w.dir, id) !== null));
   // Only a tree identity carried out of the runner's exact FETCH_HEAD probe may relax a
   // collision. A branch name would be re-resolved in the host checkout and can drift ahead
   // of or behind the remote commit that partitionByFreeze actually judged.
-  const integrationTree = typeof inheritedTree === 'string'
-    && /^[0-9a-f]{40,64}$/i.test(inheritedTree) ? inheritedTree.toLowerCase() : null;
-  const legacy = carrying.filter((w) => w.branch !== names.branch)
-    .filter((w) => !inheritedSuite(cfg, id, w, integrationTree));
+  const integrationTree = inherited && typeof inherited.tree === 'string'
+    && /^[0-9a-f]{40,64}$/i.test(inherited.tree) ? inherited.tree.toLowerCase() : null;
+  const integrationSuiteId = inherited && inherited.suiteId;
+  const adoptedLegacy = exact.length === 0 && legacyExact.length === 1 ? legacyExact[0] : null;
+  const ownedBranches = new Set([names.branch, ...(adoptedLegacy ? [legacyNames.branch] : [])]);
+  const legacy = carrying.filter((w) => !ownedBranches.has(w.branch))
+    .filter((w) => !(integrationSuiteId
+      && inheritedSuite(cfg, integrationSuiteId, w, integrationTree)));
   if (exact.length > 1) {
     return { ok: false, kind: 'collision', error: `multiple worktrees claim exact branch ${names.branch}: ${exact.map((w) => w.dir).join(', ')}` };
+  }
+  if (legacyExact.length > 1 || (exact.length && legacyExact.length)) {
+    return { ok: false, kind: 'collision', error: `canonical and legacy issue branches are both registered for ${canonicalId}: ${[...exact, ...legacyExact].map((w) => `${w.dir} (${w.branch})`).join(', ')}` };
   }
   if (exact.some((w) => w.locked || w.prunable)) {
     const unsafe = exact.filter((w) => w.locked || w.prunable);
     return { ok: false, kind: 'collision', error: `exact branch ${names.branch} has locked or prunable worktree registry state: ${unsafe.map((w) => w.dir).join(', ')}` };
   }
   if (legacy.length) {
-    return { ok: false, kind: 'collision', error: `legacy or ambiguous worktree already contains tests/acceptance/${id}/ outside ${names.branch}: ${legacy.map((w) => `${w.dir} (${w.branch || 'detached'})`).join(', ')}` };
+    return { ok: false, kind: 'collision', error: `legacy or ambiguous worktree already contains one of ${candidates.map((id) => `tests/acceptance/${id}/`).join(', ')} outside ${names.branch}: ${legacy.map((w) => `${w.dir} (${w.branch || 'detached'})`).join(', ')}` };
   }
   if (exact.length === 1) {
     return { ok: true, folder: { dir: exact[0].dir, branch: names.branch, exists: true } };
+  }
+  if (adoptedLegacy) {
+    if (adoptedLegacy.locked || adoptedLegacy.prunable) {
+      return { ok: false, kind: 'collision', error: `legacy issue branch ${legacyNames.branch} has locked or prunable worktree registry state: ${adoptedLegacy.dir}` };
+    }
+    return { ok: true, folder: { dir: adoptedLegacy.dir, branch: legacyNames.branch, exists: true,
+      legacyBranchAlias: true } };
   }
   const dir = `${cfg.targetRepoPath}-${names.dirSuffix}`;
   if (fs.existsSync(dir)) {
@@ -545,14 +609,14 @@ function criteriaLines(data) {
 }
 
 function writeBrief(ctx) {
-  const { cfg, id, data, folder, branch, policy, example, repoRoot, state } = ctx;
+  const { cfg, id, suiteId, data, folder, branch, policy, example, repoRoot, state } = ctx;
   const lines = header(cfg, id, data, folder, branch);
 
   lines.push('YOUR JOB is to write the frozen acceptance tests for this issue. You are NOT');
   lines.push('implementing it. Do not write, edit or fix any product code.');
   lines.push('');
   if (state.local === 'empty') {
-    lines.push(`NOTE: tests/acceptance/${id}/ exists and is empty — a placeholder from an earlier`);
+    lines.push(`NOTE: tests/acceptance/${suiteId}/ exists and is empty — a placeholder from an earlier`);
     lines.push('session. An empty suite directory is worse than none: the verifier exits 1 on "no');
     lines.push('test files" for all three attempts. Fill it.');
     lines.push('');
@@ -560,10 +624,10 @@ function writeBrief(ctx) {
   lines.push(...setupLines(cfg));
   lines.push(...criteriaLines(data));
 
-  lines.push(`WRITE THEM TO tests/acceptance/${id}/ in your worktree. They must run under the`);
+  lines.push(`WRITE THEM TO tests/acceptance/${suiteId}/ in your worktree. They must run under the`);
   lines.push('project\'s own verifier, which the host invokes as:');
   lines.push('');
-  lines.push(`    ${policy.verifyCommand} tests/acceptance/${id}/`);
+  lines.push(`    ${policy.verifyCommand} tests/acceptance/${suiteId}/`);
   lines.push('');
   if (example) {
     lines.push(`Copy the file shape from tests/acceptance/${example.name}/ — the most recently`);
@@ -580,7 +644,7 @@ function writeBrief(ctx) {
   lines.push('its first ten lines, and must be GREEN at the fork point. Never label something a');
   lines.push('guard that is red today; that refuses the freeze outright.');
   lines.push('');
-  lines.push(...gateLines(repoRoot, cfg, id, folder));
+  lines.push(...gateLines(repoRoot, cfg, suiteId, folder));
 
   const frozen = policy.frozenPaths.length
     ? policy.frozenPaths.join(', ')
@@ -598,18 +662,18 @@ function writeBrief(ctx) {
 }
 
 function freezeBrief(ctx) {
-  const { cfg, id, data, folder, branch, repoRoot, state, configPath } = ctx;
+  const { cfg, id, suiteId, data, folder, branch, repoRoot, state, configPath } = ctx;
   const lines = header(cfg, id, data, folder, branch);
   lines.push(`THE TESTS ARE ALREADY WRITTEN — ${state.local.length} file(s) in the working tree that`);
   lines.push(`${branch} has never seen. Nothing needs drafting. What is missing is the freeze.`);
   lines.push('');
   lines.push(...setupLines(cfg));
-  lines.push(...gateLines(repoRoot, cfg, id, folder));
+  lines.push(...gateLines(repoRoot, cfg, suiteId, folder));
   lines.push('If it comes back red or half-proven, freeze it — this gates it again, commits the');
   lines.push('suite and its receipt, pushes, and then asks the runner whether the branch it just');
   lines.push('wrote will actually be accepted:');
   lines.push('');
-  lines.push(`    node scripts/freeze.js commit ${id} --config ${configPath}`);
+  lines.push(`    node scripts/freeze.js commit ${suiteId} --config ${configPath}`);
   lines.push('');
   lines.push('If it comes back green, unreachable or stale-guard, do not freeze. Report which and');
   lines.push('why — that is a spec bug found before it cost a container, which is the point.');
@@ -619,7 +683,7 @@ function freezeBrief(ctx) {
 }
 
 function reGateBrief(ctx) {
-  const { cfg, id, data, folder, branch, repoRoot, state, configPath } = ctx;
+  const { cfg, id, suiteId, data, folder, branch, repoRoot, state, configPath } = ctx;
   const lines = header(cfg, id, data, folder, branch);
   lines.push(`THE SUITE IS ALREADY ON ${branch}. Nothing needs writing. The runner refuses it for`);
   lines.push('one reason:');
@@ -635,11 +699,11 @@ function reGateBrief(ctx) {
   }
   lines.push('');
   lines.push(...setupLines(cfg));
-  lines.push(...gateLines(repoRoot, cfg, id, folder));
+  lines.push(...gateLines(repoRoot, cfg, suiteId, folder));
   lines.push('On red or half-proven, freeze it — one command, which re-gates, commits the receipt,');
   lines.push('pushes, and confirms with the runner\'s own gate that it will now dispatch:');
   lines.push('');
-  lines.push(`    node scripts/freeze.js commit ${id} --config ${configPath}`);
+  lines.push(`    node scripts/freeze.js commit ${suiteId} --config ${configPath}`);
   lines.push('');
   lines.push('On green, unreachable or stale-guard: STOP. A suite that has been sitting on the');
   lines.push('branch does not mean it was ever discriminating — nothing has judged it until now.');
@@ -666,41 +730,50 @@ function buildBrief(opts) {
 
   const found = issue(cfg, opts.id);
   if (!found.ok) return { ok: false, kind: 'issue', error: found.error };
+  const canonical = canonicalIssueId(found.issue, opts.id);
+  if (!canonical.ok) return { ok: false, kind: 'issue', error: canonical.error };
+  const canonicalId = canonical.id;
   const criteria = criteriaInfo(found.issue);
 
   // A dispatchable issue needs no issue tree, so old forensic worktrees cannot turn an
   // already-frozen no-op into a preparation collision. Every state that can launch or prove
   // still goes through the strict exact-branch resolver below.
-  const remoteState = classifyBranch(cfg, opts.id);
+  const remoteState = classifyBranchCandidates(cfg, canonicalId, opts.id);
   if (!remoteState.ok) return { ok: false, kind: 'unknown', error: remoteState.error };
   if (remoteState.state === 'ready') {
     return {
-      ok: true, state: remoteState.state, cfg, branch, id: opts.id, policy, text: null, folder: null,
+      ok: true, state: remoteState.state, cfg, branch, id: opts.id, requestedId: opts.id,
+      canonicalId, suiteId: remoteState.suiteId, policy, text: null, folder: null,
       issue: found.issue, criteria, issueUpdatedAt: found.issue.updated_at || null,
     };
   }
 
   let located;
   try {
-    located = resolveIssueFolder(cfg, opts.id, undefined,
-      remoteState.state === 're-gate' ? remoteState.suiteTree : null);
+    located = resolveIssueFolder(cfg, canonicalId, opts.id, undefined,
+      remoteState.state === 're-gate'
+        ? { suiteId: remoteState.suiteId, tree: remoteState.suiteTree } : null);
   }
   catch (e) { return { ok: false, kind: 'unknown', error: (e && e.message) || String(e) }; }
   if (!located.ok) return { ok: false, kind: located.kind, error: located.error };
   const folder = located.folder;
 
-  const state = remoteState.state === 'local' ? classifyLocal(cfg, opts.id, folder) : remoteState;
+  const state = remoteState.state === 'local'
+    ? classifyLocal(cfg, canonicalId, opts.id, folder) : remoteState;
   if (!state.ok) return { ok: false, kind: state.kind || 'unknown', error: state.error };
 
   const ctx = {
     cfg,
     configPath: opts.config,
     id: opts.id,
+    requestedId: opts.id,
+    canonicalId,
+    suiteId: state.suiteId,
     data: found.issue,
     folder,
     branch,
     policy,
-    example: exampleSuite(cfg, opts.id),
+    example: exampleSuite(cfg, state.suiteId),
     repoRoot: pipelineMain(),
     state,
   };
@@ -710,7 +783,8 @@ function buildBrief(opts) {
       : reGateBrief(ctx);
 
   return {
-    ok: true, state: state.state, cfg, branch, id: opts.id, policy, folder,
+    ok: true, state: state.state, cfg, branch, id: opts.id, requestedId: opts.id,
+    canonicalId, suiteId: state.suiteId, policy, folder,
     text: lines.join('\n'), issue: found.issue, criteria,
     issueUpdatedAt: found.issue.updated_at || null,
   };
@@ -760,6 +834,9 @@ module.exports = {
   acceptanceCriteria,
   criteriaInfo,
   issueNames,
+  canonicalIssueId,
+  suiteCandidates,
+  classifyBranchCandidates,
   resolveIssueFolder,
   targetPolicy,
   verifyCommandError,

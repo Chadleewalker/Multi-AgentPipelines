@@ -109,8 +109,8 @@ function bdEnv(world, issues) {
     "if (argv.some((a) => /spec-brief\\.js$/.test(String(a)))) return;",
     "if (!argv.some((a) => /[\\\\/]show$/.test(String(a)))) return;",
     "const all = JSON.parse(fs.readFileSync(process.env.ISSUES_FILE, 'utf8'));",
-    'const id = argv.find((a) => /^app-/.test(String(a)));',
-    'const hit = all.filter((i) => i.id === id);',
+    "const id = argv.find((a) => all.some((i) => i.id === a || i.id.endsWith('-' + a)));",
+    "const hit = all.filter((i) => i.id === id || i.id.endsWith('-' + id));",
     'process.stdout.write(JSON.stringify(hit));',
     'process.exit(0);',
   ].join('\n'));
@@ -433,6 +433,40 @@ const ISSUE = (id, extra = {}) => ({
   const unsafe = cli(w, ['app..1', '--config', w.cfgFile], bdEnv(w, [ISSUE('app..1')]));
   check('D10 Git-invalid double-dot issue ids are rejected before any brief is built',
     unsafe.code === 2 && /safe issue id/.test(unsafe.text));
+
+  const canonical = B.canonicalIssueId({ id: 'Junkstronaut_Final-u9f' }, 'u9f');
+  check('D11 a short Beads lookup keeps the canonical returned issue id for suite paths',
+    canonical.ok && canonical.id === 'Junkstronaut_Final-u9f');
+  check('D12 an unrelated Beads resolution fails closed',
+    !B.canonicalIssueId({ id: 'another-project-x1' }, 'u9f').ok);
+
+  const legacyDir = path.join(os.tmpdir(), 'legacy-canonical-u9f');
+  fs.mkdirSync(path.join(legacyDir, 'tests', 'acceptance', 'Junkstronaut_Final-u9f'), { recursive: true });
+  const adopted = B.resolveIssueFolder({ targetRepoPath: os.tmpdir() },
+    'Junkstronaut_Final-u9f', 'u9f', [
+      { dir: legacyDir, branch: 'freeze-u9f', locked: false, prunable: false },
+    ]);
+  check('D13 one exact legacy alias branch may preserve a canonical suite without copying it',
+    adopted.ok && adopted.folder.dir === legacyDir && adopted.folder.legacyBranchAlias === true);
+  const ambiguous = B.resolveIssueFolder({ targetRepoPath: os.tmpdir() },
+    'Junkstronaut_Final-u9f', 'u9f', [
+      { dir: legacyDir, branch: 'freeze-u9f', locked: false, prunable: false },
+      { dir: path.join(os.tmpdir(), 'canonical-u9f'), branch: 'freeze-Junkstronaut_Final-u9f', locked: false, prunable: false },
+    ]);
+  check('D14 canonical and legacy branches together are a collision',
+    !ambiguous.ok && ambiguous.kind === 'collision');
+
+  const aliasRemote = makeWorld();
+  const aliasSuite = path.join(aliasRemote.target, 'tests', 'acceptance', 'u9f');
+  fs.mkdirSync(aliasSuite, { recursive: true });
+  fs.writeFileSync(path.join(aliasSuite, 'test.js'), 'process.exit(1);\n');
+  git(aliasRemote.target, ['add', '--', 'tests/acceptance/u9f']);
+  git(aliasRemote.target, ['commit', '-qm', 'legacy alias suite']);
+  git(aliasRemote.target, ['push', '-q', aliasRemote.origin, 'HEAD:refs/heads/master']);
+  const aliasRemoteResult = cli(aliasRemote, ['u9f', '--config', aliasRemote.cfgFile],
+    bdEnv(aliasRemote, [ISSUE('Junkstronaut_Final-u9f')]));
+  check('D15 an integration-branch alias suite is a re-cut collision, never runner-ready',
+    aliasRemoteResult.code === 3 && /runner requires canonical/.test(aliasRemoteResult.text));
 }
 
 // ---- E. the three states are told apart -----------------------------------------------------------

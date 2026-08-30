@@ -19,7 +19,7 @@ const { runSync, failureText } = require('../runner/process');
 const { acquire, release } = require('../runner/lock');
 const { compareSuites } = require('./freeze-gate');
 const {
-  protectedManifest, manifestHash, manifestDifference, within, sha,
+  protectedManifest, manifestHash, manifestDifference, normalizedManagedManifest, within, sha,
 } = require('./protected-tree');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -38,6 +38,8 @@ function validIssueId(id) {
   const stem = id.split('.')[0].toUpperCase();
   return !/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/.test(stem);
 }
+
+function suiteIdOf(built) { return built && (built.suiteId || built.id); }
 
 
 function suiteDifference(source, candidate) {
@@ -151,9 +153,12 @@ function validateManagedProbe(probePath, targetRepoPath, ids, head) {
   if (marker.head !== head) return { ok: false, managed: true, error: `managed probe was built at ${marker.head}, current HEAD is ${head}` };
   try {
     const policy = policyAt(targetRepoPath);
-    const targetManifest = protectedManifest(targetRepoPath, policy, marker.issue);
-    const probeManifest = protectedManifest(probe, policy, marker.issue);
-    const baselineManifest = protectedManifest(baseline, policy, marker.issue);
+    const targetManifest = normalizedManagedManifest(targetRepoPath,
+      protectedManifest(targetRepoPath, policy, marker.issue), marker.issue);
+    const probeManifest = normalizedManagedManifest(probe,
+      protectedManifest(probe, policy, marker.issue), marker.issue);
+    const baselineManifest = normalizedManagedManifest(baseline,
+      protectedManifest(baseline, policy, marker.issue), marker.issue);
     const targetHash = manifestHash(targetManifest);
     const probeHash = manifestHash(probeManifest);
     const baselineHash = manifestHash(baselineManifest);
@@ -163,12 +168,14 @@ function validateManagedProbe(probePath, targetRepoPath, ids, head) {
     if (baselineHash !== marker.manifestHash) {
       return { ok: false, managed: true, error: 'the retained red baseline changed a protected path after it was proven' };
     }
-    if (targetHash !== marker.manifestHash && targetHash !== marker.baseManifestHash) {
+    const targetIsProbe = targetHash === marker.manifestHash;
+    const targetIsBase = targetHash === marker.baseManifestHash;
+    if (!targetIsProbe && !targetIsBase) {
       const details = manifestDifference(probeManifest, targetManifest).slice(0, 5);
       return { ok: false, managed: true, error: 'the integration suite or another protected path moved after the probe was built'
         + `${details.length ? `: ${details.join(', ')}` : ''}` };
     }
-    return { ok: true, managed: true, ...managed, needsPromotion: targetHash === marker.baseManifestHash };
+    return { ok: true, managed: true, ...managed, needsPromotion: targetIsBase && !targetIsProbe };
   } catch (e) { return { ok: false, managed: true, error: e.message }; }
 }
 
@@ -242,14 +249,17 @@ function markProven(prepared, attempt, evidence) {
 }
 
 function prepareProbe(built, model, run = runSync, tempRoot = os.tmpdir()) {
-  if (!validIssueId(built && built.id)) return { ok: false, error: `unsafe issue id: ${built && built.id}` };
-  const sourceSuite = path.join(built.folder.dir, 'tests', 'acceptance', built.id);
+  const suiteId = suiteIdOf(built);
+  if (!validIssueId(built && built.id) || !validIssueId(suiteId)) {
+    return { ok: false, error: `unsafe issue or suite id: ${(built && built.id) || suiteId}` };
+  }
+  const sourceSuite = path.join(built.folder.dir, 'tests', 'acceptance', suiteId);
   if (!fs.existsSync(sourceSuite) || !fs.statSync(sourceSuite).isDirectory()) {
     return { ok: false, error: `the authored suite does not exist at ${sourceSuite}` };
   }
   const probeRoot = path.join(path.resolve(tempRoot), PROBE_ROOT_NAME);
   fs.mkdirSync(probeRoot, { recursive: true, mode: 0o700 });
-  const container = fs.mkdtempSync(path.join(probeRoot, `${PROBE_PREFIX}${built.id}-`));
+  const container = fs.mkdtempSync(path.join(probeRoot, `${PROBE_PREFIX}${suiteId}-`));
   const baseline = path.join(container, 'baseline');
   const probe = path.join(container, 'probe');
   const markerPath = path.join(container, MARKER);
@@ -264,7 +274,8 @@ function prepareProbe(built, model, run = runSync, tempRoot = os.tmpdir()) {
     kind: 'multi-agent-green-probe-owner', version: 1, ...ownership,
   }, null, 2)}\n`, { mode: 0o600 });
   fs.writeFileSync(markerPath, `${JSON.stringify({
-    kind: 'multi-agent-green-probe', version: 1, issue: built.id, model,
+    kind: 'multi-agent-green-probe', version: 1, issue: suiteId,
+    requestedIssue: built.id, model,
     sourceWorktree: path.resolve(built.folder.dir), createdAt: new Date().toISOString(),
     ...ownership,
   }, null, 2)}\n`);
@@ -287,21 +298,22 @@ function prepareProbe(built, model, run = runSync, tempRoot = os.tmpdir()) {
   }
 
   let baseManifest;
-  try { baseManifest = protectedManifest(baseline, built.policy, built.id); }
+  try { baseManifest = normalizedManagedManifest(baseline,
+    protectedManifest(baseline, built.policy, suiteId), suiteId); }
   catch (e) {
     discardNewContainer(container);
     return { ok: false, error: e.message };
   }
 
   for (const destination of [baseline, probe]) {
-    const destSuite = path.join(destination, 'tests', 'acceptance', built.id);
+    const destSuite = path.join(destination, 'tests', 'acceptance', suiteId);
     fs.rmSync(destSuite, { recursive: true, force: true });
     fs.mkdirSync(path.dirname(destSuite), { recursive: true });
     fs.cpSync(sourceSuite, destSuite, { recursive: true, force: true });
   }
 
-  const baselineSuite = path.join(baseline, 'tests', 'acceptance', built.id);
-  const probeSuite = path.join(probe, 'tests', 'acceptance', built.id);
+  const baselineSuite = path.join(baseline, 'tests', 'acceptance', suiteId);
+  const probeSuite = path.join(probe, 'tests', 'acceptance', suiteId);
   const copied = [...suiteDifference(sourceSuite, baselineSuite), ...suiteDifference(sourceSuite, probeSuite)];
   if (copied.length) {
     discardNewContainer(container);
@@ -309,7 +321,8 @@ function prepareProbe(built, model, run = runSync, tempRoot = os.tmpdir()) {
   }
 
   let manifest;
-  try { manifest = protectedManifest(baseline, built.policy, built.id); }
+  try { manifest = normalizedManagedManifest(baseline,
+    protectedManifest(baseline, built.policy, suiteId), suiteId); }
   catch (e) {
     discardNewContainer(container);
     return { ok: false, error: e.message };
@@ -321,7 +334,7 @@ function prepareProbe(built, model, run = runSync, tempRoot = os.tmpdir()) {
 }
 
 function probePrompt(built, previous = '') {
-  const suite = `tests/acceptance/${built.id}/`;
+  const suite = `tests/acceptance/${suiteIdOf(built)}/`;
   return [
     `You are building a disposable GREEN PROBE for ${built.id}.`,
     `Make every check in ${suite} pass by editing PRODUCT CODE in this disposable clone.`,
@@ -355,7 +368,7 @@ function launchProbe(built, prepared, model, previous = '', run = runSync) {
 }
 
 function runGate(built, prepared, run = runSync) {
-  const suite = `tests/acceptance/${built.id}/`;
+  const suite = `tests/acceptance/${suiteIdOf(built)}/`;
   const timeoutMs = Math.max(1, Number(built.cfg.wallClockMinutes) || 240) * 60 * 1000;
   const env = { ...process.env, FREEZE_GATE_DOCKER_IMAGE: built.cfg.image };
   if (env.PIPELINE_TESTING_FREEZE_GATE_SEAM !== '1') {
@@ -370,14 +383,17 @@ function runGate(built, prepared, run = runSync) {
 }
 
 function invariantErrors(built, prepared) {
+  const suiteId = suiteIdOf(built);
   const errors = [];
   for (const [label, suite] of [['baseline', prepared.baselineSuite], ['probe', prepared.probeSuite]]) {
     for (const detail of suiteDifference(prepared.sourceSuite, suite)) errors.push(`${label} suite ${detail}`);
   }
   let baseline; let probe;
   try {
-    baseline = protectedManifest(prepared.baseline, built.policy, built.id);
-    probe = protectedManifest(prepared.probe, built.policy, built.id);
+    baseline = normalizedManagedManifest(prepared.baseline,
+      protectedManifest(prepared.baseline, built.policy, suiteId), suiteId);
+    probe = normalizedManagedManifest(prepared.probe,
+      protectedManifest(prepared.probe, built.policy, suiteId), suiteId);
   } catch (e) { return [...errors, e.message]; }
   for (const detail of manifestDifference(prepared.manifest, baseline)) errors.push(`baseline protected path ${detail}`);
   for (const detail of manifestDifference(prepared.manifest, probe)) errors.push(`probe protected path ${detail}`);
@@ -501,7 +517,8 @@ function main(argv, out = console.log, err = console.error, seams = {}) {
 
 module.exports = {
   main, parseArgs, proveTests, prepareProbe, launchProbe, runGate, probePrompt, protectedManifest,
-  manifestHash, manifestDifference, invariantErrors, suiteDifference, validIssueId,
+  manifestHash, manifestDifference, normalizedManagedManifest, invariantErrors, suiteDifference, validIssueId,
+  suiteIdOf,
   ownerRecordPath, ownedContainer, removeOwnedPath, removeOwnedContainer, readManagedProbe, validateManagedProbe,
   promoteManagedSuite, rollbackManagedPromotion, finalizeManagedPromotion, markProven, policyAt,
   PROBE_TOOLS, PROBE_DENIED, PROBE_PREFIX, PROBE_ROOT_NAME, MARKER,
