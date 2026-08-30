@@ -33,13 +33,19 @@
 // absent and says so in those words; that refusal is the tool working, not a gap in it.
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
 const { loadConfig } = require('../runner/config');
 const {
+  validateManagedProbe, promoteManagedSuite, rollbackManagedPromotion,
+  finalizeManagedPromotion, removeOwnedContainer,
+} = require('./prove-tests');
+const {
   readyQueue, partitionByFreeze, resolveBranch, gitSpawnOptions, REFUSAL, RECEIPT_VERDICTS,
 } = require('../runner/queue');
+const { suiteHash, treeEntries } = require('../runner/suite-hash');
 
 const ROOT = path.resolve(__dirname, '..');
 const GATE = path.join(ROOT, 'scripts', 'freeze-gate.js');
@@ -216,16 +222,16 @@ function status(opts, out, err) {
 // this is deliberately the working copy and not a branch — the opposite of the runner's rule,
 // and for the opposite reason: the runner asks what the container will fork from, and this asks
 // what the planner just wrote.
-function localSuite(cfg, issueId) {
+function localSuite(cfg, issueId, repoRoot = cfg.targetRepoPath) {
   const rel = `tests/acceptance/${issueId}`;
-  const abs = path.join(cfg.targetRepoPath, rel);
+  const abs = path.join(repoRoot, rel);
   let entries;
   try {
     entries = fs.readdirSync(abs, { withFileTypes: true });
   } catch {
     return {
       ok: false,
-      reason: `no acceptance suite at ${rel}/ in ${cfg.targetRepoPath}`,
+      reason: `no acceptance suite at ${rel}/ in ${repoRoot}`,
       // Named as the interactive step it is, because this is the refusal a person will hit
       // most and the wrong reading of it — "the tool is broken" — costs a planning session.
       detail: 'the tests are the spec and are written with the user, never by this command '
@@ -246,10 +252,14 @@ function localSuite(cfg, issueId) {
 
 // The gate, through `process.execPath` rather than by shelling out to a path — the Windows host
 // cannot execute a `#!` line, and every executable seam in this repo is invoked this way.
-function runGate(cfg, rel, probe, out) {
-  const args = [GATE, '--repo', cfg.targetRepoPath, '--tests', `${rel}/`];
+function runGate(cfg, rel, probe, out, repoRoot = cfg.targetRepoPath) {
+  const args = [GATE, '--repo', repoRoot, '--tests', `${rel}/`];
   if (probe) args.push('--green', probe);
-  const r = spawnSync(process.execPath, args, { encoding: 'utf8' });
+  const env = { ...process.env, FREEZE_GATE_DOCKER_IMAGE: cfg.image };
+  if (env.PIPELINE_TESTING_FREEZE_GATE_SEAM !== '1') {
+    delete env.FREEZE_GATE_CMD; delete env.FREEZE_GATE_DOCKER_CMD;
+  }
+  const r = spawnSync(process.execPath, args, { encoding: 'utf8', env });
   if (r.error || r.status === null) {
     return { ok: false, verdict: null, report: (r.stderr || '') + ((r.error && r.error.message) || '') };
   }
@@ -261,11 +271,11 @@ function runGate(cfg, rel, probe, out) {
 // then commits the INDEX, so a file another session left staged would ride into a commit under
 // this one's message — the exact accident CLAUDE.md's staging rule was written after.
 function indexIsClean(cfg) {
-  const r = git(cfg, ['diff', '--cached', '--name-only'], { cwd: cfg.targetRepoPath });
+  const r = git(cfg, ['diff', '--cached', '--name-only', '-z'], { cwd: cfg.targetRepoPath });
   if (r.status !== 0) {
     return { ok: false, error: `cannot read the index of ${cfg.targetRepoPath}: ${(r.stderr || '').trim()}` };
   }
-  const staged = (r.stdout || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  const staged = String(r.stdout || '').split('\0').filter(Boolean);
   if (staged.length) {
     return {
       ok: false,
@@ -275,6 +285,142 @@ function indexIsClean(cfg) {
     };
   }
   return { ok: true };
+}
+
+const normalizeGitPath = (p) => String(p).replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '');
+
+// The index is shared by every process using this checkout. The clean check immediately above
+// cannot lock it: another session may stage a path after the check and before this process calls
+// `git commit`. Query it again after our named adds, reject anything outside the suites this
+// invocation gated. Production calls this against a private index, not the checkout's shared
+// one; the helper is also the fail-closed parser for either context.
+function stagedFreezePaths(cfg, gated, run = git, extra = {}) {
+  const r = run(cfg, ['diff', '--cached', '--name-only', '-z'], { cwd: cfg.targetRepoPath, ...extra });
+  if (r.status !== 0) {
+    return { ok: false, kind: 'query', error: `cannot read the staged freeze paths: ${(r.stderr || '').trim() || `exit ${r.status}`}` };
+  }
+  const staged = String(r.stdout || '').split('\0').filter(Boolean).map(normalizeGitPath);
+  const roots = gated.map((g) => normalizeGitPath(g.rel));
+  const approved = (p) => roots.some((root) => p === root || p.startsWith(`${root}/`));
+  const outside = staged.filter((p) => !approved(p));
+  if (outside.length) {
+    return { ok: false, kind: 'outside', staged, outside,
+      error: `${outside.length} concurrently staged path(s) are outside the approved freeze suites: ${outside.slice(0, 5).join(', ')}`
+        + `${outside.length > 5 ? ', …' : ''}` };
+  }
+  return { ok: true, staged, outside: [] };
+}
+
+// Roll back only paths this invocation owns. A blanket reset would discard the very concurrent
+// index work the check above detected. Promotion changes the working tree as well, so its exact
+// backup is restored after the approved paths have been removed from the index.
+function rollbackFreezePreparation(cfg, gated, promotion, run = git,
+  rollbackPromotion = rollbackManagedPromotion) {
+  const errors = [];
+  const rels = gated.map((g) => g.rel);
+  if (rels.length) {
+    const reset = run(cfg, ['reset', '-q', '--', ...rels], { cwd: cfg.targetRepoPath });
+    if (reset.status !== 0) errors.push(`could not reset approved suite paths: ${(reset.stderr || '').trim() || `exit ${reset.status}`}`);
+  }
+  if (promotion) {
+    const rolled = rollbackPromotion(promotion);
+    if (!rolled.ok) errors.push(`could not restore promoted suite: ${rolled.error}`);
+  }
+  return errors.length ? { ok: false, error: errors.join('; ') } : { ok: true };
+}
+
+function removeSnapshot(snapshot) {
+  if (!snapshot || !snapshot.tempDir) return;
+  try { fs.rmSync(snapshot.tempDir, { recursive: true, force: true }); } catch { /* best effort */ }
+}
+
+function validateTreeSnapshot(cfg, gated, head, tree, run = git) {
+  const changed = run(cfg, ['diff-tree', '-r', '--no-commit-id', '--name-only', '-z', head, tree],
+    { cwd: cfg.targetRepoPath });
+  if (changed.status !== 0) {
+    return { ok: false, error: `cannot inspect the freeze tree: ${(changed.stderr || '').trim() || `exit ${changed.status}`}` };
+  }
+  const paths = String(changed.stdout || '').split('\0').filter(Boolean).map(normalizeGitPath);
+  const roots = gated.map((g) => normalizeGitPath(g.rel));
+  const outside = paths.filter((p) => !roots.some((root) => p === root || p.startsWith(`${root}/`)));
+  if (outside.length) return { ok: false, error: `freeze tree contains paths outside the approved suites: ${outside.join(', ')}` };
+
+  for (const g of gated) {
+    const receiptRel = `${normalizeGitPath(g.rel)}/.freeze-gate.json`;
+    const shown = run(cfg, ['show', `${tree}:${receiptRel}`], { cwd: cfg.targetRepoPath });
+    if (shown.status !== 0) return { ok: false, error: `freeze tree has no readable receipt for ${g.id}` };
+    let receipt;
+    try { receipt = JSON.parse(shown.stdout || ''); }
+    catch { return { ok: false, error: `freeze tree has a malformed receipt for ${g.id}` }; }
+    let hash;
+    try { hash = suiteHash(treeEntries(cfg.targetRepoPath, tree, g.rel, { timeoutMs: gitSpawnOptions(cfg).timeout })); }
+    catch (e) { return { ok: false, error: `cannot hash ${g.id} in the freeze tree: ${e.message}` }; }
+    if (!receipt || receipt.suiteHash !== hash || receipt.verdict !== g.verdict) {
+      return { ok: false, error: `freeze tree does not match the gated receipt for ${g.id}` };
+    }
+  }
+  return { ok: true, paths };
+}
+
+// Build the candidate commit in a private index seeded from the exact validated HEAD. The real
+// index is never used as the commit source, so concurrent staging cannot enter the tree. Once
+// `write-tree` returns, later working-tree edits — including edits inside the approved suite —
+// cannot change this immutable object.
+function prepareFreezeSnapshot(cfg, gated, head, run = git, tempRoot = os.tmpdir()) {
+  const tempDir = fs.mkdtempSync(path.join(path.resolve(tempRoot), 'freeze-index-'));
+  const index = path.join(tempDir, 'index');
+  const env = { ...process.env, GIT_INDEX_FILE: index };
+  const extra = { env };
+  const fail = (error) => { const answer = { ok: false, error, tempDir, index }; removeSnapshot(answer); return answer; };
+
+  const seeded = run(cfg, ['read-tree', head], { cwd: cfg.targetRepoPath, ...extra });
+  if (seeded.status !== 0) return fail(`cannot seed the isolated freeze index: ${(seeded.stderr || '').trim() || `exit ${seeded.status}`}`);
+  const rels = gated.map((g) => g.rel);
+  const added = run(cfg, ['add', '--', ...rels], { cwd: cfg.targetRepoPath, ...extra });
+  if (added.status !== 0) return fail(`cannot stage the approved suites in the isolated index: ${(added.stderr || '').trim() || `exit ${added.status}`}`);
+  const staged = stagedFreezePaths(cfg, gated, run, extra);
+  if (!staged.ok) return fail(staged.error);
+  const written = run(cfg, ['write-tree'], { cwd: cfg.targetRepoPath, ...extra });
+  const tree = String(written.stdout || '').trim();
+  if (written.status !== 0 || !/^[0-9a-f]{40,64}$/i.test(tree)) {
+    return fail(`cannot write the isolated freeze tree: ${(written.stderr || '').trim() || `exit ${written.status}`}`);
+  }
+  const valid = validateTreeSnapshot(cfg, gated, head, tree, run);
+  if (!valid.ok) return fail(valid.error);
+  return { ok: true, tempDir, index, env, tree, head, staged: staged.staged, paths: valid.paths };
+}
+
+function makeFreezeCommit(cfg, gated, snapshot, subject, body, run = git) {
+  const made = run(cfg, ['commit-tree', snapshot.tree, '-p', snapshot.head], {
+    cwd: cfg.targetRepoPath, input: `${subject}\n\n${body}\n`,
+  });
+  const commit = String(made.stdout || '').trim();
+  if (made.status !== 0 || !/^[0-9a-f]{40,64}$/i.test(commit)) {
+    return { ok: false, error: (made.stderr || '').trim() || `git commit-tree exited ${made.status}` };
+  }
+  const valid = validateTreeSnapshot(cfg, gated, snapshot.head, commit, run);
+  return valid.ok ? { ok: true, commit } : { ok: false, error: valid.error };
+}
+
+// Publish the immutable object that was validated, never the ambient branch name or HEAD.
+// The exact lease makes the remote comparison atomic with the ref update: if another publisher
+// moved the integration branch after our snapshot, Git refuses instead of overwriting it. A
+// local process moving this checkout's branch cannot change either side of this refspec.
+function pushFreezeCommit(cfg, branch, sourceOid, expectedRemoteOid, run = git) {
+  const oid = /^[0-9a-f]{40,64}$/i;
+  if (!oid.test(String(sourceOid || '')) || !oid.test(String(expectedRemoteOid || ''))) {
+    return { ok: false, error: 'freeze publication requires exact source and lease object IDs' };
+  }
+  const ref = `refs/heads/${branch}`;
+  const pushed = run(cfg, [
+    'push',
+    `--force-with-lease=${ref}:${expectedRemoteOid}`,
+    cfg.targetRepoRemote,
+    `${sourceOid}:${ref}`,
+  ], { cwd: cfg.targetRepoPath });
+  return pushed.status === 0
+    ? { ok: true }
+    : { ok: false, error: (pushed.stderr || '').trim() || `git push exited ${pushed.status}` };
 }
 
 // HEAD must already BE the integration branch. Checking out is not an option worth having: a
@@ -294,6 +440,14 @@ function headIs(cfg, branch) {
     };
   }
   return { ok: true };
+}
+
+function currentHead(cfg) {
+  const r = git(cfg, ['rev-parse', 'HEAD'], { cwd: cfg.targetRepoPath });
+  const head = String(r.stdout || '').trim();
+  return r.status === 0 && /^[0-9a-f]{40,64}$/i.test(head)
+    ? { ok: true, head }
+    : { ok: false, error: `cannot read HEAD of ${cfg.targetRepoPath}: ${(r.stderr || '').trim()}` };
 }
 
 function commit(opts, out, err) {
@@ -337,12 +491,35 @@ function commit(opts, out, err) {
   const branch = resolved.branch;
   out(`integration branch: ${branch}  (${cfg.targetRepoRemote})`);
 
+  // A managed proof may need to promote its exact suite from the author's dedicated worktree
+  // into this checkout. Refuse a staged index or wrong branch before that first write, then
+  // repeat the same checks before the commit to catch concurrent activity.
+  const earlyClean = indexIsClean(cfg);
+  if (!earlyClean.ok) { err(`freeze: ${earlyClean.error}`); return EXIT_REFUSED; }
+  const earlyBranch = headIs(cfg, branch);
+  if (!earlyBranch.ok) { err(`freeze: ${earlyBranch.error}`); return EXIT_REFUSED; }
+
+  let managedProbe = null;
+  let managedHead = null;
+  if (opts.probe) {
+    const head = currentHead(cfg);
+    if (!head.ok) { err(`freeze: ${head.error}`); return EXIT_UNKNOWN; }
+    managedHead = head.head;
+    managedProbe = validateManagedProbe(path.resolve(opts.probe), cfg.targetRepoPath, ids, head.head);
+    if (!managedProbe.ok) {
+      err(`freeze: managed green probe is stale or unsafe — ${managedProbe.error}`);
+      err('        rebuild the probe; nothing has been staged, committed or pushed.');
+      return EXIT_REFUSED;
+    }
+  }
+
   // ---- every suite is gated BEFORE anything is staged ------------------------------------
   // One commit carries the whole batch, so a refusal on the fourth id must not leave the first
   // three committed: the gate runs over all of them first and a single refusal stops the lot.
   const gated = [];
+  const gateRoot = managedProbe && managedProbe.managed ? managedProbe.baseline : cfg.targetRepoPath;
   for (const id of ids) {
-    const suite = localSuite(cfg, id);
+    const suite = localSuite(cfg, id, gateRoot);
     if (!suite.ok) {
       err(`freeze: ${id} — ${suite.reason}`);
       err(`        ${suite.detail}`);
@@ -350,7 +527,7 @@ function commit(opts, out, err) {
     }
     out('');
     out(`${id}: gating ${suite.rel}/ (${suite.files} file(s))`);
-    const gate = runGate(cfg, suite.rel, opts.probe, out);
+    const gate = runGate(cfg, suite.rel, opts.probe, out, gateRoot);
     if (!gate.ok) {
       err(`freeze: ${id} — the freeze gate could not be run: ${gate.report.trim()}`);
       return EXIT_UNKNOWN;
@@ -366,6 +543,15 @@ function commit(opts, out, err) {
         + 'shown an implementation can turn it green.');
       err('        build a probe and pass --probe, or accept it with --allow-half-proven.');
       return EXIT_REFUSED;
+    }
+    if (managedProbe && managedProbe.managed) {
+      const afterGate = validateManagedProbe(path.resolve(opts.probe), cfg.targetRepoPath, ids, managedHead);
+      if (!afterGate.ok) {
+        err(`freeze: the verifier changed a protected byte during the managed gate — ${afterGate.error}`);
+        err('        nothing has been copied, staged, committed or pushed.');
+        return EXIT_REFUSED;
+      }
+      managedProbe = afterGate;
     }
     gated.push({ id, rel: suite.rel, verdict: gate.verdict });
   }
@@ -387,6 +573,35 @@ function commit(opts, out, err) {
   if (!onBranch.ok) {
     err(`freeze: ${onBranch.error}`);
     return EXIT_REFUSED;
+  }
+
+  let promotion = null;
+  if (managedProbe && managedProbe.managed) {
+    const headNow = currentHead(cfg);
+    if (!headNow.ok || headNow.head !== managedHead) {
+      err(`freeze: integration HEAD moved during the managed gate; rebuild the probe. Nothing was copied, staged, committed or pushed.`);
+      return EXIT_REFUSED;
+    }
+    const checked = validateManagedProbe(path.resolve(opts.probe), cfg.targetRepoPath, ids, managedHead);
+    if (!checked.ok) {
+      err(`freeze: managed proof changed before promotion — ${checked.error}`);
+      return EXIT_REFUSED;
+    }
+    promotion = promoteManagedSuite(checked, cfg.targetRepoPath);
+    if (!promotion.ok) {
+      err(`freeze: could not promote the proven suite into the integration checkout — ${promotion.error}`);
+      err('        nothing has been staged, committed or pushed.');
+      return EXIT_REFUSED;
+    }
+    const promotedCheck = validateManagedProbe(path.resolve(opts.probe), cfg.targetRepoPath, ids, managedHead);
+    if (!promotedCheck.ok || promotedCheck.needsPromotion) {
+      const rolled = rollbackManagedPromotion(promotion);
+      err(`freeze: promoted suite did not reproduce the proven protected tree — ${promotedCheck.error || 'hash mismatch'}`);
+      if (!rolled.ok) err(`freeze: rollback also failed — ${rolled.error}`);
+      return EXIT_REFUSED;
+    }
+    managedProbe = promotedCheck;
+    out(`promoted the exact proven suite for ${ids[0]} into the integration checkout`);
   }
 
   // A RE-FREEZE OF AN UNCHANGED SUITE MUST NOT MAKE A COMMIT. The gate stamps the moment it ran
@@ -417,23 +632,29 @@ function commit(opts, out, err) {
     }
   }
 
-  // NAMED PATHS, one `git add` per suite. Never `-A` and never `.`: this runs in a checkout an
-  // operator uses, and staging the folder rather than the work is how four files from another
-  // session once landed in an unrelated commit.
-  for (const g of gated) {
-    const r = git(cfg, ['add', '--', g.rel], { cwd: cfg.targetRepoPath });
-    if (r.status !== 0) {
-      err(`freeze: cannot stage ${g.rel}: ${(r.stderr || '').trim()}`);
-      return EXIT_UNKNOWN;
-    }
+  const snapshotHead = currentHead(cfg);
+  if (!snapshotHead.ok) {
+    if (promotion) rollbackManagedPromotion(promotion);
+    err(`freeze: ${snapshotHead.error}`);
+    return EXIT_UNKNOWN;
   }
-
-  // The receipt is inside the suite directory, so `git add <suite>` already carried it — but
-  // an unchanged suite stages nothing at all, and committing an empty index would make a commit
-  // that says it froze something and did not.
-  const staged = git(cfg, ['diff', '--cached', '--name-only'], { cwd: cfg.targetRepoPath });
-  const stagedPaths = (staged.stdout || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  const snapshot = prepareFreezeSnapshot(cfg, gated, snapshotHead.head);
+  if (!snapshot.ok) {
+    if (promotion) {
+      const rolled = rollbackManagedPromotion(promotion);
+      if (!rolled.ok) err(`freeze: rollback also failed — ${rolled.error}`);
+    }
+    err(`freeze: cannot build an isolated freeze snapshot — ${snapshot.error}`);
+    err('        no freeze commit or push was made; the shared index was not used.');
+    return EXIT_UNKNOWN;
+  }
+  const stagedPaths = snapshot.staged;
+  // Even the no-change path publishes the exact HEAD whose tree was validated above. Keep this
+  // separate from the ambient branch: another local process may move that ref before the push.
+  let publicationOid = snapshot.head;
+  const expectedRemoteOid = snapshot.head;
   if (!stagedPaths.length) {
+    removeSnapshot(snapshot);
     out('');
     out('every suite is already committed exactly as the gate blessed it — nothing to commit.');
   } else {
@@ -444,21 +665,64 @@ function commit(opts, out, err) {
       ? `Freeze the acceptance suite for ${gated[0].id}`
       : `Freeze acceptance suites for ${gated.map((g) => g.id).join(', ')}`;
     const body = gated.map((g) => `${g.id}: ${g.verdict}`).join('\n');
-    const made = git(cfg, ['commit', '-m', subject, '-m', body], { cwd: cfg.targetRepoPath });
-    if (made.status !== 0) {
-      err(`freeze: the commit failed: ${(made.stderr || '').trim() || (made.stdout || '').trim()}`);
+    const made = makeFreezeCommit(cfg, gated, snapshot, subject, body);
+    if (!made.ok) {
+      removeSnapshot(snapshot);
+      if (promotion) {
+        const rolled = rollbackManagedPromotion(promotion);
+        if (!rolled.ok) err(`freeze: rollback also failed — ${rolled.error}`);
+      }
+      err(`freeze: the isolated commit failed validation: ${made.error}`);
       return EXIT_UNKNOWN;
     }
+    publicationOid = made.commit;
+    // The candidate commit is already an immutable, validated object. Updating the branch with
+    // an expected-old value is atomic: if another process moved HEAD, Git refuses rather than
+    // dropping that work. No hook or working-tree read can change the candidate tree here.
+    const moved = git(cfg, ['update-ref', `refs/heads/${branch}`, made.commit, snapshot.head],
+      { cwd: cfg.targetRepoPath });
+    if (moved.status !== 0) {
+      removeSnapshot(snapshot);
+      if (promotion) {
+        const rolled = rollbackManagedPromotion(promotion);
+        if (!rolled.ok) err(`freeze: rollback also failed — ${rolled.error}`);
+      }
+      err(`freeze: integration HEAD changed before the freeze commit could land: ${(moved.stderr || '').trim()}`);
+      return EXIT_REFUSED;
+    }
+    // Bring only our suite entries in the shared index forward to the new HEAD. Any unrelated
+    // staged path remains byte-for-byte as the other process left it.
+    const synced = git(cfg, ['reset', '-q', made.commit, '--', ...gated.map((g) => g.rel)],
+      { cwd: cfg.targetRepoPath });
+    if (synced.status !== 0) {
+      const restored = git(cfg, ['update-ref', `refs/heads/${branch}`, snapshot.head, made.commit],
+        { cwd: cfg.targetRepoPath });
+      git(cfg, ['reset', '-q', snapshot.head, '--', ...gated.map((g) => g.rel)], { cwd: cfg.targetRepoPath });
+      removeSnapshot(snapshot);
+      if (promotion) {
+        const rolled = rollbackManagedPromotion(promotion);
+        if (!rolled.ok) err(`freeze: rollback also failed — ${rolled.error}`);
+      }
+      err(`freeze: could not synchronize approved suite paths in the shared index: ${(synced.stderr || '').trim()}`);
+      if (restored.status !== 0) err(`freeze: branch rollback also failed: ${(restored.stderr || '').trim()}`);
+      return EXIT_UNKNOWN;
+    }
+    removeSnapshot(snapshot);
     out(`committed: ${subject}`);
+  }
+
+  if (promotion) {
+    const finished = finalizeManagedPromotion(promotion);
+    if (!finished.ok) err(`freeze: warning — committed suite backup could not be removed: ${finished.error}`);
   }
 
   // ---- the push, which is the half that is actually load-bearing -------------------------
   // "Committed locally and unpushed is the same as absent" (§4.12): a task branch forks from the
   // REMOTE's integration branch, so a freeze that never left this machine refuses exactly like a
   // freeze that was never written.
-  const pushed = git(cfg, ['push', cfg.targetRepoRemote, `HEAD:refs/heads/${branch}`], { cwd: cfg.targetRepoPath });
-  if (pushed.status !== 0) {
-    err(`freeze: the push to ${cfg.targetRepoRemote} failed: ${(pushed.stderr || '').trim()}`);
+  const pushed = pushFreezeCommit(cfg, branch, publicationOid, expectedRemoteOid);
+  if (!pushed.ok) {
+    err(`freeze: the push to ${cfg.targetRepoRemote} failed: ${pushed.error}`);
     err('        the commit is on this machine and the runner cannot see it — push it before launching.');
     return EXIT_UNKNOWN;
   }
@@ -487,6 +751,14 @@ function commit(opts, out, err) {
   }
   out('');
   out(`frozen: ${gated.length} suite(s) the runner has just confirmed it will dispatch.`);
+  if (managedProbe && managedProbe.managed) {
+    try {
+      removeOwnedContainer(managedProbe.container);
+      out(`removed the consumed disposable green probe: ${managedProbe.container}`);
+    } catch (e) {
+      err(`freeze: warning — the freeze succeeded, but the disposable probe could not be removed: ${e.message}`);
+    }
+  }
   return EXIT_OK;
 }
 
@@ -514,4 +786,7 @@ function main(argv, out = console.log, err = console.error) {
 
 if (require.main === module) process.exit(main(process.argv.slice(2)));
 
-module.exports = { main, parseArgs, GATE_VERDICT, PROCEEDS, EXIT_OK, EXIT_REFUSED, EXIT_USAGE, EXIT_UNKNOWN };
+module.exports = { main, parseArgs, GATE_VERDICT, PROCEEDS, currentHead,
+  indexIsClean, stagedFreezePaths, rollbackFreezePreparation, normalizeGitPath,
+  validateTreeSnapshot, prepareFreezeSnapshot, makeFreezeCommit, pushFreezeCommit, removeSnapshot,
+  EXIT_OK, EXIT_REFUSED, EXIT_USAGE, EXIT_UNKNOWN };

@@ -153,6 +153,7 @@ const { MAX_BUFFER } = require('../pipeline/verify-classify.js');
 const {
   suiteHash, workingTreeEntries, isGitRepo, headCommit, RECEIPT_NAME,
 } = require('../runner/suite-hash.js');
+const { protectedManifest, manifestDifference } = require('./protected-tree');
 
 // The receipt's schema version. An integer the dispatch gate can refuse on: a receipt of an
 // unknown version is a receipt this runner cannot interpret, which is not the same as no
@@ -163,6 +164,35 @@ const RECEIPT_VERSION = 1;
 // either way, because the whole point of the exemption is that it is visible.
 const GUARD = /\[guard\]/i;
 
+// A killed Docker CLI does not imply that the daemon killed the container it started. `--rm`
+// only helps after the container exits; on a host-side timeout the verifier can otherwise keep
+// consuming CPU and memory after the gate has already reported `indeterminate`. Give every run
+// an identity owned by this process, then force-remove that exact identity in `finally`.
+const DOCKER_MEMORY = '4g';
+const DOCKER_CPUS = '2';
+const DOCKER_CLEANUP_TIMEOUT_MS = 15000;
+let dockerRunSeq = 0;
+
+function dockerRunIdentity(makeTemp = fs.mkdtempSync) {
+  dockerRunSeq += 1;
+  const dir = makeTemp(path.join(os.tmpdir(), `freeze-gate-docker-${process.pid}-${dockerRunSeq}-`));
+  return {
+    dir,
+    cidFile: path.join(dir, 'container.cid'),
+    // The random suffix protects concurrent processes even if a PID is rapidly reused. No user
+    // or repo-controlled text enters the name that is later handed to `docker rm -f`.
+    name: `freeze-gate-${process.pid}-${dockerRunSeq}-${crypto.randomBytes(6).toString('hex')}`,
+  };
+}
+
+function ownedContainer(identity) {
+  try {
+    const cid = fs.readFileSync(identity.cidFile, 'utf8').trim();
+    if (/^[0-9a-f]{12,64}$/i.test(cid)) return cid;
+  } catch { /* Docker may have failed before it could write the cidfile. */ }
+  return identity.name;
+}
+
 // --- running the target's verifier -------------------------------------------------------
 
 // Invoked exactly as `pipeline/verify.js` invokes it — `sh -c "<verifyCommand> <dir>"`. A
@@ -171,20 +201,63 @@ const GUARD = /\[guard\]/i;
 // run for reasons the gate never saw. FREEZE_GATE_CMD replaces the configured command; that
 // is the seam the suite stubs through, and it takes a `node <file.js>` stub rather than a
 // shell script because `spawnSync` cannot execute a `#!/bin/sh` file on the Windows host.
-function runVerify(repoRoot, verifyCommand, testDir, timeoutMs) {
+function dockerVerifyArgs(repoRoot, image, verifyCommand, testDir, identity = null) {
+  const mount = path.resolve(repoRoot).split(path.sep).join('/');
+  const ownership = identity ? ['--name', identity.name, '--cidfile', identity.cidFile] : [];
+  return [
+    'run', '--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL',
+    '--security-opt', 'no-new-privileges', '--pids-limit', '256',
+    '--memory', DOCKER_MEMORY, '--memory-swap', DOCKER_MEMORY, '--cpus', DOCKER_CPUS,
+    '--tmpfs', '/tmp:rw,nosuid,nodev,size=256m',
+    ...ownership,
+    '-e', 'HOME=/tmp/home', '-e', 'WORKSPACE=/workspace',
+    '-v', `${mount}:/workspace`, '-w', '/workspace', '--entrypoint', 'sh',
+    image, '-c', `${verifyCommand} "$1"`, 'freeze-gate', testDir,
+  ];
+}
+
+function runVerify(repoRoot, verifyCommand, testDir, timeoutMs, seams = {}) {
   const cmd = process.env.FREEZE_GATE_CMD || verifyCommand;
-  const r = spawnSync('sh', ['-c', `${cmd} ${testDir}`], {
-    cwd: repoRoot,
-    encoding: 'utf8',
-    timeout: timeoutMs,
-    // The verifier's own ceiling, imported from the module that owns it. Without it Node's
-    // 1 MiB default applies and a suite is killed for being LOUD — which reads as a red run
-    // that never happened, and a green probe is the loudest run this tool ever takes.
-    maxBuffer: MAX_BUFFER,
-    // The verifier gives the suite a plain environment; inheriting this process's is the
-    // closest available approximation and keeps GODOT_BIN-style host variables reachable.
-    env: process.env,
-  });
+  const dockerImage = !process.env.FREEZE_GATE_CMD && process.env.FREEZE_GATE_DOCKER_IMAGE;
+  const executable = dockerImage ? (process.env.FREEZE_GATE_DOCKER_CMD || 'docker') : 'sh';
+  const run = seams.spawnSync || spawnSync;
+  const dockerEnv = { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot,
+    COMSPEC: process.env.COMSPEC, PATHEXT: process.env.PATHEXT, MSYS_NO_PATHCONV: '1' };
+  let identity = null;
+  let r;
+  try {
+    if (dockerImage) identity = (seams.dockerRunIdentity || dockerRunIdentity)();
+    const args = dockerImage
+      ? dockerVerifyArgs(repoRoot, dockerImage, verifyCommand, testDir, identity)
+      : ['-c', `${cmd} ${testDir}`];
+    r = run(executable, args, {
+      cwd: repoRoot, encoding: 'utf8', timeout: timeoutMs,
+      // The verifier's own ceiling, imported from the module that owns it. Without it Node's
+      // 1 MiB default applies and a suite is killed for being LOUD — which reads as a red run
+      // that never happened, and a green probe is the loudest run this tool ever takes.
+      maxBuffer: MAX_BUFFER,
+      // The verifier gives the suite a plain environment; inheriting this process's is the
+      // closest available approximation and keeps GODOT_BIN-style host variables reachable.
+      // A probe verifier gets no host environment, credentials or network. The only host path in
+      // its container is its own disposable clone. FREEZE_GATE_CMD remains the explicit unit-test
+      // seam and preserves the historical host invocation for those fixtures.
+      env: dockerImage ? dockerEnv : process.env,
+    });
+  } catch (e) {
+    r = { status: null, stdout: '', stderr: '', error: e };
+  } finally {
+    if (dockerImage && identity) {
+      try {
+        // Use the daemon-issued cid when available and the unguessable owned name otherwise.
+        // Cleanup is a separate bounded Docker call: the verifier's killed client cannot perform
+        // its own `--rm`, and an unbounded cleanup would replace one parked gate with another.
+        run(executable, ['rm', '-f', ownedContainer(identity)], {
+          encoding: 'utf8', timeout: DOCKER_CLEANUP_TIMEOUT_MS, windowsHide: true, env: dockerEnv,
+        });
+      } catch { /* The primary result remains indeterminate; cleanup was still attempted. */ }
+      try { fs.rmSync(identity.dir, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
+  }
   return {
     // spawnSync reports a signal kill (timeout) with status null — treat that as its own
     // failure rather than coercing null to 0, which would read as a green run.
@@ -856,10 +929,12 @@ function main(argv) {
   const repoRoot = path.resolve(repo);
   let verifyCommand;
   let defaultBranch = null;
+  let frozenPaths = [];
   try {
     const cfg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'pipeline.config.json'), 'utf8'));
     verifyCommand = cfg.verifyCommand;
     defaultBranch = cfg.defaultBranch || null;
+    frozenPaths = Array.isArray(cfg.frozenPaths) ? cfg.frozenPaths : [];
     if (!verifyCommand && !process.env.FREEZE_GATE_CMD) {
       console.error('freeze-gate: verifyCommand missing from pipeline.config.json');
       return 2;
@@ -890,6 +965,9 @@ function main(argv) {
   // the broken-probe verdict when both would apply, which is the point: a probe that edited the
   // tests is not a probe that failed, it is a probe that changed the question.
   let suiteDiff = null;
+  const issueId = tests.replace(/\\/g, '/').replace(/\/+$/, '').split('/').pop();
+  let protectedBefore = null;
+  let probeProtectedBefore = null;
   if (probeRoot) {
     suiteDiff = compareSuites(testPath, path.join(probeRoot, tests));
     if (suiteDiff.probeMissing) {
@@ -899,11 +977,26 @@ function main(argv) {
       console.error('freeze-gate: a directory holding only the criteria\'s artifacts yields "no test files".');
       return 2;
     }
-    if (suiteDiff.absent.length) {
-      console.error(`freeze-gate: the probe's copy of the suite is MISSING files the fork point has (probe):`);
-      for (const f of suiteDiff.absent) console.error(`freeze-gate:   ${f}`);
-      console.error('freeze-gate: a probe satisfies the criteria by changing the TREE, never by removing');
-      console.error('freeze-gate: or editing a check — a probe that edits its judge blesses the freeze this gate exists to prevent.');
+    if (suiteDiff.absent.length || suiteDiff.differing.length || suiteDiff.extra.length) {
+      console.error(`freeze-gate: the probe's copy of the suite is not byte-identical to the fork point (probe):`);
+      for (const f of suiteDiff.absent) console.error(`freeze-gate:   missing: ${f}`);
+      for (const f of suiteDiff.differing) console.error(`freeze-gate:   edited: ${f}`);
+      for (const f of suiteDiff.extra) console.error(`freeze-gate:   added: ${f}`);
+      console.error('freeze-gate: a probe satisfies the criteria by changing the TREE, never by removing,');
+      console.error('freeze-gate: editing or adding a check — a probe that changes its judge blesses the freeze this gate exists to prevent.');
+      return 2;
+    }
+    try {
+      protectedBefore = protectedManifest(repoRoot, { frozenPaths }, issueId);
+      probeProtectedBefore = protectedManifest(probeRoot, { frozenPaths }, issueId);
+      const protectedDiff = manifestDifference(protectedBefore, probeProtectedBefore);
+      if (protectedDiff.length) {
+        console.error('freeze-gate: the probe changed the acceptance tree, pipeline config or a frozen path:');
+        for (const detail of protectedDiff) console.error(`freeze-gate:   ${detail}`);
+        return 2;
+      }
+    } catch (e) {
+      console.error(`freeze-gate: cannot compare protected paths with the probe: ${e.message}`);
       return 2;
     }
   }
@@ -975,6 +1068,23 @@ function main(argv) {
   // probe and prove nothing about either.
   const probe = probeRoot && !guardBlocks
     ? runSide(probeRoot, verifyCommand, tests, timeoutMs, controlArg) : null;
+  if (probeRoot) {
+    try {
+      const forkChanges = manifestDifference(protectedBefore,
+        protectedManifest(repoRoot, { frozenPaths }, issueId));
+      const probeChanges = manifestDifference(probeProtectedBefore,
+        protectedManifest(probeRoot, { frozenPaths }, issueId));
+      if (forkChanges.length || probeChanges.length) {
+        console.error('freeze-gate: the verifier modified a protected byte while the gate was running:');
+        for (const detail of forkChanges) console.error(`freeze-gate:   fork point ${detail}`);
+        for (const detail of probeChanges) console.error(`freeze-gate:   probe ${detail}`);
+        return 2;
+      }
+    } catch (e) {
+      console.error(`freeze-gate: cannot recheck protected paths after the verifier: ${e.message}`);
+      return 2;
+    }
+  }
   const v = verdictFor(real, control, chosen.kind,
     probe ? probe.suite : null, probe ? probe.control : null, guardRun);
 
@@ -1003,18 +1113,6 @@ function main(argv) {
   if (probe) {
     console.log(`  probe run      exit ${fmtStatus(probe.suite)}   (--green ${probeRoot})`);
     console.log(`  probe control  exit ${fmtStatus(probe.control)}   (${probeLabel(probe.chosen.kind)})`);
-  }
-  // What the two copies of the suite disagree about. Named, never silent: the probe runs its
-  // OWN copy, so a difference is the one thing that can make a green probe mean nothing.
-  if (suiteDiff && (suiteDiff.differing.length || suiteDiff.extra.length)) {
-    console.log('');
-    console.log(`probe suite differs: ${suiteDiff.differing.length} edited, ${suiteDiff.extra.length} added`);
-    for (const f of suiteDiff.differing) console.log(`  edited in the probe: ${f}`);
-    for (const f of suiteDiff.extra) console.log(`  present only in the probe: ${f}`);
-    console.log(wrap('A probe is supposed to satisfy the criteria by changing the TREE. Where its copy '
-      + 'of a test differs from the fork point\'s, the probe run judged a different suite from the '
-      + 'one being frozen, and a green probe says only that the EDITED test passes. Read every line '
-      + 'above before trusting the verdict.'));
   }
   console.log('');
   console.log(`${v.verdict.toUpperCase()}: ${v.headline}`);
@@ -1140,7 +1238,8 @@ function usage() {
 }
 
 module.exports = {
-  verdictFor, guardCount, guardFiles, runVerify, withEmptyControlDir, withGuardDir,
+  verdictFor, guardCount, guardFiles, runVerify, dockerVerifyArgs, dockerRunIdentity,
+  DOCKER_MEMORY, DOCKER_CPUS, DOCKER_CLEANUP_TIMEOUT_MS, withEmptyControlDir, withGuardDir,
   resolveControl, CONTROL_DIR, main,
   brittleFindings, lintSuite, LINT_EXTENSIONS, QUESTIONS,
   runSide, digestSuite, compareSuites, MAX_BUFFER,

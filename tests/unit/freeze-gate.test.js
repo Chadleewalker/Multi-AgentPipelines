@@ -25,7 +25,8 @@ const { spawnSync } = require('child_process');
 const {
   verdictFor, guardCount, guardFiles, withEmptyControlDir, withGuardDir, resolveControl,
   CONTROL_DIR, main,
-  brittleFindings, lintSuite, runVerify, compareSuites, digestSuite, MAX_BUFFER,
+  brittleFindings, lintSuite, runVerify, dockerVerifyArgs, compareSuites, digestSuite, MAX_BUFFER,
+  DOCKER_MEMORY, DOCKER_CPUS, DOCKER_CLEANUP_TIMEOUT_MS,
   RECEIPT_NAME, RECEIPT_VERSION,
 } = require('../../scripts/freeze-gate.js');
 const { MAX_BUFFER: VERIFIER_MAX_BUFFER } = require('../../pipeline/verify-classify.js');
@@ -748,6 +749,92 @@ check('...and the output past 1 MiB is actually captured',
   loudRun.stdout.length > 1024 * 1024, String(loudRun.stdout.length));
 fs.rmSync(loudRoot, { recursive: true, force: true });
 
+const sandboxIdentity = {
+  name: 'freeze-gate-owned-test', cidFile: 'fixture path/container.cid', dir: 'fixture path',
+};
+const sandboxArgs = dockerVerifyArgs('C:/probe with spaces', 'fixture:latest',
+  'sh tools/verify.sh', 'tests/acceptance/x/', sandboxIdentity);
+check('probe verification uses a networkless, read-only, capability-dropped container',
+  sandboxArgs.includes('none') && sandboxArgs.includes('--read-only')
+  && sandboxArgs.includes('ALL') && sandboxArgs.includes('no-new-privileges'));
+check('probe verification is bounded by memory, swap and CPU limits',
+  sandboxArgs[sandboxArgs.indexOf('--memory') + 1] === DOCKER_MEMORY
+  && sandboxArgs[sandboxArgs.indexOf('--memory-swap') + 1] === DOCKER_MEMORY
+  && sandboxArgs[sandboxArgs.indexOf('--cpus') + 1] === DOCKER_CPUS);
+check('every verifier container carries its unique owned name and cidfile',
+  sandboxArgs[sandboxArgs.indexOf('--name') + 1] === sandboxIdentity.name
+  && sandboxArgs[sandboxArgs.indexOf('--cidfile') + 1] === sandboxIdentity.cidFile);
+check('the disposable probe is the only host path mounted into its verifier container',
+  sandboxArgs.filter((a) => /:\/workspace$/.test(a)).length === 1
+  && sandboxArgs.some((a) => /probe with spaces\/?:\/workspace$/.test(a)));
+check('no credential or host environment value enters the verifier argv',
+  !sandboxArgs.join('\n').match(/TOKEN|GITHUB|SSH_AUTH|PROBE_TEST_HOST_ONLY/));
+check('orphan cleanup itself has a finite bound',
+  Number.isInteger(DOCKER_CLEANUP_TIMEOUT_MS) && DOCKER_CLEANUP_TIMEOUT_MS > 0);
+{
+  const owned = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-docker-owned-'));
+  const identity = { dir: owned, cidFile: path.join(owned, 'container.cid'), name: 'freeze-gate-fallback' };
+  const cid = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+  const calls = [];
+  const fakeSpawn = (exe, args, options) => {
+    calls.push({ exe, args: [...args], options });
+    if (args[0] === 'run') {
+      fs.writeFileSync(identity.cidFile, `${cid}\n`);
+      return { status: null, signal: 'SIGKILL', stdout: '', stderr: '', error: { code: 'ETIMEDOUT' } };
+    }
+    return { status: 0, stdout: '', stderr: '' };
+  };
+  const beforeImage = process.env.FREEZE_GATE_DOCKER_IMAGE;
+  const beforeDocker = process.env.FREEZE_GATE_DOCKER_CMD;
+  delete process.env.FREEZE_GATE_CMD;
+  process.env.FREEZE_GATE_DOCKER_IMAGE = 'fixture:latest';
+  process.env.FREEZE_GATE_DOCKER_CMD = 'docker-fixture';
+  const timedOut = runVerify('C:/probe with spaces', 'sh tools/verify.sh', '.', 7, {
+    spawnSync: fakeSpawn, dockerRunIdentity: () => identity,
+  });
+  if (beforeImage === undefined) delete process.env.FREEZE_GATE_DOCKER_IMAGE; else process.env.FREEZE_GATE_DOCKER_IMAGE = beforeImage;
+  if (beforeDocker === undefined) delete process.env.FREEZE_GATE_DOCKER_CMD; else process.env.FREEZE_GATE_DOCKER_CMD = beforeDocker;
+  check('a timed-out Docker client force-removes the daemon container by its cid in finally',
+    timedOut.status === null && calls.length === 2
+    && calls[1].exe === 'docker-fixture' && calls[1].args.join(' ') === `rm -f ${cid}`);
+  check('the force-removal call is independently bounded',
+    calls[1].options.timeout === DOCKER_CLEANUP_TIMEOUT_MS);
+  check('the owned cidfile directory is removed after cleanup', !fs.existsSync(owned));
+}
+{
+  const owned = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-docker-nocid-'));
+  const identity = { dir: owned, cidFile: path.join(owned, 'container.cid'), name: 'freeze-gate-no-cid' };
+  const calls = [];
+  const fakeSpawn = (exe, args) => {
+    calls.push([...args]);
+    if (args[0] === 'run') return { status: null, stdout: '', stderr: '', error: { code: 'ENOENT' } };
+    return { status: 1, stdout: '', stderr: 'not found' };
+  };
+  const beforeImage = process.env.FREEZE_GATE_DOCKER_IMAGE;
+  delete process.env.FREEZE_GATE_CMD;
+  process.env.FREEZE_GATE_DOCKER_IMAGE = 'fixture:latest';
+  runVerify('C:/probe', 'sh tools/verify.sh', '.', 7, {
+    spawnSync: fakeSpawn, dockerRunIdentity: () => identity,
+  });
+  if (beforeImage === undefined) delete process.env.FREEZE_GATE_DOCKER_IMAGE; else process.env.FREEZE_GATE_DOCKER_IMAGE = beforeImage;
+  check('a spawn failure with no cidfile still force-removes only the owned unique name',
+    calls.length === 2 && calls[1].join(' ') === 'rm -f freeze-gate-no-cid');
+  check('the no-cid owned directory is also removed', !fs.existsSync(owned));
+}
+{
+  const sentinel = path.join(os.tmpdir(), `freeze-host-sentinel-${process.pid}`);
+  const beforeImage = process.env.FREEZE_GATE_DOCKER_IMAGE;
+  const beforeDocker = process.env.FREEZE_GATE_DOCKER_CMD;
+  delete process.env.FREEZE_GATE_CMD;
+  process.env.FREEZE_GATE_DOCKER_IMAGE = 'fixture:latest';
+  process.env.FREEZE_GATE_DOCKER_CMD = 'definitely-no-such-docker-for-freeze-test';
+  const isolated = runVerify(os.tmpdir(), `${process.execPath} -e "require('fs').writeFileSync('${sentinel}','bad')"`, '.', 1000);
+  if (beforeImage === undefined) delete process.env.FREEZE_GATE_DOCKER_IMAGE; else process.env.FREEZE_GATE_DOCKER_IMAGE = beforeImage;
+  if (beforeDocker === undefined) delete process.env.FREEZE_GATE_DOCKER_CMD; else process.env.FREEZE_GATE_DOCKER_CMD = beforeDocker;
+  check('a container launch failure never falls back to executing probe-controlled code on the host',
+    isolated.status === null && !fs.existsSync(sentinel));
+}
+
 // --- end to end, through the CLI, with a stubbed verify command ------------------------------
 
 // A stub that reports red exactly when the directory it is given holds files — the behaviour
@@ -835,8 +922,7 @@ const runMain = (args) => { const restore = silence(); try { return main(args); 
 // The probe: a second repo-shaped tree carrying its own copy of the suite, byte for byte, plus
 // the marker the stub reads to know which tree it woke up in.
 const probeRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-probe-'));
-fs.writeFileSync(path.join(probeRepo, 'pipeline.config.json'),
-  JSON.stringify({ verifyCommand: 'a probe-side config is never read' }));
+fs.copyFileSync(path.join(tmpRepo, 'pipeline.config.json'), path.join(probeRepo, 'pipeline.config.json'));
 fs.mkdirSync(path.join(probeRepo, 'tests', 'acceptance', 'demo'), { recursive: true });
 fs.writeFileSync(path.join(probeRepo, 'tests', 'acceptance', 'demo', 'test.js'), '// a test');
 fs.writeFileSync(path.join(probeRepo, '.is-probe'), '');
@@ -912,17 +998,28 @@ fs.rmSync(shapeless, { recursive: true, force: true });
 fs.rmSync(deleter, { recursive: true, force: true });
 fs.rmSync(fileProbe, { force: true });
 
-// A probe that EDITED a test is not refused — the fork point's own copy is what the verdict is
-// about — but the difference is named, loudly, because a green probe then says only that the
-// edited test passes.
+// A probe that edits or adds a test has changed its judge. Refuse it before any probe run:
+// naming the difference beside a successful verdict would still leave an automator able to
+// accept the exit code and freeze a suite nothing actually proved.
 const editor = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-editor-'));
 fs.mkdirSync(path.join(editor, 'tests', 'acceptance', 'demo'), { recursive: true });
 fs.writeFileSync(path.join(editor, 'tests', 'acceptance', 'demo', 'test.js'), '// EDITED');
 fs.writeFileSync(path.join(editor, '.is-probe'), '');
 r = refusal([...ARGS, '--green', editor]);
-check('a probe whose copy of a test was edited names the difference',
-  /probe suite differs:/.test(r.out) && /test\.js/.test(r.out), r.out);
+check('a probe whose copy of a test was edited exits 2', r.code === 2, String(r.code));
+check('...and names the edited file', /edited: test\.js/.test(r.out), r.out);
 fs.rmSync(editor, { recursive: true, force: true });
+
+const adder = fs.mkdtempSync(path.join(os.tmpdir(), 'freeze-adder-'));
+fs.mkdirSync(path.join(adder, 'tests', 'acceptance', 'demo'), { recursive: true });
+fs.copyFileSync(path.join(testDir, 'test.js'),
+  path.join(adder, 'tests', 'acceptance', 'demo', 'test.js'));
+fs.writeFileSync(path.join(adder, 'tests', 'acceptance', 'demo', 'extra.js'), '// NEW JUDGE\n');
+fs.writeFileSync(path.join(adder, '.is-probe'), '');
+r = refusal([...ARGS, '--green', adder]);
+check('a probe that adds a test exits 2', r.code === 2, String(r.code));
+check('...and names the added file', /added: extra\.js/.test(r.out), r.out);
+fs.rmSync(adder, { recursive: true, force: true });
 
 // The report says what happened in the probe, not only what it decided.
 const withProbe = refusal(GREEN);
@@ -931,19 +1028,18 @@ check('the report shows the probe\'s own control run',
   /probe control\s+exit\s+0/.test(withProbe.out), withProbe.out);
 check('the report still names the verdict as RED:', /RED:/.test(withProbe.out));
 
-// The probe's control is resolved against the PROBE, by the same rule used at the target root.
-// The fixture is a PAIR and has to be read as one: the probe carries a `_control` fixture and
-// the target does not, so the two lines of the report differ — an implementation that resolved
-// the probe's control against the target would print the target's answer twice, and with both
-// trees shaped alike that is invisible.
+// The entire acceptance tree is immutable across a probe, including the control fixture. Marker
+// files still prove each invocation resolves that identical path inside the tree it was handed.
+fs.mkdirSync(path.join(tmpRepo, 'tests', 'acceptance', '_control'), { recursive: true });
+fs.writeFileSync(path.join(tmpRepo, 'tests', 'acceptance', '_control', 'c.js'), 'process.exit(0);');
 fs.mkdirSync(path.join(probeRepo, 'tests', 'acceptance', '_control'), { recursive: true });
 fs.writeFileSync(path.join(probeRepo, 'tests', 'acceptance', '_control', 'c.js'), 'process.exit(0);');
 const twoControls = refusal(GREEN);
 check('the probe\'s control comes from the PROBE\'s own tree',
   new RegExp(`probe control\\s+exit\\s+0\\s+\\(${CONTROL_DIR} in the probe`).test(twoControls.out),
   twoControls.out.split(/\r?\n/).slice(0, 6).join(' | '));
-check('...while the target, which has no fixture, still admits its control is weak',
-  /control run\s+exit\s+0\s+\(empty directory — NO control fixture/.test(twoControls.out),
+check('...and the target resolves its own byte-identical control fixture',
+  new RegExp(`control run\\s+exit\\s+0\\s+\\(${CONTROL_DIR} — one passing test`).test(twoControls.out),
   twoControls.out.split(/\r?\n/).slice(0, 6).join(' | '));
 
 // --- HOW the probe is invoked, not only what it decided -----------------------------------
@@ -1194,14 +1290,15 @@ fs.writeFileSync(path.join(testDir, 'brittle.js'), [
   "spawnSync('git', ['merge-base', 'origin/main', 'HEAD']);",
 ].join('\n'));
 fs.writeFileSync(path.join(testDir, 'logo.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
-// The probe carries the same suite, byte for byte — plus one brittle file of its own, which the
-// lint must never read: the lint runs ONCE, over the fork-point suite only. A probe is
+// The probe carries the same suite, byte for byte — plus one brittle PRODUCT-side file of its
+// own, which the lint must never read: the lint runs ONCE, over the fork-point suite only. A probe is
 // throwaway and deliberately crude, and findings nobody will ever fix are noise in a report
 // whose whole value is that every finding takes a disposition.
 const probeSuite = path.join(probeRepo, 'tests', 'acceptance', 'demo');
 fs.copyFileSync(path.join(testDir, 'brittle.js'), path.join(probeSuite, 'brittle.js'));
 fs.copyFileSync(path.join(testDir, 'logo.png'), path.join(probeSuite, 'logo.png'));
-fs.writeFileSync(path.join(probeSuite, 'probe-only-brittle.js'),
+fs.mkdirSync(path.join(probeRepo, 'tools'), { recursive: true });
+fs.writeFileSync(path.join(probeRepo, 'tools', 'probe-only-brittle.js'),
   "assert.deepStrictEqual(keys, ['probe', 'only', 'list']);\nassert.strictEqual(rows.length, 44);\n");
 
 // The exit code is a verdict about red, green and indeterminate that PLANNING.md step 4
@@ -1518,6 +1615,7 @@ check('...nor a file the probe added, when the probe is the side carrying one',
   })());
 // Editing a test still moves the hash — the exclusion is the receipt and nothing else.
 fs.appendFileSync(path.join(rcRepo, 'tests', 'acceptance', 'demo', 'test.js'), '// one more byte\n');
+fs.appendFileSync(path.join(rcProbe, 'tests', 'acceptance', 'demo', 'test.js'), '// one more byte\n');
 capture(RC_ARGS);
 check('one appended byte in a test moves the recorded hash',
   rcJson(rcRepo).suiteHash !== rec.suiteHash);

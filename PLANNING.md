@@ -199,17 +199,39 @@ Every one of those six is already recorded — in the run config, the target's
 `pipeline.config.json`, git's worktree registry and Beads — so none of them is retyped, and the
 brief quotes the issue's own criteria rather than the planning draft that produced them. Set
 the optional `testAuthorModel` in the run config when the test author should differ from the
-implementation `model`; otherwise the launcher uses `model`. It passes that alias explicitly,
-never inheriting a global CLI selection. `scripts/spec-brief.js` remains the read-only command
-for inspecting or saving the brief without opening a session.
+implementation `model`; otherwise the launcher uses `model`. `testProbeModel` may pin the
+separate green-probe agent and falls back through `testAuthorModel` to `model`; all aliases are
+explicit argv values, never a global CLI selection. `testProbeAttempts` bounds the host-feedback
+loop at three by default. `scripts/spec-brief.js` remains the read-only command for inspecting or
+saving the brief without opening a session.
 
 It works out which of three states the issue is in first, because the instructions differ:
 write the tests, freeze a suite the working tree already holds, or re-gate one that is on the
 branch without a readable receipt. The last two need no drafting at all, and a report that does
 not separate them makes a nearly-finished task look like an untouched one.
 
-The launcher stops when the agent exits. It never calls `freeze.js`, commits, or pushes. Read
-the agent's report and review the suite before the human-approved freeze in step 6.
+The launcher does not treat a successful test-author exit as completion. It first refuses any
+worktree change outside that issue's suite, then creates two independent disposable clones at
+the author's exact HEAD and overlays the suite byte-for-byte into both. One remains the red
+baseline. A separately pinned probe agent may edit product code in the other, with file tools
+only — no shell, Git, Beads or freeze capability. After every attempt the host starts the gate's
+verifier inside the project's configured image with no network, credentials, capabilities or
+host mount other than that disposable clone, then feeds its evidence into the next bounded
+ attempt. The whole acceptance tree, `pipeline.config.json` and every configured frozen Git
+ pathspec are hashed before the agent and checked after both the agent and gate. Wildcard matches,
+ ignored additions and file modes count. Any changed protected byte is a refusal.
+
+Only a gate exit 0 is a launcher success. The ownership-marked baseline and probe are retained,
+and the reported human command includes `--probe <dir>` so the approved freeze re-runs the same
+containerized two-direction proof without first changing the integration checkout. After that
+gate passes and the protected bytes are rechecked, freeze transactionally promotes the exact
+suite and receipt from the baseline; any pre-commit refusal restores the previous integration
+tree. It rejects unrelated staged paths, builds the candidate commit from a private immutable
+index, and pushes that exact object under a remote lease so concurrent work cannot ride along or
+be overwritten. The launcher itself never calls `freeze.js`, commits, merges or pushes. Verifier containers
+have resource limits and deterministic cleanup by an owned name/CID; clone ownership is recorded
+outside the model-editable tree. Managed clones are removed only after freeze has pushed and the
+runner has read the result back as dispatchable.
 
 A machine-specific path — a binary that is not on `PATH` — belongs in the run config's optional
 `hostEnv`, never in the target's `pipeline.config.json`: run configs are host-local and
@@ -272,8 +294,8 @@ means however crude, and hand it to `--green`. It is not an implementation and n
   directory holding only the criteria's artifacts yields "no test files" and a false *unreachable*.
 - **A probe satisfies the criteria by changing the tree, never by editing a check.** The probe
   runs its own copy of the suite, so the gate hashes both copies first: a copy with a file
-  *missing* is refused, and any file whose bytes differ is named in the report. A probe that
-  edits its judge blesses exactly the freeze this gate exists to prevent.
+  *missing*, edited or added is named and refused before the probe runs. A probe that edits its
+  judge would otherwise bless exactly the freeze this gate exists to prevent.
 - **Crude is the point.** Hard-code the return value, write the file the test looks for, stub
   the command. If a criterion cannot be satisfied even by cheating, that is the finding.
 
@@ -310,6 +332,9 @@ means however crude, and hand it to `--green`. It is not an implementation and n
   pass the way the guard count is carried, so the user is approving a spec they know is proven
   on one side only. Prefer a probe for anything hard, anything whose tests build fixtures of
   their own, and anything where a criterion's *setup* could fail without the check noticing.
+  The planning launcher does not choose this escape hatch automatically: it reports failure and
+  offers no freeze command. Half-proven remains available only through an explicit manual gate
+  and approval.
 - **exit 5 — stale-guard. Never a pass.** A test file that declares itself a guard — the
   literal `[guard]` token on a comment line within its first ten lines, the same word the spec
   uses — is run *alone* against the fork point, and this one came back red. A guard says

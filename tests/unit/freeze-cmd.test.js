@@ -37,6 +37,7 @@ const { spawnSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const SCRIPT = path.join(ROOT, 'scripts', 'freeze.js');
+const PROOF = require(path.join(ROOT, 'scripts', 'prove-tests.js'));
 
 let failures = 0;
 function check(name, ok) {
@@ -52,7 +53,8 @@ const both = (r) => `${r.stdout || ''}${r.stderr || ''}`;
 
 function git(cwd, args) {
   const r = spawnSync('git', args, { cwd, encoding: 'utf8' });
-  return { status: r.status, out: `${r.stdout || ''}${r.stderr || ''}` };
+  return { status: r.status, stdout: r.stdout || '', stderr: r.stderr || '',
+    out: `${r.stdout || ''}${r.stderr || ''}` };
 }
 
 // Identity and signing go into the FIXTURE's own config, never `-c` on the command line: `-c`
@@ -138,15 +140,52 @@ function makeProbe(world, id) {
   fs.copyFileSync(path.join(world.target, rel, 'test.js'), path.join(probe, rel, 'test.js'));
   fs.copyFileSync(path.join(world.target, 'tests', 'acceptance', '_control', 'control.js'),
     path.join(probe, 'tests', 'acceptance', '_control', 'control.js'));
-  fs.writeFileSync(path.join(probe, 'pipeline.config.json'), '{"verifyCommand":"unused"}');
+  fs.copyFileSync(path.join(world.target, 'pipeline.config.json'), path.join(probe, 'pipeline.config.json'));
   fs.writeFileSync(path.join(probe, '.is-probe'), '');
   return probe;
+}
+
+// The automatic author flow leaves the suite outside the integration checkout. Its successful
+// managed probe records both the untouched fork-point hash and the proven protected-tree hash,
+// allowing only the later explicitly invoked freeze to bridge that exact suite into the target.
+function makeManagedProbe(world, id) {
+  const probeRoot = path.join(world.base, PROOF.PROBE_ROOT_NAME);
+  fs.mkdirSync(probeRoot, { recursive: true });
+  const container = path.join(probeRoot, `${PROOF.PROBE_PREFIX}${id}-fixture`);
+  const probe = path.join(container, 'probe');
+  const rel = path.join('tests', 'acceptance', id);
+  const baseline = path.join(container, 'baseline');
+  fs.mkdirSync(container, { recursive: true });
+  spawnSync('git', ['clone', '-q', '--no-hardlinks', world.target, probe], { encoding: 'utf8' });
+  spawnSync('git', ['clone', '-q', '--no-hardlinks', world.target, baseline], { encoding: 'utf8' });
+  fs.mkdirSync(path.join(probe, rel), { recursive: true });
+  fs.mkdirSync(path.join(baseline, rel), { recursive: true });
+  fs.writeFileSync(path.join(probe, rel, 'test.js'), "process.exit(require('fs').existsSync('DONE') ? 0 : 1);\n");
+  fs.writeFileSync(path.join(baseline, rel, 'test.js'), "process.exit(require('fs').existsSync('DONE') ? 0 : 1);\n");
+  fs.writeFileSync(path.join(probe, '.is-probe'), '');
+  const policy = { frozenPaths: [] };
+  const head = git(world.target, ['rev-parse', 'HEAD']).out.trim();
+  const ownership = {
+    probeRoot: fs.realpathSync(probeRoot), container: fs.realpathSync(container),
+    cleanupToken: 'a'.repeat(64),
+  };
+  fs.writeFileSync(PROOF.ownerRecordPath(container), JSON.stringify({
+    kind: 'multi-agent-green-probe-owner', version: 1, ...ownership,
+  }, null, 2));
+  fs.writeFileSync(path.join(container, PROOF.MARKER), JSON.stringify({
+    kind: 'multi-agent-green-probe', version: 1, issue: id, status: 'proven', head,
+    ...ownership,
+    baseManifestHash: PROOF.manifestHash(PROOF.protectedManifest(world.target, policy, id)),
+    manifestHash: PROOF.manifestHash(PROOF.protectedManifest(probe, policy, id)),
+  }, null, 2));
+  return { container, probe };
 }
 
 function cli(world, args, extraEnv) {
   const env = {
     ...process.env,
     FREEZE_GATE_CMD: `"${fwd(process.execPath)}" "${fwd(world.stub)}"`,
+    PIPELINE_TESTING_FREEZE_GATE_SEAM: '1',
     ...(extraEnv || {}),
   };
   const r = spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8', env, cwd: world.base });
@@ -161,7 +200,10 @@ function headCount(world) {
   return Number(git(world.target, ['rev-list', '--count', 'HEAD']).out.trim() || '0');
 }
 function stagedIn(world) {
-  return git(world.target, ['diff', '--cached', '--name-only']).out.trim();
+  // Successful Git queries may still warn on stderr about host-global configuration that this
+  // sandbox cannot read. Staged paths are stdout; treating warnings as filenames makes an empty
+  // index look dirty and hides the transaction behavior this fixture exists to measure.
+  return git(world.target, ['diff', '--cached', '--name-only']).stdout.trim();
 }
 
 // ---- A. the command line ------------------------------------------------------------------
@@ -195,6 +237,122 @@ function stagedIn(world) {
   const { RECEIPT_VERDICTS } = require(path.join(ROOT, 'runner', 'queue.js'));
   check('A9 the verdicts a freeze proceeds on ARE the runner\'s set, not a copy of it',
     F.PROCEEDS === RECEIPT_VERDICTS);
+}
+
+// ---- A2. the final index transaction is path-bounded even under concurrent activity -------
+{
+  const F = require(SCRIPT);
+  const cfg = { targetRepoPath: 'fixture-target' };
+  const gated = [
+    { rel: 'tests/acceptance/app-one' },
+    { rel: 'tests/acceptance/app-two' },
+  ];
+
+  let queryArgs = null;
+  const clean = F.stagedFreezePaths(cfg, gated, (seenCfg, args) => {
+    queryArgs = args;
+    return { status: 0, stdout: 'tests/acceptance/app-one/a.js\0tests/acceptance/app-two/nested/b.js\0', stderr: '' };
+  });
+  check('A10 the final staged-path query is NUL-delimited and accepts only gated suite descendants',
+    clean.ok && clean.staged.length === 2 && queryArgs.includes('-z'));
+
+  const raced = F.stagedFreezePaths(cfg, gated, () => ({
+    status: 0,
+    stdout: 'tests/acceptance/app-one/a.js\0someone else staged this.txt\0',
+    stderr: '',
+  }));
+  check('A11 a path staged after the cleanliness check is mechanically rejected by name',
+    !raced.ok && raced.kind === 'outside'
+      && raced.outside.join(',') === 'someone else staged this.txt'
+      && /someone else staged this\.txt/.test(raced.error));
+
+  const unavailable = F.stagedFreezePaths(cfg, gated,
+    () => ({ status: 128, stdout: 'misleading output\0', stderr: 'index is locked' }));
+  check('A12 a failed git diff --cached query is unknown, never parsed as an empty or valid index',
+    !unavailable.ok && unavailable.kind === 'query' && /index is locked/.test(unavailable.error));
+
+  const resetCalls = [];
+  let promotionRollbacks = 0;
+  const rolled = F.rollbackFreezePreparation(cfg, gated, { promoted: true },
+    (seenCfg, args) => { resetCalls.push(args); return { status: 0, stdout: '', stderr: '' }; },
+    () => { promotionRollbacks += 1; return { ok: true }; });
+  check('A13 refusal resets every approved suite path and rolls back promotion, but no broad index path',
+    rolled.ok && promotionRollbacks === 1 && resetCalls.length === 1
+      && resetCalls[0].join(' ') === `reset -q -- ${gated.map((g) => g.rel).join(' ')}`);
+}
+
+// The race a path-limited porcelain commit cannot close: it reads approved paths from the
+// working tree again. The private index freezes those bytes first, and commit-tree consumes the
+// resulting immutable tree even when the same suite changes before commit creation.
+{
+  const F = require(SCRIPT);
+  const { suiteHash, workingTreeEntries } = require(path.join(ROOT, 'runner', 'suite-hash.js'));
+  const w = makeWorld();
+  const id = 'app-snapshot-race';
+  const rel = writeSuite(w, id, 'ORIGINAL VALIDATED SUITE\n');
+  const hash = suiteHash(workingTreeEntries(w.target, rel));
+  fs.writeFileSync(path.join(w.target, rel, '.freeze-gate.json'), `${JSON.stringify({
+    gateVersion: 1, verdict: 'red', probeSupplied: true, suiteHash: hash,
+  })}\n`);
+  const head = git(w.target, ['rev-parse', 'HEAD']).out.trim();
+  const gated = [{ id, rel, verdict: 'red' }];
+  const snapshot = F.prepareFreezeSnapshot({ targetRepoPath: w.target }, gated, head, undefined, TMP);
+  check('A14 the isolated index captures and validates an exact candidate tree',
+    snapshot.ok && /^[0-9a-f]{40}$/.test(snapshot.tree) && stagedIn(w) === '');
+
+  fs.writeFileSync(path.join(w.target, rel, 'test.js'), 'CONCURRENT SAME-SUITE MUTATION\n');
+  const made = F.makeFreezeCommit({ targetRepoPath: w.target }, gated, snapshot, 'fixture freeze', 'red');
+  const committedBytes = made.ok
+    ? git(w.target, ['show', `${made.commit}:${rel}/test.js`]).out : '';
+  check('A15 a same-suite edit after snapshot validation cannot enter the candidate commit',
+    made.ok && committedBytes === 'ORIGINAL VALIDATED SUITE\n');
+  check('A16 candidate creation preserves the concurrent working edit and does not move HEAD',
+    fs.readFileSync(path.join(w.target, rel, 'test.js'), 'utf8') === 'CONCURRENT SAME-SUITE MUTATION\n'
+      && git(w.target, ['rev-parse', 'HEAD']).out.trim() === head);
+  F.removeSnapshot(snapshot);
+}
+
+// Publication consumes the immutable candidate OID, not HEAD. A different local process can
+// fast-forward the checked-out branch after the atomic update-ref; that later commit must not
+// ride into this command's remote publication.
+{
+  const F = require(SCRIPT);
+  const w = makeWorld();
+  const id = 'app-push-race';
+  const rel = writeSuite(w, id, 'VALIDATED PUBLICATION\n');
+  const { suiteHash, workingTreeEntries } = require(path.join(ROOT, 'runner', 'suite-hash.js'));
+  const hash = suiteHash(workingTreeEntries(w.target, rel));
+  fs.writeFileSync(path.join(w.target, rel, '.freeze-gate.json'), `${JSON.stringify({
+    gateVersion: 1, verdict: 'red', probeSupplied: true, suiteHash: hash,
+  })}\n`);
+  const head = git(w.target, ['rev-parse', 'HEAD']).out.trim();
+  const gated = [{ id, rel, verdict: 'red' }];
+  const snapshot = F.prepareFreezeSnapshot({ targetRepoPath: w.target }, gated, head, undefined, TMP);
+  const made = F.makeFreezeCommit({ targetRepoPath: w.target }, gated, snapshot, 'fixture freeze', 'red');
+  git(w.target, ['update-ref', 'refs/heads/master', made.commit, head]);
+
+  // Simulate a concurrent local fast-forward without changing the validated commit object.
+  const laterTree = git(w.target, ['rev-parse', `${made.commit}^{tree}`]).out.trim();
+  const later = spawnSync('git', ['commit-tree', laterTree, '-p', made.commit], {
+    cwd: w.target, input: 'concurrent local commit\n', encoding: 'utf8',
+  }).stdout.trim();
+  git(w.target, ['update-ref', 'refs/heads/master', later, made.commit]);
+  const pushed = F.pushFreezeCommit({ targetRepoPath: w.target, targetRepoRemote: w.origin },
+    'master', made.commit, head);
+  const remote = git(w.target, ['ls-remote', w.origin, 'refs/heads/master']).out.trim().split(/\s+/)[0];
+
+  check('A17 a concurrent local branch fast-forward cannot change the exact validated push source',
+    pushed.ok && remote === made.commit && git(w.target, ['rev-parse', 'HEAD']).out.trim() === later);
+
+  // Once the remote moves too, the original baseline lease is stale. Even though the validated
+  // object still exists locally, publication must refuse and leave the newer remote tip intact.
+  git(w.target, ['push', '-q', w.origin, `${later}:refs/heads/master`]);
+  const refused = F.pushFreezeCommit({ targetRepoPath: w.target, targetRepoRemote: w.origin },
+    'master', made.commit, head);
+  const remoteAfterRace = git(w.target, ['ls-remote', w.origin, 'refs/heads/master']).out.trim().split(/\s+/)[0];
+  check('A18 an exact remote lease refuses a concurrent publisher without changing its commit',
+    !refused.ok && remoteAfterRace === later);
+  F.removeSnapshot(snapshot);
 }
 
 // ---- B. commit refuses before it touches anything -------------------------------------------
@@ -315,6 +473,26 @@ function stagedIn(world) {
   const again = cli(w, ['commit', 'app-1', '--config', w.cfgFile, '--probe', probe]);
   check('E10 re-freezing an unchanged suite makes no empty commit',
     again.code === 0 && /nothing to commit/.test(again.text));
+}
+
+// ---- E2. managed proof promotes the exact authored suite only inside approved freeze ---------
+{
+  const w = makeWorld();
+  const managed = makeManagedProbe(w, 'app-managed');
+  const suite = path.join(w.target, 'tests', 'acceptance', 'app-managed');
+
+  const dry = cli(w, ['commit', 'app-managed', '--config', w.cfgFile, '--probe', managed.probe, '--dry-run']);
+  check('E11 managed dry-run reruns the complete gate without copying the suite',
+    dry.code === 0 && /gated and would be frozen/.test(dry.text) && !fs.existsSync(suite));
+  check('E12 managed dry-run retains its proof and changes no remote state',
+    fs.existsSync(managed.container) && onRemote(w, 'tests/acceptance/app-managed') === '');
+
+  const frozen = cli(w, ['commit', 'app-managed', '--config', w.cfgFile, '--probe', managed.probe]);
+  check('E13 approved managed freeze promotes and freezes the exact proven suite',
+    frozen.code === 0 && /promoted the exact proven suite/.test(frozen.text)
+    && /app-managed\/test\.js/.test(onRemote(w, 'tests/acceptance/app-managed')));
+  check('E14 a consumed managed probe is removed only after successful push and readback',
+    !fs.existsSync(managed.container) && /removed the consumed disposable green probe/.test(frozen.text));
 }
 
 // ---- F. it never commits work it did not stage ------------------------------------------------

@@ -216,8 +216,26 @@ about the criteria, exactly as the fork point's red says nothing when its own co
 `half-proven` proceeds because a probe is real work and a one-line criterion rarely earns it —
 but the state is carried into the approval pass the way the guard count is, so a spec proven on
 one side only is visible rather than assumed. The probe's copy of the suite is hashed against
-the fork point's before any probe run: a probe that satisfies the criteria by editing the test
-rather than the tree would bless the freeze the gate exists to prevent.
+the fork point's before any probe run: a missing, edited or added check is an exit-2 refusal,
+because a probe that satisfies the criteria by changing the judge would bless the freeze the
+gate exists to prevent.
+
+**The planning launcher builds the other half by default** (change-log row
+`automatic-green-probe`). After the test author exits, a deterministic audit permits changes
+only inside that issue's suite. The host then creates two independent clones at the author's
+exact HEAD, overlays the suite into both, and launches a second pinned model only in the green
+copy. That model has file tools but no shell. Verifier code is still probe-controlled code, so
+the host starts it only in the configured project image with no network, credentials,
+capabilities or host mount beyond the disposable clone; it never executes on the host. The
+baseline copy, the entire acceptance tree, `pipeline.config.json`, and configured frozen Git
+pathspecs form an immutable manifest, including wildcard and ignored matches. Only exit 0 with
+that manifest unchanged reports success. Verifier containers have resource limits, an owned
+name/CID, and deterministic timeout cleanup; clone ownership is also recorded outside the
+model-editable tree. The real author worktree gains no receipt. Both owned clones survive so a
+later human-approved freeze can re-gate without touching integration first, then transactionally
+promote the exact suite and receipt. Freeze refuses unrelated staged paths, builds the commit from
+a private immutable index, and pushes that exact object under a remote lease before the runner's
+own readback, only then removing the owned clones.
 
 **The stale guard, and the receipt** (change-log rows `stale-guard-design`, `receipt-design`).
 Two more things the gate says, both added after twelve stuck tasks in one fortnight were

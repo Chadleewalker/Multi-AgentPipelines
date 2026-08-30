@@ -11,11 +11,13 @@ const fs = require('fs');
 const path = require('path');
 const { runSync, failureText } = require('../runner/process');
 const { buildBrief } = require('./spec-brief');
+const { proveTests, validIssueId } = require('./prove-tests');
 
 const EXIT_OK = 0;
 const EXIT_USAGE = 2;
 const EXIT_SETUP = 3;
 const EXIT_AGENT = 4;
+const EXIT_PROBE = 5;
 const MAX_BUFFER = 64 * 1024 * 1024;
 const USAGE = 'usage: node scripts/author-tests.js <issue-id> --config run.config.<project>.json';
 const AUTHOR_TOOLS = 'Read,Edit,Write,Glob,Grep,Bash';
@@ -85,20 +87,45 @@ function launchAuthor(built, model, run = runSync) {
     });
 }
 
-function nextStep(id, configPath) {
-  return `Human approval is mandatory. Review the suite and agent report; only then run: node scripts/freeze.js commit ${id} --config ${configPath}`;
+function quote(value) {
+  return `"${String(value).replace(/"/g, '\\"')}"`;
+}
+
+function nextStep(id, configPath, probe) {
+  const green = probe ? ` --probe ${quote(probe)}` : '';
+  return `Human approval is mandatory. Review the suite and proof report; only then run: node scripts/freeze.js commit ${id} --config ${quote(configPath)}${green}`;
 }
 
 function failureStep() {
   return 'Next human step: inspect the agent failure and worktree, then fix the prerequisite or rerun author-tests. Do not freeze a failed session.';
 }
 
+function statusPaths(output) {
+  return String(output || '').split('\0').filter(Boolean).map((record) =>
+    record.length > 3 && record[2] === ' ' ? record.slice(3) : record);
+}
+
+// The test author owns exactly one suite. Restricted mode confines file tools to its worktree,
+// not to that directory, so the boundary is checked mechanically before and after the model.
+function auditAuthorTree(built, run = runSync) {
+  const result = run('git', ['status', '--porcelain=v1', '-z', '--untracked-files=all'], {
+    cfg: built.cfg, kind: 'git', cwd: built.folder.dir, label: 'audit test-author worktree',
+  });
+  if (result.status !== 0) return { ok: false, error: failureText(result, 'git status failed') };
+  const suite = `tests/acceptance/${built.id}`;
+  const outside = statusPaths(result.stdout).map((p) => p.split('\\').join('/'))
+    .filter((p) => p !== suite && !p.startsWith(`${suite}/`));
+  return outside.length
+    ? { ok: false, error: `the dedicated test-author worktree has changes outside ${suite}/: ${outside.join(', ')}` }
+    : { ok: true };
+}
+
 function main(argv, io = {}, seams = {}) {
   const out = io.out || console.log; const err = io.err || console.error;
   const opts = parseArgs(argv);
   if (opts.help) { out(USAGE); return EXIT_OK; }
-  if (opts.error || !opts.id || !opts.config) {
-    err(`author-tests: ${opts.error || 'an issue id and --config are required'}`); err(USAGE); return EXIT_USAGE;
+  if (opts.error || !opts.id || !opts.config || !validIssueId(opts.id)) {
+    err(`author-tests: ${opts.error || 'a safe issue id and --config are required'}`); err(USAGE); return EXIT_USAGE;
   }
   const builder = seams.buildBrief || buildBrief;
   let built = builder(opts);
@@ -108,9 +135,11 @@ function main(argv, io = {}, seams = {}) {
   }
   const configPath = path.resolve(opts.config);
   const model = String(built.cfg.testAuthorModel || built.cfg.model || '').trim();
+  const probeModel = String(built.cfg.testProbeModel || built.cfg.testAuthorModel || built.cfg.model || '').trim();
   if (!model) { err('author-tests: no model is available; set testAuthorModel or model in the run config'); return EXIT_SETUP; }
+  if (!probeModel) { err('author-tests: no probe model is available; set testProbeModel, testAuthorModel or model in the run config'); return EXIT_SETUP; }
 
-  out(`Issue: ${opts.id}`); out(`Selected test-author model: ${model}`);
+  out(`Issue: ${opts.id}`); out(`Selected test-author model: ${model}`); out(`Selected green-probe model: ${probeModel}`);
   if (built.state === 'ready') {
     out('Outcome: no launch — the suite is already frozen and dispatchable.');
     out('Next human step: review the existing frozen suite before launching the pipeline.');
@@ -138,6 +167,8 @@ function main(argv, io = {}, seams = {}) {
     built = refreshed;
   }
   out(`Worktree: ${built.folder.dir}${made.created ? ' (created)' : ' (reused)'}`);
+  const before = (seams.auditAuthorTree || auditAuthorTree)(built, seams.runSync || runSync);
+  if (!before.ok) { err(`author-tests: ${before.error}`); err(failureStep()); return EXIT_SETUP; }
   out(`Launching Claude with explicit model alias ${model}; freeze/commit/push are not part of this command.`);
   const r = (seams.launchAuthor || launchAuthor)(built, model, seams.runSync || runSync);
   if (r.stdout) out(String(r.stdout).trimEnd());
@@ -148,14 +179,33 @@ function main(argv, io = {}, seams = {}) {
     err(failureStep());
     return EXIT_AGENT;
   }
-  out('Outcome: test-author agent exited successfully. No commit or push was performed by the launcher.');
-  out(nextStep(opts.id, configPath));
+  const after = (seams.auditAuthorTree || auditAuthorTree)(built, seams.runSync || runSync);
+  if (!after.ok) {
+    err(`Outcome: test-author boundary violation — ${after.error}`);
+    err('Do not freeze this suite. Inspect the dedicated worktree and remove or recover the out-of-scope changes.');
+    return EXIT_AGENT;
+  }
+
+  out('Test-author agent exited successfully. Starting the isolated two-direction green proof.');
+  const proof = (seams.proveTests || proveTests)(built, probeModel, seams.probeSeams || {});
+  if (proof.agentOutput) out(proof.agentOutput);
+  if (proof.evidence) out(proof.evidence);
+  if (!proof.ok) {
+    err(`Outcome: suite is not fully proven (${proof.kind || 'unknown'}): ${proof.error}`);
+    if (proof.probe) err(`Probe retained for inspection: ${proof.probe}`);
+    err('No freeze, commit or push was performed. Fix the probe or the suite before approval.');
+    return EXIT_PROBE;
+  }
+  out(`Outcome: fully proven — RED at the fork point and GREEN in the protected probe (attempt ${proof.attempt}).`);
+  out(`Probe retained for the human-approved freeze: ${proof.probe}`);
+  out('No freeze, commit or push was performed by the launcher.');
+  out(nextStep(opts.id, configPath, proof.probe));
   return EXIT_OK;
 }
 
 if (require.main === module) process.exit(main(process.argv.slice(2)));
 
 module.exports = {
-  main, parseArgs, ensureWorktree, launchAuthor, nextStep, failureStep,
-  AUTHOR_TOOLS, DENIED_TOOLS, EXIT_USAGE, EXIT_SETUP, EXIT_AGENT,
+  main, parseArgs, ensureWorktree, launchAuthor, nextStep, failureStep, auditAuthorTree, statusPaths,
+  AUTHOR_TOOLS, DENIED_TOOLS, EXIT_USAGE, EXIT_SETUP, EXIT_AGENT, EXIT_PROBE,
 };

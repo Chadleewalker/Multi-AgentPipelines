@@ -259,6 +259,10 @@ function gateLines(repoRoot, cfg, id, folder) {
     'implementation. Stale-guard (5) means something you labelled a guard is red at the fork',
     'point. Never treat 2, 3 or 5 as a pass.',
     '',
+    'This is only the RED-side author check. The launcher follows a successful author session',
+    'with a separate, disposable green-probe agent and will not offer a freeze command until',
+    'the same suite has passed there without changing any protected test or verifier byte.',
+    '',
   ];
 }
 

@@ -90,7 +90,7 @@ else fail "the fixture repository has no commit — every receipt check below is
 # are already satisfied. A directory holding only the criteria's artifacts is not a probe.
 mkdir -p "$TMP/probe/tests/acceptance/demo"
 cp "$TMP/repo/tests/acceptance/demo/test.js" "$TMP/probe/tests/acceptance/demo/test.js"
-printf '{"verifyCommand":"a probe-side config is never read"}' > "$TMP/probe/pipeline.config.json"
+cp "$TMP/repo/pipeline.config.json" "$TMP/probe/pipeline.config.json"
 : > "$TMP/probe/.is-probe"
 
 NODE_Q="$(printf '%s' "${TMP}/stub.js")"
@@ -202,10 +202,13 @@ echo "$LINT" | grep -q "skipped: logo.png  (extension)" \
 # crude; linting it produces findings nobody will ever fix, in a report whose whole value is
 # that every finding takes a disposition.
 cp "$TMP/repo/tests/acceptance/demo/brittle.js" "$TMP/probe/tests/acceptance/demo/probe-only.js"
-LINT_ONCE="$(node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ --green "$TMP/probe" 2>&1)"
-echo "$LINT_ONCE" | grep -q "brittleness findings: 4" \
-  && pass "the lint reads the fork-point suite only, not the probe's copy" \
-  || fail "the lint count changed when the probe gained a brittle file"
+LINT_ONCE_RC=0
+LINT_ONCE="$(node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ --green "$TMP/probe" 2>&1)" || LINT_ONCE_RC=$?
+if [ "$LINT_ONCE_RC" -eq 2 ]; then pass "an added probe test is refused before lint or execution"
+else fail "an added probe test was not refused at exit 2"; fi
+echo "$LINT_ONCE" | grep -q "probe-only.js" \
+  && pass "the protected-tree refusal names the added probe test" \
+  || fail "the added probe test was not named"
 rm -f "$TMP/probe/tests/acceptance/demo/probe-only.js"
 rm -f "$TMP/repo/tests/acceptance/demo/brittle.js" "$TMP/repo/tests/acceptance/demo/logo.png"
 rm -f "$TMP/probe/tests/acceptance/demo/brittle.js" "$TMP/probe/tests/acceptance/demo/logo.png"
@@ -372,11 +375,12 @@ else fail "real runner: expected exit 4 for red with no probe, got $RED_RC"; fi
 # is the only section here that can catch a probe-side path resolved wrongly — the miss
 # change-log row `freeze-gate-red` records, from the other side.
 GPROBE="$TMP/real-probe"
-mkdir -p "$GPROBE/tools" "$GPROBE/tests/acceptance/_freeze-gate-selftest" "$GPROBE/tests/acceptance/_control"
-cp "$ROOT/tools/run-acceptance.sh" "$GPROBE/tools/run-acceptance.sh"
-cp "$PROOF/failing.js" "$GPROBE/tests/acceptance/_freeze-gate-selftest/failing.js"
-cp "$ROOT/tests/acceptance/_control/"* "$GPROBE/tests/acceptance/_control/" 2>/dev/null
+mkdir -p "$GPROBE"
+# Every acceptance suite, config byte and frozen path is part of the judge. Copy the working tree
+# rather than manufacturing a partial probe; product code may differ afterwards, the judge may not.
+cp -R "$ROOT/." "$GPROBE/"
 : > "$GPROBE/PROBE-IMPLEMENTED"
+: > "$GPROBE/.is-probe"
 GREEN_RC=0
 node "$GATE" --repo "$ROOT" --tests tests/acceptance/_freeze-gate-selftest/ --green "$GPROBE" >/dev/null 2>&1 || GREEN_RC=$?
 if [ "$GREEN_RC" -eq 0 ]; then pass "real runner: red at the fork point and green in the probe is exit 0"

@@ -169,11 +169,18 @@ function loadConfig(file) {
   // silently unpin the session or make spawn reject its argument list late, after planning has
   // already created a worktree. testAuthorModel is deliberately separate from the autonomous
   // implementation model; when absent, the planning launcher falls back to model.
-  for (const k of ['model', 'testAuthorModel']) {
+  for (const k of ['model', 'testAuthorModel', 'testProbeModel']) {
     if (raw[k] !== undefined && raw[k] !== null
-        && (typeof raw[k] !== 'string' || !raw[k].trim())) {
+        && (typeof raw[k] !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(raw[k].trim()))) {
       throw new Error(`run.config.json: '${k}' must be null or a non-empty model alias`);
     }
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9._/:@-]*$/.test(raw.image)) {
+    throw new Error(`run.config.json: 'image' must be a safe Docker image reference`);
+  }
+  if (raw.testProbeAttempts !== undefined
+      && !(Number.isInteger(raw.testProbeAttempts) && raw.testProbeAttempts > 0 && raw.testProbeAttempts <= 10)) {
+    throw new Error(`run.config.json: 'testProbeAttempts' must be a whole number from 1 to 10`);
   }
   for (const k of ['network', 'proxyName']) {
     if (raw[k] !== undefined && (typeof raw[k] !== 'string' || !raw[k].trim())) {

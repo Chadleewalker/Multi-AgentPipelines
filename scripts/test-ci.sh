@@ -16,6 +16,7 @@ SUITES=(
   test-artifact-contracts.sh
   test-audit-runs.sh
   test-author-tests.sh
+  test-prove-tests.sh
   test-batch.sh
   test-bd-seams.sh
   test-bd-shim.sh

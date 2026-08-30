@@ -27,18 +27,29 @@ const built = (state = 'write', extra = {}) => ({
 
 check('A1 missing arguments are usage errors', A.main([], capture().io) === A.EXIT_USAGE);
 check('A2 unknown options are named', /unknown option/.test(A.parseArgs(['x', '--wat']).error));
+{
+  let builtUnsafe = false;
+  check('A3 unsafe issue ids fail before brief or filesystem work',
+    A.main(['../escape', '--config', 'x.json'], capture().io, {
+      buildBrief: () => { builtUnsafe = true; return built(); },
+    }) === A.EXIT_USAGE && !builtUnsafe);
+}
 
 {
   const c = capture(); let launch = 0;
   const rc = A.main(['app-7', '--config', 'x.json'], c.io, {
     buildBrief: () => built('write'),
+    auditAuthorTree: () => ({ ok: true }),
     launchAuthor: (b, model) => { launch += 1; return { status: 0, stdout: 'agent report', stderr: '' }; },
+    proveTests: () => ({ ok: true, attempt: 1, probe: path.join(tmp, 'probe'), evidence: 'RED/GREEN proof' }),
   });
   check('B1 write state launches exactly once and succeeds', rc === 0 && launch === 1);
   check('B2 selected testAuthorModel is reported explicitly', c.out.some((s) => s.includes('opus')));
   check('B3 worktree and agent output are reported', c.out.some((s) => s.includes(folder)) && c.out.includes('agent report'));
   check('B4 mandatory human freeze step is reported', c.out.some((s) => /Human approval is mandatory/.test(s)));
-  check('B5 launcher states that it did not commit or push', c.out.some((s) => /No commit or push/.test(s)));
+  check('B5 launcher states that it did not freeze, commit or push', c.out.some((s) => /No freeze, commit or push/.test(s)));
+  check('B6 successful authoring requires and reports a fully proven green probe',
+    c.out.some((s) => /fully proven/.test(s)) && c.out.some((s) => /--probe/.test(s)));
 }
 
 for (const state of ['ready', 'freeze', 're-gate']) {
@@ -69,6 +80,7 @@ for (const state of ['ready', 'freeze', 're-gate']) {
   const c = capture();
   const rc = A.main(['app-7', '--config', 'x.json'], c.io, {
     buildBrief: () => built('write'), launchAuthor: () => ({ status: null, stdout: '', stderr: '', error: { code: 'ENOENT', message: 'spawnSync claude ENOENT' } }),
+    auditAuthorTree: () => ({ ok: true }),
   });
   check('D3 missing Claude executable is a distinct agent failure with useful detail', rc === A.EXIT_AGENT && /ENOENT/.test(c.err.join('\n')));
   check('D4 a failed author is explicitly kept away from freeze', /Do not freeze/.test(c.err.join('\n')));
@@ -122,7 +134,9 @@ for (const state of ['ready', 'freeze', 're-gate']) {
   const rc = A.main(['app-9', '--config', 'x.json'], c.io, {
     buildBrief: () => (++builds === 1 ? absent : present),
     runSync: (cmd, args) => ({ status: args[0] === 'show-ref' ? 1 : 0 }),
+    auditAuthorTree: () => ({ ok: true }),
     launchAuthor: (b) => { launchedText = b.text; return { status: 0, stdout: '', stderr: '' }; },
+    proveTests: () => ({ ok: true, attempt: 1, probe: path.join(tmp, 'probe') }),
   });
   check('F3 a newly created worktree causes the brief to be rebuilt from git registry', rc === 0 && builds === 2);
   check('F4 the agent receives the refreshed work-here brief, not stale creation instructions', launchedText === 'work here now');
@@ -134,8 +148,34 @@ for (const state of ['ready', 'freeze', 're-gate']) {
   const rejects = (key, value) => { fs.writeFileSync(file, JSON.stringify({ ...base, [key]: value })); try { loadConfig(file); return false; } catch { return true; } };
   check('G1 testAuthorModel rejects empty/non-string aliases', rejects('testAuthorModel', '') && rejects('testAuthorModel', 7));
   check('G2 existing model field uses the same validation', rejects('model', '') && rejects('model', false));
+  check('G3 option-shaped and unsafe model aliases are refused',
+    rejects('testProbeModel', '--dangerously-skip-permissions') && rejects('testProbeModel', 'opus;whoami'));
+  check('G4 probe attempts are bounded positive whole numbers',
+    rejects('testProbeAttempts', 0) && rejects('testProbeAttempts', 1.5) && rejects('testProbeAttempts', 11));
   fs.writeFileSync(file, JSON.stringify({ ...base, model: 'sonnet' }));
-  check('G3 model-only configs remain valid for fallback', loadConfig(file).model === 'sonnet');
+  check('G5 model-only configs remain valid for fallback', loadConfig(file).model === 'sonnet');
+  check('G6 an option-shaped Docker image cannot inject verifier-container flags', rejects('image', '--privileged'));
+}
+
+{
+  const c = capture();
+  const rc = A.main(['app-7', '--config', 'x.json'], c.io, {
+    buildBrief: () => built('write'),
+    auditAuthorTree: () => ({ ok: true }),
+    launchAuthor: () => ({ status: 0 }),
+    proveTests: () => ({ ok: false, kind: 'unproven', error: 'probe stayed red', probe: 'P' }),
+  });
+  check('H1 a failed green probe is a distinct refusal', rc === A.EXIT_PROBE && /not fully proven/.test(c.err.join('\n')));
+  check('H2 a failed green probe never offers a freeze command', !c.out.concat(c.err).some((s) => /freeze\.js commit/.test(s)));
+}
+
+{
+  const records = '?? tests/acceptance/app-7/new.js\0 M scenes/product.gd\0';
+  const audit = A.auditAuthorTree(built('write'), () => ({ status: 0, stdout: records }));
+  check('I1 author audit accepts its suite and rejects product changes',
+    !audit.ok && /scenes\/product\.gd/.test(audit.error) && !/new\.js.*outside/.test(audit.error));
+  const clean = A.auditAuthorTree(built('write'), () => ({ status: 0, stdout: '?? tests/acceptance/app-7/new.js\0' }));
+  check('I2 author audit accepts changes confined to the issue suite', clean.ok);
 }
 
 console.log(failures ? `\n${failures} check(s) failed` : '\nall checks passed');

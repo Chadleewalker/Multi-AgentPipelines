@@ -15,5 +15,7 @@
   "agentCommand": null,
   "hostShell": null,
   "model": "opus",
-  "testAuthorModel": "opus"
+  "testAuthorModel": "opus",
+  "testProbeModel": "opus",
+  "testProbeAttempts": 3
 }
