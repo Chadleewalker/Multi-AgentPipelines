@@ -219,11 +219,15 @@ verifier inside the project's configured image with no network, credentials, cap
 host mount other than that disposable clone, then feeds its evidence into the next bounded
  attempt. The whole acceptance tree, `pipeline.config.json` and every configured frozen Git
  pathspec are hashed before the agent and checked after both the agent and gate. Wildcard matches,
- ignored additions and file modes count, except a strict ignored-and-untracked Godot `.gd.uid`
- sidecar beside its unchanged `.gd` companion in another suite. That generated UID body is
+ ignored additions and file modes count, except two strict non-test shapes in another suite:
+ a valid single-link regular untracked `.freeze-gate.json` receipt in the integration-target
+ comparison only, and an ignored-and-untracked Godot `.gd.uid`
+ sidecar beside its unchanged `.gd` companion. The receipt is parsed by the runner's own rule;
+ staged, tracked, malformed, unreadable and symlinked receipts remain protected. The generated UID body is
  variable-width (one through thirteen engine-alphabet characters), not fixed-width. The suite
  under proof, malformed, orphan or tracked sidecars, and any uncertain Git query remain protected.
- Any changed protected byte is a refusal.
+ Any changed protected byte is a refusal. A refusal is diffed against whichever of the clean base
+ or proven tree is closer, so an expected suite awaiting promotion is not named as the concurrent change.
 
 Only a gate exit 0 is a launcher success. The ownership-marked baseline and probe are retained,
 and the reported human command includes `--probe <dir>` so the approved freeze re-runs the same

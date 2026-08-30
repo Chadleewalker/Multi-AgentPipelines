@@ -713,6 +713,6 @@ module.exports = {
   // command exists to prevent — so it reaches in here rather than restating the rule.
   partitionByFreeze, resolveBranch,
   queueExitCode, EXIT_NOTHING_DISPATCHABLE,
-  REFUSAL, KNOWN_GATE_VERSIONS, RECEIPT_VERDICTS,
+  REFUSAL, KNOWN_GATE_VERSIONS, RECEIPT_VERDICTS, parseReceipt,
   OWNER_TOKEN_KEY, OWNER_RUN_KEY,
 };

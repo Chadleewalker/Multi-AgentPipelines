@@ -11,6 +11,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { parseReceipt } = require('../runner/queue');
 
 const RECEIPT_NAME = '.freeze-gate.json';
 // ResourceUID::id_to_text emits a variable-width base-34 number. Godot's generator alphabet
@@ -167,16 +168,37 @@ function generatedGodotUid(repoRoot, rel, companionPresent, run = spawnSync) {
     && tracked.status === 1 && !tracked.error && !tracked.signal;
 }
 
-// Godot writes ignored `<script>.uid` sidecars when it scans a project. They are not part of
-// Git's integration tree, so a long-lived host checkout can have them while clean proof clones
-// do not. Managed-proof comparisons normalize only strict generated sidecars in OTHER suites.
-// The suite being proved, tracked/staged files, symlinks, malformed UIDs and missing companions
-// remain protected. The companion `.gd` entry remains in the manifest, so any source edit still
-// changes the proof hash.
-function normalizedManagedManifest(repoRoot, manifest, issueId, run = spawnSync) {
+function untrackedSiblingReceipt(repoRoot, rel, issueId, run = spawnSync) {
+  const match = /^tests\/acceptance\/([^/]+)\/\.freeze-gate\.json$/.exec(rel);
+  if (!match || match[1] === issueId) return false;
+  const file = path.resolve(repoRoot, ...rel.split('/'));
+  if (!within(repoRoot, file)) return false;
+  let stat; let text;
+  try { stat = fs.lstatSync(file); text = fs.readFileSync(file, 'utf8'); }
+  catch { return false; }
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || !parseReceipt(text).ok) return false;
+  const tracked = run('git', ['ls-files', '--error-unmatch', '--', rel], {
+    cwd: repoRoot, encoding: 'utf8', maxBuffer: 1024 * 1024, timeout: 5000,
+  });
+  return tracked.status === 1 && !tracked.error && !tracked.signal;
+}
+
+// Managed proof compares a clean commit-shaped clone with a long-lived integration checkout.
+// Freeze receipts are controller metadata rather than executable tests, and a receipt written
+// beside one unrelated suite must not stale the proof of another; promotion never copies or
+// rewrites those other suites. Godot also writes ignored `<script>.uid` sidecars when it scans a
+// project. Normalize only those two exact controller/generated shapes. The suite being proved's
+// test bytes, tracked/staged files, symlinks, malformed UIDs, missing companions and every other
+// protected path remain protected.
+function normalizedManagedManifest(repoRoot, manifest, issueId, runOrOptions = spawnSync) {
+  const run = typeof runOrOptions === 'function' ? runOrOptions : spawnSync;
+  const options = typeof runOrOptions === 'function' ? {} : (runOrOptions || {});
   const answer = [];
   const entries = new Map(manifest);
   for (const [rel, value] of manifest) {
+    // This projection is authorized only for the long-lived integration target. Baseline and
+    // probe identities stay bound to every raw byte the proof marker originally hashed.
+    if (options.targetComparison === true && untrackedSiblingReceipt(repoRoot, rel, issueId, run)) continue;
     const match = /^tests\/acceptance\/([^/]+)\/(.+\.gd)\.uid$/.exec(rel);
     if (!match || match[1] === issueId || !entries.has(`tests/acceptance/${match[1]}/${match[2]}`)) {
       answer.push([rel, value]); continue;
@@ -189,5 +211,6 @@ function normalizedManagedManifest(repoRoot, manifest, issueId, run = spawnSync)
 
 module.exports = {
   protectedManifest, manifestHash, manifestDifference, normalizedManagedManifest, generatedGodotUid,
+  untrackedSiblingReceipt,
   safePattern, regexFor, within, sha,
 };

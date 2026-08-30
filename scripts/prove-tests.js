@@ -154,7 +154,8 @@ function validateManagedProbe(probePath, targetRepoPath, ids, head) {
   try {
     const policy = policyAt(targetRepoPath);
     const targetManifest = normalizedManagedManifest(targetRepoPath,
-      protectedManifest(targetRepoPath, policy, marker.issue), marker.issue);
+      protectedManifest(targetRepoPath, policy, marker.issue), marker.issue,
+      { targetComparison: true });
     const probeManifest = normalizedManagedManifest(probe,
       protectedManifest(probe, policy, marker.issue), marker.issue);
     const baselineManifest = normalizedManagedManifest(baseline,
@@ -171,7 +172,12 @@ function validateManagedProbe(probePath, targetRepoPath, ids, head) {
     const targetIsProbe = targetHash === marker.manifestHash;
     const targetIsBase = targetHash === marker.baseManifestHash;
     if (!targetIsProbe && !targetIsBase) {
-      const details = manifestDifference(probeManifest, targetManifest).slice(0, 5);
+      // A pre-promotion integration checkout is expected to resemble the clean base, while an
+      // already-promoted checkout resembles the proven tree. Report the closer identity so the
+      // expected absence of the not-yet-promoted suite does not bury the actual concurrent byte.
+      const fromBase = manifestDifference(baselineManifest, targetManifest);
+      const fromProbe = manifestDifference(probeManifest, targetManifest);
+      const details = (fromBase.length <= fromProbe.length ? fromBase : fromProbe).slice(0, 5);
       return { ok: false, managed: true, error: 'the integration suite or another protected path moved after the probe was built'
         + `${details.length ? `: ${details.join(', ')}` : ''}` };
     }

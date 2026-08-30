@@ -1704,13 +1704,21 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     neither persisted nor included in the durable config hash, and their values are scrubbed from
     persisted worker evidence and errors.
 
-    Managed proof comparison normalizes one host-only Godot artifact: a strict generated
+    The managed proof's integration-target comparison normalizes two non-test host artifacts;
+    retained baseline and probe marker identities keep their original full semantics. A sibling suite's freeze
+    receipt is omitted only when the runner's own receipt parser accepts it, Git proves it is
+    untracked, and it is a single-link regular non-symlink file; promotion stages only the suite under proof,
+    so that sibling metadata is neither copied nor overwritten. A tracked or staged, malformed,
+    unreadable, symlinked or current-suite receipt remains protected. The other normalized shape
+    is one host-only Godot artifact: a strict generated
     `<script>.gd.uid` sidecar in another suite when Git proves it is ignored and untracked, it is
     a regular non-symlink file, its `.gd` companion remains in the protected manifest, and its
     body is Godot's variable-width generated form: `uid://`, one through thirteen characters
     from the engine's `a`-`y` plus `0`-`8` alphabet, and an optional final newline. The suite
     under proof, tracked or staged sidecars, malformed or orphan sidecars, every source file,
-    and every uncertain Git result remain protected and fail closed.
+    and every uncertain Git result remain protected and fail closed. Where integration matches
+    neither the clean base nor the proven tree, the refusal reports the closer identity's delta,
+    so an expected not-yet-promoted suite is not misreported as the cause.
 
     The strongest batch result is deliberately **proven-at-base**. A proof is bound to the exact
     integration HEAD and protected-tree manifest, so freezing one suite makes every other old

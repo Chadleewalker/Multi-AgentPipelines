@@ -162,6 +162,34 @@ fs.rmSync(path.join(target, 'scripts', 'test-ignored.sh'));
   const managed = P.validateManagedProbe(prepared.probe, target, ['app-7'], 'a'.repeat(40));
   check('E4 a proven managed probe recognizes the untouched integration fork point',
     managed.ok && managed.managed && managed.needsPromotion);
+  const unrelatedReceipt = path.join(target, 'tests', 'acceptance', 'other-suite', '.freeze-gate.json');
+  fs.mkdirSync(path.dirname(unrelatedReceipt), { recursive: true });
+  fs.writeFileSync(unrelatedReceipt, `${JSON.stringify({
+    gateVersion: 1, verdict: 'half-proven', suiteHash: 'a'.repeat(64),
+  })}\n`);
+  const withUnrelatedReceipt = P.validateManagedProbe(prepared.probe, target, ['app-7'], 'a'.repeat(40));
+  check('E4a a valid regular untracked sibling freeze receipt does not stale a managed proof',
+    withUnrelatedReceipt.ok && withUnrelatedReceipt.managed && withUnrelatedReceipt.needsPromotion);
+  spawnSync('git', ['add', '-f', '--', 'tests/acceptance/other-suite/.freeze-gate.json'], { cwd: target });
+  check('E4a1 a staged sibling freeze receipt remains protected',
+    !P.validateManagedProbe(prepared.probe, target, ['app-7'], 'a'.repeat(40)).ok);
+  spawnSync('git', ['reset', '-q', 'HEAD', '--', 'tests/acceptance/other-suite/.freeze-gate.json'], { cwd: target });
+  fs.writeFileSync(unrelatedReceipt, '{"verdict":"red"}\n');
+  const withMalformedReceipt = P.validateManagedProbe(prepared.probe, target, ['app-7'], 'a'.repeat(40));
+  check('E4a2 a malformed sibling freeze receipt remains protected',
+    !withMalformedReceipt.ok);
+  check('E4a3 a pre-promotion refusal reports the unexpected base delta, not the expected absent suite',
+    withMalformedReceipt.error.includes('added tests/acceptance/other-suite/.freeze-gate.json')
+      && !withMalformedReceipt.error.includes('removed tests/acceptance/app-7/'));
+  fs.rmSync(path.dirname(unrelatedReceipt), { recursive: true, force: true });
+  const baselineRunner = path.join(prepared.baseline, 'tools', 'run-acceptance.sh');
+  const probeRunner = path.join(prepared.probe, 'tools', 'run-acceptance.sh');
+  fs.writeFileSync(baselineRunner, '# symmetric tamper\n');
+  fs.writeFileSync(probeRunner, '# symmetric tamper\n');
+  check('E4a4 matching post-proof edits to baseline and probe cannot bypass marker identity',
+    !P.validateManagedProbe(prepared.probe, target, ['app-7'], 'a'.repeat(40)).ok);
+  fs.writeFileSync(baselineRunner, '# runner\n');
+  fs.writeFileSync(probeRunner, '# runner\n');
   const generatedUid = path.join(target, 'tests', 'acceptance', '_control', 'helper.gd.uid');
   for (const uid of ['a', 'b123456780a', 'c123456780ab', 'd123456780abc']) {
     fs.writeFileSync(generatedUid, `uid://${uid}\n`);
