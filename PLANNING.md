@@ -247,7 +247,7 @@ batch and its complete issue set once:
 
 ```bash
 node scripts/prepare-batch.js start <batch> --config run.config.<project>.json \
-  --issue <id> --issue <id> [--author-concurrency 1..3]
+  --issue <id> --issue <id> [--author-concurrency 1..10]
 node scripts/prepare-batch.js status <batch>
 ```
 
@@ -256,7 +256,7 @@ host-local run policy before it starts a worker. It reads Beads serially and use
 id returned by `bd show` for new suite and worktree paths. One unique exact legacy alias worktree
 may be reused to preserve unfinished work; dual or ambiguous carriers fail closed, and a
 published alias suite must be re-cut under the canonical path the runner dispatches. It then runs
-at most two test authors by default (three at the explicit maximum). Workers receive the immutable
+at most ten test authors, both by default and at the hard maximum. Workers receive the immutable
 snapshot on stdin; they cannot re-read Beads or choose another worktree. The same target-global
 lock excludes a normal pipeline run and either standalone author/proof command while preparation
 owns the target.

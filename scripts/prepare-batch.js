@@ -24,8 +24,8 @@ const ROOT = path.resolve(__dirname, '..');
 const WORKER = path.join(__dirname, 'prepare-batch-worker.js');
 const MAX_WORKER_OUTPUT = 1024 * 1024;
 const STAGE_PREFIX = 'PREPARATION_STAGE ';
-const DEFAULT_CONCURRENCY = 2;
-const MAX_CONCURRENCY = 3;
+const DEFAULT_CONCURRENCY = 10;
+const MAX_CONCURRENCY = 10;
 const SECRET_MARKER = '<redacted-host-env>';
 const EXIT_USAGE = 2;
 const EXIT_REFUSED = 3;
@@ -33,7 +33,7 @@ const EXIT_ATTENTION = 4;
 
 const USAGE = [
   'usage:',
-  '  node scripts/prepare-batch.js start <batch> --config <path> --issue <id> [--issue <id> ...] [--author-concurrency 1..3]',
+  `  node scripts/prepare-batch.js start <batch> --config <path> --issue <id> [--issue <id> ...] [--author-concurrency 1..${MAX_CONCURRENCY}]`,
   '  node scripts/prepare-batch.js resume <batch>',
   '  node scripts/prepare-batch.js status <batch> [--json]',
   '  node scripts/prepare-batch.js retry <batch> <id> [<id> ...]',
@@ -60,7 +60,7 @@ function parseArgs(argv) {
   try { prepState.validateBatchId(answer.batch); }
   catch { return { error: 'a safe batch id is required' }; }
   if (!Number.isInteger(answer.concurrency) || answer.concurrency < 1 || answer.concurrency > MAX_CONCURRENCY) {
-    return { error: '--author-concurrency must be a whole number from 1 to 3' };
+    return { error: `--author-concurrency must be a whole number from 1 to ${MAX_CONCURRENCY}` };
   }
   if (answer.mode === 'start' && (!answer.config || !answer.issues.length)) {
     return { error: 'start requires --config and at least one --issue' };

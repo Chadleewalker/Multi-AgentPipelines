@@ -1693,8 +1693,8 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     (change-log row `batch-test-preparation`). `scripts/prepare-batch.js` names an immutable
     issue roster and records each issue's Beads dependencies, criteria fingerprint, integration
     HEAD, redacted configuration and exact full-id worktree before it launches anything. Beads
-    access and worktree allocation remain serialized in the parent; a maximum of three child
-    processes receive complete snapshots on stdin and call only the structured author/proof
+    access and worktree allocation remain serialized in the parent; a default and hard maximum
+    of ten child processes receive complete snapshots on stdin and call only the structured author/proof
     cores. The coordinator and the standalone commands share the runner's target-global lock,
     so no preparation worker can overlap a pipeline run or be rediscovered through an ambiguous
     folder. `runs/preparations/<batch>/` holds an immutable manifest, hash-chained events and

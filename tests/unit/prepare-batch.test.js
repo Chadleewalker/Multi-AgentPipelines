@@ -33,12 +33,13 @@ function built(id = 'app-1', state = 'write', extra = {}) {
 }
 
 // A. CLI is intentionally small and portable.
-check('A1 start accepts repeated issue ids and defaults preparation concurrency to two', (() => {
+check('A1 start accepts repeated issue ids and defaults preparation concurrency to ten', (() => {
   const v = P.parseArgs(['start', 'night-wave', '--config', 'run.json', '--issue', 'app-1', '--issue', 'app-2']);
-  return !v.error && v.issues.length === 2 && v.concurrency === 2;
+  return !v.error && v.issues.length === 2 && v.concurrency === 10;
 })());
-check('A2 concurrency has a hard preparation ceiling of three',
-  /1 to 3/.test(P.parseArgs(['start', 'wave', '--config', 'x', '--issue', 'app-1', '--author-concurrency', '4']).error || ''));
+check('A2 concurrency accepts ten and has a hard preparation ceiling of ten',
+  !P.parseArgs(['start', 'wave', '--config', 'x', '--issue', 'app-1', '--author-concurrency', '10']).error
+    && /1 to 10/.test(P.parseArgs(['start', 'wave', '--config', 'x', '--issue', 'app-1', '--author-concurrency', '11']).error || ''));
 check('A3 duplicate ids are rejected before snapshotting',
   /duplicate/.test(P.parseArgs(['start', 'wave', '--config', 'x', '--issue', 'app-1', '--issue', 'app-1']).error || ''));
 check('A4 portable reserved ids are rejected without throwing',
