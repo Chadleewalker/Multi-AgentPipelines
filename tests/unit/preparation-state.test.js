@@ -29,7 +29,7 @@ const manifestInput = (extra = {}) => ({
   ],
   config: {
     targetRepoPath: 'C:/fixture', targetRepoRemote: 'https://example.invalid/repo.git',
-    image: 'fixture:local', hostEnv: { GODOT: 'C:/secret/godot.exe', LICENSE_KEY: 'do-not-store' },
+    image: 'fixture:local', hostEnv: { GODOT: 'C:/tmp/private-fixture/godot.exe', LICENSE_KEY: 'do-not-store' },
     oauthToken: 'also-secret', concurrency: 3,
   },
   ...extra,
@@ -117,7 +117,7 @@ const manifest = S.createManifest(root, batch, manifestInput(), { now: instant()
   check('manifest round-trips with normalized dependency order intact',
     S.readManifest(root, batch).issues[1].dependencies[0] === 'fixture-a1');
   const raw = fs.readFileSync(path.join(root, batch, 'manifest.json'), 'utf8');
-  check('manifest never persists hostEnv values', !/do-not-store|C:\/secret/.test(raw));
+  check('manifest never persists hostEnv values', !/do-not-store|C:\/tmp\/private-fixture/.test(raw));
   check('an existing manifest cannot be overwritten',
     throws(() => S.createManifest(root, batch, manifestInput({ intent: 'replacement' }), { now: instant(1) }), /EEXIST|exist/i));
 

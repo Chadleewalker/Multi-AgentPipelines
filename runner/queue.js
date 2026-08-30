@@ -148,12 +148,21 @@ function fetchBranch(cfg, branch) {
 function suitePath(issueId) { return `tests/acceptance/${issueId}`; }
 
 function hasSuite(cfg, probe, issueId) {
-  const r = git(cfg, ['ls-tree', '-d', '--name-only', 'FETCH_HEAD', '--', suitePath(issueId)],
+  const rel = suitePath(issueId);
+  const r = git(cfg, ['ls-tree', '-d', 'FETCH_HEAD', '--', rel],
     { cwd: probe.dir });
   if (r.status !== 0) {
-    return { ok: false, error: `cannot read FETCH_HEAD while checking ${suitePath(issueId)}: ${(r.stderr || '').trim() || `git ls-tree exited ${r.status}`}` };
+    return { ok: false, error: `cannot read FETCH_HEAD while checking ${rel}: ${(r.stderr || '').trim() || `git ls-tree exited ${r.status}`}` };
   }
-  return { ok: true, present: !!(r.stdout || '').trim() };
+  const text = String(r.stdout || '').trim();
+  if (!text) return { ok: true, present: false, suiteTree: null };
+  // Keep the identity from this exact FETCH_HEAD probe. A later lookup through the host
+  // checkout's local branch can be ahead of or behind the remote commit judged below.
+  const match = text.match(/^[0-7]{6} tree ([0-9a-f]{40,64})\t(.+)$/i);
+  if (!match || match[2] !== rel) {
+    return { ok: false, error: `cannot identify ${rel} in FETCH_HEAD: unexpected git ls-tree output` };
+  }
+  return { ok: true, present: true, suiteTree: match[1].toLowerCase() };
 }
 
 // ---- §4.12's THIRD admission rule: the receipt ----------------------------------------
@@ -256,6 +265,7 @@ function judge(cfg, probe, issue, branch) {
   if (!present.present) {
     return { refusal: REFUSAL.NO_SUITE, reason: `no frozen acceptance suite at ${where}` };
   }
+  const suiteTree = present.suiteTree;
 
   const raw = readReceipt(cfg, probe, issue.id);
   if (!raw.ok) return { abort: raw.error };
@@ -263,6 +273,7 @@ function judge(cfg, probe, issue, branch) {
   if (!parsed.ok) {
     return {
       refusal: REFUSAL.NO_RECEIPT,
+      suiteTree,
       reason: `no freeze receipt the runner can read at ${suitePath(issue.id)}/${RECEIPT_NAME} on ${branch} of ${cfg.targetRepoRemote} — ${parsed.detail}`,
     };
   }
@@ -272,6 +283,7 @@ function judge(cfg, probe, issue, branch) {
   if (hashed.hash !== parsed.receipt.suiteHash) {
     return {
       refusal: REFUSAL.MISMATCH,
+      suiteTree,
       reason: `the freeze receipt does not match the suite at ${where}: the gate blessed `
         + `${parsed.receipt.suiteHash.slice(0, 12)} and the branch now holds ${hashed.hash.slice(0, 12)}`,
     };
@@ -284,12 +296,13 @@ function judge(cfg, probe, issue, branch) {
   if (parsed.receipt.verdict === 'half-proven' && cfg.allowHalfProven !== true) {
     return {
       refusal: REFUSAL.HALF_PROVEN,
+      suiteTree,
       reason: `the freeze receipt for ${where} records a half-proven freeze — the suite was red `
         + 'at the fork point but no probe was supplied, so nothing has ever shown an '
         + 'implementation can turn it green, and this run does not admit half-proven suites',
     };
   }
-  return { dispatch: true };
+  return { dispatch: true, suiteTree };
 }
 
 // Split the candidates into what may be dispatched and what may not. LAZY at the caller:
@@ -311,7 +324,10 @@ function partitionByFreeze(cfg, candidates) {
       // The KIND travels beside the reason from here on: through the feed's live refusal map,
       // onto the manifest row, and into the report's heading and remedy. A reason is prose a
       // human reads; the kind is what every consumer downstream branches on.
-      else undispatchable.push({ issue, reason: answer.reason, refusal: answer.refusal });
+      else undispatchable.push({
+        issue, reason: answer.reason, refusal: answer.refusal,
+        ...(answer.suiteTree ? { suiteTree: answer.suiteTree } : {}),
+      });
     }
     return { ok: true, issues, undispatchable, branch };
   } finally {

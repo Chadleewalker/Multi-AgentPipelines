@@ -274,6 +274,138 @@ const ISSUE = (id, extra = {}) => ({
   check('D6 a legacy suite-bearing worktree is surfaced as a collision, never adopted',
     r.code === 3 && /legacy or ambiguous worktree/.test(r.text) && /freeze-1/.test(r.text));
 }
+
+// A suite committed on the integration branch is inherited by every later worktree. Those clean,
+// integration-identical copies are not unpublished ownership claims. Working-tree and committed
+// divergence still are, including a clean divergent branch that status alone would miss.
+{
+  const w = makeWorld();
+  const B = require(SCRIPT);
+  const id = 'app-inherited';
+  const relative = path.join('tests', 'acceptance', id);
+  const suite = path.join(w.target, relative);
+  const original = '# inherited from integration\n';
+  fs.mkdirSync(suite, { recursive: true });
+  fs.writeFileSync(path.join(suite, 'acceptance.sh'), original);
+  git(w.target, ['add', relative]);
+  git(w.target, ['commit', '-qm', 'an inherited acceptance suite']);
+  const integrationTree = git(w.target, ['rev-parse', `HEAD:${fwd(relative)}`]).out.trim();
+
+  const legacyA = path.join(w.base, 'legacy-inherited-a');
+  const legacyB = path.join(w.base, 'legacy-inherited-b');
+  git(w.target, ['worktree', 'add', '-q', '-b', 'legacy-inherited-a', legacyA, 'master']);
+  git(w.target, ['worktree', 'add', '-q', '-b', 'legacy-inherited-b', legacyB, 'master']);
+  const registered = [
+    { dir: legacyA, branch: 'legacy-inherited-a', locked: false, prunable: false },
+    { dir: legacyB, branch: 'legacy-inherited-b', locked: false, prunable: false },
+  ];
+  const inherited = B.resolveIssueFolder({ targetRepoPath: w.target }, id, registered, integrationTree);
+  check('D6a clean integration-identical legacy suites are ignored only with a re-gate base',
+    inherited.ok && inherited.folder && inherited.folder.exists === false);
+  check('D6b local/write resolution keeps the original conservative collision', (() => {
+    const local = B.resolveIssueFolder({ targetRepoPath: w.target }, id, registered);
+    return !local.ok && local.kind === 'collision';
+  })());
+
+  const legacyFile = path.join(legacyA, relative, 'acceptance.sh');
+  fs.appendFileSync(legacyFile, '# local divergence\n');
+  check('D6c a modified inherited suite remains a collision', (() => {
+    const found = B.resolveIssueFolder({ targetRepoPath: w.target }, id, registered, integrationTree);
+    return !found.ok && found.kind === 'collision' && /legacy-inherited-a/.test(found.error);
+  })());
+  fs.writeFileSync(legacyFile, original);
+
+  const extra = path.join(legacyA, relative, 'untracked.txt');
+  fs.writeFileSync(extra, 'unpublished evidence\n');
+  check('D6d an untracked file prevents the inherited-suite exemption', (() => {
+    const found = B.resolveIssueFolder({ targetRepoPath: w.target }, id, registered, integrationTree);
+    return !found.ok && found.kind === 'collision';
+  })());
+  fs.rmSync(extra);
+
+  const ignored = path.join(legacyA, relative, 'ignored.tmp');
+  fs.appendFileSync(path.join(legacyA, '.gitignore'), '\n*.tmp\n');
+  fs.writeFileSync(ignored, 'ignored unpublished evidence\n');
+  check('D6e an ignored file prevents the inherited-suite exemption', (() => {
+    const found = B.resolveIssueFolder({ targetRepoPath: w.target }, id, registered, integrationTree);
+    return !found.ok && found.kind === 'collision';
+  })());
+  fs.rmSync(ignored); fs.rmSync(path.join(legacyA, '.gitignore'));
+
+  fs.appendFileSync(legacyFile, '# committed divergence\n');
+  git(legacyA, ['add', relative]);
+  git(legacyA, ['commit', '-qm', 'diverge the legacy suite']);
+  check('D6f a clean but committed divergent legacy suite remains a collision', (() => {
+    const found = B.resolveIssueFolder({ targetRepoPath: w.target }, id, registered, integrationTree);
+    return !found.ok && found.kind === 'collision';
+  })());
+
+  const notGit = path.join(w.base, 'legacy-not-git');
+  fs.mkdirSync(path.join(notGit, relative), { recursive: true });
+  fs.writeFileSync(path.join(notGit, relative, 'acceptance.sh'), original);
+  check('D6g an unreadable legacy Git identity fails closed as a collision', (() => {
+    const found = B.resolveIssueFolder({ targetRepoPath: w.target }, id,
+      [{ dir: notGit, branch: 'legacy-not-git', locked: false, prunable: false }], integrationTree);
+    return !found.ok && found.kind === 'collision';
+  })());
+}
+
+// Re-gate is classified from a throwaway fetch, not from the host checkout. The collision
+// exemption must therefore carry the exact fetched suite tree through the gate. Re-resolving
+// `master` locally is wrong in both directions: an ahead local ref creates false collisions,
+// while a behind local ref can hide genuinely divergent legacy evidence.
+{
+  const w = makeWorld();
+  const id = 'app-remote-ahead';
+  const relative = path.join('tests', 'acceptance', id);
+  const suite = path.join(w.target, relative);
+  fs.mkdirSync(suite, { recursive: true });
+  fs.writeFileSync(path.join(suite, 'acceptance.sh'), '# remote version\n');
+  git(w.target, ['add', relative]);
+  git(w.target, ['commit', '-qm', 'remote suite']);
+  git(w.target, ['push', '-q', w.origin, 'HEAD:refs/heads/master']);
+  const remoteCommit = git(w.target, ['rev-parse', 'HEAD']).out.trim();
+
+  const legacy = path.join(w.base, 'legacy-remote-ahead');
+  git(w.target, ['worktree', 'add', '-q', '-b', 'legacy-remote-ahead', legacy, remoteCommit]);
+  fs.writeFileSync(path.join(suite, 'acceptance.sh'), '# local ahead version\n');
+  git(w.target, ['add', relative]);
+  git(w.target, ['commit', '-qm', 'local branch moves suite ahead']);
+  // Leave refs/heads/master ahead while the shared worktree itself is clean at the remote
+  // commit, so the only difference is which branch identity the exemption resolves.
+  git(w.target, ['checkout', '-q', '--detach', remoteCommit]);
+
+  const r = cli(w, [id, '--config', w.cfgFile], bdEnv(w, [ISSUE(id)]));
+  check('D6h an ahead local branch cannot create collisions for remote-identical inherited suites',
+    r.code === 0 && /THE SUITE IS ALREADY ON master/.test(r.text));
+}
+{
+  const w = makeWorld();
+  const id = 'app-remote-behind';
+  const relative = path.join('tests', 'acceptance', id);
+  const suite = path.join(w.target, relative);
+  fs.mkdirSync(suite, { recursive: true });
+  fs.writeFileSync(path.join(suite, 'acceptance.sh'), '# old local version\n');
+  git(w.target, ['add', relative]);
+  git(w.target, ['commit', '-qm', 'old local suite']);
+  git(w.target, ['push', '-q', w.origin, 'HEAD:refs/heads/master']);
+  const legacy = path.join(w.base, 'legacy-remote-behind');
+  git(w.target, ['worktree', 'add', '-q', '-b', 'legacy-remote-behind', legacy, 'master']);
+
+  const publisher = path.join(w.base, 'publisher');
+  spawnSync('git', ['clone', '-q', w.origin, publisher]);
+  for (const kv of [['user.email', 'fixture@test.local'], ['user.name', 'f'],
+    ['commit.gpgsign', 'false'], ['core.autocrlf', 'false'], ['core.eol', 'lf']]) git(publisher, ['config', ...kv]);
+  fs.writeFileSync(path.join(publisher, relative, 'acceptance.sh'), '# newer remote version\n');
+  git(publisher, ['add', relative]);
+  git(publisher, ['commit', '-qm', 'remote moves suite ahead']);
+  git(publisher, ['push', '-q', 'origin', 'master']);
+
+  const r = cli(w, [id, '--config', w.cfgFile], bdEnv(w, [ISSUE(id)]));
+  check('D6i a behind local branch cannot exempt legacy suites divergent from fetched remote',
+    r.code === 3 && /legacy or ambiguous worktree/.test(r.text)
+      && /legacy-remote-behind/.test(r.text));
+}
 {
   const w = makeWorld();
   const env = bdEnv(w, [ISSUE('app-1')]);

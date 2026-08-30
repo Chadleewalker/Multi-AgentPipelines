@@ -1647,6 +1647,16 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     untouched one. The state comes from the runner's own `partitionByFreeze`, never a second
     reading of the rule.
 
+    A suite already committed on the integration branch appears in every worktree that inherited
+    that commit, so directory presence alone is not an ownership claim. For `re-gate` only, a
+    legacy worktree is ignored when its committed suite tree is byte-identical to the **exact
+    `FETCH_HEAD` tree the dispatch gate just judged** and its suite path is clean of tracked,
+    untracked and ignored changes. The gate carries that tree object id out of its throwaway
+    repository; the brief never resolves a local branch name a second time, because a local ref
+    may be ahead of or behind the remote decision. A different tree, any local suite byte, or any
+    Git uncertainty remains a collision. `write` and `freeze` keep the original conservative
+    rule because there is no remote suite whose inheritance could explain the second copy.
+
     A machine-specific path lives in the run config's optional `hostEnv`, not in the target's
     `pipeline.config.json`: run configs are host-local and git-ignored, and a path true on one
     machine must not be committed to a repository other machines clone. Nothing at run time

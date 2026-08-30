@@ -191,13 +191,17 @@ function classifyBranch(cfg, id) {
   const gate = partitionByFreeze(cfg, [{ id }]);
   if (!gate.ok) return { ok: false, error: gate.error };
   if (gate.issues.length) return { ok: true, state: 'ready' };
-  const refusal = (gate.undispatchable[0] || {}).refusal;
+  const row = gate.undispatchable[0] || {};
+  const refusal = row.refusal;
 
   if (refusal !== REFUSAL.NO_SUITE) {
     // A suite is on the branch; what is wrong is the receipt beside it. One command fixes it and
     // nothing needs writing — which is worth saying loudly, because it looks like the same
     // problem as a missing suite in every report that does not separate them.
-    return { ok: true, state: 're-gate', refusal, reason: (gate.undispatchable[0] || {}).reason };
+    return {
+      ok: true, state: 're-gate', refusal, reason: row.reason,
+      suiteTree: row.suiteTree,
+    };
   }
   return { ok: true, state: 'local' };
 }
@@ -318,15 +322,42 @@ function suiteFiles(root, id) {
   try { return fs.readdirSync(dir).filter((f) => f !== '.freeze-gate.json'); } catch { return null; }
 }
 
+function suiteTree(cfg, cwd, ref, id) {
+  const suite = `tests/acceptance/${id}`;
+  const r = git(cfg, ['rev-parse', '--verify', `${ref}:${suite}`], { cwd });
+  const oid = String(r.stdout || '').trim();
+  return r.status === 0 && /^[0-9a-f]{40,64}$/i.test(oid) ? oid : null;
+}
+
+// A committed suite appears in every worktree whose branch inherited that commit. Directory
+// presence alone therefore cannot mean that the other worktree owns unpublished test work. The
+// exemption is deliberately narrow: the complete committed suite tree must equal the resolved
+// integration branch, and Git must see no tracked, untracked OR ignored working-tree bytes under
+// it. Any uncertainty remains a collision so divergent/manual evidence is never adopted or lost.
+function inheritedSuite(cfg, id, folder, integrationTree) {
+  if (!integrationTree || suiteTree(cfg, folder.dir, 'HEAD', id) !== integrationTree) return false;
+  const suite = `tests/acceptance/${id}`;
+  const clean = git(cfg, [
+    'status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored=matching', '--', suite,
+  ], { cwd: folder.dir });
+  return clean.status === 0 && !String(clean.stdout || '').length;
+}
+
 // Resolve one and only one place for an issue.  A worktree containing the suite under any
 // other branch is evidence from an older/manual session, not permission to take that session
 // over.  Likewise, a directory at the path we intend to create which Git does not register is
 // a collision, never an existing worktree to trust by filename.
-function resolveIssueFolder(cfg, id, registered = worktrees(cfg)) {
+function resolveIssueFolder(cfg, id, registered = worktrees(cfg), inheritedTree = null) {
   const names = issueNames(id);
   const exact = registered.filter((w) => w.branch === names.branch);
   const carrying = registered.filter((w) => suiteFiles(w.dir, id) !== null);
-  const legacy = carrying.filter((w) => w.branch !== names.branch);
+  // Only a tree identity carried out of the runner's exact FETCH_HEAD probe may relax a
+  // collision. A branch name would be re-resolved in the host checkout and can drift ahead
+  // of or behind the remote commit that partitionByFreeze actually judged.
+  const integrationTree = typeof inheritedTree === 'string'
+    && /^[0-9a-f]{40,64}$/i.test(inheritedTree) ? inheritedTree.toLowerCase() : null;
+  const legacy = carrying.filter((w) => w.branch !== names.branch)
+    .filter((w) => !inheritedSuite(cfg, id, w, integrationTree));
   if (exact.length > 1) {
     return { ok: false, kind: 'collision', error: `multiple worktrees claim exact branch ${names.branch}: ${exact.map((w) => w.dir).join(', ')}` };
   }
@@ -650,7 +681,10 @@ function buildBrief(opts) {
   }
 
   let located;
-  try { located = resolveIssueFolder(cfg, opts.id); }
+  try {
+    located = resolveIssueFolder(cfg, opts.id, undefined,
+      remoteState.state === 're-gate' ? remoteState.suiteTree : null);
+  }
   catch (e) { return { ok: false, kind: 'unknown', error: (e && e.message) || String(e) }; }
   if (!located.ok) return { ok: false, kind: located.kind, error: located.error };
   const folder = located.folder;
