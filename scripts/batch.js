@@ -130,7 +130,7 @@ const MARKER_STEM = /^(.+)-(\d{4}-\d{2}-\d{2})$/;
 
 // Direct children of the runs root that are never a run directory. `batches/` is this
 // tool's own input, and the other two are the sweep's and the lock's.
-const NOT_A_RUN = new Set(['batches', 'locks', 'sweeps']);
+const NOT_A_RUN = new Set(['batches', 'locks', 'preparations', 'sweeps']);
 
 // The optional marker fields, in the order a human reads them. Present ones are printed;
 // absent ones say nothing at all rather than printing an empty row.

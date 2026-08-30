@@ -14,7 +14,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+const { loadConfig } = require('../runner/config');
 const { runSync, failureText } = require('../runner/process');
+const { acquire, release } = require('../runner/lock');
 const { compareSuites } = require('./freeze-gate');
 const {
   protectedManifest, manifestHash, manifestDifference, within, sha,
@@ -32,7 +34,7 @@ const PROBE_DENIED = 'Bash,WebFetch,WebSearch';
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 function validIssueId(id) {
-  if (typeof id !== 'string' || !SAFE_ID.test(id) || id === '.' || id === '..' || id.endsWith('.')) return false;
+  if (typeof id !== 'string' || !SAFE_ID.test(id) || id === '.' || id.includes('..') || id.endsWith('.')) return false;
   const stem = id.split('.')[0].toUpperCase();
   return !/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/.test(stem);
 }
@@ -447,25 +449,54 @@ function main(argv, out = console.log, err = console.error, seams = {}) {
   if (opts.error || !opts.id || !opts.config || !validIssueId(opts.id)) {
     err(`prove-tests: ${opts.error || 'a safe issue id and --config are required'}`); err(USAGE); return 2;
   }
-  const builder = seams.buildBrief || require('./spec-brief').buildBrief;
-  const built = builder(opts);
-  if (!built.ok) { err(`prove-tests: ${built.error}`); return 3; }
-  if (built.state === 'ready') { out(`${opts.id} is already frozen and dispatchable.`); return 0; }
-  if (!built.folder || !built.folder.exists) {
-    err(`prove-tests: no existing issue worktree contains ${opts.id}; run author-tests first`); return 3;
+  const configPath = path.resolve(opts.config);
+  let lockCfg;
+  try { lockCfg = (seams.loadConfig || loadConfig)(configPath); }
+  catch (e) { err(`prove-tests: ${(e && e.message) || String(e)}`); return 2; }
+  // The structured proveTests() API deliberately owns no global lock: batch workers already
+  // run under their coordinator's target ownership. The standalone CLI loads only enough
+  // config to name the target, then locks before buildBrief's sole Beads read.
+  const root = path.resolve(__dirname, '..');
+  const lockRunId = `test-proof-cli-${process.pid}-${Date.now()}`;
+  const locked = (seams.acquireLock || acquire)(root, lockCfg.targetRepoPath, lockRunId);
+  if (!locked.ok) {
+    const holder = locked.holder || {};
+    err(`prove-tests: target is already owned by ${holder.runId || 'another live operation'}`
+      + `${holder.pid ? ` (pid ${holder.pid})` : ''}; no probe was created.`);
+    return 3;
   }
-  const model = String(built.cfg.testProbeModel || built.cfg.testAuthorModel || built.cfg.model || '').trim();
-  if (!model) { err('prove-tests: no probe model is configured'); return 3; }
-  const proof = (seams.proveTests || proveTests)(built, model, seams.probeSeams || {});
-  if (proof.evidence) out(proof.evidence);
-  if (!proof.ok) {
-    err(`prove-tests: ${proof.error}`);
-    if (proof.probe) err(`probe retained for inspection: ${proof.probe}`);
-    return 4;
+  try {
+    if (locked.tookOver) {
+      err('prove-tests: stale target ownership requires normal pipeline recovery; no Beads read or probe was started.');
+      return 3;
+    }
+    const builder = seams.buildBrief || require('./spec-brief').buildBrief;
+    const built = builder(opts);
+    if (!built.ok) { err(`prove-tests: ${built.error}`); return 3; }
+    if (!built.cfg || typeof built.cfg.targetRepoPath !== 'string'
+        || path.resolve(built.cfg.targetRepoPath) !== path.resolve(lockCfg.targetRepoPath)) {
+      err('prove-tests: run config target changed after target ownership was acquired; no probe was created.');
+      return 3;
+    }
+    if (built.state === 'ready') { out(`${opts.id} is already frozen and dispatchable.`); return 0; }
+    if (!built.folder || !built.folder.exists) {
+      err(`prove-tests: no existing issue worktree contains ${opts.id}; run author-tests first`); return 3;
+    }
+    const model = String(built.cfg.testProbeModel || built.cfg.testAuthorModel || built.cfg.model || '').trim();
+    if (!model) { err('prove-tests: no probe model is configured'); return 3; }
+    const proof = (seams.proveTests || proveTests)(built, model, seams.probeSeams || {});
+    if (proof.evidence) out(proof.evidence);
+    if (!proof.ok) {
+      err(`prove-tests: ${proof.error}`);
+      if (proof.probe) err(`probe retained for inspection: ${proof.probe}`);
+      return 4;
+    }
+    out(`fully proven on attempt ${proof.attempt}; retained probe: ${proof.probe}`);
+    out(`human approval is still required before: node scripts/freeze.js commit ${opts.id} --config "${path.resolve(opts.config)}" --probe "${proof.probe}"`);
+    return 0;
+  } finally {
+    (seams.releaseLock || release)(root, lockCfg.targetRepoPath, locked.ownership);
   }
-  out(`fully proven on attempt ${proof.attempt}; retained probe: ${proof.probe}`);
-  out(`human approval is still required before: node scripts/freeze.js commit ${opts.id} --config "${path.resolve(opts.config)}" --probe "${proof.probe}"`);
-  return 0;
 }
 
 module.exports = {

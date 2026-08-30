@@ -20,9 +20,16 @@ const folder = path.join(tmp, 'issue-tree');
 fs.mkdirSync(folder);
 const cfg = { targetRepoPath: tmp, targetRepoRemote: 'x', image: 'x', wallClockMinutes: 2, model: 'sonnet', testAuthorModel: 'opus' };
 const built = (state = 'write', extra = {}) => ({
-  ok: true, state, cfg: { ...cfg, ...(extra.cfg || {}) }, branch: 'master', id: 'app-7',
+  ok: true, state, branch: 'master', id: 'app-7',
   policy: { verifyCommand: 'sh tools/run-acceptance.sh' }, text: 'THE BRIEF',
   folder: state === 'ready' ? null : { dir: folder, branch: 'freeze-7', exists: true }, ...extra,
+  cfg: { ...cfg, ...(extra.cfg || {}) },
+});
+const cliSeams = (extra = {}) => ({
+  loadConfig: () => cfg,
+  acquireLock: () => ({ ok: true, tookOver: false, ownership: { token: 'fixture' } }),
+  releaseLock: () => {},
+  ...extra,
 });
 
 check('A1 missing arguments are usage errors', A.main([], capture().io) === A.EXIT_USAGE);
@@ -37,12 +44,12 @@ check('A2 unknown options are named', /unknown option/.test(A.parseArgs(['x', '-
 
 {
   const c = capture(); let launch = 0;
-  const rc = A.main(['app-7', '--config', 'x.json'], c.io, {
+  const rc = A.main(['app-7', '--config', 'x.json'], c.io, cliSeams({
     buildBrief: () => built('write'),
     auditAuthorTree: () => ({ ok: true }),
     launchAuthor: (b, model) => { launch += 1; return { status: 0, stdout: 'agent report', stderr: '' }; },
     proveTests: () => ({ ok: true, attempt: 1, probe: path.join(tmp, 'probe'), evidence: 'RED/GREEN proof' }),
-  });
+  }));
   check('B1 write state launches exactly once and succeeds', rc === 0 && launch === 1);
   check('B2 selected testAuthorModel is reported explicitly', c.out.some((s) => s.includes('opus')));
   check('B3 worktree and agent output are reported', c.out.some((s) => s.includes(folder)) && c.out.includes('agent report'));
@@ -54,34 +61,34 @@ check('A2 unknown options are named', /unknown option/.test(A.parseArgs(['x', '-
 
 for (const state of ['ready', 'freeze', 're-gate']) {
   const c = capture(); let launch = 0;
-  const rc = A.main(['app-7', '--config', 'x.json'], c.io, {
+  const rc = A.main(['app-7', '--config', 'x.json'], c.io, cliSeams({
     buildBrief: () => built(state), launchAuthor: () => { launch += 1; return { status: 0 }; },
-  });
+  }));
   check(`C ${state} state does not launch an author`, rc === 0 && launch === 0 && c.out.some((s) => /no launch/.test(s)));
 }
 
 {
   const c = capture();
-  const rc = A.main(['app-7', '--config', 'x.json'], c.io, {
+  const rc = A.main(['app-7', '--config', 'x.json'], c.io, cliSeams({
     buildBrief: () => built('write', { cfg: { model: null, testAuthorModel: null } }),
-  });
+  }));
   check('D1 no model fails before launch and names both config choices', rc === A.EXIT_SETUP && /testAuthorModel or model/.test(c.err.join('\n')));
 }
 
 {
   const c = capture();
-  const rc = A.main(['app-404', '--config', 'x.json'], c.io, {
+  const rc = A.main(['app-404', '--config', 'x.json'], c.io, cliSeams({
     buildBrief: () => ({ ok: false, kind: 'issue', error: 'bd returned no issue for app-404' }),
-  });
+  }));
   check('D2 unknown issue is a setup failure and is named', rc === A.EXIT_SETUP && /app-404/.test(c.err.join('\n')));
 }
 
 {
   const c = capture();
-  const rc = A.main(['app-7', '--config', 'x.json'], c.io, {
+  const rc = A.main(['app-7', '--config', 'x.json'], c.io, cliSeams({
     buildBrief: () => built('write'), launchAuthor: () => ({ status: null, stdout: '', stderr: '', error: { code: 'ENOENT', message: 'spawnSync claude ENOENT' } }),
     auditAuthorTree: () => ({ ok: true }),
-  });
+  }));
   check('D3 missing Claude executable is a distinct agent failure with useful detail', rc === A.EXIT_AGENT && /ENOENT/.test(c.err.join('\n')));
   check('D4 a failed author is explicitly kept away from freeze', /Do not freeze/.test(c.err.join('\n')));
 }
@@ -131,13 +138,13 @@ for (const state of ['ready', 'freeze', 're-gate']) {
   const c = capture(); let builds = 0; let launchedText = null;
   const absent = built('write', { folder: { dir: folder, branch: 'freeze-9', exists: false }, text: 'create it first' });
   const present = built('write', { folder: { dir: folder, branch: 'freeze-9', exists: true }, text: 'work here now' });
-  const rc = A.main(['app-9', '--config', 'x.json'], c.io, {
+  const rc = A.main(['app-9', '--config', 'x.json'], c.io, cliSeams({
     buildBrief: () => (++builds === 1 ? absent : present),
     runSync: (cmd, args) => ({ status: args[0] === 'show-ref' ? 1 : 0 }),
     auditAuthorTree: () => ({ ok: true }),
     launchAuthor: (b) => { launchedText = b.text; return { status: 0, stdout: '', stderr: '' }; },
     proveTests: () => ({ ok: true, attempt: 1, probe: path.join(tmp, 'probe') }),
-  });
+  }));
   check('F3 a newly created worktree causes the brief to be rebuilt from git registry', rc === 0 && builds === 2);
   check('F4 the agent receives the refreshed work-here brief, not stale creation instructions', launchedText === 'work here now');
 }
@@ -159,12 +166,12 @@ for (const state of ['ready', 'freeze', 're-gate']) {
 
 {
   const c = capture();
-  const rc = A.main(['app-7', '--config', 'x.json'], c.io, {
+  const rc = A.main(['app-7', '--config', 'x.json'], c.io, cliSeams({
     buildBrief: () => built('write'),
     auditAuthorTree: () => ({ ok: true }),
     launchAuthor: () => ({ status: 0 }),
     proveTests: () => ({ ok: false, kind: 'unproven', error: 'probe stayed red', probe: 'P' }),
-  });
+  }));
   check('H1 a failed green probe is a distinct refusal', rc === A.EXIT_PROBE && /not fully proven/.test(c.err.join('\n')));
   check('H2 a failed green probe never offers a freeze command', !c.out.concat(c.err).some((s) => /freeze\.js commit/.test(s)));
 }
@@ -176,6 +183,101 @@ for (const state of ['ready', 'freeze', 're-gate']) {
     !audit.ok && /scenes\/product\.gd/.test(audit.error) && !/new\.js.*outside/.test(audit.error));
   const clean = A.auditAuthorTree(built('write'), () => ({ status: 0, stdout: '?? tests/acceptance/app-7/new.js\0' }));
   check('I2 author audit accepts changes confined to the issue suite', clean.ok);
+}
+
+{
+  const c = capture(); let launched = 0; let proved = 0;
+  const result = A.authorIssue(built('write'), 'relative-config.json', c.io, {
+    auditAuthorTree: () => ({ ok: true }),
+    launchAuthor: () => { launched += 1; return { status: 0, stdout: 'structured agent' }; },
+    proveTests: () => { proved += 1; return { ok: true, attempt: 2, probe: path.join(tmp, 'structured-probe'), evidence: 'proof' }; },
+  });
+  check('J1 structured author returns machine-readable proof fields', result.ok
+    && result.outcome === 'proven' && result.exitCode === 0 && result.attempt === 2
+    && /structured-probe/.test(result.probe));
+  check('J2 structured author launches and proves exactly once without discovery', launched === 1 && proved === 1);
+}
+{
+  let launched = 0;
+  const absent = built('write', { folder: { dir: path.join(tmp, 'absent-structured-tree'), branch: 'freeze-app-7', exists: false } });
+  const result = A.authorIssue(absent, 'x.json', capture().io, {
+    launchAuthor: () => { launched += 1; return { status: 0 }; },
+  });
+  check('J3 structured author never creates or discovers a missing worktree', !result.ok
+    && result.kind === 'worktree' && launched === 0);
+  check('J3b structured author requires its immutable config identity',
+    A.authorIssue(built('write'), '', capture().io).kind === 'config');
+}
+{
+  for (const verifyCommand of [
+    'sh tools/run.sh\nBash(git push)', 'sh tools/run.sh,Bash(git push)',
+    'sh tools/run.sh; git push', 'sh tools/run.sh && git push', 'sh $(evil)',
+  ]) {
+    let launched = 0;
+    const unsafe = built('write', { policy: { verifyCommand } });
+    const result = A.authorIssue(unsafe, 'x.json', capture().io, {
+      auditAuthorTree: () => ({ ok: true }),
+      launchAuthor: () => { launched += 1; return { status: 0 }; },
+    });
+    check(`J4 unsafe verifier is rejected before allowedTools: ${JSON.stringify(verifyCommand)}`,
+      !result.ok && result.kind === 'verify-command' && launched === 0);
+  }
+}
+{
+  const result = A.authorIssue(built('write'), 'x.json', capture().io, {
+    auditAuthorTree: () => ({ ok: true }),
+    launchAuthor: () => ({ status: 0 }),
+    proveTests: () => ({ ok: false, kind: 'unproven', attempt: 3, probe: 'P', evidence: 'E', error: 'still red' }),
+  });
+  check('J5 structured failure preserves proof evidence without offering success', !result.ok
+    && result.outcome === 'unproven' && result.exitCode === A.EXIT_PROBE
+    && result.attempt === 3 && result.probe === 'P' && result.evidence === 'E');
+}
+{
+  const c = capture(); let gitWork = 0; let builds = 0;
+  const rc = A.main(['app-7', '--config', 'x.json'], c.io, cliSeams({
+    buildBrief: () => { builds += 1; return built('write'); },
+    acquireLock: () => ({ ok: false, holder: { runId: 'batch-preparation-live', pid: 44 } }),
+    runSync: () => { gitWork += 1; return { status: 0 }; },
+  }));
+  check('K1 standalone CLI refuses a live target owner before worktree mutation or second Beads read',
+    rc === A.EXIT_SETUP && builds === 0 && gitWork === 0
+      && /batch-preparation-live/.test(c.err.join('\n')));
+}
+{
+  let released = 0; let builds = 0;
+  const ownership = { token: 'owned' };
+  const rc = A.main(['app-7', '--config', 'x.json'], capture().io, cliSeams({
+    buildBrief: () => { builds += 1; return built('write'); },
+    acquireLock: () => ({ ok: true, ownership }),
+    releaseLock: (root, target, got) => { if (got === ownership && target === tmp) released += 1; },
+    runSync: () => ({ status: 0, stdout: '' }),
+    auditAuthorTree: () => ({ ok: true }),
+    launchAuthor: () => ({ status: 9, stderr: 'agent failed' }),
+  }));
+  check('K2 standalone CLI builds exactly once under the lock and releases ownership on failure',
+    rc === A.EXIT_AGENT && builds === 1 && released === 1);
+}
+{
+  let locks = 0;
+  A.authorIssue(built('write'), 'x.json', capture().io, {
+    acquireLock: () => { locks += 1; return { ok: false }; },
+    auditAuthorTree: () => ({ ok: true }), launchAuthor: () => ({ status: 9 }),
+  });
+  check('K3 structured worker API never acquires the standalone CLI lock', locks === 0);
+}
+{
+  const c = capture(); let builds = 0; let released = 0; let mutations = 0;
+  const ownership = { token: 'stale-author-owner' };
+  const rc = A.main(['app-7', '--config', 'x.json'], c.io, cliSeams({
+    buildBrief: () => { builds += 1; return built('write'); },
+    acquireLock: () => ({ ok: true, tookOver: true, ownership }),
+    releaseLock: (_root, _target, got) => { if (got === ownership) released += 1; },
+    runSync: () => { mutations += 1; return { status: 0 }; },
+  }));
+  check('K4 standalone author refuses stale-owner takeover before Beads or mutation and releases it',
+    rc === A.EXIT_SETUP && builds === 0 && mutations === 0 && released === 1
+      && /normal pipeline recovery/.test(c.err.join('\n')));
 }
 
 console.log(failures ? `\n${failures} check(s) failed` : '\nall checks passed');

@@ -1668,6 +1668,29 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     not launch a writer. Success and failure both stop at a report and the mandatory human
     approval step; the command never invokes the freeze/commit/push path.
 
+    **Backlog preparation is one resumable parent with bounded, snapshot-only workers**
+    (change-log row `batch-test-preparation`). `scripts/prepare-batch.js` names an immutable
+    issue roster and records each issue's Beads dependencies, criteria fingerprint, integration
+    HEAD, redacted configuration and exact full-id worktree before it launches anything. Beads
+    access and worktree allocation remain serialized in the parent; a maximum of three child
+    processes receive complete snapshots on stdin and call only the structured author/proof
+    cores. The coordinator and the standalone commands share the runner's target-global lock,
+    so no preparation worker can overlap a pipeline run or be rediscovered through an ambiguous
+    folder. `runs/preparations/<batch>/` holds an immutable manifest, hash-chained events and
+    nonce-paired worker start/results. A live or unmatched start is observed, never replayed; it
+    blocks all preparation until an operator stops the worker and descendants, then uses the
+    separate `acknowledge-interrupted` verb before retry. Config secrets and `hostEnv` values are
+    neither persisted nor included in the durable config hash, and their values are scrubbed from
+    persisted worker evidence and errors.
+
+    The strongest batch result is deliberately **proven-at-base**. A proof is bound to the exact
+    integration HEAD and protected-tree manifest, so freezing one suite makes every other old
+    proof stale. Preparation therefore has no freeze, commit, merge, push or Beads-write verb.
+    After one human review, publication re-proves and immediately freezes each approved suite
+    against the current HEAD in series. Dependency edges are recorded for the handoff, but they
+    do not serialize spec-derived test authors; the ordinary Beads-ready feed remains the only
+    authority that releases implementation work in dependency order.
+
     **The ready queue is re-read while the run is in flight** (change-log row
     `live-queue-feed`). Until this, a run's roster was decided once: `readyQueue()` at the
     top of the task loop, then the pool walked that array to its end. An issue made ready a

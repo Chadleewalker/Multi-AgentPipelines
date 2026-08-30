@@ -109,6 +109,110 @@ function globalLockPath(targetRepoPath) {
   return path.join(globalLockRoot(), `${digest}.lock`);
 }
 
+// A preparation worker can outlive the coordinator which held the ordinary target lock.
+// Keep that uncertainty beside the host-global lock authority, not in one pipeline checkout,
+// so every future runner and standalone planning command sees it before admission.
+function preparationUncertainDir(targetRepoPath) {
+  return `${globalLockPath(targetRepoPath)}.preparation-uncertain`;
+}
+
+function preparationNonce(value) {
+  const nonce = String(value || '');
+  if (!/^[a-f0-9]{32,64}$/.test(nonce)) throw new Error('lock: preparation nonce must be 32 to 64 lowercase hexadecimal characters');
+  return nonce;
+}
+
+function preparationMarkerHash(body) {
+  return crypto.createHash('sha256').update(JSON.stringify(body)).digest('hex');
+}
+
+function readPreparationMarker(file, expectedTarget, expectedNonce) {
+  const value = readRecord(file);
+  if (!value || value.schema !== 1 || value.kind !== 'preparation-uncertain'
+      || value.target !== expectedTarget || value.nonce !== expectedNonce
+      || typeof value.markerHash !== 'string') {
+    throw new Error(`lock: invalid preparation-uncertain marker ${file}`);
+  }
+  const body = { ...value }; delete body.markerHash;
+  if (preparationMarkerHash(body) !== value.markerHash) {
+    throw new Error(`lock: tampered preparation-uncertain marker ${file}`);
+  }
+  return value;
+}
+
+function listPreparationUncertain(targetRepoPath) {
+  const target = canonicalTarget(targetRepoPath);
+  const dir = preparationUncertainDir(targetRepoPath);
+  let names;
+  try { names = fs.readdirSync(dir); }
+  catch (e) { if (e.code === 'ENOENT') return []; throw e; }
+  const stat = fs.lstatSync(dir);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`lock: preparation uncertainty path is not a real directory: ${dir}`);
+  const visible = names.filter((name) => !name.startsWith('.')).sort();
+  for (const name of visible) {
+    if (!/^[a-f0-9]{32,64}\.json$/.test(name)) throw new Error(`lock: unexpected preparation uncertainty marker ${name}`);
+  }
+  return visible.map((name) => {
+    const nonce = name.slice(0, -5);
+    return readPreparationMarker(path.join(dir, name), target, nonce);
+  });
+}
+
+function preparationHolder(marker, targetRepoPath) {
+  return {
+    runId: `preparation-uncertain:${marker.batch || 'unknown'}/${marker.issueId || 'unknown'}`,
+    pid: Number.isInteger(marker.pid) ? marker.pid : null,
+    since: marker.createdAt || null,
+    host: marker.host || null,
+    lockFile: preparationUncertainDir(targetRepoPath),
+    preparationUncertain: true,
+    nonce: marker.nonce,
+    issueId: marker.issueId || null,
+    batch: marker.batch || null,
+    phase: marker.phase || null,
+  };
+}
+
+function markPreparationUncertain(ownership, data = {}) {
+  const rec = ownedRecord(ownership);
+  const nonce = preparationNonce(data.nonce);
+  const dir = preparationUncertainDir(rec.target);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const stat = fs.lstatSync(dir);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('lock: preparation uncertainty path is not a real directory');
+  const body = {
+    schema: 1,
+    kind: 'preparation-uncertain',
+    target: rec.target,
+    nonce,
+    batch: String(data.batch || '').slice(0, 128),
+    issueId: String(data.issueId || '').slice(0, 256),
+    phase: String(data.phase || '').slice(0, 64),
+    pid: Number.isInteger(data.pid) && data.pid > 0 ? data.pid : null,
+    host: os.hostname(),
+    createdAt: new Date().toISOString(),
+  };
+  const marker = { ...body, markerHash: preparationMarkerHash(body) };
+  const file = path.join(dir, `${nonce}.json`);
+  let fd;
+  try {
+    fd = fs.openSync(file, 'wx', 0o600);
+    fs.writeFileSync(fd, JSON.stringify(marker, null, 2) + '\n', 'utf8');
+    fs.fsyncSync(fd);
+  } finally { if (fd !== undefined) fs.closeSync(fd); }
+  return marker;
+}
+
+function clearPreparationUncertain(ownership, nonceValue) {
+  const rec = ownedRecord(ownership);
+  const nonce = preparationNonce(nonceValue);
+  const dir = preparationUncertainDir(rec.target);
+  const file = path.join(dir, `${nonce}.json`);
+  readPreparationMarker(file, rec.target, nonce);
+  removeFile(file);
+  try { fs.rmdirSync(dir); } catch (e) { if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(e.code)) throw e; }
+}
+
 // ---- liveness -------------------------------------------------------------------------
 
 function pidAlive(pid) {
@@ -283,13 +387,21 @@ function holderOf(rec, file) {
 // Deliberately NOT registered against process exit: a crashed run must leave its lock
 // behind for the next run to take over, and that path is the only protection there is
 // when a process dies without running handlers. Releasing is the caller's job.
-function acquire(repoRoot, targetRepoPath, runId) {
+function acquire(repoRoot, targetRepoPath, runId, options = {}) {
   if (!repoRoot || typeof repoRoot !== 'string') throw new Error('lock: a pipeline repo root is required');
   const canon = canonicalTarget(targetRepoPath);
   const observerFile = lockPath(repoRoot, targetRepoPath);
   const file = globalLockPath(targetRepoPath);
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   fs.mkdirSync(path.dirname(observerFile), { recursive: true });
+
+  const uncertainRefusal = () => {
+    if (options && options.allowPreparationRecovery === true) return null;
+    const markers = listPreparationUncertain(targetRepoPath);
+    return markers.length ? { ok: false, holder: preparationHolder(markers[0], targetRepoPath) } : null;
+  };
+  const initialUncertain = uncertainRefusal();
+  if (initialUncertain) return initialUncertain;
 
   // Upgrade bridge: an older runner may already hold the checkout-local lock. Copy that
   // record into the global authority with exclusive create before competing there. This
@@ -316,6 +428,8 @@ function acquire(repoRoot, targetRepoPath, runId) {
   // challenger that wins becomes the live holder the next pass reports.
   let last = null;
   for (let attempt = 0; attempt < 3; attempt++) {
+    const uncertain = uncertainRefusal();
+    if (uncertain) return uncertain;
     const rec = selfRecord(runId, canon, observerFile);
     if (tryCreate(file, rec)) {
       writeRecord(observerFile, rec);
@@ -331,6 +445,9 @@ function acquire(repoRoot, targetRepoPath, runId) {
 
     last = readRecord(file);
     if (isHolderLive(last)) return { ok: false, holder: holderOf(last, file) };
+
+    const staleUncertain = uncertainRefusal();
+    if (staleUncertain) return staleUncertain;
 
     // Gone, or unreadable: clear it and re-take it through the same exclusive create, so
     // a second challenger arriving mid-takeover still loses cleanly rather than sharing.
@@ -428,5 +545,7 @@ function release(repoRoot, targetRepoPath, ownership) {
 module.exports = {
   acquire, release, recordClaim, completeClaim, clearRecoveryOwner,
   lockPath, globalLockPath, globalLockRoot, canonicalTarget, isHolderLive,
+  preparationUncertainDir, listPreparationUncertain,
+  markPreparationUncertain, clearPreparationUncertain,
   OWNER_TOKEN_KEY, OWNER_RUN_KEY,
 };

@@ -305,6 +305,7 @@ writeJson(path.join(runsRoot, 'run-remote-001', 'tasks', 'app-7', 'status.json')
 // Noise the run-dir predicate must skip.
 write(path.join(runsRoot, 'loose-file.txt'), 'not a run\n');
 fs.mkdirSync(path.join(runsRoot, 'empty-dir'), { recursive: true });
+write(path.join(runsRoot, 'preparations', 'batch-1', 'run.json'), '{"not":"a pipeline run"}\n');
 write(path.join(runsRoot, 'sweeps', '20260101-000000', 'summary.md'), '# sweep\n');
 
 const byKey = (st, key) => st.projects.find((p) => p.key === key);
@@ -315,7 +316,7 @@ const taskOf = (p, id) => p.run.tasks.find((t) => t.issueId === id);
   const st = D.buildState(runsRoot);
   check('buildState answers schema 1 with a projects array', st.schema === 1 && Array.isArray(st.projects));
   check('buildState reads the tree without writing to it', sameSnapshot(before, snapshot(path.join(tmp, 'corpus'))));
-  check('the run-dir predicate skips plain files, dirs holding neither artifact, locks and sweeps',
+  check('the run-dir predicate skips plain files, dirs holding neither artifact, locks, preparations and sweeps',
     st.projects.length === 5);
   const keys = st.projects.map((p) => p.key);
   check('projects sort byte-wise by key', eq(keys, [...keys].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))));

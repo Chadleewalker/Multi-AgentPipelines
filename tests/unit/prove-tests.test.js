@@ -42,13 +42,19 @@ spawnSync('git', ['commit', '-qm', 'fixture'], { cwd: target });
 const built = {
   id: 'app-7', branch: 'main', folder: { dir: author },
   cfg: { targetRepoPath: target, image: 'fixture-probe:latest', wallClockMinutes: 2, testProbeAttempts: 3,
-    hostEnv: { PROBE_TEST_HOST_ONLY: 'C:/fixture/tool.exe' } },
+    hostEnv: { PROBE_TEST_HOST_ONLY: 'fixture-tool-value' } },
   policy: { verifyCommand: 'sh tools/run-acceptance.sh',
     frozenPaths: ['tools/run-acceptance.sh', 'scripts/test-*.sh'] },
 };
+const cliSeams = (extra = {}) => ({
+  loadConfig: () => ({ targetRepoPath: target }),
+  acquireLock: () => ({ ok: true, tookOver: false, ownership: { token: 'fixture-proof' } }),
+  releaseLock: () => {},
+  ...extra,
+});
 
 check('A1 ordinary issue ids are accepted', P.validIssueId('Junkstronaut_Final-pyx'));
-for (const bad of ['..', '../x', 'a/b', 'a\\b', 'a b', 'x)', 'x,', 'x&y', '-option', 'CON', 'app.']) {
+for (const bad of ['..', 'app..7', '../x', 'a/b', 'a\\b', 'a b', 'x)', 'x,', 'x&y', '-option', 'CON', 'app.']) {
   check(`A2 unsafe issue id is rejected: ${bad}`, !P.validIssueId(bad));
 }
 
@@ -217,14 +223,58 @@ fs.rmSync(path.join(target, 'scripts', 'test-ignored.sh'));
 
 {
   const out = []; const err = [];
-  const rc = P.main(['app-7', '--config', 'x.json'], (s) => out.push(String(s)), (s) => err.push(String(s)), {
+  const rc = P.main(['app-7', '--config', 'x.json'], (s) => out.push(String(s)), (s) => err.push(String(s)), cliSeams({
     buildBrief: () => ({ ...built, ok: true, state: 'write', folder: { ...built.folder, exists: true },
       cfg: { ...built.cfg, testProbeModel: 'opus' } }),
     proveTests: () => ({ ok: true, attempt: 1, probe: 'C:/owned probe' }),
-  });
+  }));
   check('G1 standalone proof command reports success but still requires human freeze approval',
     rc === 0 && out.some((s) => /fully proven/.test(s)) && out.some((s) => /human approval/.test(s)));
   check('G2 unsafe standalone ids fail before building a brief', P.main(['../x', '--config', 'x'], () => {}, () => {}) === 2);
+}
+{
+  const out = []; const err = []; let proves = 0; let builds = 0;
+  const rc = P.main(['app-7', '--config', 'x.json'], (s) => out.push(String(s)), (s) => err.push(String(s)), cliSeams({
+    buildBrief: () => { builds += 1; return { ...built, ok: true, state: 'write', folder: { ...built.folder, exists: true },
+      cfg: { ...built.cfg, testProbeModel: 'opus' } }; },
+    acquireLock: () => ({ ok: false, holder: { runId: 'implementation-run-live', pid: 55 } }),
+    proveTests: () => { proves += 1; return { ok: true }; },
+  }));
+  check('G3 standalone proof refuses a live target owner before probe mutation or another brief read',
+    rc === 3 && builds === 0 && proves === 0 && /implementation-run-live/.test(err.join('\n')));
+}
+{
+  let released = 0; let builds = 0; const ownership = { token: 'proof-owner' };
+  const rc = P.main(['app-7', '--config', 'x.json'], () => {}, () => {}, cliSeams({
+    buildBrief: () => { builds += 1; return ({ ...built, ok: true, state: 'write', folder: { ...built.folder, exists: true },
+      cfg: { ...built.cfg, testProbeModel: 'opus' } }); },
+    acquireLock: () => ({ ok: true, ownership }),
+    releaseLock: (root, targetPath, got) => { if (got === ownership && targetPath === target) released += 1; },
+    proveTests: () => ({ ok: false, kind: 'unproven', error: 'still red' }),
+  }));
+  check('G4 standalone proof builds exactly once under the lock and releases ownership on failure',
+    rc === 4 && builds === 1 && released === 1);
+}
+{
+  let locks = 0;
+  P.proveTests(built, 'opus', {
+    acquireLock: () => { locks += 1; return { ok: false }; },
+    prepareProbe: () => ({ ok: false, error: 'fixture stop' }),
+  });
+  check('G5 structured proof API never acquires the standalone CLI lock', locks === 0);
+}
+{
+  const err = []; let builds = 0; let probes = 0; let released = 0;
+  const ownership = { token: 'stale-proof-owner' };
+  const rc = P.main(['app-7', '--config', 'x.json'], () => {}, (s) => err.push(String(s)), cliSeams({
+    buildBrief: () => { builds += 1; return { ...built, ok: true }; },
+    acquireLock: () => ({ ok: true, tookOver: true, ownership }),
+    releaseLock: (_root, _target, got) => { if (got === ownership) released += 1; },
+    proveTests: () => { probes += 1; return { ok: true }; },
+  }));
+  check('G6 standalone proof refuses stale-owner takeover before Beads or probe and releases it',
+    rc === 3 && builds === 0 && probes === 0 && released === 1
+      && /normal pipeline recovery/.test(err.join('\n')));
 }
 
 fs.rmSync(tmp, { recursive: true, force: true });

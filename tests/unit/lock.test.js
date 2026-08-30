@@ -246,6 +246,39 @@ check('the takeover names the run whose lock was seized',
   !!seized.previous && seized.previous.runId === 'DEAD-RUN');
 lock.release(root, deadProj);
 
+// ---- durable preparation uncertainty ---------------------------------------------------
+// A test-author child can survive its coordinator on Windows. The marker is outside the
+// parent-owned lock record so stale-lock recovery cannot accidentally admit another runner.
+const uncertainProj = mk('preparation-uncertain');
+const uncertainOwner = lock.acquire(root, uncertainProj, 'PREPARE-PARENT');
+const nonceA = 'a'.repeat(32); const nonceB = 'b'.repeat(32);
+lock.markPreparationUncertain(uncertainOwner.ownership, {
+  nonce: nonceA, batch: 'wave', issueId: 'app-1', phase: 'author-proof', pid: alive.pid,
+});
+lock.markPreparationUncertain(uncertainOwner.ownership, {
+  nonce: nonceB, batch: 'wave', issueId: 'app-2', phase: 'proof', pid: alive.pid,
+});
+lock.release(root, uncertainProj, uncertainOwner.ownership);
+const refusedUncertain = lock.acquire(root, uncertainProj, 'NORMAL-RUNNER');
+check('a target-global preparation marker refuses ordinary runner/standalone admission',
+  refusedUncertain.ok === false && refusedUncertain.holder.preparationUncertain === true);
+check('the refusal names the exact uncertain issue and nonce',
+  refusedUncertain.holder.issueId === 'app-1' && refusedUncertain.holder.nonce === nonceA);
+const recovery = lock.acquire(root, uncertainProj, 'EXPLICIT-ACK', { allowPreparationRecovery: true });
+check('only explicit preparation recovery may acquire through uncertainty', recovery.ok === true);
+lock.clearPreparationUncertain(recovery.ownership, nonceA);
+check('clearing one nonce leaves the concurrent uncertain worker independently protected',
+  lock.listPreparationUncertain(uncertainProj).map((v) => v.nonce).join(',') === nonceB);
+lock.release(root, uncertainProj, recovery.ownership);
+check('the remaining nonce still refuses normal admission',
+  lock.acquire(root, uncertainProj, 'STILL-BLOCKED').ok === false);
+const recoveryTwo = lock.acquire(root, uncertainProj, 'EXPLICIT-ACK-2', { allowPreparationRecovery: true });
+lock.clearPreparationUncertain(recoveryTwo.ownership, nonceB);
+lock.release(root, uncertainProj, recoveryTwo.ownership);
+const afterUncertain = lock.acquire(root, uncertainProj, 'AFTER-ACK');
+check('normal admission resumes only after every exact nonce is cleared', afterUncertain.ok === true);
+lock.release(root, uncertainProj, afterUncertain.ownership);
+
 // ---- preflight: first gate, and it releases what it took -------------------------------
 // A fake repo root whose network scripts record any invocation, and the Beads seam pointed
 // at a recorder. Both stay empty: the refusal happens before either is reached.

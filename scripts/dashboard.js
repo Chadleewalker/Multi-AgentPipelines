@@ -70,7 +70,7 @@ const ATTEMPTS_MAX = 3;
 const PHASES = ['code', 'verify', 'docs'];
 
 // Not runs: the lock directory and the test sweep's own output tree.
-const NOT_A_RUN = new Set(['locks', 'sweeps']);
+const NOT_A_RUN = new Set(['locks', 'preparations', 'sweeps']);
 
 // The parsed line vocabulary, as literal prefixes. Everything else in `run.log` is
 // ignored. Prefixes IDENTIFY lines; payloads are then split on their own pinned
@@ -298,7 +298,8 @@ function readLog(file) {
 }
 
 // ---- run directories ---------------------------------------------------------------------------
-// A run dir is a direct child DIRECTORY of the runs root, not named `locks` or `sweeps`, that
+// A run dir is a direct child DIRECTORY of the runs root, not named `locks`, `preparations`
+// or `sweeps`, that
 // holds `run.log` or `run.json`. No recency cutoff and no count cap: every project the corpus
 // names has to appear, or the strip silently loses a channel. Plain files are skipped —
 // `runs/` also holds the sweep's own leavings.

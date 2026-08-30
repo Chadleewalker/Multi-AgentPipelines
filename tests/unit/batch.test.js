@@ -367,9 +367,10 @@ function record(r) { outputs.push(both(r)); return r; }
   const n = mktemp('notruns');
   marker(n, 'safe-2026-08-10', mkMarker('safe', T, ['s-1']));
   writeJson(path.join(n, 'locks', 'tasks', 's-1', 'status.json'), { issueId: 's-1' });
+  writeJson(path.join(n, 'preparations', 'tasks', 's-1', 'status.json'), { issueId: 's-1' });
   writeJson(path.join(n, 'sweeps', 'tasks', 's-1', 'status.json'), { issueId: 's-1' });
   const np = record(cli(n, ['pending']));
-  check('C9 batches/, locks/ and sweeps/ are never read as run directories',
+  check('C9 batches/, locks/, preparations/ and sweeps/ are never read as run directories',
     np.status === 0 && (np.stdout || '').includes('safe-2026-08-10'));
 }
 

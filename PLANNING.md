@@ -233,6 +233,39 @@ have resource limits and deterministic cleanup by an owned name/CID; clone owner
 outside the model-editable tree. Managed clones are removed only after freeze has pushed and the
 runner has read the result back as dispatchable.
 
+**Prepare a dependency-shaped backlog as one resumable planning batch.** Repeating the
+single-issue launcher by hand is unnecessary when several approved specs are waiting. Name the
+batch and its complete issue set once:
+
+```bash
+node scripts/prepare-batch.js start <batch> --config run.config.<project>.json \
+  --issue <id> --issue <id> [--author-concurrency 1..3]
+node scripts/prepare-batch.js status <batch>
+```
+
+The coordinator snapshots every issue, its dependencies, criteria, integration HEAD and
+host-local run policy before it starts a worker. It reads Beads serially, creates or reuses only
+the exact registered `freeze-<full-issue-id>` worktree, and then runs at most two test authors by
+default (three at the explicit maximum). Workers receive the immutable snapshot on stdin; they
+cannot re-read Beads or choose another worktree. The same target-global lock excludes a normal
+pipeline run and either standalone author/proof command while preparation owns the target.
+
+State is durable under `runs/preparations/<batch>/`. `resume <batch>` reports or continues work
+whose ownership is unambiguous; a worker that may still be alive is never duplicated, and a
+crash with no matching result becomes `interrupted-unknown` and blocks new preparation. Stop the
+recorded worker and any descendants, then record that human check with
+`acknowledge-interrupted <batch> <id>...`; only after that may `retry <batch> <id>...` start a new
+attempt. A successful item means **proven at the recorded integration base**. The coordinator
+never freezes, commits, merges, pushes, changes Beads, or turns blocked
+implementation dependencies into test-author dependencies: specs may be prepared together, then
+the ordinary Beads-ready runner releases their implementation waves in dependency order.
+
+`allowHalfProven: true` is incompatible with this all-proven preparation posture and is refused;
+change that run policy explicitly rather than asking the coordinator to weaken it. Human review
+still follows. Because a freeze advances the integration HEAD, approved publication re-proves
+each retained suite at the then-current HEAD and freezes it immediately, one at a time; an older
+`proven-at-base` record is evidence, not permission to publish from a stale base.
+
 A machine-specific path — a binary that is not on `PATH` — belongs in the run config's optional
 `hostEnv`, never in the target's `pipeline.config.json`: run configs are host-local and
 git-ignored, which is exactly where a path that is true on one machine should live. The brief

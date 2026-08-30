@@ -34,15 +34,24 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 
 const { loadConfig } = require('../runner/config');
 const { bdJson } = require('../runner/bd');
 const { partitionByFreeze, resolveBranch, gitSpawnOptions, REFUSAL } = require('../runner/queue');
+const { failureText } = require('../runner/process');
 
 const EXIT_OK = 0;
 const EXIT_USAGE = 2;
 const EXIT_UNKNOWN = 3;
+const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+function validIssueId(id) {
+  if (typeof id !== 'string' || !SAFE_ID.test(id) || id === '.' || id.includes('..') || id.endsWith('.')) return false;
+  const stem = id.split('.')[0].toUpperCase();
+  return !/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/.test(stem);
+}
 
 const USAGE = [
   'usage:',
@@ -73,6 +82,30 @@ function parseArgs(argv) {
 
 const git = (cfg, args, extra) => spawnSync('git', args, gitSpawnOptions(cfg, extra));
 
+// verifyCommand is interpolated into Claude's `Bash(<exact command>)` permission pattern and
+// is also invoked by the target's shell.  Treat it as a small argv-shaped command, not as an
+// arbitrary shell program: punctuation that can close the permission pattern, add another
+// tool, or compose a second shell command is never a legitimate verifier path or argument.
+// Commas are called out separately because Claude's tool list uses them as separators.
+const SAFE_VERIFY_COMMAND = /^[A-Za-z0-9_./:@%+=-]+(?:[ \t]+[A-Za-z0-9_./:@%+=-]+)*$/;
+function verifyCommandError(value) {
+  if (typeof value !== 'string' || !value.trim()) return 'names no verifyCommand';
+  if (/[\x00-\x1f\x7f]/.test(value)) return 'verifyCommand contains a control character';
+  if (value.includes(',')) return 'verifyCommand contains a comma that can escape the tool permission';
+  if (!SAFE_VERIFY_COMMAND.test(value)) {
+    return 'verifyCommand contains shell or permission-pattern metacharacters';
+  }
+  return null;
+}
+
+// The old suffix-only name (`freeze-${id.split('-').pop()}`) mapped two different issue ids
+// onto one branch.  The issue id has already passed prove-tests' safe-id grammar before an
+// author can launch, so retaining the whole id is both Git-safe and injective.
+function issueNames(id) {
+  const stem = `freeze-${String(id)}`;
+  return { branch: stem, dirSuffix: stem };
+}
+
 // ---- the six facts -------------------------------------------------------------------------
 
 // The target's own verifier contract. Never defaulted: a brief that guessed the verify command
@@ -82,9 +115,8 @@ function targetPolicy(cfg) {
   const file = path.join(cfg.targetRepoPath, 'pipeline.config.json');
   try {
     const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
-    if (typeof raw.verifyCommand !== 'string' || !raw.verifyCommand.trim()) {
-      return { ok: false, error: `${file} names no verifyCommand` };
-    }
+    const unsafe = verifyCommandError(raw.verifyCommand);
+    if (unsafe) return { ok: false, error: `${file} ${unsafe}` };
     return {
       ok: true,
       verifyCommand: raw.verifyCommand.trim(),
@@ -101,12 +133,14 @@ function targetPolicy(cfg) {
 // there. `--porcelain` so a path containing a space is still one field.
 function worktrees(cfg) {
   const r = git(cfg, ['worktree', 'list', '--porcelain'], { cwd: cfg.targetRepoPath });
-  if (r.status !== 0) return [];
+  if (r.status !== 0) throw new Error(failureText(r, 'git worktree list failed'));
   const out = [];
   let current = null;
   for (const line of String(r.stdout || '').split(/\r?\n/)) {
-    if (line.startsWith('worktree ')) current = { dir: line.slice(9).trim(), branch: null };
+    if (line.startsWith('worktree ')) current = { dir: line.slice(9).trim(), branch: null, locked: false, prunable: false };
     else if (line.startsWith('branch ') && current) current.branch = line.slice(7).trim().replace(/^refs\/heads\//, '');
+    else if (line.startsWith('locked') && current) current.locked = true;
+    else if (line.startsWith('prunable') && current) current.prunable = true;
     else if (!line.trim() && current) { out.push(current); current = null; }
   }
   if (current) out.push(current);
@@ -151,10 +185,7 @@ function issue(cfg, id) {
 
 // ---- which of the three states ---------------------------------------------------------------
 
-function classify(cfg, id, branch) {
-  const rel = `tests/acceptance/${id}`;
-  const abs = path.join(cfg.targetRepoPath, ...rel.split('/'));
-
+function classifyBranch(cfg, id) {
   // What the BRANCH holds is what a container forks from, so it is asked first and it is asked
   // through the runner's own gate — the same judgement a launch makes, not a second copy of it.
   const gate = partitionByFreeze(cfg, [{ id }]);
@@ -168,15 +199,31 @@ function classify(cfg, id, branch) {
     // problem as a missing suite in every report that does not separate them.
     return { ok: true, state: 're-gate', refusal, reason: (gate.undispatchable[0] || {}).reason };
   }
+  return { ok: true, state: 'local' };
+}
 
+function classifyLocal(cfg, id, folder) {
   // Nothing on the branch. The working tree decides between "write them" and "freeze what is
   // already written" — a distinction no branch-side check can make, and the state a planning
   // session that stopped one step early leaves behind.
-  let files = [];
-  try { files = fs.readdirSync(abs).filter((f) => f !== '.freeze-gate.json'); } catch { files = null; }
+  if (!folder || !folder.exists) {
+    // Only branch absence makes this interesting. A suite which is already frozen normally
+    // exists in the shared checkout and returned above; here it is unowned local planning work.
+    if (suiteFiles(cfg.targetRepoPath, id) !== null) {
+      return { ok: false, kind: 'collision', error: `the shared checkout contains tests/acceptance/${id}/ but no exact ${issueNames(id).branch} worktree owns it` };
+    }
+    return { ok: true, state: 'write', local: null };
+  }
+  const files = suiteFiles(folder.dir, id);
   if (files === null) return { ok: true, state: 'write', local: null };
   if (!files.length) return { ok: true, state: 'write', local: 'empty' };
   return { ok: true, state: 'freeze', local: files };
+}
+
+function classify(cfg, id, branch, folder = null) { // branch retained for the public seam
+  const remote = classifyBranch(cfg, id);
+  if (!remote.ok || remote.state !== 'local') return remote;
+  return classifyLocal(cfg, id, folder);
 }
 
 // THE MAIN CHECKOUT of this repo, not the folder this script happens to be running from. The
@@ -264,6 +311,40 @@ function gateLines(repoRoot, cfg, id, folder) {
     'the same suite has passed there without changing any protected test or verifier byte.',
     '',
   ];
+}
+
+function suiteFiles(root, id) {
+  const dir = path.join(root, 'tests', 'acceptance', id);
+  try { return fs.readdirSync(dir).filter((f) => f !== '.freeze-gate.json'); } catch { return null; }
+}
+
+// Resolve one and only one place for an issue.  A worktree containing the suite under any
+// other branch is evidence from an older/manual session, not permission to take that session
+// over.  Likewise, a directory at the path we intend to create which Git does not register is
+// a collision, never an existing worktree to trust by filename.
+function resolveIssueFolder(cfg, id, registered = worktrees(cfg)) {
+  const names = issueNames(id);
+  const exact = registered.filter((w) => w.branch === names.branch);
+  const carrying = registered.filter((w) => suiteFiles(w.dir, id) !== null);
+  const legacy = carrying.filter((w) => w.branch !== names.branch);
+  if (exact.length > 1) {
+    return { ok: false, kind: 'collision', error: `multiple worktrees claim exact branch ${names.branch}: ${exact.map((w) => w.dir).join(', ')}` };
+  }
+  if (exact.some((w) => w.locked || w.prunable)) {
+    const unsafe = exact.filter((w) => w.locked || w.prunable);
+    return { ok: false, kind: 'collision', error: `exact branch ${names.branch} has locked or prunable worktree registry state: ${unsafe.map((w) => w.dir).join(', ')}` };
+  }
+  if (legacy.length) {
+    return { ok: false, kind: 'collision', error: `legacy or ambiguous worktree already contains tests/acceptance/${id}/ outside ${names.branch}: ${legacy.map((w) => `${w.dir} (${w.branch || 'detached'})`).join(', ')}` };
+  }
+  if (exact.length === 1) {
+    return { ok: true, folder: { dir: exact[0].dir, branch: names.branch, exists: true } };
+  }
+  const dir = `${cfg.targetRepoPath}-${names.dirSuffix}`;
+  if (fs.existsSync(dir)) {
+    return { ok: false, kind: 'collision', error: `${dir} exists but Git does not register it as ${names.branch}` };
+  }
+  return { ok: true, folder: { dir, branch: names.branch, exists: false } };
 }
 
 function commentState(line, initial) {
@@ -399,6 +480,20 @@ function acceptanceCriteria(data) {
   return structured || descriptionCriteria(data);
 }
 
+function criteriaInfo(data) {
+  const hasStructured = data && Object.prototype.hasOwnProperty.call(data, 'acceptance_criteria');
+  if (hasStructured && typeof data.acceptance_criteria !== 'string') {
+    const text = '';
+    return { text, source: 'none', sha256: crypto.createHash('sha256').update(text).digest('hex') };
+  }
+  const structured = hasStructured && typeof data.acceptance_criteria === 'string'
+    ? data.acceptance_criteria.trim() : '';
+  const fallback = structured ? '' : descriptionCriteria(data);
+  const text = structured || fallback;
+  const source = structured ? 'structured' : fallback ? 'description' : 'none';
+  return { text, source, sha256: crypto.createHash('sha256').update(text).digest('hex') };
+}
+
 function criteriaLines(data) {
   const text = acceptanceCriteria(data);
   if (!text) {
@@ -526,6 +621,7 @@ function reGateBrief(ctx) {
 // ---- entry -------------------------------------------------------------------------------------
 
 function buildBrief(opts) {
+  if (!validIssueId(opts && opts.id)) return { ok: false, kind: 'issue', error: `unsafe issue id: ${opts && opts.id}` };
   let cfg;
   const configPath = path.resolve(opts.config);
   try { cfg = loadConfig(configPath); } catch (e) { return { ok: false, kind: 'config', error: (e && e.message) || String(e) }; }
@@ -539,24 +635,28 @@ function buildBrief(opts) {
 
   const found = issue(cfg, opts.id);
   if (!found.ok) return { ok: false, kind: 'issue', error: found.error };
+  const criteria = criteriaInfo(found.issue);
 
-  const state = classify(cfg, opts.id, branch);
-  if (!state.ok) return { ok: false, kind: 'unknown', error: state.error };
-
-  if (state.state === 'ready') {
-    return { ok: true, state: state.state, cfg, branch, id: opts.id, policy, text: null, folder: null };
+  // A dispatchable issue needs no issue tree, so old forensic worktrees cannot turn an
+  // already-frozen no-op into a preparation collision. Every state that can launch or prove
+  // still goes through the strict exact-branch resolver below.
+  const remoteState = classifyBranch(cfg, opts.id);
+  if (!remoteState.ok) return { ok: false, kind: 'unknown', error: remoteState.error };
+  if (remoteState.state === 'ready') {
+    return {
+      ok: true, state: remoteState.state, cfg, branch, id: opts.id, policy, text: null, folder: null,
+      issue: found.issue, criteria, issueUpdatedAt: found.issue.updated_at || null,
+    };
   }
 
-  // An existing worktree is REUSED, never re-created. Matched on the branch a session folder
-  // would carry for this issue, then on the folder holding its suite — an agent told to make a
-  // worktree that exists loses its first move to an error message.
-  const slug = String(opts.id).split('-').pop();
-  const wanted = `freeze-${slug}`;
-  const existing = worktrees(cfg).find((w) => w.branch === wanted)
-    || worktrees(cfg).find((w) => fs.existsSync(path.join(w.dir, 'tests', 'acceptance', opts.id)));
-  const folder = existing
-    ? { dir: existing.dir, branch: existing.branch, exists: true }
-    : { dir: `${cfg.targetRepoPath}-${wanted}`, branch: wanted, exists: false };
+  let located;
+  try { located = resolveIssueFolder(cfg, opts.id); }
+  catch (e) { return { ok: false, kind: 'unknown', error: (e && e.message) || String(e) }; }
+  if (!located.ok) return { ok: false, kind: located.kind, error: located.error };
+  const folder = located.folder;
+
+  const state = remoteState.state === 'local' ? classifyLocal(cfg, opts.id, folder) : remoteState;
+  if (!state.ok) return { ok: false, kind: state.kind || 'unknown', error: state.error };
 
   const ctx = {
     cfg,
@@ -575,7 +675,11 @@ function buildBrief(opts) {
     : state.state === 'freeze' ? freezeBrief(ctx)
       : reGateBrief(ctx);
 
-  return { ok: true, state: state.state, cfg, branch, id: opts.id, policy, folder, text: lines.join('\n') };
+  return {
+    ok: true, state: state.state, cfg, branch, id: opts.id, policy, folder,
+    text: lines.join('\n'), issue: found.issue, criteria,
+    issueUpdatedAt: found.issue.updated_at || null,
+  };
 }
 
 function main(argv, out = console.log, err = console.error) {
@@ -585,7 +689,7 @@ function main(argv, out = console.log, err = console.error) {
   }
   const opts = parseArgs(argv);
   if (opts.error) { err(`spec-brief: ${opts.error}`); err(USAGE); return EXIT_USAGE; }
-  if (!opts.id) { err('spec-brief: needs an issue id'); err(USAGE); return EXIT_USAGE; }
+  if (!opts.id || !validIssueId(opts.id)) { err('spec-brief: needs a safe issue id'); err(USAGE); return EXIT_USAGE; }
   if (!opts.config) { err('spec-brief: --config names the run.config.<project>.json a launch would type'); return EXIT_USAGE; }
 
   const built = buildBrief(opts);
@@ -620,4 +724,10 @@ module.exports = {
   worktrees,
   envLines,
   acceptanceCriteria,
+  criteriaInfo,
+  issueNames,
+  resolveIssueFolder,
+  targetPolicy,
+  verifyCommandError,
+  validIssueId,
 };

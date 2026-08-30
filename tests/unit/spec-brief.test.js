@@ -165,7 +165,7 @@ const ISSUE = (id, extra = {}) => ({
   // so the check would fail on a correct brief and could never pass on any.
   const gateArg = (r.text.split(/\r?\n/).find((l) => /^\s+--repo\s/.test(l)) || '')
     .trim().replace(/\s*\\$/, '').replace(/^--repo\s+/, '');
-  check('B4 the gate is pointed at the worktree', /-freeze-1$/.test(gateArg));
+  check('B4 the gate is pointed at the injective full-id worktree', /-freeze-app-1$/.test(gateArg));
   // The shared checkout is where the tests are NOT. A brief naming it would send the gate to grade
   // a directory that does not exist, and indeterminate is never a pass.
   check('B5 and never at the shared checkout', gateArg !== w.target && gateArg !== fwd(w.target));
@@ -190,6 +190,17 @@ const ISSUE = (id, extra = {}) => ({
     /\[guard\]/.test(r.text) && /GREEN at the fork point/.test(r.text));
   check('B15 it ends at approval, never at a push',
     /do not freeze/i.test(r.text) && /Approval comes before the freeze/.test(r.text));
+  const previous = { PIPELINE_BD_CMD: process.env.PIPELINE_BD_CMD,
+    ISSUES_FILE: process.env.ISSUES_FILE, NODE_OPTIONS: process.env.NODE_OPTIONS };
+  Object.assign(process.env, env);
+  const built = require(SCRIPT).buildBrief({ id: 'app-1', config: w.cfgFile });
+  for (const [key, value] of Object.entries(previous)) {
+    if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  }
+  check('B16 structured brief carries JSON-safe issue identity, criteria source/hash and update clock',
+    built.ok && built.issue.id === 'app-1' && built.criteria.source === 'structured'
+      && /^[a-f0-9]{64}$/.test(built.criteria.sha256) && built.issueUpdatedAt === null
+      && (() => { try { JSON.stringify(built); return true; } catch { return false; } })());
 }
 
 // ---- C. it writes nothing it was not asked to write --------------------------------------------------
@@ -213,8 +224,8 @@ const ISSUE = (id, extra = {}) => ({
 {
   const w = makeWorld();
   const env = bdEnv(w, [ISSUE('app-1')]);
-  const wt = path.join(w.base, 'target-freeze-1');
-  git(w.target, ['worktree', 'add', '-q', '-b', 'freeze-1', wt, 'master']);
+  const wt = path.join(w.base, 'target-freeze-app-1');
+  git(w.target, ['worktree', 'add', '-q', '-b', 'freeze-app-1', wt, 'master']);
 
   const r = cli(w, ['app-1', '--config', w.cfgFile], env);
   check('D1 an existing worktree is found in git\'s own registry and reused',
@@ -227,7 +238,7 @@ const ISSUE = (id, extra = {}) => ({
     const w2 = makeWorld();
     const e2 = bdEnv(w2, [ISSUE('app-9')]);
     const r2 = cli(w2, ['app-9', '--config', w2.cfgFile], e2);
-    return /worktree add -b freeze-9/.test(r2.text);
+    return /worktree add -b freeze-app-9/.test(r2.text);
   })());
   check('D4 and warns that you cannot write into it from the folder you made it in', (() => {
     const w2 = makeWorld();
@@ -235,6 +246,61 @@ const ISSUE = (id, extra = {}) => ({
     const r2 = cli(w2, ['app-9', '--config', w2.cfgFile], e2);
     return /cannot write into a worktree from the folder you made it in/.test(r2.text);
   })());
+  const B = require(SCRIPT);
+  check('D5 full issue ids with the same suffix receive different branch and folder names',
+    B.issueNames('app-9').branch === 'freeze-app-9'
+      && B.issueNames('other-9').branch === 'freeze-other-9'
+      && B.issueNames('app-9').dirSuffix !== B.issueNames('other-9').dirSuffix);
+  const duplicate = B.resolveIssueFolder({ targetRepoPath: w.target }, 'app-9', [
+    { dir: path.join(w.base, 'one'), branch: 'freeze-app-9' },
+    { dir: path.join(w.base, 'two'), branch: 'freeze-app-9' },
+  ]);
+  check('D5b ambiguous exact-branch registry results fail closed',
+    !duplicate.ok && duplicate.kind === 'collision' && /multiple worktrees/.test(duplicate.error));
+}
+
+// A suite in somebody else's tree is evidence to preserve, not a naming fallback. The old
+// resolver silently adopted the first worktree containing the directory, including active and
+// contaminated sessions.
+{
+  const w = makeWorld();
+  const env = bdEnv(w, [ISSUE('app-1')]);
+  const legacy = path.join(w.base, 'legacy');
+  git(w.target, ['worktree', 'add', '-q', '-b', 'freeze-1', legacy, 'master']);
+  const suite = path.join(legacy, 'tests', 'acceptance', 'app-1');
+  fs.mkdirSync(suite, { recursive: true });
+  fs.writeFileSync(path.join(suite, 'legacy.sh'), '# preserve me\n');
+  const r = cli(w, ['app-1', '--config', w.cfgFile], env);
+  check('D6 a legacy suite-bearing worktree is surfaced as a collision, never adopted',
+    r.code === 3 && /legacy or ambiguous worktree/.test(r.text) && /freeze-1/.test(r.text));
+}
+{
+  const w = makeWorld();
+  const env = bdEnv(w, [ISSUE('app-1')]);
+  const suite = path.join(w.target, 'tests', 'acceptance', 'app-1');
+  fs.mkdirSync(suite, { recursive: true });
+  fs.writeFileSync(path.join(suite, 'unowned.sh'), '# preserve me\n');
+  const r = cli(w, ['app-1', '--config', w.cfgFile], env);
+  check('D7 an unowned suite in dirty shared main is a collision, not freeze state',
+    r.code === 3 && /shared checkout contains/.test(r.text) && !/THE TESTS ARE ALREADY WRITTEN/.test(r.text));
+}
+{
+  const B = require(SCRIPT);
+  let failedList = false;
+  try { B.worktrees({ targetRepoPath: path.join(os.tmpdir(), 'missing-worktree-registry-root') }); }
+  catch (e) { failedList = Boolean(e && e.message); }
+  check('D8 a failed git worktree registry read fails closed instead of becoming an empty list', failedList);
+  for (const field of ['locked', 'prunable']) {
+    const found = B.resolveIssueFolder({ targetRepoPath: os.tmpdir() }, 'app-1', [
+      { dir: path.join(os.tmpdir(), `unsafe-${field}`), branch: 'freeze-app-1', [field]: true },
+    ]);
+    check(`D9 exact worktree marked ${field} is a collision, never adopted`,
+      !found.ok && found.kind === 'collision' && /locked or prunable/.test(found.error));
+  }
+  const w = makeWorld();
+  const unsafe = cli(w, ['app..1', '--config', w.cfgFile], bdEnv(w, [ISSUE('app..1')]));
+  check('D10 Git-invalid double-dot issue ids are rejected before any brief is built',
+    unsafe.code === 2 && /safe issue id/.test(unsafe.text));
 }
 
 // ---- E. the three states are told apart -----------------------------------------------------------
@@ -244,7 +310,9 @@ const ISSUE = (id, extra = {}) => ({
   // check can see it.
   const w = makeWorld();
   const env = bdEnv(w, [ISSUE('app-2')]);
-  const dir = path.join(w.target, 'tests', 'acceptance', 'app-2');
+  const wt = path.join(w.base, 'target-freeze-app-2');
+  git(w.target, ['worktree', 'add', '-q', '-b', 'freeze-app-2', wt, 'master']);
+  const dir = path.join(wt, 'tests', 'acceptance', 'app-2');
   fs.mkdirSync(dir, { recursive: true });
 
   const empty = cli(w, ['app-2', '--config', w.cfgFile], env);
@@ -262,6 +330,9 @@ const ISSUE = (id, extra = {}) => ({
 
   // RE-GATE: on the branch, refused for the receipt rather than for the suite. It looks identical
   // to a missing suite in any report that does not separate them, and it is ninety per cent done.
+  const mainDir = path.join(w.target, 'tests', 'acceptance', 'app-2');
+  fs.mkdirSync(mainDir, { recursive: true });
+  fs.writeFileSync(path.join(mainDir, '01-a-check.sh'), '# a check\n');
   git(w.target, ['add', '--', 'tests/acceptance/app-2']);
   git(w.target, ['commit', '-qm', 'a suite with no receipt']);
   git(w.target, ['push', '-q', w.origin, 'HEAD:refs/heads/master']);
@@ -392,13 +463,20 @@ const ISSUE = (id, extra = {}) => ({
       && !/outside the contract/.test(fencedPeer.text));
 }
 {
-  const { acceptanceCriteria } = require(SCRIPT);
+  const { acceptanceCriteria, criteriaInfo } = require(SCRIPT);
   const description = '## Acceptance criteria\n1. A valid legacy criterion.';
   check('G10 a missing structured field may use the strict legacy fallback',
     acceptanceCriteria({ description }) === '1. A valid legacy criterion.');
   check('G11 every present non-string structured value fails closed instead of falling back',
     [null, undefined, 0, false, [], {}]
       .every((acceptance_criteria) => acceptanceCriteria({ acceptance_criteria, description }) === ''));
+  const structured = criteriaInfo({ acceptance_criteria: ' A1. Exact. ', description });
+  const fallback = criteriaInfo({ acceptance_criteria: '', description });
+  const none = criteriaInfo({ acceptance_criteria: null, description });
+  check('G11b criteria metadata names its canonical source and stable digest',
+    structured.text === 'A1. Exact.' && structured.source === 'structured'
+      && fallback.source === 'description' && /^[a-f0-9]{64}$/.test(fallback.sha256)
+      && none.source === 'none' && none.text === '');
 }
 {
   const w = makeWorld();
@@ -555,6 +633,20 @@ const ISSUE = (id, extra = {}) => ({
   const r = cli(w, ['app-5', '--config', w.cfgFile], env);
   check('H5 with no hostEnv the brief emits no export block rather than an invented one',
     !/^export /m.test(r.text) && !/SETUP, BEFORE ANYTHING ELSE/.test(r.text));
+}
+
+// verifyCommand enters both a shell invocation and Claude's comma/parenthesis-delimited tool
+// permission grammar. It therefore has a deliberately smaller language than arbitrary shell.
+{
+  const { verifyCommandError } = require(SCRIPT);
+  check('H6 an ordinary argv-shaped verifier remains valid', !verifyCommandError('sh tools/run-acceptance.sh --strict'));
+  for (const command of [
+    'sh tools/run.sh\nBash(git push)', 'sh tools/run.sh,Bash(git push)',
+    'sh tools/run.sh; git push', 'sh tools/run.sh && git push', 'sh $(evil)',
+    'sh tools/run.sh | tee leak', 'sh tools/run.sh > changed',
+  ]) {
+    check(`H7 verifier injection is rejected: ${JSON.stringify(command)}`, !!verifyCommandError(command));
+  }
 }
 
 // ---- I. it restates no rule it could import ---------------------------------------------------------
