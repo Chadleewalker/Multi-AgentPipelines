@@ -13,7 +13,7 @@ const { loadConfig } = require('../runner/config');
 const { runSync, failureText } = require('../runner/process');
 const { acquire, release } = require('../runner/lock');
 const { buildBrief, verifyCommandError } = require('./spec-brief');
-const { proveTests, validIssueId } = require('./prove-tests');
+const { proveTests, validIssueId, proofStageLine } = require('./prove-tests');
 
 const EXIT_OK = 0;
 const EXIT_USAGE = 2;
@@ -192,7 +192,11 @@ function authorIssue(built, configPath, io = {}, seams = {}) {
   }
 
   out('Test-author agent exited successfully. Starting the isolated two-direction green proof.');
-  const proof = (seams.proveTests || proveTests)(built, probeModel, seams.probeSeams || {});
+  const probeSeams = { ...(seams.probeSeams || {}) };
+  if (typeof probeSeams.onStage !== 'function') probeSeams.onStage = (event) => {
+    const line = proofStageLine(event); if (line) out(line);
+  };
+  const proof = (seams.proveTests || proveTests)(built, probeModel, probeSeams);
   if (proof.agentOutput) out(proof.agentOutput);
   if (proof.evidence) out(proof.evidence);
   if (!proof.ok) {

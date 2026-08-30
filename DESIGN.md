@@ -1720,6 +1720,23 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     neither the clean base nor the proven tree, the refusal reports the closer identity's delta,
     so an expected not-yet-promoted suite is not misreported as the cause.
 
+    Protected-tree hashing is bounded by both path count and conservative Windows command-line
+    size, but remains Git-native: each batch uses `git hash-object -- <paths...>` so attributes,
+    clean filters and line-ending normalization have the same semantics as the former per-path
+    calls. The controller requires exactly one valid object id for every input path and has no
+    raw-byte or partial-manifest fallback. A timeout, signal, Git error, missing id or malformed id
+    therefore refuses the proof. This changes process count from one Git child per protected file
+    to a small number of bounded batches without weakening the protected-byte identity. Generated
+    Godot sidecar normalization likewise takes one NUL-delimited ignored-path decision and one
+    complete tracked-path snapshot instead of two Git children per candidate. Any malformed,
+    incomplete or failed snapshot keeps all uncertain sidecars protected.
+
+    Proof execution also emits a fixed, validated stage vocabulary for prepare, probe-agent,
+    pre-gate protected check, gate, post-gate protected check and marker write. Batch workers carry
+    those events on a prefixed stderr side channel while retaining the one-JSON stdout protocol;
+    progress reporting is observational and can neither manufacture success nor suppress a proof
+    failure. Operators can now distinguish a live expensive gate from a stalled integrity scan.
+
     The strongest batch result is deliberately **proven-at-base**. A proof is bound to the exact
     integration HEAD and protected-tree manifest, so freezing one suite makes every other old
     proof stale. Preparation therefore has no freeze, commit, merge, push or Beads-write verb.

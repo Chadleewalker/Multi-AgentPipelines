@@ -15,6 +15,7 @@ const proof = require('./prove-tests');
 const MAX_INPUT = 4 * 1024 * 1024;
 const MAX_TEXT = 64 * 1024;
 const SAFE_ACTIONS = new Set(['author-proof', 'proof']);
+const STAGE_PREFIX = 'PREPARATION_STAGE ';
 
 function limited(value, max = MAX_TEXT) {
   const text = String(value || '');
@@ -66,7 +67,9 @@ function authorStructured(built, configPath, seams, log) {
   if (launched.status !== 0) return { ok: false, kind: 'agent', error: `test author exited ${launched.status}` };
   const after = (seams.auditAuthorTree || author.auditAuthorTree)(built, seams.runSync || runSync);
   if (!after.ok) return { ok: false, kind: 'boundary', error: after.error };
-  const result = (seams.proveTests || proof.proveTests)(built, probeModel, seams.probeSeams || {});
+  const probeSeams = { ...(seams.probeSeams || {}) };
+  if (typeof seams.onStage === 'function' && typeof probeSeams.onStage !== 'function') probeSeams.onStage = seams.onStage;
+  const result = (seams.proveTests || proof.proveTests)(built, probeModel, probeSeams);
   return result.ok
     ? { ok: true, outcome: 'proven-at-base', probe: result.probe, attempt: result.attempt,
       evidence: limited(result.evidence), agentOutput: limited(result.agentOutput) }
@@ -77,7 +80,9 @@ function authorStructured(built, configPath, seams, log) {
 function proofStructured(built, seams) {
   const model = String(built.cfg.testProbeModel || built.cfg.testAuthorModel || built.cfg.model || '').trim();
   if (!model) return { ok: false, outcome: 'unproven', kind: 'config', error: 'no probe model is configured' };
-  const result = (seams.proveTests || proof.proveTests)(built, model, seams.probeSeams || {});
+  const probeSeams = { ...(seams.probeSeams || {}) };
+  if (typeof seams.onStage === 'function' && typeof probeSeams.onStage !== 'function') probeSeams.onStage = seams.onStage;
+  const result = (seams.proveTests || proof.proveTests)(built, model, probeSeams);
   return result.ok
     ? { ok: true, outcome: 'proven-at-base', probe: result.probe, attempt: result.attempt,
       evidence: limited(result.evidence), agentOutput: limited(result.agentOutput) }
@@ -141,7 +146,9 @@ function readJob(stream = process.stdin, limit = MAX_INPUT) {
 async function main() {
   try {
     const job = await readJob();
-    const result = execute(job);
+    const result = execute(job, { onStage: (event) => {
+      if (proof.validStageEvent(event)) process.stderr.write(`${STAGE_PREFIX}${JSON.stringify(event)}\n`);
+    } });
     process.stdout.write(`${JSON.stringify(result)}\n`);
     return result.ok ? 0 : 1;
   } catch (e) {
@@ -152,4 +159,4 @@ async function main() {
 
 if (require.main === module) main().then((code) => { process.exitCode = code; });
 
-module.exports = { execute, validateJob, readJob, limited, currentHead, MAX_INPUT, MAX_TEXT };
+module.exports = { execute, validateJob, readJob, limited, currentHead, MAX_INPUT, MAX_TEXT, STAGE_PREFIX };

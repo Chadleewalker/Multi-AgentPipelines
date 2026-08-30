@@ -23,6 +23,7 @@ for (const root of [target, author]) {
   fs.mkdirSync(path.join(root, 'tests', 'acceptance', 'app-7'), { recursive: true });
   fs.mkdirSync(path.join(root, 'tools'), { recursive: true });
   fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.gitattributes'), '*.txt text eol=lf\n');
   fs.writeFileSync(path.join(root, 'pipeline.config.json'), JSON.stringify({
     verifyCommand: 'sh tools/run-acceptance.sh',
     frozenPaths: ['tools/run-acceptance.sh', 'scripts/test-*.sh'],
@@ -31,6 +32,7 @@ for (const root of [target, author]) {
   fs.writeFileSync(path.join(root, 'tests', 'acceptance', '_control', 'pass.js'), '// pass\n');
   fs.writeFileSync(path.join(root, 'tests', 'acceptance', '_control', 'helper.gd'), '# helper\n');
   fs.writeFileSync(path.join(root, 'tests', 'acceptance', 'app-7', 'test.js'), '// exact judge\n');
+  fs.writeFileSync(path.join(root, 'tests', 'acceptance', 'app-7', 'crlf.txt'), 'first\r\nsecond\r\n');
   fs.writeFileSync(path.join(root, 'scripts', 'test-core.sh'), '# frozen wildcard\n');
 }
 fs.writeFileSync(path.join(target, '.gitignore'), 'scripts/test-ignored.sh\n*.uid\n*.tmp\n');
@@ -89,6 +91,55 @@ check('B6 an ignored addition matching a frozen path is still protected',
   P.manifestDifference(manifest, P.protectedManifest(target, built.policy, built.id))
     .some((x) => /added scripts\/test-ignored\.sh/.test(x)));
 fs.rmSync(path.join(target, 'scripts', 'test-ignored.sh'));
+
+{
+  const paths = [
+    'pipeline.config.json',
+    'tests/acceptance/app-7/crlf.txt',
+    'tests/acceptance/app-7/test.js',
+    'tools/run-acceptance.sh',
+  ];
+  const expected = paths.map((rel) => String(spawnSync('git',
+    ['hash-object', '--path', rel, '--', rel], { cwd: target, encoding: 'utf8' }).stdout || '').trim());
+  const calls = [];
+  const actual = typeof P.gitFileHashes === 'function'
+    ? P.gitFileHashes(target, paths, (cmd, args, opts) => {
+      calls.push({ cmd, args });
+      return spawnSync(cmd, args, opts);
+    })
+    : null;
+  check('B7 protected regular files are filter-correct and hashed in one bounded Git child',
+    actual instanceof Map
+      && paths.every((rel, index) => actual.get(rel) === expected[index])
+      && calls.length === 1
+      && calls[0].args[0] === 'hash-object'
+      && calls[0].args.includes('--'));
+
+  let malformedRefused = false;
+  try {
+    P.gitFileHashes(target, ['one', 'two'], () => ({ status: 0, stdout: `${'a'.repeat(40)}\n` }));
+  } catch { malformedRefused = true; }
+  check('B8 a partial bulk hash result fails closed instead of returning a partial manifest', malformedRefused);
+
+  let nonHashRefused = false; let signaledRefused = false;
+  try {
+    P.gitFileHashes(target, ['one'], () => ({ status: 0, stdout: 'not-an-object-id\n' }));
+  } catch { nonHashRefused = true; }
+  try {
+    P.gitFileHashes(target, ['one'], () => ({ status: null, signal: 'SIGKILL', stdout: '', stderr: '' }));
+  } catch { signaledRefused = true; }
+  check('B8b malformed or signaled bulk hash output fails closed', nonHashRefused && signaledRefused);
+
+  const many = Array.from({ length: P.HASH_BATCH_PATHS * 2 + 7 }, (_, i) => `tests/acceptance/app-7/${i}.js`);
+  let batches = 0;
+  const bounded = P.gitFileHashes(target, many, (_cmd, args) => {
+    batches += 1;
+    const count = args.length - args.indexOf('--') - 1;
+    return { status: 0, stdout: `${Array.from({ length: count }, () => 'b'.repeat(40)).join('\n')}\n` };
+  });
+  check('B9 bulk hashing grows by bounded batches, never by one child per protected file',
+    bounded.size === many.length && batches === 3);
+}
 
 {
   let call;
@@ -209,6 +260,24 @@ fs.rmSync(path.join(target, 'scripts', 'test-ignored.sh'));
   check('E4b2 a failed tracked-state query cannot hide an ignored Godot sidecar',
     failedGitManifest.some(([rel]) => rel.endsWith('helper.gd.uid')));
   fs.rmSync(generatedUid);
+  const bulkUidDir = path.join(target, 'tests', 'acceptance', 'bulk-uids');
+  fs.mkdirSync(bulkUidDir, { recursive: true });
+  const bulkUidManifest = [];
+  for (let i = 0; i < 300; i += 1) {
+    const gd = `tests/acceptance/bulk-uids/script-${i}.gd`;
+    const uid = `${gd}.uid`;
+    fs.writeFileSync(path.join(target, ...uid.split('/')), 'uid://bulk\n');
+    bulkUidManifest.push([gd, 'companion'], [uid, 'sidecar']);
+  }
+  let uidGitCalls = 0;
+  const bulkGenerated = P.generatedGodotUids(target, bulkUidManifest, 'app-7', (_cmd, args, opts) => {
+    uidGitCalls += 1;
+    if (args[0] === 'check-ignore') return { status: 0, stdout: opts.input.toString('utf8') };
+    return { status: 0, stdout: '' };
+  });
+  check('E4b3 generated sidecar normalization uses two bounded Git snapshots, not two children per sidecar',
+    bulkGenerated.size === 300 && uidGitCalls === 2);
+  fs.rmSync(bulkUidDir, { recursive: true, force: true });
   const ignoredOther = path.join(target, 'tests', 'acceptance', '_control', 'scratch.tmp');
   fs.writeFileSync(ignoredOther, 'not a Godot uid\n');
   check('E4c other ignored additions under acceptance remain protected',
@@ -256,16 +325,24 @@ fs.rmSync(path.join(target, 'scripts', 'test-ignored.sh'));
 {
   const prepared = { ok: true, container: path.join(tmp, 'fake-container'), baseline: path.join(tmp, 'fake-baseline'),
     probe: path.join(tmp, 'fake-probe') };
-  let gates = 0; const prior = [];
+  let gates = 0; let clock = 0; const prior = []; const stages = [];
   const result = P.proveTests(built, 'opus', {
     prepareProbe: () => prepared,
     launchProbe: (b, p, m, evidence) => { prior.push(evidence); return { status: 0 }; },
     invariantErrors: () => [],
     runGate: () => (++gates === 1 ? { status: 3, stdout: 'still red' } : { status: 0, stdout: 'RED: fully proven' }),
     markProven: () => {},
+    now: () => clock++,
+    onStage: (event) => stages.push(event),
   });
   check('F1 controller retries with host evidence and accepts only gate exit 0',
     result.ok && result.attempt === 2 && prior[0] === '' && prior[1].includes('still red'));
+  check('F1b proof stages are ordered, timed and never announce marker completion before the successful gate',
+    stages[0].stage === 'prepare' && stages[0].phase === 'start'
+      && stages[stages.length - 1].stage === 'marker-write' && stages[stages.length - 1].phase === 'done'
+      && stages.filter((event) => event.stage === 'gate' && event.phase === 'start').map((event) => event.attempt).join(',') === '1,2'
+      && stages.every((event, index) => event.phase === (index % 2 === 0 ? 'start' : 'done'))
+      && stages.filter((event) => event.phase === 'done').every((event) => event.elapsedMs === 1));
 }
 
 {
@@ -284,10 +361,15 @@ fs.rmSync(path.join(target, 'scripts', 'test-ignored.sh'));
   const rc = P.main(['app-7', '--config', 'x.json'], (s) => out.push(String(s)), (s) => err.push(String(s)), cliSeams({
     buildBrief: () => ({ ...built, ok: true, state: 'write', folder: { ...built.folder, exists: true },
       cfg: { ...built.cfg, testProbeModel: 'opus' } }),
-    proveTests: () => ({ ok: true, attempt: 1, probe: 'C:/owned probe' }),
+    proveTests: (_built, _model, probeSeams) => {
+      probeSeams.onStage({ stage: 'gate', phase: 'start', attempt: 1 });
+      probeSeams.onStage({ stage: 'gate', phase: 'done', attempt: 1, elapsedMs: 20 });
+      return { ok: true, attempt: 1, probe: 'C:/owned probe' };
+    },
   }));
   check('G1 standalone proof command reports success but still requires human freeze approval',
-    rc === 0 && out.some((s) => /fully proven/.test(s)) && out.some((s) => /human approval/.test(s)));
+    rc === 0 && out.some((s) => /fully proven/.test(s)) && out.some((s) => /human approval/.test(s))
+      && err.some((s) => /gate started/.test(s)) && err.some((s) => /gate finished in 20ms/.test(s)));
   check('G2 unsafe standalone ids fail before building a brief', P.main(['../x', '--config', 'x'], () => {}, () => {}) === 2);
 }
 {

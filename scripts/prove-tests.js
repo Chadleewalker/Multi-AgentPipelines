@@ -19,7 +19,9 @@ const { runSync, failureText } = require('../runner/process');
 const { acquire, release } = require('../runner/lock');
 const { compareSuites } = require('./freeze-gate');
 const {
-  protectedManifest, manifestHash, manifestDifference, normalizedManagedManifest, within, sha,
+  protectedManifest, manifestHash, manifestDifference, normalizedManagedManifest, gitFileHashes,
+  generatedGodotUids,
+  HASH_BATCH_PATHS, within, sha,
 } = require('./protected-tree');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -28,6 +30,9 @@ const PROBE_PREFIX = 'multi-agent-green-probe-';
 const PROBE_ROOT_NAME = 'multi-agent-green-probes';
 const MARKER = '.pipeline-green-probe.json';
 const OWNER_SUFFIX = '.pipeline-green-probe-owner.json';
+const PROOF_STAGES = new Set([
+  'prepare', 'probe-agent', 'protected-check-before', 'gate', 'protected-check-after', 'marker-write',
+]);
 const MAX_BUFFER = 64 * 1024 * 1024;
 const PROBE_TOOLS = 'Read,Edit,Write,Glob,Grep';
 const PROBE_DENIED = 'Bash,WebFetch,WebSearch';
@@ -254,6 +259,36 @@ function markProven(prepared, attempt, evidence) {
   fs.writeFileSync(markerPath, `${JSON.stringify(marker, null, 2)}\n`);
 }
 
+function validStageEvent(event) {
+  return !!event && typeof event === 'object' && PROOF_STAGES.has(event.stage)
+    && ['start', 'done'].includes(event.phase)
+    && (event.attempt === null || event.attempt === undefined
+      || Number.isInteger(event.attempt) && event.attempt > 0)
+    && (event.elapsedMs === undefined || Number.isInteger(event.elapsedMs) && event.elapsedMs >= 0);
+}
+
+function proofStageLine(event) {
+  if (!validStageEvent(event)) return null;
+  const attempt = event.attempt ? ` attempt ${event.attempt}` : '';
+  const elapsed = event.phase === 'done' && Number.isInteger(event.elapsedMs) ? ` in ${event.elapsedMs}ms` : '';
+  return `proof${attempt}: ${event.stage} ${event.phase === 'start' ? 'started' : `finished${elapsed}`}`;
+}
+
+function runStage(seams, stage, attempt, fn) {
+  const now = typeof seams.now === 'function' ? seams.now : Date.now;
+  const emit = (event) => {
+    if (typeof seams.onStage !== 'function') return;
+    try { seams.onStage(Object.freeze(event)); } catch { /* progress is observational */ }
+  };
+  const started = now();
+  emit({ stage, phase: 'start', attempt });
+  try { return fn(); }
+  finally {
+    const elapsedMs = Math.max(0, Math.round(now() - started));
+    emit({ stage, phase: 'done', attempt, elapsedMs });
+  }
+}
+
 function prepareProbe(built, model, run = runSync, tempRoot = os.tmpdir()) {
   const suiteId = suiteIdOf(built);
   if (!validIssueId(built && built.id) || !validIssueId(suiteId)) {
@@ -408,27 +443,33 @@ function invariantErrors(built, prepared) {
 
 function proveTests(built, model, seams = {}) {
   const run = seams.runSync || runSync;
-  const prepared = (seams.prepareProbe || prepareProbe)(built, model, run, seams.tempRoot || os.tmpdir());
+  const prepared = runStage(seams, 'prepare', null,
+    () => (seams.prepareProbe || prepareProbe)(built, model, run, seams.tempRoot || os.tmpdir()));
   if (!prepared.ok) return { ok: false, kind: 'setup', error: prepared.error };
   const attempts = Math.max(1, Number(built.cfg.testProbeAttempts) || 3);
   let evidence = '';
   let keepBaseline = false;
   try {
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
-      const launched = (seams.launchProbe || launchProbe)(built, prepared, model, evidence, run);
+      const launched = runStage(seams, 'probe-agent', attempt,
+        () => (seams.launchProbe || launchProbe)(built, prepared, model, evidence, run));
       if (launched.status !== 0) {
         return { ok: false, kind: 'agent', attempt, probe: prepared.probe,
           error: failureText(launched, 'green-probe agent failed') };
       }
-      const before = (seams.invariantErrors || invariantErrors)(built, prepared);
+      const before = runStage(seams, 'protected-check-before', attempt,
+        () => (seams.invariantErrors || invariantErrors)(built, prepared));
       if (before.length) return { ok: false, kind: 'tamper', attempt, probe: prepared.probe, error: before.join('; ') };
 
-      const gated = (seams.runGate || runGate)(built, prepared, run);
+      const gated = runStage(seams, 'gate', attempt,
+        () => (seams.runGate || runGate)(built, prepared, run));
       evidence = `${gated.stdout || ''}${gated.stderr || ''}`.trim();
-      const after = (seams.invariantErrors || invariantErrors)(built, prepared);
+      const after = runStage(seams, 'protected-check-after', attempt,
+        () => (seams.invariantErrors || invariantErrors)(built, prepared));
       if (after.length) return { ok: false, kind: 'tamper', attempt, probe: prepared.probe, error: after.join('; '), evidence };
       if (gated.status === 0) {
-        (seams.markProven || markProven)(prepared, attempt, evidence);
+        runStage(seams, 'marker-write', attempt,
+          () => (seams.markProven || markProven)(prepared, attempt, evidence));
         keepBaseline = true;
         return { ok: true, attempt, probe: prepared.probe, container: prepared.container, evidence,
           agentOutput: String(launched.stdout || '').trim() };
@@ -506,7 +547,11 @@ function main(argv, out = console.log, err = console.error, seams = {}) {
     }
     const model = String(built.cfg.testProbeModel || built.cfg.testAuthorModel || built.cfg.model || '').trim();
     if (!model) { err('prove-tests: no probe model is configured'); return 3; }
-    const proof = (seams.proveTests || proveTests)(built, model, seams.probeSeams || {});
+    const probeSeams = { ...(seams.probeSeams || {}) };
+    if (typeof probeSeams.onStage !== 'function') probeSeams.onStage = (event) => {
+      const line = proofStageLine(event); if (line) err(`prove-tests: ${line}`);
+    };
+    const proof = (seams.proveTests || proveTests)(built, model, probeSeams);
     if (proof.evidence) out(proof.evidence);
     if (!proof.ok) {
       err(`prove-tests: ${proof.error}`);
@@ -523,10 +568,13 @@ function main(argv, out = console.log, err = console.error, seams = {}) {
 
 module.exports = {
   main, parseArgs, proveTests, prepareProbe, launchProbe, runGate, probePrompt, protectedManifest,
-  manifestHash, manifestDifference, normalizedManagedManifest, invariantErrors, suiteDifference, validIssueId,
+  manifestHash, manifestDifference, normalizedManagedManifest, gitFileHashes, generatedGodotUids,
+  HASH_BATCH_PATHS,
+  invariantErrors, suiteDifference, validIssueId,
   suiteIdOf,
   ownerRecordPath, ownedContainer, removeOwnedPath, removeOwnedContainer, readManagedProbe, validateManagedProbe,
   promoteManagedSuite, rollbackManagedPromotion, finalizeManagedPromotion, markProven, policyAt,
+  validStageEvent, proofStageLine, runStage, PROOF_STAGES,
   PROBE_TOOLS, PROBE_DENIED, PROBE_PREFIX, PROBE_ROOT_NAME, MARKER,
 };
 

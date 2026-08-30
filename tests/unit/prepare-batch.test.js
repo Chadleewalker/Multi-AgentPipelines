@@ -319,6 +319,31 @@ check('B4 write and existing-suite states select only author-proof and proof',
     check('J2 parent result event makes the refusal visible in derived status',
       State.deriveState(stateRoot, 'protocol').issues[0].state === 'invalid');
   }
+  {
+    const fakeChild = new EventEmitter(); const progress = [];
+    fakeChild.pid = 11223;
+    fakeChild.stdout = new EventEmitter(); fakeChild.stderr = new EventEmitter();
+    fakeChild.kill = () => {};
+    fakeChild.stdin = { end: () => setImmediate(() => {
+      const first = `${P.STAGE_PREFIX}${JSON.stringify({ stage: 'gate', phase: 'start', attempt: 1 })}\n`;
+      const second = `${P.STAGE_PREFIX}${JSON.stringify({ stage: 'gate', phase: 'done', attempt: 1, elapsedMs: 25 })}\n`;
+      fakeChild.stderr.emit('data', Buffer.from(first.slice(0, 13)));
+      fakeChild.stderr.emit('data', Buffer.from(`${first.slice(13)}ordinary stderr\n${second}`));
+      fakeChild.stdout.emit('data', Buffer.from(`${JSON.stringify({ ok: true, outcome: 'proven-at-base' })}\n`));
+      fakeChild.emit('close', 0);
+    }) };
+    await P.runWorker('R', 'wave', {
+      id: 'app-progress', action: 'proof', built: built('app-progress', 'freeze'),
+    }, 'run.json', {
+      createWorkerNonce: () => 'd'.repeat(32), writeWorkerStarted() {}, writeWorkerResult() {}, appendEvent() {},
+    }, {
+      spawn: () => fakeChild, ownership: {}, markPreparationUncertain() {}, clearPreparationUncertain() {},
+      onWorkerProgress: (id, event) => progress.push({ id, event }),
+    });
+    check('J3 fixed proof stages cross worker stderr live without corrupting its one-JSON stdout protocol',
+      progress.length === 2 && progress.every((row) => row.id === 'app-progress')
+        && progress[0].event.phase === 'start' && progress[1].event.elapsedMs === 25);
+  }
 
   // K. Machine consumers cannot get a successful status for invalid/tampered durable state.
   {

@@ -14,6 +14,11 @@ const { spawnSync } = require('child_process');
 const { parseReceipt } = require('../runner/queue');
 
 const RECEIPT_NAME = '.freeze-gate.json';
+const HASH_BATCH_PATHS = 256;
+// Windows CreateProcess has a 32,767 UTF-16 command-line limit. This conservative estimate
+// includes quoting expansion and leaves room for the executable and fixed arguments.
+const HASH_BATCH_ARG_UNITS = 12000;
+const GIT_TIMEOUT_MS = 60000;
 // ResourceUID::id_to_text emits a variable-width base-34 number. Godot's generator alphabet
 // is a-y plus 0-8 and the engine caps the encoded number at 13 characters. Shorter values are
 // normal (and present in real projects), so exact-width validation would turn generated cache
@@ -79,7 +84,7 @@ function allFilesystemPaths(root) {
   return out;
 }
 
-function gitPaths(root, patterns) {
+function gitPaths(root, patterns, run = spawnSync) {
   const base = ['ls-files', '-z'];
   const calls = [
     [...base, '--cached', '--others', '--exclude-standard', '--', ...patterns],
@@ -87,14 +92,48 @@ function gitPaths(root, patterns) {
   ];
   const paths = new Set();
   for (const args of calls) {
-    const r = spawnSync('git', args, { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    const r = run('git', args, { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
+      timeout: GIT_TIMEOUT_MS, killSignal: 'SIGKILL' });
     if (r.status !== 0) return null;
     for (const name of String(r.stdout || '').split('\0').filter(Boolean)) paths.add(normalize(name));
   }
   return [...paths];
 }
 
-function entryFor(root, rel, gitBacked) {
+function gitFileHashes(root, rels, run = spawnSync) {
+  const hashes = new Map();
+  let batch = []; let units = 0;
+  function flush() {
+    if (!batch.length) return;
+    const current = batch; batch = []; units = 0;
+    const result = run('git', ['hash-object', '--', ...current], {
+      cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
+      timeout: GIT_TIMEOUT_MS, killSignal: 'SIGKILL',
+    });
+    if (result.status !== 0 || result.error || result.signal) {
+      const detail = (result.stderr || '').trim()
+        || (result.error && result.error.message)
+        || (result.signal ? `signal ${result.signal}` : `exit ${result.status}`);
+      throw new Error(`cannot bulk-hash protected paths: ${detail}`);
+    }
+    const lines = String(result.stdout || '').split(/\r?\n/);
+    if (lines[lines.length - 1] === '') lines.pop();
+    if (lines.length !== current.length || lines.some((line) => !/^[0-9a-f]{40}$/.test(line))) {
+      throw new Error(`cannot bulk-hash protected paths: expected ${current.length} object ids, got ${lines.length}`);
+    }
+    current.forEach((rel, index) => hashes.set(rel, lines[index]));
+  }
+  for (const rel of rels) {
+    // Upper-bound Windows quoting cost without duplicating Git's argv encoder.
+    const nextUnits = 2 * String(rel).length + 3;
+    if (batch.length && (batch.length >= HASH_BATCH_PATHS || units + nextUnits > HASH_BATCH_ARG_UNITS)) flush();
+    batch.push(rel); units += nextUnits;
+  }
+  flush();
+  return hashes;
+}
+
+function entryFor(root, rel, gitBacked, gitHashes = null) {
   const file = path.resolve(root, ...rel.split('/'));
   if (!within(root, file)) throw new Error(`protected match escapes the repository: ${rel}`);
   let stat;
@@ -103,13 +142,8 @@ function entryFor(root, rel, gitBacked) {
   if (stat.isSymbolicLink()) return `link:${mode}:${sha(Buffer.from(fs.readlinkSync(file)))}`;
   if (stat.isFile()) {
     if (gitBacked) {
-      const h = spawnSync('git', ['hash-object', '--path', rel, '--', rel], {
-        cwd: root, encoding: 'utf8', maxBuffer: 1024 * 1024,
-      });
-      const blob = String(h.stdout || '').trim();
-      if (h.status !== 0 || !/^[0-9a-f]{40}$/.test(blob)) {
-        throw new Error(`cannot hash protected path ${rel}: ${(h.stderr || '').trim() || `exit ${h.status}`}`);
-      }
+      const blob = gitHashes && gitHashes.get(rel);
+      if (!/^[0-9a-f]{40}$/.test(blob || '')) throw new Error(`cannot hash protected path ${rel}: no bulk object id`);
       return `file:${mode}:blob:${blob}`;
     }
     const bytes = fs.readFileSync(file);
@@ -120,21 +154,28 @@ function entryFor(root, rel, gitBacked) {
   return `other:${mode}`;
 }
 
-function protectedManifest(repoRoot, policy, issueId) {
+function protectedManifest(repoRoot, policy, issueId, run = spawnSync) {
   const root = path.resolve(repoRoot);
   const patterns = ['tests/acceptance', 'pipeline.config.json', ...((policy && policy.frozenPaths) || [])]
     .map((p) => safePattern(p, root));
-  let matches = gitPaths(root, patterns);
+  let matches = gitPaths(root, patterns, run);
   const gitBacked = matches !== null;
   if (matches === null) {
     const matchers = patterns.map(regexFor);
     matches = allFilesystemPaths(root).filter((rel) => matchers.some((re) => re.test(rel)));
   }
   const ignoredReceipt = `tests/acceptance/${issueId}/${RECEIPT_NAME}`;
+  matches = matches.filter((rel) => rel !== ignoredReceipt);
+  const regularFiles = matches.filter((rel) => {
+    try {
+      const stat = fs.lstatSync(path.resolve(root, ...rel.split('/')));
+      return stat.isFile() && !stat.isSymbolicLink();
+    } catch { return false; }
+  });
+  const gitHashes = gitBacked ? gitFileHashes(root, regularFiles, run) : null;
   const out = new Map();
   for (const rel of matches.sort()) {
-    if (rel === ignoredReceipt || rel.endsWith(`/${RECEIPT_NAME}`) && rel === ignoredReceipt) continue;
-    out.set(rel, entryFor(root, rel, gitBacked));
+    out.set(rel, entryFor(root, rel, gitBacked, gitHashes));
   }
   return [...out.entries()].sort((a, b) => Buffer.from(a[0]).compare(Buffer.from(b[0])));
 }
@@ -168,6 +209,54 @@ function generatedGodotUid(repoRoot, rel, companionPresent, run = spawnSync) {
     && tracked.status === 1 && !tracked.error && !tracked.signal;
 }
 
+function nulPaths(output) {
+  const text = String(output || '');
+  if (!text) return [];
+  if (!text.endsWith('\0')) return null;
+  return text.slice(0, -1).split('\0').map(normalize);
+}
+
+function generatedGodotUids(repoRoot, manifest, issueId, run = spawnSync) {
+  const entries = new Map(manifest);
+  const candidates = [];
+  for (const [rel] of manifest) {
+    const match = /^tests\/acceptance\/([^/]+)\/(.+\.gd)\.uid$/.exec(rel);
+    if (!match || match[1] === issueId
+        || !entries.has(`tests/acceptance/${match[1]}/${match[2]}`)) continue;
+    const file = path.resolve(repoRoot, ...rel.split('/'));
+    let stat; let bytes;
+    try { stat = fs.lstatSync(file); bytes = fs.readFileSync(file, 'utf8'); }
+    catch { continue; }
+    if (stat.isFile() && !stat.isSymbolicLink() && GENERATED_GODOT_UID.test(bytes)) candidates.push(rel);
+  }
+  if (!candidates.length) return new Set();
+
+  // `check-ignore --stdin -z` preserves arbitrary path bytes and avoids both the Windows argv
+  // ceiling and one process per sidecar. Any ambiguous response keeps every candidate protected.
+  const input = Buffer.from(`${candidates.join('\0')}\0`);
+  const ignoredResult = run('git', ['check-ignore', '-z', '--stdin'], {
+    cwd: repoRoot, input, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
+    timeout: GIT_TIMEOUT_MS, killSignal: 'SIGKILL',
+  });
+  if (![0, 1].includes(ignoredResult.status) || ignoredResult.error || ignoredResult.signal) return new Set();
+  const ignoredPaths = nulPaths(ignoredResult.stdout);
+  if (ignoredPaths === null || (ignoredResult.status === 1 && ignoredPaths.length)) return new Set();
+  const candidateSet = new Set(candidates);
+  if (ignoredPaths.some((rel) => !candidateSet.has(rel))) return new Set();
+
+  // A single complete tracked-path snapshot replaces `ls-files --error-unmatch` per sidecar.
+  const trackedResult = run('git', ['ls-files', '-z', '--cached'], {
+    cwd: repoRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
+    timeout: GIT_TIMEOUT_MS, killSignal: 'SIGKILL',
+  });
+  if (trackedResult.status !== 0 || trackedResult.error || trackedResult.signal) return new Set();
+  const trackedPaths = nulPaths(trackedResult.stdout);
+  if (trackedPaths === null) return new Set();
+  const tracked = new Set(trackedPaths);
+  const ignored = new Set(ignoredPaths);
+  return new Set(candidates.filter((rel) => ignored.has(rel) && !tracked.has(rel)));
+}
+
 function untrackedSiblingReceipt(repoRoot, rel, issueId, run = spawnSync) {
   const match = /^tests\/acceptance\/([^/]+)\/\.freeze-gate\.json$/.exec(rel);
   if (!match || match[1] === issueId) return false;
@@ -195,6 +284,7 @@ function normalizedManagedManifest(repoRoot, manifest, issueId, runOrOptions = s
   const options = typeof runOrOptions === 'function' ? {} : (runOrOptions || {});
   const answer = [];
   const entries = new Map(manifest);
+  const generatedUids = generatedGodotUids(repoRoot, manifest, issueId, run);
   for (const [rel, value] of manifest) {
     // This projection is authorized only for the long-lived integration target. Baseline and
     // probe identities stay bound to every raw byte the proof marker originally hashed.
@@ -203,14 +293,16 @@ function normalizedManagedManifest(repoRoot, manifest, issueId, runOrOptions = s
     if (!match || match[1] === issueId || !entries.has(`tests/acceptance/${match[1]}/${match[2]}`)) {
       answer.push([rel, value]); continue;
     }
-    if (!generatedGodotUid(repoRoot, rel,
-      entries.has(`tests/acceptance/${match[1]}/${match[2]}`), run)) answer.push([rel, value]);
+    if (!generatedUids.has(rel)) answer.push([rel, value]);
   }
   return answer;
 }
 
 module.exports = {
-  protectedManifest, manifestHash, manifestDifference, normalizedManagedManifest, generatedGodotUid,
+  protectedManifest, manifestHash, manifestDifference, normalizedManagedManifest,
+  generatedGodotUid, generatedGodotUids, nulPaths,
+  gitFileHashes,
   untrackedSiblingReceipt,
   safePattern, regexFor, within, sha,
+  HASH_BATCH_PATHS, HASH_BATCH_ARG_UNITS, GIT_TIMEOUT_MS,
 };

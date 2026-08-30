@@ -271,6 +271,15 @@ never freezes, commits, merges, pushes, changes Beads, or turns blocked
 implementation dependencies into test-author dependencies: specs may be prepared together, then
 the ordinary Beads-ready runner releases their implementation waves in dependency order.
 
+While a proof is running, the coordinator reports the current fixed stage (`prepare`, probe
+agent, protected check, gate, final protected check, or marker write) and the elapsed time of each
+completed stage. These messages are progress only; the durable worker result remains the sole
+success record. Protected-tree scans use bounded multi-path Git hashing, preserving repository
+attributes and clean filters while avoiding one Windows process launch per protected file.
+Generated Godot sidecars are classified from one NUL-delimited ignore query and one complete
+tracked-path snapshot rather than two Git children per candidate. Any incomplete, malformed or
+failed bulk result keeps the uncertain paths protected rather than producing a partial manifest.
+
 `allowHalfProven: true` is incompatible with this all-proven preparation posture and is refused;
 change that run policy explicitly rather than asking the coordinator to weaken it. Human review
 still follows. Because a freeze advances the integration HEAD, approved publication re-proves

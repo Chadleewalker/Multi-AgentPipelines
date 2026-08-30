@@ -23,6 +23,7 @@ const prepState = require('../runner/preparation-state');
 const ROOT = path.resolve(__dirname, '..');
 const WORKER = path.join(__dirname, 'prepare-batch-worker.js');
 const MAX_WORKER_OUTPUT = 1024 * 1024;
+const STAGE_PREFIX = 'PREPARATION_STAGE ';
 const DEFAULT_CONCURRENCY = 2;
 const MAX_CONCURRENCY = 3;
 const SECRET_MARKER = '<redacted-host-env>';
@@ -313,13 +314,33 @@ function runWorker(root, batch, item, configPath, state = prepState, seams = {})
         error: `cannot record target-global worker uncertainty: ${e.message}` });
       return;
     }
-    const chunks = []; let bytes = 0; let overflow = false; let stderr = '';
+    const chunks = []; let bytes = 0; let overflow = false; let stderr = ''; let stageBuffer = '';
+    const reportStage = (line) => {
+      if (!line.startsWith(STAGE_PREFIX)) return;
+      try {
+        const event = JSON.parse(line.slice(STAGE_PREFIX.length));
+        if (proof.validStageEvent(event) && typeof seams.onWorkerProgress === 'function') {
+          seams.onWorkerProgress(item.id, event);
+        }
+      } catch { /* ordinary worker stderr is not a progress event */ }
+    };
     child.stdout.on('data', (chunk) => {
       bytes += chunk.length;
       if (bytes <= MAX_WORKER_OUTPUT) chunks.push(chunk);
       else if (!overflow) { overflow = true; try { child.kill('SIGKILL'); } catch { /* owned child */ } }
     });
-    child.stderr.on('data', (chunk) => { if (stderr.length < 65536) stderr += chunk.toString('utf8').slice(0, 65536 - stderr.length); });
+    child.stderr.on('data', (chunk) => {
+      const text = chunk.toString('utf8');
+      if (stderr.length < 65536) stderr += text.slice(0, 65536 - stderr.length);
+      stageBuffer += text;
+      for (;;) {
+        const newline = stageBuffer.indexOf('\n');
+        if (newline < 0) break;
+        reportStage(stageBuffer.slice(0, newline).replace(/\r$/, ''));
+        stageBuffer = stageBuffer.slice(newline + 1);
+      }
+      if (stageBuffer.length > 65536) stageBuffer = '';
+    });
     child.on('error', (e) => {
       const result = scrubSecrets(
         { id: item.id, ok: false, outcome: 'interrupted', error: e.message, nonce }, item.built.cfg);
@@ -331,6 +352,7 @@ function runWorker(root, batch, item, configPath, state = prepState, seams = {})
       resolve(result);
     });
     child.on('close', (code) => {
+      if (stageBuffer) reportStage(stageBuffer.replace(/\r$/, ''));
       const envelope = overflow ? { verified: false,
         result: { ok: false, outcome: 'interrupted', error: `worker output exceeded ${MAX_WORKER_OUTPUT} bytes` } }
         : parseWorkerEnvelope(Buffer.concat(chunks).toString('utf8'));
@@ -730,9 +752,12 @@ async function execute(opts, io = {}, seams = {}) {
       }, cfg));
       if (item.action) runnable.push(item);
     }
+    const onWorkerProgress = seams.onWorkerProgress || ((id, event) => {
+      const line = proof.proofStageLine(event); if (line) err(`${id}: ${line}`);
+    });
     const results = await runPool(runnable, concurrency,
       (item) => (seams.runWorker || runWorker)(root, opts.batch, item, configPath, state,
-        { ...seams, ownership: held.ownership }));
+        { ...seams, ownership: held.ownership, onWorkerProgress }));
     for (const item of snapshots.filter((s) => !s.action)) out(`${item.id}: ${item.outcome}${item.error ? ` — ${item.error}` : ''}`);
     for (const result of results) out(`${result.id}: ${result.outcome}${result.error ? ` — ${result.error}` : ''}`);
     if (strays.ids.length) out(`stray dispatchable issues outside this batch: ${strays.ids.join(', ')}`);
@@ -763,5 +788,6 @@ module.exports = {
   inspectIntegration, strayIssues, settleEmptyTakeover, unresolvedWorkers, acknowledgeInterrupted,
   acknowledgedPhases,
   attemptPhase, sameConfigIdentity, SECRET_MARKER,
-  DEFAULT_CONCURRENCY, MAX_CONCURRENCY, MAX_WORKER_OUTPUT, EXIT_USAGE, EXIT_REFUSED, EXIT_ATTENTION,
+  DEFAULT_CONCURRENCY, MAX_CONCURRENCY, MAX_WORKER_OUTPUT, STAGE_PREFIX,
+  EXIT_USAGE, EXIT_REFUSED, EXIT_ATTENTION,
 };
