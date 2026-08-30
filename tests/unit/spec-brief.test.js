@@ -307,6 +307,230 @@ const ISSUE = (id, extra = {}) => ({
     /NO ACCEPTANCE CRITERIA/.test(r.text) && /Report it and stop/.test(r.text));
 }
 
+// Older issues put a numbered Done-means list in description because their Beads version did not
+// expose the structured field. The fallback is intentionally a tiny grammar, not a prose guess:
+// an exact Markdown heading and a top-level list beginning at 1, bounded by the next peer heading.
+{
+  const w = makeWorld();
+  const lhi = ISSUE('app-6', {
+    acceptance_criteria: ' \r\n ',
+    description: [
+      'Keep the hold feedback readable during long sessions.',
+      '',
+      '## aCcEpTaNcE CrItErIa:',
+      '',
+      '1. Holding cargo displays the remaining safe duration.',
+      '2. Releasing cargo clears the display.',
+      '',
+      '## Implementation notes',
+      'This sentence is not a criterion.',
+    ].join('\r\n'),
+  });
+  const env = bdEnv(w, [lhi]);
+  const r = cli(w, ['app-6', '--config', w.cfgFile], env);
+  check('G2 a numbered Acceptance criteria description section is the legacy fallback',
+    /1\. Holding cargo displays/.test(r.text) && /2\. Releasing cargo clears/.test(r.text));
+  check('G3 the fallback stops at the next equal-level heading',
+    !/Implementation notes/.test(r.text) && !/not a criterion/.test(r.text));
+}
+{
+  const w = makeWorld();
+  const env = bdEnv(w, [ISSUE('app-7', {
+    acceptance_criteria: 'A1. Structured wins.',
+    description: '## Acceptance criteria\n1. Description loses.',
+  })]);
+  const r = cli(w, ['app-7', '--config', w.cfgFile], env);
+  check('G4 nonblank structured criteria take precedence over the description fallback',
+    /A1\. Structured wins\./.test(r.text) && !/Description loses/.test(r.text));
+}
+{
+  const w = makeWorld();
+  const issues = [
+    ISSUE('app-8', { acceptance_criteria: '', description: 'Context only.\n\n1. Unlabelled list.' }),
+    ISSUE('app-9', { acceptance_criteria: '', description: '## Acceptance criteria\n- A bullet is not the numbered contract.' }),
+    ISSUE('app-10', { acceptance_criteria: '', description: '## Acceptance criteria and notes\n1. Not an exact heading.' }),
+  ];
+  const env = bdEnv(w, issues);
+  const unlabeled = cli(w, ['app-8', '--config', w.cfgFile], env);
+  const unnumbered = cli(w, ['app-9', '--config', w.cfgFile], env);
+  const inexact = cli(w, ['app-10', '--config', w.cfgFile], env);
+  check('G5 arbitrary description prose and an unlabeled list remain rejected',
+    /NO ACCEPTANCE CRITERIA/.test(unlabeled.text));
+  check('G6 an unnumbered Acceptance criteria section remains rejected',
+    /NO ACCEPTANCE CRITERIA/.test(unnumbered.text));
+  check('G7 the fallback heading must be exactly Acceptance criteria',
+    /NO ACCEPTANCE CRITERIA/.test(inexact.text));
+}
+{
+  const w = makeWorld();
+  const issues = [
+    ISSUE('app-11', {
+      acceptance_criteria: '',
+      description: '```md\n## Acceptance criteria\n1. This is only an example.\n```\nNo contract follows.',
+    }),
+    ISSUE('app-12', {
+      acceptance_criteria: '',
+      description: [
+        '### Acceptance criteria',
+        '1. The first real criterion.',
+        '~~~~ markdown',
+        '## A peer-looking heading inside the example',
+        '~~~~',
+        '2. The second real criterion survives the fence.',
+        '## Actual next section',
+        'This is outside the contract.',
+      ].join('\n'),
+    }),
+  ];
+  const env = bdEnv(w, issues);
+  const fake = cli(w, ['app-11', '--config', w.cfgFile], env);
+  const fencedPeer = cli(w, ['app-12', '--config', w.cfgFile], env);
+  check('G8 an Acceptance criteria heading inside a backtick fence is not a fallback section',
+    /NO ACCEPTANCE CRITERIA/.test(fake.text));
+  check('G9 a peer heading inside a tilde fence does not end a real criteria section',
+    /2\. The second real criterion survives/.test(fencedPeer.text)
+      && !/outside the contract/.test(fencedPeer.text));
+}
+{
+  const { acceptanceCriteria } = require(SCRIPT);
+  const description = '## Acceptance criteria\n1. A valid legacy criterion.';
+  check('G10 a missing structured field may use the strict legacy fallback',
+    acceptanceCriteria({ description }) === '1. A valid legacy criterion.');
+  check('G11 every present non-string structured value fails closed instead of falling back',
+    [null, undefined, 0, false, [], {}]
+      .every((acceptance_criteria) => acceptanceCriteria({ acceptance_criteria, description }) === ''));
+}
+{
+  const w = makeWorld();
+  const issues = [
+    ISSUE('app-13', {
+      acceptance_criteria: '',
+      description: '<!--\n## Acceptance criteria\n1. Template placeholder only.\n-->\nNo contract follows.',
+    }),
+    ISSUE('app-14', {
+      acceptance_criteria: '',
+      description: [
+        '## Acceptance criteria',
+        '1. The first real criterion.',
+        '<!--',
+        '## Commented next-section template',
+        '-->',
+        '2. The second real criterion survives the comment.',
+        '## Actual next section',
+        'This is outside the contract.',
+      ].join('\n'),
+    }),
+    ISSUE('app-15', {
+      acceptance_criteria: '',
+      description: '## Acceptance criteria\n1. The captured criterion.\nNext section\n---\nOutside peer section.',
+    }),
+    ISSUE('app-16', {
+      acceptance_criteria: '',
+      description: '### Acceptance criteria\n1. The captured criterion.\nHigher section\n===\nOutside higher section.',
+    }),
+    ISSUE('app-17', {
+      acceptance_criteria: '',
+      description: [
+        '# Acceptance criteria',
+        '1. The first criterion.',
+        'Lower subsection',
+        '---',
+        '2. A lower Setext heading does not end an H1 criteria section.',
+        '# Actual peer section',
+        'This is outside the contract.',
+      ].join('\n'),
+    }),
+    ISSUE('app-18', {
+      acceptance_criteria: '',
+      description: '## Acceptance criteria\n1. Looks valid.\n<!-- unclosed template',
+    }),
+  ];
+  const env = bdEnv(w, issues);
+  const commented = cli(w, ['app-13', '--config', w.cfgFile], env);
+  const commentedPeer = cli(w, ['app-14', '--config', w.cfgFile], env);
+  const peerSetext = cli(w, ['app-15', '--config', w.cfgFile], env);
+  const higherSetext = cli(w, ['app-16', '--config', w.cfgFile], env);
+  const lowerSetext = cli(w, ['app-17', '--config', w.cfgFile], env);
+  const unclosed = cli(w, ['app-18', '--config', w.cfgFile], env);
+  check('G12 a commented Acceptance criteria template is not a fallback section',
+    /NO ACCEPTANCE CRITERIA/.test(commented.text));
+  check('G13 an ATX peer heading inside an HTML comment does not end real criteria',
+    /2\. The second real criterion survives/.test(commentedPeer.text)
+      && !/outside the contract/.test(commentedPeer.text));
+  check('G14 a peer Setext heading ends an H2 criteria section before its title',
+    !/Next section/.test(peerSetext.text) && !/Outside peer/.test(peerSetext.text));
+  check('G15 a higher Setext heading ends an H3 criteria section before its title',
+    !/Higher section/.test(higherSetext.text) && !/Outside higher/.test(higherSetext.text));
+  check('G16 a lower Setext heading remains inside an H1 criteria section',
+    /Lower subsection/.test(lowerSetext.text)
+      && /2\. A lower Setext heading does not end/.test(lowerSetext.text)
+      && !/outside the contract/.test(lowerSetext.text));
+  check('G17 an unclosed HTML comment makes the description fallback fail closed',
+    /NO ACCEPTANCE CRITERIA/.test(unclosed.text));
+}
+{
+  const w = makeWorld();
+  const issues = [
+    ISSUE('app-19', {
+      acceptance_criteria: '',
+      description: '## Acceptance criteria\n1. The first criterion.\n---\n2. The second criterion survives the divider.',
+    }),
+    ISSUE('app-20', {
+      acceptance_criteria: '',
+      description: '<pre>\n## Acceptance criteria\n1. Fake criterion in raw HTML.\n</pre>',
+    }),
+    ISSUE('app-21', {
+      acceptance_criteria: '',
+      description: '<script>\n## Acceptance criteria\n1. Fake script template.\n</script>',
+    }),
+    ISSUE('app-22', {
+      acceptance_criteria: '',
+      description: '## Acceptance criteria\n1. Otherwise valid.\n\n<div>Benign supporting note.</div>',
+    }),
+  ];
+  const env = bdEnv(w, issues);
+  const divider = cli(w, ['app-19', '--config', w.cfgFile], env);
+  const pre = cli(w, ['app-20', '--config', w.cfgFile], env);
+  const script = cli(w, ['app-21', '--config', w.cfgFile], env);
+  const benignHtml = cli(w, ['app-22', '--config', w.cfgFile], env);
+  check('G18 a horizontal divider after a numbered criterion is not a Setext boundary',
+    /1\. The first criterion/.test(divider.text)
+      && /2\. The second criterion survives/.test(divider.text));
+  check('G19 raw pre HTML cannot expose a fake criteria heading',
+    /NO ACCEPTANCE CRITERIA/.test(pre.text));
+  check('G20 raw script HTML cannot expose a fake criteria heading',
+    /NO ACCEPTANCE CRITERIA/.test(script.text));
+  check('G21 any visible raw HTML tag line makes an otherwise valid fallback fail closed',
+    /NO ACCEPTANCE CRITERIA/.test(benignHtml.text));
+}
+{
+  const w = makeWorld();
+  const issues = [
+    ISSUE('app-23', {
+      acceptance_criteria: '',
+      description: '<!ELEMENT note (\n## Acceptance criteria\n1. Fake declaration criterion.\n)>',
+    }),
+    ISSUE('app-24', {
+      acceptance_criteria: '',
+      description: '## Acceptance criteria\n1. Looks valid before raw HTML.\n<!ELEMENT note (unclosed',
+    }),
+    ISSUE('app-25', {
+      acceptance_criteria: '',
+      description: '<!DOCTYPE html>\n## Acceptance criteria\n1. Looks valid after the declaration.',
+    }),
+  ];
+  const env = bdEnv(w, issues);
+  const element = cli(w, ['app-23', '--config', w.cfgFile], env);
+  const unclosedElement = cli(w, ['app-24', '--config', w.cfgFile], env);
+  const doctype = cli(w, ['app-25', '--config', w.cfgFile], env);
+  check('G22 a criteria-shaped template inside an ELEMENT declaration is rejected',
+    /NO ACCEPTANCE CRITERIA/.test(element.text));
+  check('G23 an unclosed uppercase declaration makes fallback fail closed',
+    /NO ACCEPTANCE CRITERIA/.test(unclosedElement.text));
+  check('G24 DOCTYPE remains a visible raw-HTML refusal',
+    /NO ACCEPTANCE CRITERIA/.test(doctype.text));
+}
+
 // ---- H. the config key -----------------------------------------------------------------------------
 {
   const { loadConfig } = require(path.join(ROOT, 'runner', 'config.js'));

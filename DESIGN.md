@@ -1625,6 +1625,19 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     target's `pipeline.config.json`, git's own worktree registry, Beads — so
     `scripts/spec-brief.js` retypes none of them, and quotes the issue's criteria rather than
     the planning draft, because the issue is canonical from freeze onward. It reads only.
+    A nonblank structured `acceptance_criteria` field is authoritative. For older issues whose
+    Beads schema left that field blank, the only accepted fallback is the description's exact,
+    case-insensitive Markdown `Acceptance criteria` heading section, beginning with a top-level
+    `1.` and ending at the next equal-or-higher heading. Unlabelled prose and bullet lists remain
+    no criteria rather than becoming a heuristic specification. Markdown-looking headings inside
+    backtick or tilde code fences and HTML comments are examples, never section markers; an
+    ambiguous or unclosed comment refuses the fallback. The accepted criteria heading remains
+    strict ATX, while ordinary ATX and paragraph-shaped Setext peer-or-higher headings end its
+    section; list items and thematic dividers are not Setext titles. Rather than embedding a full
+    CommonMark HTML parser in this rare compatibility path, any visible raw HTML tag line or
+    uppercase `<!…>` declaration block refuses the fallback; an unclosed declaration fails closed.
+    A present structured field of any non-string type is malformed and fails closed rather than
+    taking the legacy fallback.
 
     **Three states, three briefs**, decided before a word is written: `write` (no suite
     anywhere), `freeze` (a suite in the working tree the branch has never seen — a session that

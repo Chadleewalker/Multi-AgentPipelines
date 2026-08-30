@@ -266,9 +266,142 @@ function gateLines(repoRoot, cfg, id, folder) {
   ];
 }
 
+function commentState(line, initial) {
+  let active = initial;
+  let ambiguous = false;
+  let at = 0;
+  while (at < line.length) {
+    const opening = line.indexOf('<!--', at);
+    const closing = line.indexOf('-->', at);
+    if (active) {
+      if (opening !== -1 && (closing === -1 || opening < closing)) {
+        ambiguous = true;
+        at = opening + 4;
+      } else if (closing !== -1) {
+        active = false;
+        at = closing + 3;
+      } else break;
+    } else if (closing !== -1 && (opening === -1 || closing < opening)) {
+      ambiguous = true;
+      at = closing + 3;
+    } else if (opening !== -1) {
+      active = true;
+      at = opening + 4;
+    } else break;
+  }
+  return { active, ambiguous };
+}
+
+function rawHtmlLine(line) {
+  return /^ {0,3}<(?:\/?[A-Za-z][A-Za-z0-9-]*(?:[ \t/>]|$)|!DOCTYPE(?:[ \t>]|$)|!\[CDATA\[|\?)/i.test(line)
+    || /^ {0,3}<![A-Z]/.test(line);
+}
+
+function markdownLineState(lines) {
+  let fence = null;
+  let comment = false;
+  let declaration = false;
+  let invalidComment = false;
+  let rawHtml = false;
+  const visible = lines.map((line) => {
+    if (fence) {
+      const closing = line.match(/^ {0,3}(`+|~+)[ \t]*$/);
+      if (closing && closing[1][0] === fence.char && closing[1].length >= fence.length) {
+        fence = null;
+      }
+      return false;
+    }
+    if (declaration) {
+      if (line.includes('>')) declaration = false;
+      return false;
+    }
+
+    const startedInComment = comment;
+    if (!startedInComment) {
+      const opening = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+      if (opening && (opening[1][0] !== '`' || !opening[2].includes('`'))) {
+        fence = { char: opening[1][0], length: opening[1].length };
+        return false;
+      }
+    }
+
+    if (!startedInComment && /^ {0,3}<![A-Z]/.test(line)) {
+      rawHtml = true;
+      declaration = !line.slice(line.indexOf('<!') + 2).includes('>');
+      return false;
+    }
+
+    const firstComment = line.indexOf('<!--');
+    const beginsWithComment = firstComment !== -1 && !line.slice(0, firstComment).trim();
+    const next = commentState(line, comment);
+    comment = next.active;
+    invalidComment = invalidComment || next.ambiguous;
+    if (startedInComment || beginsWithComment) {
+      return false;
+    }
+    rawHtml = rawHtml || rawHtmlLine(line);
+    return true;
+  });
+  return { visible, invalidComment: invalidComment || comment, rawHtml: rawHtml || declaration };
+}
+
+function setextTitle(line) {
+  if (!line.trim() || /^ {4}/.test(line)) return false;
+  if (/^ {0,3}(?:#{1,6}(?:[ \t]+|$)|>|`{3,}|~{3,})/.test(line)) return false;
+  if (/^ {0,3}(?:(?:[*+-]|\d{1,9}[.)])[ \t]+)/.test(line)) return false;
+  if (/^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/.test(line)) return false;
+  return !rawHtmlLine(line);
+}
+
+function setextHeadings(lines, visible) {
+  const levels = new Map();
+  for (let i = 0; i + 1 < lines.length; i += 1) {
+    if (!visible[i] || !visible[i + 1] || !setextTitle(lines[i])) continue;
+    const underline = lines[i + 1].match(/^ {0,3}(=+|-+)[ \t]*$/);
+    if (underline) levels.set(i, underline[1][0] === '=' ? 1 : 2);
+  }
+  return levels;
+}
+
+function descriptionCriteria(data) {
+  const description = data && typeof data.description === 'string' ? data.description : '';
+  const lines = description.split(/\r?\n/);
+  const state = markdownLineState(lines);
+  if (state.invalidComment || state.rawHtml) return '';
+  const setext = setextHeadings(lines, state.visible);
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!state.visible[i]) continue;
+    const heading = lines[i].match(/^ {0,3}(#{1,6})[ \t]+Acceptance criteria:?(?:[ \t]+#+)?[ \t]*$/i);
+    if (!heading) continue;
+
+    const level = heading[1].length;
+    const section = [];
+    for (let j = i + 1; j < lines.length; j += 1) {
+      const nextHeading = state.visible[j] && lines[j].match(/^ {0,3}(#{1,6})(?:[ \t]+|$)/);
+      if ((nextHeading && nextHeading[1].length <= level)
+          || (setext.has(j) && setext.get(j) <= level)) break;
+      section.push(lines[j]);
+    }
+    while (section.length && !section[0].trim()) section.shift();
+    while (section.length && !section[section.length - 1].trim()) section.pop();
+    if (section.length && /^1\.[ \t]+\S/.test(section[0])
+        && section.some((line) => /^\d+\.[ \t]+\S/.test(line))) {
+      return section.join('\n');
+    }
+  }
+  return '';
+}
+
+function acceptanceCriteria(data) {
+  const hasStructured = data && Object.prototype.hasOwnProperty.call(data, 'acceptance_criteria');
+  if (hasStructured && typeof data.acceptance_criteria !== 'string') return '';
+  const structured = hasStructured ? data.acceptance_criteria.trim() : '';
+  return structured || descriptionCriteria(data);
+}
+
 function criteriaLines(data) {
-  const text = (data && data.acceptance_criteria) || '';
-  if (!text.trim()) {
+  const text = acceptanceCriteria(data);
+  if (!text) {
     return [
       'THE ISSUE CARRIES NO ACCEPTANCE CRITERIA. That is a spec bug and it is not yours to fix:',
       'there is nothing to write tests against. Report it and stop.',
@@ -478,4 +611,13 @@ function main(argv, out = console.log, err = console.error) {
 
 if (require.main === module) process.exit(main(process.argv.slice(2)));
 
-module.exports = { main, buildBrief, parseArgs, classify, exampleSuite, worktrees, envLines };
+module.exports = {
+  main,
+  buildBrief,
+  parseArgs,
+  classify,
+  exampleSuite,
+  worktrees,
+  envLines,
+  acceptanceCriteria,
+};
