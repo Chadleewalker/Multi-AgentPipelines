@@ -218,6 +218,18 @@ function stagedIn(world) {
     const o = F.parseArgs(['x', '--dry-run', '--allow-half-proven', 'y']);
     return o.dryRun === true && o.allowHalfProven === true && o.positional.join(',') === 'x,y';
   })());
+  check('A4a repeated managed probes are retained in command-line order', (() => {
+    const o = F.parseArgs(['a', 'b', '--managed-probe', 'a=C:/one', '--managed-probe', 'b=C:/two']);
+    return o.managedProbes.join('|') === 'a=C:/one|b=C:/two';
+  })());
+  check('A4b a managed-probe batch requires exactly one absolute mapping per issue', (() => {
+    const missing = F.managedProbeMap({ managedProbes: ['a=C:/one'], probe: null, allowHalfProven: false }, ['a', 'b']);
+    const relative = F.managedProbeMap({ managedProbes: ['a=relative/probe'], probe: null, allowHalfProven: false }, ['a']);
+    const mixed = F.managedProbeMap({ managedProbes: ['a=C:/one'], probe: 'C:/legacy', allowHalfProven: false }, ['a']);
+    return !missing.ok && /missing: b/.test(missing.error)
+      && !relative.ok && /absolute/.test(relative.error)
+      && !mixed.ok && /cannot be combined/.test(mixed.error);
+  })());
 
   const w = makeWorld();
   check('A5 no verb prints usage and exits 2', cli(w, []).code === 2);
@@ -493,6 +505,80 @@ function stagedIn(world) {
     && /app-managed\/test\.js/.test(onRemote(w, 'tests/acceptance/app-managed')));
   check('E14 a consumed managed probe is removed only after successful push and readback',
     !fs.existsSync(managed.container) && /removed the consumed disposable green probe/.test(frozen.text));
+}
+
+// ---- E3. individually managed proofs freeze as one atomic publication ------------------------
+{
+  const w = makeWorld();
+  const first = makeManagedProbe(w, 'app-bulk-a');
+  const second = makeManagedProbe(w, 'app-bulk-b');
+  const before = headCount(w);
+  const frozen = cli(w, [
+    'commit', 'app-bulk-a', 'app-bulk-b', '--config', w.cfgFile,
+    '--managed-probe', `app-bulk-a=${first.probe}`,
+    '--managed-probe', `app-bulk-b=${second.probe}`,
+  ]);
+  check('E15 two same-base managed proofs freeze in one command', frozen.code === 0);
+  check('E16 the atomic batch advances the integration branch exactly once', headCount(w) === before + 1);
+  check('E17 both exact suites and receipts reach the same remote commit', (() => {
+    const a = onRemote(w, 'tests/acceptance/app-bulk-a');
+    const b = onRemote(w, 'tests/acceptance/app-bulk-b');
+    return /app-bulk-a\/test\.js/.test(a) && /app-bulk-a\/\.freeze-gate\.json/.test(a)
+      && /app-bulk-b\/test\.js/.test(b) && /app-bulk-b\/\.freeze-gate\.json/.test(b);
+  })());
+  const { partitionByFreeze } = require(path.join(ROOT, 'runner', 'queue.js'));
+  const { loadConfig } = require(path.join(ROOT, 'runner', 'config.js'));
+  const verdict = partitionByFreeze(loadConfig(w.cfgFile), [{ id: 'app-bulk-a' }, { id: 'app-bulk-b' }]);
+  check('E18 runner readback admits every suite in the managed batch',
+    verdict.ok && verdict.issues.length === 2 && (verdict.undispatchable || []).length === 0);
+  check('E19 all managed containers survive until push/readback and are then consumed',
+    !fs.existsSync(first.container) && !fs.existsSync(second.container));
+}
+
+// ---- E4. managed mapping refuses before any suite is promoted -------------------------------
+{
+  const w = makeWorld();
+  const first = makeManagedProbe(w, 'app-map-a');
+  const second = makeManagedProbe(w, 'app-map-b');
+  const before = headCount(w);
+  const refused = cli(w, [
+    'commit', 'app-map-a', 'app-map-b', '--config', w.cfgFile,
+    '--managed-probe', `app-map-a=${first.probe}`,
+    '--managed-probe', `app-map-a=${second.probe}`,
+  ]);
+  check('E20 duplicate or missing managed mappings are refused', refused.code === 2 && /repeated|missing/.test(refused.text));
+  check('E21 mapping refusal writes no suite, commit or remote state',
+    headCount(w) === before
+    && !fs.existsSync(path.join(w.target, 'tests', 'acceptance', 'app-map-a'))
+    && !fs.existsSync(path.join(w.target, 'tests', 'acceptance', 'app-map-b'))
+    && onRemote(w, 'tests/acceptance/app-map-a') === ''
+    && onRemote(w, 'tests/acceptance/app-map-b') === '');
+}
+
+// ---- E5. one stale managed proof refuses the whole batch before promotion --------------------
+{
+  const w = makeWorld();
+  const first = makeManagedProbe(w, 'app-stale-a');
+  const second = makeManagedProbe(w, 'app-stale-b');
+  const markerFile = path.join(second.container, PROOF.MARKER);
+  const marker = JSON.parse(fs.readFileSync(markerFile, 'utf8'));
+  marker.head = '0'.repeat(40);
+  fs.writeFileSync(markerFile, JSON.stringify(marker, null, 2));
+  const before = headCount(w);
+  const refused = cli(w, [
+    'commit', 'app-stale-a', 'app-stale-b', '--config', w.cfgFile,
+    '--managed-probe', `app-stale-a=${first.probe}`,
+    '--managed-probe', `app-stale-b=${second.probe}`,
+  ]);
+  check('E22 one stale managed proof refuses the complete batch by issue name',
+    refused.code === 1 && /app-stale-b/.test(refused.text) && /current HEAD/.test(refused.text));
+  check('E23 stale-proof refusal precedes every promotion, commit, cleanup and push',
+    headCount(w) === before
+    && !fs.existsSync(path.join(w.target, 'tests', 'acceptance', 'app-stale-a'))
+    && !fs.existsSync(path.join(w.target, 'tests', 'acceptance', 'app-stale-b'))
+    && fs.existsSync(first.container) && fs.existsSync(second.container)
+    && onRemote(w, 'tests/acceptance/app-stale-a') === ''
+    && onRemote(w, 'tests/acceptance/app-stale-b') === '');
 }
 
 // ---- F. it never commits work it did not stage ------------------------------------------------

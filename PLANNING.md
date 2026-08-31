@@ -509,6 +509,21 @@ in one commit. It refuses before touching anything if any suite in the batch fai
 the target checkout has staged work, or if that checkout is parked on another branch: a
 half-done freeze is worse than none, because the operator then has a tree they did not make.
 
+When several automatically managed proofs were prepared against the same integration HEAD,
+pass one absolute mapping per full suite id:
+
+```bash
+node scripts/freeze.js commit <id-a> <id-b> --config run.config.<project>.json \
+  --managed-probe <id-a>=<probe-a> --managed-probe <id-b>=<probe-b>
+```
+
+The command validates every marker and the common base before running any gate, gates each
+suite against its own retained baseline and green probe, promotes the exact suite union as one
+transaction, and makes one commit and one leased push. Missing, duplicate, extra, mixed-base or
+changed proofs refuse the whole batch before publication. This is the publication counterpart
+to `prepare-batch`: freezing one proof first would advance the integration base and stale every
+other proof from the same preparation wave.
+
 **It will not write the tests.** The suite is the spec (§2, hard invariant 3), and an issue whose
 `tests/acceptance/<issue-id>/` does not exist is refused naming step 3. That refusal is the tool
 working.

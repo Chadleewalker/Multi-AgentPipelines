@@ -40,7 +40,8 @@ const { spawnSync } = require('child_process');
 const { loadConfig } = require('../runner/config');
 const {
   validateManagedProbe, promoteManagedSuite, rollbackManagedPromotion,
-  finalizeManagedPromotion, removeOwnedContainer,
+  finalizeManagedPromotion, removeOwnedContainer, protectedManifest,
+  manifestHash, manifestDifference, normalizedManagedManifest, suiteDifference, policyAt,
 } = require('./prove-tests');
 const {
   readyQueue, partitionByFreeze, resolveBranch, gitSpawnOptions, REFUSAL, RECEIPT_VERDICTS,
@@ -87,6 +88,8 @@ const USAGE = [
   '  --config <file>        the run config a launch would type (required)',
   '  --probe <dir>          a repo-shaped tree in which the criteria are already satisfied,',
   '                         handed to the freeze gate as --green (PLANNING.md step 4)',
+  '  --managed-probe <id>=<absolute-dir>',
+  '                         repeat once per id to atomically freeze individually managed proofs',
   '  --allow-half-proven    proceed on a red suite no probe was ever run against',
   '  --dry-run              gate everything and report, but commit and push nothing',
 ].join('\n');
@@ -94,11 +97,11 @@ const USAGE = [
 // ---- argument parsing --------------------------------------------------------------------
 // Flags that take a value are named, so `--config` with nothing after it is a usage error
 // rather than a config path of `undefined` reported ten lines later as a missing file.
-const VALUE_FLAGS = new Set(['--config', '--probe']);
+const VALUE_FLAGS = new Set(['--config', '--probe', '--managed-probe']);
 const BARE_FLAGS = new Set(['--allow-half-proven', '--dry-run']);
 
 function parseArgs(argv) {
-  const opts = { positional: [], config: null, probe: null, allowHalfProven: false, dryRun: false };
+  const opts = { positional: [], config: null, probe: null, managedProbes: [], allowHalfProven: false, dryRun: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (VALUE_FLAGS.has(arg)) {
@@ -108,6 +111,7 @@ function parseArgs(argv) {
       }
       if (arg === '--config') opts.config = value;
       if (arg === '--probe') opts.probe = value;
+      if (arg === '--managed-probe') opts.managedProbes.push(value);
       i += 1;
       continue;
     }
@@ -120,6 +124,89 @@ function parseArgs(argv) {
     opts.positional.push(arg);
   }
   return opts;
+}
+
+function managedProbeMap(opts, ids) {
+  if (!opts.managedProbes.length) return { ok: true, entries: null };
+  if (opts.probe) return { ok: false, error: '--probe and --managed-probe cannot be combined' };
+  if (opts.allowHalfProven) return { ok: false, error: '--managed-probe cannot be combined with --allow-half-proven' };
+  if (new Set(ids).size !== ids.length) return { ok: false, error: 'issue ids must be unique' };
+  const mapped = new Map();
+  for (const raw of opts.managedProbes) {
+    const at = raw.indexOf('=');
+    if (at <= 0 || at === raw.length - 1) {
+      return { ok: false, error: `--managed-probe must be <issue-id>=<absolute-dir>: ${raw}` };
+    }
+    const id = raw.slice(0, at);
+    const probe = raw.slice(at + 1);
+    if (!ids.includes(id)) return { ok: false, error: `--managed-probe names unrequested issue ${id}` };
+    if (mapped.has(id)) return { ok: false, error: `--managed-probe is repeated for ${id}` };
+    if (!path.isAbsolute(probe)) return { ok: false, error: `--managed-probe for ${id} must name an absolute directory` };
+    mapped.set(id, path.resolve(probe));
+  }
+  const missing = ids.filter((id) => !mapped.has(id));
+  if (missing.length) return { ok: false, error: `--managed-probe is missing: ${missing.join(', ')}` };
+  return { ok: true, entries: ids.map((id) => ({ id, probe: mapped.get(id) })) };
+}
+
+function outsideProtectedManifest(repoRoot, policy, ids) {
+  const roots = ids.map((id) => `tests/acceptance/${id}/`);
+  return protectedManifest(repoRoot, policy, '__managed_batch__')
+    .filter(([rel]) => !roots.some((root) => rel.startsWith(root)));
+}
+
+function managedArtifactsIntact(entry, targetRepoPath) {
+  const policy = policyAt(targetRepoPath);
+  for (const [label, repo] of [['baseline', entry.baseline], ['probe', entry.probe]]) {
+    let manifest;
+    try {
+      manifest = normalizedManagedManifest(repo,
+        protectedManifest(repo, policy, entry.id), entry.id);
+    } catch (e) { return { ok: false, error: `${entry.id} ${label}: ${e.message}` }; }
+    if (manifestHash(manifest) !== entry.marker.manifestHash) {
+      return { ok: false, error: `${entry.id} ${label} changed after it was proven` };
+    }
+  }
+  return { ok: true };
+}
+
+function validatePromotedManagedBatch(entries, targetRepoPath, outsideBefore) {
+  let outsideAfter;
+  try { outsideAfter = outsideProtectedManifest(targetRepoPath, policyAt(targetRepoPath), entries.map((e) => e.id)); }
+  catch (e) { return { ok: false, error: e.message }; }
+  const outsideDiff = manifestDifference(outsideBefore, outsideAfter);
+  if (outsideDiff.length) {
+    return { ok: false, error: `a protected path outside the approved suites moved: ${outsideDiff.slice(0, 5).join(', ')}` };
+  }
+  for (const entry of entries) {
+    const intact = managedArtifactsIntact(entry, targetRepoPath);
+    if (!intact.ok) return intact;
+    const source = path.join(entry.baseline, 'tests', 'acceptance', entry.id);
+    const target = path.join(targetRepoPath, 'tests', 'acceptance', entry.id);
+    let diff;
+    try { diff = suiteDifference(source, target); }
+    catch (e) { return { ok: false, error: `${entry.id} promoted suite could not be compared: ${e.message}` }; }
+    if (diff.length) return { ok: false, error: `${entry.id} promoted suite differs: ${diff.slice(0, 5).join(', ')}` };
+  }
+  return { ok: true };
+}
+
+function rollbackManagedPromotions(promotions) {
+  const errors = [];
+  for (const promotion of [...promotions].reverse()) {
+    const rolled = rollbackManagedPromotion(promotion);
+    if (!rolled.ok) errors.push(rolled.error);
+  }
+  return errors.length ? { ok: false, error: errors.join('; ') } : { ok: true };
+}
+
+function finalizeManagedPromotions(promotions) {
+  const errors = [];
+  for (const promotion of promotions) {
+    const finished = finalizeManagedPromotion(promotion);
+    if (!finished.ok) errors.push(finished.error);
+  }
+  return errors.length ? { ok: false, error: errors.join('; ') } : { ok: true };
 }
 
 // ---- shared -------------------------------------------------------------------------------
@@ -463,6 +550,12 @@ function commit(opts, out, err) {
   }
   const cfg = loaded.cfg;
 
+  const mapped = managedProbeMap(opts, ids);
+  if (!mapped.ok) {
+    err(`freeze: ${mapped.error}`);
+    return EXIT_USAGE;
+  }
+
   if (opts.probe && !fs.existsSync(opts.probe)) {
     err(`freeze: --probe names ${opts.probe}, which does not exist`);
     return EXIT_USAGE;
@@ -499,26 +592,62 @@ function commit(opts, out, err) {
   const earlyBranch = headIs(cfg, branch);
   if (!earlyBranch.ok) { err(`freeze: ${earlyBranch.error}`); return EXIT_REFUSED; }
 
-  let managedProbe = null;
   let managedHead = null;
+  let managedProbes = [];
+  const requestedManaged = mapped.entries || [];
+  for (const entry of requestedManaged) {
+    if (!fs.existsSync(entry.probe)) {
+      err(`freeze: --managed-probe for ${entry.id} names ${entry.probe}, which does not exist`);
+      return EXIT_USAGE;
+    }
+  }
+  if (requestedManaged.length) {
+    const head = currentHead(cfg);
+    if (!head.ok) { err(`freeze: ${head.error}`); return EXIT_UNKNOWN; }
+    managedHead = head.head;
+    for (const entry of requestedManaged) {
+      const checked = validateManagedProbe(entry.probe, cfg.targetRepoPath, [entry.id], managedHead);
+      if (!checked.ok || !checked.managed) {
+        err(`freeze: managed green probe for ${entry.id} is stale or unsafe — ${checked.error || 'not a managed proof'}`);
+        err('        rebuild the probe; nothing has been staged, committed or pushed.');
+        return EXIT_REFUSED;
+      }
+      managedProbes.push({ ...checked, id: entry.id, probePath: entry.probe });
+    }
+    const baseHashes = new Set(managedProbes.map((entry) => entry.marker.baseManifestHash));
+    if (baseHashes.size !== 1) {
+      err('freeze: managed green probes do not share one integration-base identity.');
+      err('        rebuild the stale probes together; nothing has been staged, committed or pushed.');
+      return EXIT_REFUSED;
+    }
+  }
   if (opts.probe) {
     const head = currentHead(cfg);
     if (!head.ok) { err(`freeze: ${head.error}`); return EXIT_UNKNOWN; }
     managedHead = head.head;
-    managedProbe = validateManagedProbe(path.resolve(opts.probe), cfg.targetRepoPath, ids, head.head);
-    if (!managedProbe.ok) {
-      err(`freeze: managed green probe is stale or unsafe — ${managedProbe.error}`);
+    const checked = validateManagedProbe(path.resolve(opts.probe), cfg.targetRepoPath, ids, head.head);
+    if (!checked.ok) {
+      err(`freeze: managed green probe is stale or unsafe — ${checked.error}`);
       err('        rebuild the probe; nothing has been staged, committed or pushed.');
       return EXIT_REFUSED;
     }
+    if (checked.managed) managedProbes = [{ ...checked, id: ids[0], probePath: path.resolve(opts.probe) }];
+  }
+  const managedById = new Map(managedProbes.map((entry) => [entry.id, entry]));
+  let outsideBefore = null;
+  if (managedProbes.length) {
+    try { outsideBefore = outsideProtectedManifest(cfg.targetRepoPath, policyAt(cfg.targetRepoPath), ids); }
+    catch (e) { err(`freeze: cannot snapshot protected paths before managed gating — ${e.message}`); return EXIT_UNKNOWN; }
   }
 
   // ---- every suite is gated BEFORE anything is staged ------------------------------------
   // One commit carries the whole batch, so a refusal on the fourth id must not leave the first
   // three committed: the gate runs over all of them first and a single refusal stops the lot.
   const gated = [];
-  const gateRoot = managedProbe && managedProbe.managed ? managedProbe.baseline : cfg.targetRepoPath;
   for (const id of ids) {
+    const managed = managedById.get(id) || null;
+    const gateRoot = managed ? managed.baseline : cfg.targetRepoPath;
+    const gateProbe = managed ? managed.probe : opts.probe;
     const suite = localSuite(cfg, id, gateRoot);
     if (!suite.ok) {
       err(`freeze: ${id} — ${suite.reason}`);
@@ -527,7 +656,7 @@ function commit(opts, out, err) {
     }
     out('');
     out(`${id}: gating ${suite.rel}/ (${suite.files} file(s))`);
-    const gate = runGate(cfg, suite.rel, opts.probe, out, gateRoot);
+    const gate = runGate(cfg, suite.rel, gateProbe, out, gateRoot);
     if (!gate.ok) {
       err(`freeze: ${id} — the freeze gate could not be run: ${gate.report.trim()}`);
       return EXIT_UNKNOWN;
@@ -544,14 +673,16 @@ function commit(opts, out, err) {
       err('        build a probe and pass --probe, or accept it with --allow-half-proven.');
       return EXIT_REFUSED;
     }
-    if (managedProbe && managedProbe.managed) {
-      const afterGate = validateManagedProbe(path.resolve(opts.probe), cfg.targetRepoPath, ids, managedHead);
+    if (managed) {
+      const afterGate = validateManagedProbe(managed.probePath, cfg.targetRepoPath, [id], managedHead);
       if (!afterGate.ok) {
         err(`freeze: the verifier changed a protected byte during the managed gate — ${afterGate.error}`);
         err('        nothing has been copied, staged, committed or pushed.');
         return EXIT_REFUSED;
       }
-      managedProbe = afterGate;
+      const refreshed = { ...afterGate, id, probePath: managed.probePath };
+      managedById.set(id, refreshed);
+      managedProbes = managedProbes.map((entry) => entry.id === id ? refreshed : entry);
     }
     gated.push({ id, rel: suite.rel, verdict: gate.verdict });
   }
@@ -575,33 +706,42 @@ function commit(opts, out, err) {
     return EXIT_REFUSED;
   }
 
-  let promotion = null;
-  if (managedProbe && managedProbe.managed) {
+  const promotions = [];
+  if (managedProbes.length) {
     const headNow = currentHead(cfg);
     if (!headNow.ok || headNow.head !== managedHead) {
       err(`freeze: integration HEAD moved during the managed gate; rebuild the probe. Nothing was copied, staged, committed or pushed.`);
       return EXIT_REFUSED;
     }
-    const checked = validateManagedProbe(path.resolve(opts.probe), cfg.targetRepoPath, ids, managedHead);
-    if (!checked.ok) {
-      err(`freeze: managed proof changed before promotion — ${checked.error}`);
-      return EXIT_REFUSED;
+    const refreshed = [];
+    for (const managed of managedProbes) {
+      const checked = validateManagedProbe(managed.probePath, cfg.targetRepoPath, [managed.id], managedHead);
+      if (!checked.ok) {
+        err(`freeze: managed proof for ${managed.id} changed before promotion — ${checked.error}`);
+        return EXIT_REFUSED;
+      }
+      refreshed.push({ ...checked, id: managed.id, probePath: managed.probePath });
     }
-    promotion = promoteManagedSuite(checked, cfg.targetRepoPath);
-    if (!promotion.ok) {
-      err(`freeze: could not promote the proven suite into the integration checkout — ${promotion.error}`);
-      err('        nothing has been staged, committed or pushed.');
-      return EXIT_REFUSED;
+    managedProbes = refreshed;
+    for (const managed of managedProbes) {
+      const promotion = promoteManagedSuite(managed, cfg.targetRepoPath);
+      if (!promotion.ok) {
+        const rolled = rollbackManagedPromotions(promotions);
+        err(`freeze: could not promote the proven suite for ${managed.id} — ${promotion.error}`);
+        if (!rolled.ok) err(`freeze: rollback also failed — ${rolled.error}`);
+        err('        nothing has been staged, committed or pushed.');
+        return EXIT_REFUSED;
+      }
+      promotions.push(promotion);
+      out(`promoted the exact proven suite for ${managed.id} into the integration checkout`);
     }
-    const promotedCheck = validateManagedProbe(path.resolve(opts.probe), cfg.targetRepoPath, ids, managedHead);
-    if (!promotedCheck.ok || promotedCheck.needsPromotion) {
-      const rolled = rollbackManagedPromotion(promotion);
-      err(`freeze: promoted suite did not reproduce the proven protected tree — ${promotedCheck.error || 'hash mismatch'}`);
+    const promotedCheck = validatePromotedManagedBatch(managedProbes, cfg.targetRepoPath, outsideBefore);
+    if (!promotedCheck.ok) {
+      const rolled = rollbackManagedPromotions(promotions);
+      err(`freeze: promoted suites did not reproduce the proven protected union — ${promotedCheck.error}`);
       if (!rolled.ok) err(`freeze: rollback also failed — ${rolled.error}`);
       return EXIT_REFUSED;
     }
-    managedProbe = promotedCheck;
-    out(`promoted the exact proven suite for ${ids[0]} into the integration checkout`);
   }
 
   // A RE-FREEZE OF AN UNCHANGED SUITE MUST NOT MAKE A COMMIT. The gate stamps the moment it ran
@@ -634,14 +774,14 @@ function commit(opts, out, err) {
 
   const snapshotHead = currentHead(cfg);
   if (!snapshotHead.ok) {
-    if (promotion) rollbackManagedPromotion(promotion);
+    if (promotions.length) rollbackManagedPromotions(promotions);
     err(`freeze: ${snapshotHead.error}`);
     return EXIT_UNKNOWN;
   }
   const snapshot = prepareFreezeSnapshot(cfg, gated, snapshotHead.head);
   if (!snapshot.ok) {
-    if (promotion) {
-      const rolled = rollbackManagedPromotion(promotion);
+    if (promotions.length) {
+      const rolled = rollbackManagedPromotions(promotions);
       if (!rolled.ok) err(`freeze: rollback also failed — ${rolled.error}`);
     }
     err(`freeze: cannot build an isolated freeze snapshot — ${snapshot.error}`);
@@ -668,8 +808,8 @@ function commit(opts, out, err) {
     const made = makeFreezeCommit(cfg, gated, snapshot, subject, body);
     if (!made.ok) {
       removeSnapshot(snapshot);
-      if (promotion) {
-        const rolled = rollbackManagedPromotion(promotion);
+      if (promotions.length) {
+        const rolled = rollbackManagedPromotions(promotions);
         if (!rolled.ok) err(`freeze: rollback also failed — ${rolled.error}`);
       }
       err(`freeze: the isolated commit failed validation: ${made.error}`);
@@ -683,8 +823,8 @@ function commit(opts, out, err) {
       { cwd: cfg.targetRepoPath });
     if (moved.status !== 0) {
       removeSnapshot(snapshot);
-      if (promotion) {
-        const rolled = rollbackManagedPromotion(promotion);
+      if (promotions.length) {
+        const rolled = rollbackManagedPromotions(promotions);
         if (!rolled.ok) err(`freeze: rollback also failed — ${rolled.error}`);
       }
       err(`freeze: integration HEAD changed before the freeze commit could land: ${(moved.stderr || '').trim()}`);
@@ -699,8 +839,8 @@ function commit(opts, out, err) {
         { cwd: cfg.targetRepoPath });
       git(cfg, ['reset', '-q', snapshot.head, '--', ...gated.map((g) => g.rel)], { cwd: cfg.targetRepoPath });
       removeSnapshot(snapshot);
-      if (promotion) {
-        const rolled = rollbackManagedPromotion(promotion);
+      if (promotions.length) {
+        const rolled = rollbackManagedPromotions(promotions);
         if (!rolled.ok) err(`freeze: rollback also failed — ${rolled.error}`);
       }
       err(`freeze: could not synchronize approved suite paths in the shared index: ${(synced.stderr || '').trim()}`);
@@ -711,8 +851,8 @@ function commit(opts, out, err) {
     out(`committed: ${subject}`);
   }
 
-  if (promotion) {
-    const finished = finalizeManagedPromotion(promotion);
+  if (promotions.length) {
+    const finished = finalizeManagedPromotions(promotions);
     if (!finished.ok) err(`freeze: warning — committed suite backup could not be removed: ${finished.error}`);
   }
 
@@ -751,12 +891,12 @@ function commit(opts, out, err) {
   }
   out('');
   out(`frozen: ${gated.length} suite(s) the runner has just confirmed it will dispatch.`);
-  if (managedProbe && managedProbe.managed) {
+  for (const managed of managedProbes) {
     try {
-      removeOwnedContainer(managedProbe.container);
-      out(`removed the consumed disposable green probe: ${managedProbe.container}`);
+      removeOwnedContainer(managed.container);
+      out(`removed the consumed disposable green probe: ${managed.container}`);
     } catch (e) {
-      err(`freeze: warning — the freeze succeeded, but the disposable probe could not be removed: ${e.message}`);
+      err(`freeze: warning — the freeze succeeded, but the disposable probe for ${managed.id} could not be removed: ${e.message}`);
     }
   }
   return EXIT_OK;
@@ -789,4 +929,6 @@ if (require.main === module) process.exit(main(process.argv.slice(2)));
 module.exports = { main, parseArgs, GATE_VERDICT, PROCEEDS, currentHead,
   indexIsClean, stagedFreezePaths, rollbackFreezePreparation, normalizeGitPath,
   validateTreeSnapshot, prepareFreezeSnapshot, makeFreezeCommit, pushFreezeCommit, removeSnapshot,
+  managedProbeMap, outsideProtectedManifest, managedArtifactsIntact,
+  validatePromotedManagedBatch, rollbackManagedPromotions, finalizeManagedPromotions,
   EXIT_OK, EXIT_REFUSED, EXIT_USAGE, EXIT_UNKNOWN };

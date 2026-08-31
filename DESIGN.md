@@ -1740,10 +1740,14 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     The strongest batch result is deliberately **proven-at-base**. A proof is bound to the exact
     integration HEAD and protected-tree manifest, so freezing one suite makes every other old
     proof stale. Preparation therefore has no freeze, commit, merge, push or Beads-write verb.
-    After one human review, publication re-proves and immediately freezes each approved suite
-    against the current HEAD in series. Dependency edges are recorded for the handoff, but they
-    do not serialize spec-derived test authors; the ordinary Beads-ready feed remains the only
-    authority that releases implementation work in dependency order.
+    After one human review, proofs sharing one base may be published atomically: the freeze
+    command takes one issue-to-managed-probe mapping per suite, validates every marker before a
+    write, gates each retained baseline/probe pair, promotes only the disjoint suite union, and
+    makes one commit and one leased push. A missing, mixed-base, changed or mismatched member
+    refuses the whole publication. Proofs that do not share a base are re-proved and frozen in
+    series. Dependency edges are recorded for the handoff, but they do not serialize
+    spec-derived test authors; the ordinary Beads-ready feed remains the only authority that
+    releases implementation work in dependency order.
 
     **The ready queue is re-read while the run is in flight** (change-log row
     `live-queue-feed`). Until this, a run's roster was decided once: `readyQueue()` at the
