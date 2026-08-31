@@ -710,10 +710,26 @@ guarded('G9', () => {
   // The counts are recorded as NUMBERS as well as prose. A log can be truncated, rotated or
   // simply unread; a reader comparing two runs of one queue has no other way to tell "there was
   // nothing to do" from "there was work and none of it could start".
+  const sourceAt = code.indexOf('createFeedSource(');
+  const manifestAt = code.indexOf('writeManifest(', sourceAt);
+  const sourceBlock = sourceAt < 0 || manifestAt < 0 ? '' : code.slice(sourceAt, manifestAt);
+  const manifestBlock = manifestAt < 0 ? '' : code.slice(manifestAt);
   check('G9k the queue counts reach the manifest',
-    /queue: queueCounts/.test(code)
+    /queue: queueCounts/.test(manifestBlock)
+    && !/queue: queueCounts/.test(sourceBlock)
     && /ready: results\.length \+ stillRefused\.length/.test(code)
     && /refused: stillRefused\.length/.test(code));
+  check('G9l queueCounts is declared before the manifest consumes it',
+    code.indexOf('const queueCounts') >= 0
+    && manifestAt > code.indexOf('const queueCounts'));
+  const queueSchema = JSON.parse(fs.readFileSync(path.join(ROOT, 'schemas', 'run.schema.json'), 'utf8'))
+    .properties.queue;
+  check('G9m the closed run manifest schema admits all three final queue counts',
+    !!queueSchema && queueSchema.additionalProperties === false
+    && ['ready', 'dispatched', 'refused'].every((name) =>
+      queueSchema.required.includes(name)
+      && queueSchema.properties[name].type === 'integer'
+      && queueSchema.properties[name].minimum === 0));
 });
 
 // =======================================================================================

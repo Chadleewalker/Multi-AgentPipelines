@@ -611,11 +611,6 @@ async function main() {
   const source = createFeedSource(q.issues, {
     poll: () => readyQueue(cfg),
     concurrency: cfg.concurrency,
-    // What the run decided about its own queue, as numbers rather than prose (change-log row
-    // `refused-exit-design`). The summary line says it in English and the log can be truncated,
-    // rotated or unread; a reader comparing two runs of one queue has no other way to tell "there
-    // was nothing to do" from "there was work and none of it could start".
-    queue: queueCounts,
     idleGraceMs: cfg.feedIdleGraceMinutes * 60000,
     pollMs: cfg.feedPollSeconds * 1000,
     // The STARTUP roster's refusals, seeded here rather than left to the first poll. A
@@ -721,6 +716,11 @@ async function main() {
       polls: source.polls(),
       ending: source.ending() || ENDINGS.DRAINED,
     },
+    // What the run decided about its own queue, as numbers rather than prose (change-log row
+    // `refused-exit-design`). This belongs in the durable manifest, after the drain has computed
+    // the counts; passing it to createFeedSource read `queueCounts` before initialization and the
+    // source did not consume that option in any case.
+    queue: queueCounts,
     tasks: [...results, ...refusedRows],
   });
   const reportFile = writeReport(log.dir, manifest);

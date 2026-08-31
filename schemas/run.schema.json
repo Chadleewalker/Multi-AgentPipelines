@@ -43,6 +43,17 @@
         }
       }
     },
+    "queue": {
+      "description": "Final ready-queue disposition for this run. Optional on manifests written before refused-exit-design. ready is the number of dispatchable plus still-refused candidates when the run closed; dispatched and refused partition it.",
+      "type": "object",
+      "required": ["ready", "dispatched", "refused"],
+      "additionalProperties": false,
+      "properties": {
+        "ready": { "type": "integer", "minimum": 0 },
+        "dispatched": { "type": "integer", "minimum": 0 },
+        "refused": { "type": "integer", "minimum": 0 }
+      }
+    },
     "abortedReason": {
       "description": "Present when the run ended before draining the queue (preflight failure, operator stop).",
       "type": "string"
