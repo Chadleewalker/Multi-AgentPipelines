@@ -245,6 +245,16 @@ a checkout carrying `pipeline.config.json` is pipeline-first, so product, config
 control and frozen-path writes are refused and reading is untouched. Neither says anything in
 a project that does not carry them, so your other repositories are unaffected.
 
+Both clients are installed the same way — one `PreToolUse` matcher group per guarded tool
+path — and `status` asks every step between the configuration file and a refused tool call
+before it says `enforced` (change-log row `repo-l2w`). **Re-run `install` on a machine set
+up before that repair**: the Codex block written by earlier versions is a shape no current
+client reads, so the hook never ran, and `status` now reports such a host as `degraded`
+rather than enforced. Re-running replaces only our own marked block and leaves unrelated
+client configuration alone. One thing `install` cannot do for you: Codex runs no hook in a
+project it has not been told to trust, so if you see a trust limitation named in `status`,
+trust the project in Codex or treat that checkout as guarded by admission only.
+
 `status` will tell you enforcement is **not** complete, and that is correct rather than a
 setup error: these hooks live in configuration files on this machine, so whoever is sitting
 here can disable them. The layer that does not depend on a hook is admission — the freeze,

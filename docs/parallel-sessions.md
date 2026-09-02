@@ -365,7 +365,14 @@ this one is a decision about a project, so it is not a file in the project.
 switched off, a client can be configured without one, and a specialized tool path can go
 uncovered — so `status` reports each client as `enforced`, `degraded`, `disabled`,
 `unsupported` or `uninstalled`, and refuses to call enforcement complete while any of that
-is true. The layer that is not optional is **admission**: `scripts/freeze.js`,
+is true. It says so by asking each step separately (change-log row `repo-l2w`): whether a
+`PreToolUse` group runs this installation's own bridge by exact path, whether hooks are
+switched off, whether the client withholds the trust a hook needs before it runs, and
+whether a matcher covers every guarded tool path — naming the ones it does not. A
+configuration written down is not a hook that ran, which is how a Codex installation once
+reported enforced while an ordinary session rewrote `runner/run.js`; if `status` names a
+Codex limitation on a machine installed before that repair, re-run `install`. The layer
+that is not optional is **admission**: `scripts/freeze.js`,
 `scripts/prepare-batch.js` and `runner/run.js` each run the same check over the real
 integration checkout before they mutate it, and a protected path that is staged, unstaged
 or untracked with no matching planning or frozen-test provenance stops the operation and is
