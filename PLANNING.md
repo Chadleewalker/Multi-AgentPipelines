@@ -219,7 +219,10 @@ verifier inside the project's configured image with no network, credentials, cap
 host mount other than that disposable clone, then feeds its evidence into the next bounded
  attempt. The whole acceptance tree, `pipeline.config.json` and every configured frozen Git
  pathspec are hashed before the agent and checked after both the agent and gate. Wildcard matches,
- ignored additions and file modes count, except two strict non-test shapes in another suite:
+ ignored additions and file modes count — modes as *Git* records them (`100644`, `100755`,
+ `120000`, `40000`), so a Windows checkout bind-mounted into a Linux container is not read as a
+ change while an executable-bit change Git does record still is. Two strict non-test shapes in
+ another suite are the only exceptions:
  a valid single-link regular untracked `.freeze-gate.json` receipt in the integration-target
  comparison only, and an ignored-and-untracked Godot `.gd.uid`
  sidecar beside its unchanged `.gd` companion. The receipt is parsed by the runner's own rule;
@@ -523,6 +526,11 @@ transaction, and makes one commit and one leased push. Missing, duplicate, extra
 changed proofs refuse the whole batch before publication. This is the publication counterpart
 to `prepare-batch`: freezing one proof first would advance the integration base and stale every
 other proof from the same preparation wave.
+
+"Absolute" is judged in both path flavours rather than the running platform's, so a POSIX root,
+a Windows drive root with either slash and a UNC share are accepted identically on the host and
+inside a container. A drive-relative `C:probe` is not absolute in either flavour and is still
+refused, as is any ordinary relative path.
 
 **It will not write the tests.** The suite is the spec (§2, hard invariant 3), and an issue whose
 `tests/acceptance/<issue-id>/` does not exist is refused naming step 3. That refusal is the tool
