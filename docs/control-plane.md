@@ -92,6 +92,38 @@ or untracked without matching planning or frozen-test provenance refuses the who
 operation, by name, without resetting, cleaning, stashing, overwriting, committing or
 moving anything.
 
+A client's state describes its configuration, not its dispatch. `enforced` for Codex means a
+profile that names an effective string handler for every declared tool path; whether a real
+session loads that profile and refuses through it is a separate question, and the recipe
+below is how it is answered.
+
+### Verifying a Codex profile end to end, black box
+
+A profile that parses is not a session that dispatches. Where no Codex binary exists, skip
+this and say so — an explicit skip is honest and a green that was never run is not.
+
+1. Build a disposable checkout: `git init` a scratch directory, add a `pipeline.config.json`
+   and a file under `runner/`, and commit. Never point this at a real project.
+2. With `WRITE_PROTECTION_CODEX_DIR` aimed at a throwaway configuration directory, run
+   `install`, then `status --json`, and confirm the Codex client reads `enforced`.
+3. Mark the disposable checkout **trusted** for that configuration — a `[projects."<path>"]`
+   entry with `trust_level = "trusted"` — so the run exercises the hook and not the trust
+   prompt.
+4. Run an ordinary Codex session in that checkout with `CODEX_HOME` set to the throwaway
+   directory, asking it to change the file under `runner/` with `apply_patch`. Use no flag
+   that bypasses hook trust or the sandbox: a `--dangerously-…` switch turns off the thing
+   under test, so a run made with one proves nothing about it.
+5. It passes only if all four hold — the session started with no configuration error (a
+   rejected profile says `invalid type: …` and loads no hook at all), the model was refused
+   in write-protection's own words, the protected file's hash is unchanged, and `git status`
+   in the disposable checkout is unchanged.
+
+The deterministic half needs no Codex and runs anywhere: `WRITE_PROTECTION_CODEX_DIR` aims
+`install` and `status --json` at any directory, so a planted profile is judged exactly as a
+real one is, and the string command the profile names can be spawned directly with one hook
+payload on stdin — exit 0 allows, exit 2 refuses with the reason on stderr.
+`tests/acceptance/repo-gy3/test.js` is the worked example of both halves.
+
 Managed client policy: an organization that needs non-disableable local policy must not
 rely on either client's own configuration file, because both live on the operator's host
 and both are editable there. Deploy the Codex hook block, and the Claude `PreToolUse`

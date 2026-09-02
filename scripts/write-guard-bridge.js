@@ -8,8 +8,16 @@
 //
 //   Claude   {"session_id":…,"cwd":…,"tool_name":"Write|Edit|MultiEdit|NotebookEdit|Bash",
 //             "tool_input":{…}}
+//   Codex    {"session_id":…,"cwd":…,"tool_name":"Bash"|"apply_patch",
+//             "tool_input":{"command":[argv]|"<command line>"}}
 //   Codex    {"session_id":…,"cwd":…,"hook":"apply_patch"|"unified_exec",
-//             "input":{"patch":…}|{"command":[…]}}
+//    (legacy) "input":{"patch":…}|{"command":[…]}}
+//
+// Both clients send the same `tool_name` / `tool_input` envelope, so selection is on the TOOL
+// NAME and the two differ only in what `command` holds: Claude a command line, Codex an argv
+// array carrying either a shell invocation or the `apply_patch` envelope. The legacy dialect is
+// still understood — what the contract's `toolPaths` says is what is INSTALLED, never what is
+// UNDERSTOOD, and dropping a payload dialect unguards whatever still speaks it.
 //
 //   exit 0   allow, silent
 //   exit 2   refuse, reason on stderr where the model will read it
@@ -44,18 +52,41 @@ const WRITE_TOOLS = {
   NotebookEdit: 'notebook_path',
 };
 
-// A `unified_exec` command arrives as an argv array. `sh -c "<script>"` is the form an agent
-// actually sends, and joining it back into one string would lose the quoting the script
-// depends on, so the script itself is what gets read.
+// A Codex command arrives as an argv array. `sh -c "<script>"` is the form an agent actually
+// sends, and joining it back into one string would lose the quoting the script depends on, so
+// the script itself is what gets read. The flag is matched as any single-dash cluster ENDING in
+// `c` — `bash -lc` and `sh -ec` are as common as `-c`, and joining one of those back up makes
+// the guard answer `unknown-shell-form`, which refuses for the wrong reason and hides whether
+// the command was understood at all.
 function commandOf(value) {
   if (typeof value === 'string') return value;
   if (!Array.isArray(value) || !value.length) return '';
-  const first = String(value[0] || '').split(/[\\/]/).pop();
-  if (value.length >= 3 && /^(sh|bash|dash|zsh|ksh)$/.test(first) && String(value[1]) === '-c') {
+  const first = String(value[0] || '').split(/[\\/]/).pop().replace(/\.(exe|cmd|bat)$/i, '');
+  if (value.length >= 3 && /^(sh|bash|dash|zsh|ksh)$/.test(first) && /^-[a-z]*c$/.test(String(value[1]))) {
     return String(value[2]);
   }
   return value.map(String).join(' ');
 }
+
+// The `apply_patch` envelope, wherever this client put it: its own key, or — the current
+// dialect — an argv array whose first word is the tool and whose second is the patch text.
+function patchOf(input) {
+  for (const key of ['patch', 'input', 'patch_text']) {
+    if (typeof input[key] === 'string' && input[key].trim()) return input[key];
+  }
+  const command = input.command === undefined ? input.argv : input.command;
+  if (typeof command === 'string') return command;
+  if (!Array.isArray(command)) return '';
+  const parts = command.map(String);
+  const envelope = parts.find((p) => /^\s*\*\*\*\s+Begin Patch/im.test(p) || /^\s*(?:---|\+\+\+|@@)/m.test(p));
+  if (envelope) return envelope;
+  return parts.filter((p) => !/^apply_patch$/i.test(p.trim())).join('\n');
+}
+
+// Tool names that carry a command to run rather than a file to write. Claude sends `Bash`;
+// Codex sends `Bash` in the current dialect and named its shell tool several other things
+// along the way, all of which are still answered.
+const SHELL_TOOLS = new Set(['Bash', 'bash', 'unified_exec', 'exec', 'shell', 'local_shell']);
 
 function requestFrom(payload) {
   const cwd = path.resolve(String((payload && payload.cwd) || process.cwd()));
@@ -77,12 +108,21 @@ function requestFrom(payload) {
   }
 
   const tool = String((payload && payload.tool_name) || '');
+  const input = (payload && payload.tool_input) || {};
   if (Object.prototype.hasOwnProperty.call(WRITE_TOOLS, tool)) {
-    const file = String(((payload && payload.tool_input) || {})[WRITE_TOOLS[tool]] || '');
+    const file = String(input[WRITE_TOOLS[tool]] || '');
     return file ? { ...base, action: 'write', path: file } : null;
   }
-  if (tool === 'Bash') {
-    const command = String(((payload && payload.tool_input) || {}).command || '');
+  if (tool === 'apply_patch') {
+    const patch = patchOf(input);
+    return patch.trim() ? { ...base, action: 'patch', patch } : null;
+  }
+  if (SHELL_TOOLS.has(tool)) {
+    // `local_shell` nests its argv one level down; every other spelling carries it directly.
+    const carried = input.command === undefined ? (input.argv === undefined ? input.cmd : input.argv)
+      : input.command;
+    const action = (input.action && typeof input.action === 'object') ? input.action : null;
+    const command = commandOf(carried === undefined && action ? action.command : carried);
     return command.trim() ? { ...base, action: 'shell', command } : null;
   }
   return null;

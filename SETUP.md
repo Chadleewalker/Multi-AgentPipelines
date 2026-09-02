@@ -245,6 +245,12 @@ a checkout carrying `pipeline.config.json` is pipeline-first, so product, config
 control and frozen-path writes are refused and reading is untouched. Neither says anything in
 a project that does not carry them, so your other repositories are unaffected.
 
+What `status` reports about a client is what its *configuration* says, not what a session did:
+a Codex `enforced` means the profile names a hook that would run our bridge for every declared
+tool path. The end-to-end check — a disposable trusted checkout, one ordinary session, an
+`apply_patch` that gets refused — is written out in `docs/control-plane.md` and is worth
+running once on a machine you will leave the pipeline alone on.
+
 `status` will tell you enforcement is **not** complete, and that is correct rather than a
 setup error: these hooks live in configuration files on this machine, so whoever is sitting
 here can disable them. The layer that does not depend on a hook is admission — the freeze,

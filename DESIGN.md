@@ -2566,6 +2566,28 @@ untracked freeze receipt beside a suite is controller metadata rather than a cha
 frozen path — the same narrow exemption `scripts/protected-tree.js` already makes
 (change-log row `sibling-receipt-normalization`).
 
+**What a client hook is written as is part of the control, not a detail of it.** The Codex
+profile carries one `[[hooks.PreToolUse]]` matcher group per tool path
+`contracts/write-protection.json` declares for that client — `^Bash$` and `^apply_patch$` —
+each followed by a nested `[[hooks.PreToolUse.hooks]]` table declaring `type = "command"` and
+a command written as a **TOML string** naming the exact bridge this installation put in
+place. A string because that is what Codex reads the key as: an array is rejected with
+`invalid type: sequence, expected a string`, and a rejected profile takes the whole
+configuration down rather than the one hook, so the session runs with no hook of ours at all.
+Two earlier claims are corrected here (change-log row `repo-gy3`). Change-log row `repo-ak5`
+moved the block onto the official nested table path but left the value shape explicitly free,
+and the pull request that shipped it, PR #81, emitted `command = ["node", "<bridge>"]` — an
+array no session ever dispatched from, while `status` reported `enforced` throughout because
+it was looking for the sentinel comment it had written itself. `status` therefore *parses*
+`config.toml`: hooks switched off is asked first, and `enforced` requires an effective string
+handler — nested, typed, every command key a string, running this installation's own bridge —
+covering every declared tool path. The array form, an untyped handler, a handler naming some
+other file and a missing bridge are all `degraded`. Presence of a block we wrote is not
+evidence of anything, which is why the claim that the profile loads is a black-box one: a
+real session in a disposable trusted checkout, refused at `apply_patch`, with the recipe in
+`docs/control-plane.md` so anyone can repeat it and the same profile judged deterministically
+through the `WRITE_PROTECTION_CODEX_DIR` seam where no Codex exists.
+
 **A refusal takes nothing away.** It never resets, cleans, stashes, overwrites, commits or
 moves a file; the diagnostic names the exact paths and the command that helps.
 `write-protection.js recover` adds a dedicated worktree with `git worktree add` — registered,

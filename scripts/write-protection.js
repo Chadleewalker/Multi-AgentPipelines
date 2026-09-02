@@ -25,7 +25,14 @@
 //   WRITE_PROTECTION_MANAGED          set when local client policy is centrally managed and
 //                                     therefore not disableable by whoever is sitting here
 //
-// Checks: `node tests/acceptance/repo-324/test.js`.
+// The two client-directory seams are also the deterministic way to VALIDATE a client
+// configuration without the client: aim one at a directory holding any profile and `status
+// --json` judges it exactly as it judges a real installation, on a machine where neither
+// agent CLI exists. `parseToml` and `codexState` are exported for the same reason. What that
+// cannot answer — whether a real session loads the profile and refuses through it — is the
+// black-box recipe in `docs/control-plane.md` (change-log row `repo-gy3`).
+//
+// Checks: `node tests/acceptance/repo-324/test.js`, `node tests/acceptance/repo-gy3/test.js`.
 'use strict';
 
 const crypto = require('crypto');
@@ -340,17 +347,42 @@ function claudeState(dir) {
 
 function codexConfigFile(dir) { return path.join(dir, 'config.toml'); }
 
+// A TOML basic string, escaped so that any character a path can carry survives the round trip.
+function tomlString(value) {
+  return `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+// The hook command, as ONE command line rather than an argv array: Codex reads
+// `[[hooks.PreToolUse.hooks]].command` as a string and rejects the profile outright when it is
+// a sequence (change-log row `repo-gy3`). One pair of double quotes around the path is the only
+// quoting form a POSIX shell and cmd.exe both read the same way, so a bridge installed under a
+// directory with a space in its name still runs.
+function codexCommandLine(bridge) {
+  return `node "${posix(bridge)}"`;
+}
+
+// One matcher group per declared tool path, anchored to that tool alone. A bare name and an
+// anchored expression are read identically by an exact-match client; an alternation would only
+// work on a client that reads matchers as regular expressions.
+function codexMatcher(tool) {
+  return `^${String(tool).replace(/[\\^$+*?.()|{}[\]]/g, (c) => `\\${c}`)}$`;
+}
+
 function codexBlock(bridge) {
-  return [
+  const tools = policy.contract().clients.codex.toolPaths;
+  const command = tomlString(codexCommandLine(bridge));
+  const lines = [
     CODEX_BEGIN,
     '# Installed by node scripts/write-protection.js install — remove with `uninstall`.',
-    '[[hooks.apply_patch]]',
-    `command = ["node", "${posix(bridge)}"]`,
-    '',
-    '[[hooks.unified_exec]]',
-    `command = ["node", "${posix(bridge)}"]`,
-    CODEX_END,
-  ].join('\n');
+    '# `command` is a TOML string on purpose: an argv array is rejected as `invalid type:',
+    '# sequence, expected a string` and takes the whole profile down with it.',
+  ];
+  for (const tool of tools) {
+    lines.push('', '[[hooks.PreToolUse]]', `matcher = ${tomlString(codexMatcher(tool))}`,
+      '', '[[hooks.PreToolUse.hooks]]', 'type = "command"', `command = ${command}`);
+  }
+  lines.push(CODEX_END);
+  return lines.join('\n');
 }
 
 function stripCodex(text) {
@@ -389,22 +421,353 @@ function uninstallCodex(dir) {
   return { ok: true };
 }
 
+// ---- reading a Codex profile ----------------------------------------------------------------
+//
+// `status` PARSES config.toml rather than looking for the sentinel comments it wrote. Two
+// shapes this project shipped were valid TOML that Codex accepted and dispatched nothing from,
+// and both carried the sentinel: presence of a block we wrote is exactly the evidence that
+// failed (change-log rows `repo-ak5` and `repo-gy3`). What follows is enough of a TOML reader
+// to answer the question honestly — table headers, array-of-table headers, dotted and quoted
+// keys, strings, booleans, integers, arrays and inline tables — and, crucially, it keeps a
+// value's KIND, because "a string, never an array" is the whole of what changed.
+
+function tomlStripComment(line) {
+  let out = '';
+  let quote = null;
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
+    if (quote) {
+      out += ch;
+      if (ch === '\\' && quote === '"') { out += line[i + 1] || ''; i += 1; continue; }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; out += ch; continue; }
+    if (ch === '#') break;
+    out += ch;
+  }
+  return out;
+}
+
+function tomlDepth(text) {
+  let depth = 0;
+  let quote = null;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === '\\' && quote === '"') { i += 1; continue; }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === '[' || ch === '{') depth += 1;
+    else if (ch === ']' || ch === '}') depth -= 1;
+  }
+  return depth;
+}
+
+// A value may span lines; a table header is balanced and never does, so joining on an unclosed
+// bracket cannot swallow one.
+function tomlLines(text) {
+  const raw = String(text || '').split(/\r?\n/).map(tomlStripComment);
+  const out = [];
+  for (let i = 0; i < raw.length; i += 1) {
+    let line = raw[i].trim();
+    if (!line) continue;
+    while (tomlDepth(line) > 0 && i + 1 < raw.length) { i += 1; line += ` ${raw[i].trim()}`; }
+    out.push(line);
+  }
+  return out;
+}
+
+function tomlKeyPath(src) {
+  const segs = [];
+  let cur = '';
+  let quote = null;
+  for (let i = 0; i < src.length; i += 1) {
+    const ch = src[i];
+    if (quote) {
+      if (ch === quote) { quote = null; continue; }
+      cur += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === '.') { segs.push(cur.trim()); cur = ''; continue; }
+    cur += ch;
+  }
+  segs.push(cur.trim());
+  return segs.filter((s) => s.length);
+}
+
+function tomlValue(src, start) {
+  let i = start;
+  while (i < src.length && /\s/.test(src[i])) i += 1;
+  const ch = src[i];
+  if (ch === '"' || ch === "'") {
+    const quote = ch;
+    let out = '';
+    i += 1;
+    while (i < src.length) {
+      const c = src[i];
+      if (quote === '"' && c === '\\') {
+        const next = src[i + 1] || '';
+        out += next === 'n' ? '\n' : next;
+        i += 2;
+        continue;
+      }
+      if (c === quote) { i += 1; break; }
+      out += c;
+      i += 1;
+    }
+    return { value: out, i };
+  }
+  if (ch === '[') {
+    const arr = [];
+    i += 1;
+    for (;;) {
+      while (i < src.length && /[\s,]/.test(src[i])) i += 1;
+      if (i >= src.length || src[i] === ']') { i += 1; break; }
+      const r = tomlValue(src, i);
+      arr.push(r.value);
+      i = r.i;
+    }
+    return { value: arr, i };
+  }
+  if (ch === '{') {
+    const obj = {};
+    i += 1;
+    for (;;) {
+      while (i < src.length && /[\s,]/.test(src[i])) i += 1;
+      if (i >= src.length || src[i] === '}') { i += 1; break; }
+      let key = '';
+      if (src[i] === '"' || src[i] === "'") { const r = tomlValue(src, i); key = r.value; i = r.i; }
+      else { while (i < src.length && !/[=\s]/.test(src[i])) { key += src[i]; i += 1; } }
+      while (i < src.length && /\s/.test(src[i])) i += 1;
+      if (src[i] === '=') i += 1;
+      const r = tomlValue(src, i);
+      tomlAssign(obj, tomlKeyPath(key), r.value);
+      i = r.i;
+    }
+    return { value: obj, i };
+  }
+  let token = '';
+  while (i < src.length && !/[,\]}]/.test(src[i])) { token += src[i]; i += 1; }
+  token = token.trim();
+  if (token === 'true') return { value: true, i };
+  if (token === 'false') return { value: false, i };
+  if (/^-?\d+$/.test(token)) return { value: Number(token), i };
+  return { value: token, i };
+}
+
+function tomlDescend(root, segs) {
+  let node = root;
+  for (const seg of segs) {
+    if (!node[seg] || typeof node[seg] !== 'object') node[seg] = {};
+    if (Array.isArray(node[seg])) {
+      if (!node[seg].length) node[seg].push({});
+      node = node[seg][node[seg].length - 1];
+    } else node = node[seg];
+  }
+  return node;
+}
+
+function tomlAssign(table, segs, value) {
+  if (!segs.length) return;
+  const holder = tomlDescend(table, segs.slice(0, -1));
+  holder[segs[segs.length - 1]] = value;
+}
+
+// The first `=` outside a string and outside a bracket.
+function tomlSplitAssign(line) {
+  let quote = null;
+  let depth = 0;
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
+    if (quote) {
+      if (ch === '\\' && quote === '"') { i += 1; continue; }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === '[' || ch === '{') depth += 1;
+    else if (ch === ']' || ch === '}') depth -= 1;
+    else if (ch === '=' && depth === 0) return [line.slice(0, i).trim(), line.slice(i + 1).trim()];
+  }
+  return null;
+}
+
+function parseToml(text) {
+  const root = {};
+  let table = root;
+  for (const line of tomlLines(text)) {
+    const arrayHeader = /^\[\[(.+)\]\]$/.exec(line);
+    const tableHeader = arrayHeader ? null : /^\[(.+)\]$/.exec(line);
+    if (arrayHeader || tableHeader) {
+      const segs = tomlKeyPath((arrayHeader || tableHeader)[1].trim());
+      if (!segs.length) { table = root; continue; }
+      const holder = tomlDescend(root, segs.slice(0, -1));
+      const last = segs[segs.length - 1];
+      if (arrayHeader) {
+        if (!Array.isArray(holder[last])) holder[last] = [];
+        const fresh = {};
+        holder[last].push(fresh);
+        table = fresh;
+      } else if (Array.isArray(holder[last])) {
+        if (!holder[last].length) holder[last].push({});
+        table = holder[last][holder[last].length - 1];
+      } else {
+        if (!holder[last] || typeof holder[last] !== 'object') holder[last] = {};
+        table = holder[last];
+      }
+      continue;
+    }
+    const kv = tomlSplitAssign(line);
+    if (!kv) continue;
+    tomlAssign(table, tomlKeyPath(kv[0]), tomlValue(kv[1], 0).value);
+  }
+  return root;
+}
+
+// ---- what a Codex profile has to say for itself ------------------------------------------------
+
+const asList = (v) => (Array.isArray(v) ? v : (v === undefined || v === null ? [] : [v]));
+const isTable = (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v);
+
+// `command_windows` where this platform would use it, `command` otherwise: the key a Codex on
+// THIS host would actually run. Both are supported on the way in; only a string is accepted.
+const CODEX_COMMAND_KEYS = ['command', 'command_windows'];
+
+function codexCommandEntries(handler) {
+  const out = [];
+  for (const key of CODEX_COMMAND_KEYS) {
+    const value = handler && handler[key];
+    if (value === undefined || value === null) continue;
+    if (Array.isArray(value) ? value.length === 0 : String(value).trim() === '') continue;
+    out.push({ key, value });
+  }
+  return out;
+}
+
+function codexEffectiveCommand(handler) {
+  const entries = codexCommandEntries(handler);
+  if (!entries.length) return null;
+  const windows = entries.find((e) => e.key === 'command_windows');
+  const general = entries.find((e) => e.key === 'command');
+  if (process.platform === 'win32' && windows) return windows.value;
+  return (general || windows).value;
+}
+
+// Tokenise a command line the way a shell would, so the file it runs can be read out of it.
+// Used only to ask WHICH program a handler names — never to decide whether the value was
+// written as a string, which is asked of the parsed kind.
+function commandTokens(value) {
+  if (Array.isArray(value)) return value.map(String).filter((s) => s.length);
+  const one = String(value === undefined || value === null ? '' : value).trim();
+  if (!one) return [];
+  return (one.match(/"[^"]*"|'[^']*'|\S+/g) || []).map((t) => t.replace(/^["']|["']$/g, ''));
+}
+
+const samePath = (a, b) => {
+  const one = path.resolve(String(a));
+  const two = path.resolve(String(b));
+  return process.platform === 'win32' ? one.toLowerCase() === two.toLowerCase() : one === two;
+};
+
+const mentionsSigil = (value) => commandTokens(value).some((t) => posix(String(t)).includes(SIGIL));
+const codexHandlerIsOurs = (h) => codexCommandEntries(h).some((e) => mentionsSigil(e.value));
+
+// Every command assignment anywhere in the profile, whatever table it sits under — the PR #81
+// shape put them under `[[hooks.apply_patch]]`, which is not a matcher group at all.
+function codexCommandsAnywhere(cfg) {
+  const out = [];
+  const walk = (node) => {
+    if (Array.isArray(node)) { node.forEach(walk); return; }
+    if (!isTable(node)) return;
+    for (const entry of codexCommandEntries(node)) out.push(entry);
+    for (const value of Object.values(node)) walk(value);
+  };
+  walk(cfg);
+  return out;
+}
+
+const codexGroups = (cfg) => asList(cfg && cfg.hooks && cfg.hooks.PreToolUse).filter(isTable);
+const codexHandlers = (group) => asList(group && group.hooks).filter(isTable);
+
+// An EFFECTIVE STRING HANDLER: nested under a matcher group, declared `type = "command"`, every
+// command key it carries written as a TOML string, and running the bridge this installation put
+// in place. Anything less is configuration that reads well and dispatches nothing.
+function codexHandlerIsEffective(handler, bridge) {
+  if (String((handler && handler.type) || '') !== 'command') return false;
+  const entries = codexCommandEntries(handler);
+  if (!entries.length) return false;
+  if (!entries.every((e) => typeof e.value === 'string' && e.value.trim().length)) return false;
+  return commandTokens(codexEffectiveCommand(handler)).some((t) => samePath(t, bridge));
+}
+
+function codexGroupCovers(group, tool) {
+  return [...asList(group && group.matcher), ...asList(group && group.matchers)]
+    .some((m) => matcherCovers(m, [tool]));
+}
+
+// Switched off at the client wins over everything else: a profile that turns hooks off has
+// turned ours off too, whether or not our entry is still written down in it. Asked of the parse
+// in the spellings this reader models, and of the raw text for any it does not.
+function codexHooksOff(cfg, text) {
+  if (isTable(cfg.features) && cfg.features.hooks === false) return 'hooks = false under [features]';
+  if (cfg.hooks === false) return 'hooks = false';
+  if (isTable(cfg.hooks) && cfg.hooks.enabled === false) return 'hooks.enabled = false';
+  if (/^\s*(?:hooks|hooks_enabled|enable_hooks)\s*=\s*false\b/m.test(String(text || ''))) {
+    return 'hooks = false';
+  }
+  return null;
+}
+
 function codexState(dir) {
+  const tools = policy.contract().clients.codex.toolPaths;
   let stat = null;
   try { stat = fs.statSync(dir); } catch { stat = null; }
   if (stat && !stat.isDirectory()) return { state: 'unsupported', detail: `${dir} is not a directory` };
   const { file, text } = readCodex(dir);
   if (text === null) return { state: 'uninstalled', detail: `no ${file}` };
-  // Switched off at the client wins over everything else: a config that turns hooks off has
-  // turned OURS off too, whether or not the entry is still written down in it.
-  if (/^\s*hooks\s*=\s*false\b/m.test(text)) {
-    return { state: 'disabled', detail: `${file} sets hooks = false, so no hook of ours runs` };
+
+  let cfg;
+  try { cfg = parseToml(text); }
+  catch (e) {
+    return { state: 'degraded', detail: `${file} could not be read as TOML (${String(e && e.message)})` };
   }
-  if (!text.includes(CODEX_BEGIN)) return { state: 'uninstalled', detail: `no hook entry in ${file}` };
+
+  const off = codexHooksOff(cfg, text);
+  if (off) return { state: 'disabled', detail: `${file} sets ${off}, so no hook of ours runs` };
+
+  const groups = codexGroups(cfg);
+  const nested = groups.flatMap(codexHandlers);
+  const ours = nested.filter(codexHandlerIsOurs);
+  const elsewhere = codexCommandsAnywhere(cfg).filter((e) => mentionsSigil(e.value));
+  if (!ours.length && !elsewhere.length && !text.includes(CODEX_BEGIN)) {
+    return { state: 'uninstalled', detail: `no hook entry in ${file}` };
+  }
   if (!payloadComplete(dir)) {
     return { state: 'degraded', detail: `the hook is configured but ${payloadPaths(dir).base} is incomplete` };
   }
-  return { state: 'enforced', detail: `${file}` };
+
+  const bridge = payloadPaths(dir).bridge;
+  const covered = tools.filter((tool) => groups.some((g) => codexGroupCovers(g, tool)
+    && codexHandlers(g).some((h) => codexHandlerIsEffective(h, bridge))));
+  const uncovered = tools.filter((t) => !covered.includes(t));
+  if (!uncovered.length) return { state: 'enforced', detail: `${file}` };
+
+  // Say WHICH way it fails, because the three ways are repaired differently and two of them
+  // were shipped by this project itself.
+  const arrayed = ours.some((h) => codexCommandEntries(h).some((e) => Array.isArray(e.value)))
+    || elsewhere.some((e) => Array.isArray(e.value));
+  const untyped = ours.some((h) => String((h && h.type) || '') !== 'command');
+  const detail = arrayed
+    ? `a hook command in ${file} is written as an array; Codex reads this key as a string and `
+      + `rejects the profile, so ${uncovered.join(', ')} is not guarded`
+    : untyped
+      ? `a nested hook in ${file} omits type = "command", so ${uncovered.join(', ')} is not dispatched`
+      : `no effective string handler running ${bridge} covers ${uncovered.join(', ')}`;
+  return { state: 'degraded', detail };
 }
 
 // ---- status ----------------------------------------------------------------------------------
@@ -656,4 +1019,11 @@ function run(argv, io = {}) {
 
 if (require.main === module) process.exit(run(process.argv.slice(2)));
 
-module.exports = { run, admit: policy.admit };
+module.exports = {
+  run,
+  admit: policy.admit,
+  // The client-configuration validation seam: a profile in, a state out, no client needed.
+  parseToml,
+  codexState,
+  claudeState,
+};
