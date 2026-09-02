@@ -231,6 +231,30 @@ each session gets its own git worktree — its own folder, its own branch, one s
 three agents typing into one set of files. `.worktree-carry` names which git-ignored files a
 new worktree is given.
 
+### B7. Install the write guards — once per machine, not per clone
+
+```bash
+node scripts/install-session-guard.js      # one session, one folder
+node scripts/write-protection.js install   # pipeline-first writes, Claude and Codex
+node scripts/write-protection.js status    # what is enforced, honestly
+```
+
+Two different rules at the same enforcement point. The first keeps two sessions out of one
+folder. The second keeps an agent session from changing an onboarded project by hand at all:
+a checkout carrying `pipeline.config.json` is pipeline-first, so product, configuration,
+control and frozen-path writes are refused and reading is untouched. Neither says anything in
+a project that does not carry them, so your other repositories are unaffected.
+
+`status` will tell you enforcement is **not** complete, and that is correct rather than a
+setup error: these hooks live in configuration files on this machine, so whoever is sitting
+here can disable them. The layer that does not depend on a hook is admission — the freeze,
+batch preparation and the runner each re-check the real checkout before they mutate it. If
+one of them ever refuses with a list of paths, nothing was deleted or reverted; run
+`node scripts/write-protection.js recover --target <dir>` to give that work a Git-registered
+worktree of its own. To work by hand deliberately, grant yourself
+`node scripts/write-protection.js allow-writes --target <dir> --session <id>` and `revoke`
+when you are done.
+
 ---
 
 ## Part C — Prove it works before you trust it

@@ -47,6 +47,7 @@ const {
   readyQueue, partitionByFreeze, resolveBranch, gitSpawnOptions, REFUSAL, RECEIPT_VERDICTS,
 } = require('../runner/queue');
 const { suiteHash, treeEntries } = require('../runner/suite-hash');
+const writeProtection = require('./write-protection-policy');
 
 const ROOT = path.resolve(__dirname, '..');
 const GATE = path.join(ROOT, 'scripts', 'freeze-gate.js');
@@ -606,6 +607,20 @@ function commit(opts, out, err) {
   if (!earlyClean.ok) { err(`freeze: ${earlyClean.error}`); return EXIT_REFUSED; }
   const earlyBranch = headIs(cfg, branch);
   if (!earlyBranch.ok) { err(`freeze: ${earlyBranch.error}`); return EXIT_REFUSED; }
+
+  // The write-protection backstop (change-log row `repo-324`). `indexIsClean` above refuses a
+  // STAGED index; this refuses the other two states as well, over the real integration
+  // checkout, before the first promotion or stage. A hook can be switched off and a tool path
+  // can go uncovered, so the last thing standing between a hand-made edit and the integration
+  // branch is this — and it refuses by REPORTING, never by cleaning up after anyone.
+  const admitted = writeProtection.admit(cfg.targetRepoPath, { issues: ids });
+  if (!admitted.admit) {
+    err('freeze: refusing to commit — the integration checkout is not admissible.');
+    for (const line of writeProtection.admissionRefusal(admitted, { label: admitted.target, issues: ids })) {
+      err(`        ${line}`);
+    }
+    return EXIT_REFUSED;
+  }
 
   let managedHead = null;
   let managedProbes = [];

@@ -361,6 +361,18 @@ guard and `repo-1cy` runs git against a ref it created itself — a detector key
 `binary`, `extension`, `unreadable`, one line per path, because a discriminator that skips
 in silence is the failure mode this document already has a rule about.
 
+**What a planning session is allowed to write** (§6.3, change-log row `repo-324`). Hard
+invariant 3 says planning is interactive and implementation is autonomous; §6.3 is the same
+sentence made mechanical, because a session that recognises an onboarded repository and
+implements in it directly has skipped everything the rest of this section exists to produce.
+An onboarded checkout is pipeline-first by default. Planning holds narrow authority over the
+declared planning and design paths; authoring an acceptance suite holds authority over that
+one issue's suite directory and its receipt, and over nothing else — another issue's suite is
+somebody else's frozen evidence, and product code is what the run is for. A green probe (step
+4 above) may change product paths and may never change what judges it. Those role
+definitions, and the path classes they name, live in `contracts/write-protection.json`;
+restating them here would be the second-source rule broken in the document that states it.
+
 **V1 deliverable.** In V1 the planning session is a written playbook — `PLANNING.md` in
 this repo — that the user and Claude follow interactively: draft spec + tests, approve
 intent, commit/freeze tests, create the issue, declare dependencies, rebuild the image if
@@ -424,6 +436,15 @@ fields:
   beside this config; the playbook (and the E2E pass) cross-check the Dockerfile against
   the manifest so they cannot silently drift. Rebuilding the image is a manual pre-run
   step in the playbook; the runner only asserts the image exists and fails fast otherwise.
+
+This file's *presence at the selected integration fork point* carries one more meaning,
+added later and deliberately given no field of its own: it is the marker that makes a
+checkout **pipeline-first**, so an interactive agent session in it may read anything and may
+not change product, configuration, control or frozen paths by hand (§6.3, change-log row
+`repo-324`). A field would have been a switch, and a switch inside the tree is a switch a
+model can flip; the only bypass is a host record a person grants with
+`write-protection.js allow-writes`. `frozenPaths` is read by the same classifier, which is
+why a path this project alone declares is protected in this project alone.
 
 ### 3.5 Domain specialists (physics, aesthetics, security, …)
 
@@ -1164,7 +1185,19 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     must all compute the same name, in one process or in several, across a pause and
     resume.
 
-    **One run per project, enforced by a lock — the first gate there is.** Per-project
+    **Write-protection admission, ahead of everything** (§6.3, change-log row `repo-324`).
+    A dispatch clones and mutates the integration checkout, so before the lock, the network
+    or Docker exist the runner asks one question of that checkout: does it carry changes to
+    protected paths that no plan and no frozen suite accounts for? A staged, unstaged or
+    untracked product, configuration, control or frozen-path edit stops the run and is named
+    exactly; ignored host artifacts and an untracked freeze receipt beside a suite are not
+    such edits. It is placed ahead of the lock rather than after it for the same reason the
+    lock is placed ahead of Docker: it acquires nothing, writes nothing, touches neither
+    Beads nor the network, and a refusal from it therefore has nothing to compensate for.
+    `scripts/freeze.js` and `scripts/prepare-batch.js` run the identical check before their
+    own first write, which is what makes it a backstop rather than a fourth opinion.
+
+    **One run per project, enforced by a lock — the first gate that acquires anything.** Per-project
     plumbing makes two *different* projects independent; it does nothing about starting
     the *same* project twice, which is then the remaining way to corrupt a run and the
     easy mistake to make, because the second run looks like it starts normally. Two
@@ -1176,7 +1209,8 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     checkout's `runs/locks/` for the dashboard and sweep readers, but exclusion rests only
     on the global authority. The refusal names both the project and the run that holds it,
     and exits non-zero. The
-    lock is acquired **before every other gate**, first and not merely early: it is the
+    lock is acquired **before every other gate that acquires or mutates anything**, first
+    and not merely early: apart from the read-only admission check above it is the
     only purely local check, everything after it probes Docker or writes to Beads, and a
     refusal arriving after the stale-issue sweep has already reset another live run's
     in-progress issues has not refused anything useful. Being first is also what makes a
@@ -2480,6 +2514,68 @@ branch is merged and pushed — correctly, and now more often, since parallel se
 more unmerged freeze branches outstanding at any moment. The remedy is the one already in the
 outcome contract (freeze, PR, merge, run), plus feeding for a run already in flight. No gate
 changes.
+
+### 6.3 Pipeline-first writes (a worktree is isolation, not authority)
+
+§6.2 stops two sessions colliding in one folder. It says nothing about the question one layer
+up, and that question turned out to be the expensive one: **should this session be changing
+the project by hand at all?** A session that takes its own worktree and implements a feature
+in it breaks no rule in §6.2 — every file it touched was its own, on its own branch,
+colliding with nobody — and has still bypassed the frozen spec, the deterministic verifier,
+the evidence and the review that are the only reasons to trust the result. The machine guard
+that existed treated worktree membership as permission, was wired to one client, and failed
+open in every direction; none of those is wrong for the folder rule and all three are wrong
+for this one. So this is added *beside* §6.2, on the same enforcement point, and neither rule
+weakens the other (change-log row `repo-324`).
+
+**The marker is `pipeline.config.json` at the selected integration fork point**, which is the
+same file §3.4 already makes authoritative and §4.4 already reads from the immutable fork
+point rather than from the working tree. Presence makes a checkout pipeline-first by default:
+product, configuration, control and frozen-path writes are refused in the shared checkout and
+in every ordinary worktree alike, and read-only inspection is untouched. Absence leaves a
+checkout exactly as unprotected as it was, which is what keeps every other project on the
+host unaffected. Deleting the file from the working tree is therefore not an opt-out, and
+neither is any tracked marker: everything inside the tree is something a model can write, so
+nothing inside the tree may decide this.
+
+**Authority is a host record.** `scripts/write-protection.js lease --grant` writes one
+outside every repository, binding the canonical target, its Git common directory, the role,
+the issue and run identity, the controlling process's pid *and* its start identity (so a
+recycled pid inherits nothing — the falsification §4.7's lock already uses), the allowed path
+classes, an expiry and an unguessable token. Missing, stale, malformed, copied, mismatched
+and model-created leases all authorize nothing, and a lease found inside the repository is
+not read at all. Five roles are declared, and the roster and its path classes live in
+`contracts/write-protection.json` so no prose restates them: planning and test authoring get
+narrowly declared paths, a probe gets product paths and never what judges it, task execution
+gets product paths only inside the workspace the pipeline created for it, an ordinary session
+gets none, and one explicit user grant covers one repository and one session.
+
+**Two layers, and only the second is a perimeter.** Hook bridges for Claude and Codex refuse
+at the moment of the tool call, which is where a refusal is useful and where a person can act
+on it. They are also incomplete by construction: a local hook can be switched off, a client
+can be configured without one, and a specialized tool path can bypass it — so
+`write-protection.js status` reports each client as `enforced`, `degraded`, `disabled`,
+`unsupported` or `uninstalled` and refuses to call enforcement complete while any of that
+holds. Claiming a control one does not have is worse than admitting a partial one, because
+the claim is what stops anyone building the second layer. That second layer is **admission**:
+`scripts/freeze.js`, `scripts/prepare-batch.js` and `runner/run.js` each run the same check
+over the real integration checkout before they mutate it, and a protected path that is
+staged, unstaged or untracked without matching planning or frozen-test provenance refuses the
+whole operation. Ignored host artifacts stay governed by §6.2's existing rule, and an
+untracked freeze receipt beside a suite is controller metadata rather than a change to a
+frozen path — the same narrow exemption `scripts/protected-tree.js` already makes
+(change-log row `sibling-receipt-normalization`).
+
+**A refusal takes nothing away.** It never resets, cleans, stashes, overwrites, commits or
+moves a file; the diagnostic names the exact paths and the command that helps.
+`write-protection.js recover` adds a dedicated worktree with `git worktree add` — registered,
+so `git worktree list` finds it and its branch reviews and merges like any other — plus a
+patch/copy manifest naming everything carried across, with untracked bytes copied verbatim
+because a patch cannot represent a file Git has never seen. Repeated runs take fresh homes
+and never overwrite an earlier one. The only thing recovery changes in the target is the
+worktree registry inside the Git common directory; the project files, the index, the working
+tree, HEAD and the stash stack are byte-identical afterwards, which is the property the
+frozen suite asserts rather than a promise made in prose here.
 
 ## 7. Phasing
 

@@ -253,6 +253,17 @@ repo: a second run is refused even from another pipeline checkout. `runs/locks/`
 observer mirror for local readers, not a second authority (change-log row
 `global-run-ownership-and-atomic-claims`).
 
+One check runs even earlier, before preflight is entered at all: **write-protection
+admission** (§4.12, §6.3, change-log row `repo-324`). A dispatch clones and mutates the
+integration checkout, so the runner first asks whether that checkout carries staged,
+unstaged or untracked changes to protected product, configuration, control or frozen paths
+that no plan and no frozen suite accounts for. If it does, the run stops with those paths
+named and nothing else touched — no lock taken, no Beads write, no network, and nothing
+reset, cleaned, stashed or moved. It sits ahead of the lock for the same reason the lock
+sits ahead of Docker: it acquires nothing, so its refusal has nothing to compensate for.
+`scripts/freeze.js` and `scripts/prepare-batch.js` run the identical check before their own
+first write, which is what makes it a backstop rather than a fourth opinion.
+
 Before the shell/Docker/network gates, preflight also proves the local checkout's fetch
 remote and `targetRepoRemote` reduce to the same repository identity. This binds the task
 list the host writes to the code the runner fetches and publishes; a mismatch stops before

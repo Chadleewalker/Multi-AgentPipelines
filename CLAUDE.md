@@ -11,6 +11,7 @@ and agent paths without copying mutable runtime policy into prose.
 - `contracts/control-plane.json` owns stable enumerated control-plane policy.
 - `schemas/*.schema.json` own persisted artifact shapes.
 - A target's `pipeline.config.json` owns its verifier, regression policy, and frozen paths.
+- `contracts/write-protection.json` owns the write-protection role and path-class vocabulary.
 - `DESIGN.md` owns architectural rationale and the change-log convention.
 - `PLANNING.md` owns interactive planning and freeze workflow.
 - `docs/change-log.md` and `docs/STATUS.md` are historical records, not live config.
@@ -42,6 +43,28 @@ down.
 Fresh-context subagents are pre-authorized only for the independent spec draft and critic
 panel steps explicitly required by `PLANNING.md`. This is not authorization to fan out
 ordinary implementation work.
+
+## Pipeline-first writes
+
+This checkout carries `pipeline.config.json` at its integration fork point, so it is
+pipeline-first by default: plan the change and let a run make it. Product, configuration,
+control and frozen-path edits are refused at the tool call by the Claude and Codex write
+hooks, and refused again by admission in `scripts/freeze.js`, `scripts/prepare-batch.js`
+and `runner/run.js` before any of them mutates the integration checkout — because a local
+hook can be switched off and a tool path can go uncovered, so hooks are prevention and
+admission is the backstop. Reading is never restricted, and a worktree is isolation rather
+than permission: authority is a host-owned lease this repository cannot contain.
+
+```bash
+node scripts/write-protection.js install                 # both clients, host-side only
+node scripts/write-protection.js status                  # honest per-client enforcement
+node scripts/write-protection.js recover --target <dir>  # a home for refused edits
+node scripts/write-protection.js allow-writes --target <dir> --session <id>
+```
+
+`allow-writes` is the only bypass; it is a person's decision, scoped to one repository and
+one session, listed by `status`, and undone with `revoke`. Nothing tracked in the tree opts
+out. If admission refuses, run `recover` — it never deletes, resets or stashes anything.
 
 ## Reference host
 
