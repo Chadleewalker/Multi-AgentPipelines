@@ -338,19 +338,146 @@ function claudeState(dir) {
 
 // ---- the Codex client ---------------------------------------------------------------------------
 
+// Codex hooks are `PreToolUse` matcher groups carrying a command, and the event they send is
+// the `tool_name` / `tool_input` envelope the bridge reads (change-log row `repo-l2w`). The
+// tables this used to write — `[[hooks.apply_patch]]` and `[[hooks.unified_exec]]` — are not a
+// dialect of that, they are a configuration the client never reads: an installation carrying
+// them is unguarded while `status` calls it enforced, which is the failure this file exists to
+// not commit.
+//
+// ONE GROUP PER TOOL PATH, matcher spelled as the bare tool name. A client that matches a
+// matcher exactly and a client that matches it as a regular expression both read a bare name
+// the same way, and an alternation would be read by only one of them. Three groups cost three
+// lines and are correct under either reading.
+
 function codexConfigFile(dir) { return path.join(dir, 'config.toml'); }
 
+function codexTools() {
+  const declared = policy.contract().clients.codex.toolPaths;
+  return Array.isArray(declared) ? declared.map(String) : [];
+}
+
 function codexBlock(bridge) {
-  return [
+  const lines = [
     CODEX_BEGIN,
     '# Installed by node scripts/write-protection.js install — remove with `uninstall`.',
-    '[[hooks.apply_patch]]',
-    `command = ["node", "${posix(bridge)}"]`,
-    '',
-    '[[hooks.unified_exec]]',
-    `command = ["node", "${posix(bridge)}"]`,
-    CODEX_END,
-  ].join('\n');
+    '# One PreToolUse matcher group per guarded tool path.',
+  ];
+  for (const tool of codexTools()) {
+    lines.push('', '[[hooks.PreToolUse]]', `matcher = "${tool}"`,
+      `command = ["node", "${posix(bridge)}"]`);
+  }
+  lines.push(CODEX_END);
+  return lines.join('\n');
+}
+
+// ---- reading a config.toml, as far as this needs to ------------------------------------------
+
+// Three constructs, because they are the only three any answer below turns on: a table header,
+// `key = <value>`, and the strings inside a value. A full TOML parser would be a dependency and
+// a second opinion about syntax this file has none about.
+function codexRows(text) {
+  const rows = [];
+  let header = '';
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const bare = line.replace(/(^|\s)#.*$/, '').trim();
+    const h = /^\[\[?\s*([^\]]+?)\s*\]\]?$/.exec(bare);
+    if (h) { header = h[1].replace(/"/g, ''); rows.push({ header, key: null, value: null }); continue; }
+    const kv = /^([A-Za-z0-9_.\-"']+)\s*=\s*(.+)$/.exec(bare);
+    if (kv) rows.push({ header, key: kv[1].replace(/"/g, ''), value: kv[2].trim() });
+  }
+  return rows;
+}
+
+function tomlStrings(value) {
+  const out = [];
+  const re = /"((?:[^"\\]|\\.)*)"|'([^']*)'/g;
+  let m = re.exec(String(value || ''));
+  while (m) { out.push(m[1] !== undefined ? m[1].replace(/\\(.)/g, '$1') : m[2]); m = re.exec(String(value || '')); }
+  return out;
+}
+
+// Every hook group whose table path carries a `PreToolUse` segment, with the matchers and
+// commands declared in it or in a table nested beneath it. A repeat of the same header is the
+// next element of an array of tables and therefore the next group, which is what keeps somebody
+// else's entry in the shared table from being read as part of ours.
+function codexGroups(text) {
+  const groups = [];
+  let open = null;
+  for (const row of codexRows(text)) {
+    if (row.key === null) {
+      if (open && row.header.startsWith(`${open.header}.`)) continue;
+      if (row.header.split('.').some((seg) => seg === 'PreToolUse')) {
+        open = { header: row.header, matchers: [], commands: [] };
+        groups.push(open);
+        continue;
+      }
+      open = null;
+      continue;
+    }
+    if (!open) continue;
+    if (['matcher', 'matchers', 'tools'].includes(row.key)) open.matchers.push(...tomlStrings(row.value));
+    if (['command', 'commands', 'argv'].includes(row.key)) {
+      const argv = tomlStrings(row.value);
+      if (argv.length) open.commands.push(argv);
+    }
+  }
+  return groups;
+}
+
+// The same rule the Claude half applies, one tool at a time: absent or `*` covers everything,
+// an alternation covers what it lists, anything else is tried as a whole-name regular
+// expression. A group in a table named after a tool covers that tool too.
+function codexGroupCovers(group, tool) {
+  if (group.header.split('.').some((seg) => seg === tool)) return true;
+  return group.matchers.some((raw) => {
+    const m = String(raw === undefined || raw === null ? '' : raw).trim();
+    if (!m || m === '*') return true;
+    if (m.split(/[|,]/).map((s) => s.trim()).some((s) => s === tool || s === '*')) return true;
+    try { return new RegExp(`^(?:${m})$`).test(tool); } catch { return false; }
+  });
+}
+
+// Whether a hook group runs THIS installation's own bridge. Not "a file whose name looks like
+// ours" — the exact path `install` wrote, because a group re-pointed at something else is a
+// hook whose behaviour this command knows nothing about and may not vouch for.
+function runsOurBridge(group, dir) {
+  const want = posix(payloadPaths(dir).bridge).toLowerCase();
+  return group.commands.some((argv) => argv.some((a) => posix(String(a)).toLowerCase() === want));
+}
+
+// Hooks switched off at the client, in either spelling. This wins over everything else: a
+// configuration that turns hooks off has turned OURS off too, whether or not the entry is
+// still written down in it.
+function codexHooksOff(text) {
+  const falsey = (v) => /^false\b/i.test(String(v || '').trim());
+  for (const row of codexRows(text)) {
+    if (row.key === null) continue;
+    if (row.key === 'hooks' && falsey(row.value)) return `${row.header || '(root)'}.hooks = false`;
+    if (row.header === 'hooks' && row.key === 'enabled' && falsey(row.value)) return '[hooks] enabled = false';
+    if (row.key === 'hooks.enabled' && falsey(row.value)) return 'hooks.enabled = false';
+  }
+  return null;
+}
+
+// Codex will not run a hook in a project it has not been told to trust. A trust level declared
+// at the root is the setting that governs sessions generally; per-project entries govern one
+// path each and are reported as a limitation rather than as this client's state, because a
+// project nobody guards here is not evidence about the projects that are.
+function codexTrust(text) {
+  const global = [];
+  const projects = [];
+  for (const row of codexRows(text)) {
+    if (row.key === null) continue;
+    const leaf = row.key.split('.').pop();
+    if (leaf !== 'trust_level') continue;
+    const value = (tomlStrings(row.value)[0] || String(row.value)).trim();
+    if (value === 'trusted') continue;
+    const scope = `${row.header ? `${row.header}.` : ''}${row.key}`;
+    if (row.header === '' && row.key === 'trust_level') global.push(`${scope} = "${value}"`);
+    else projects.push(`${scope} = "${value}"`);
+  }
+  return { global, projects };
 }
 
 function stripCodex(text) {
@@ -389,22 +516,62 @@ function uninstallCodex(dir) {
   return { ok: true };
 }
 
+// Nothing here reports `enforced` on the strength of the block being written down. Every step
+// between the file and a tool call the client would actually refuse is asked separately, and
+// the first one that cannot be answered is the state — because the failure this repairs was a
+// configuration that said enforced while a normal session rewrote a protected file.
 function codexState(dir) {
   let stat = null;
   try { stat = fs.statSync(dir); } catch { stat = null; }
   if (stat && !stat.isDirectory()) return { state: 'unsupported', detail: `${dir} is not a directory` };
   const { file, text } = readCodex(dir);
   if (text === null) return { state: 'uninstalled', detail: `no ${file}` };
-  // Switched off at the client wins over everything else: a config that turns hooks off has
-  // turned OURS off too, whether or not the entry is still written down in it.
-  if (/^\s*hooks\s*=\s*false\b/m.test(text)) {
-    return { state: 'disabled', detail: `${file} sets hooks = false, so no hook of ours runs` };
+
+  // Switched off at the client wins over everything else, including over there being nothing
+  // installed: a configuration that turns hooks off has turned OURS off too, and reporting it
+  // as merely uninstalled would invite an `install` that changes nothing.
+  const off = codexHooksOff(text);
+  if (off) return { state: 'disabled', detail: `${file} sets ${off}, so no hook of ours runs` };
+
+  const groups = codexGroups(text);
+  const ours = groups.filter((g) => runsOurBridge(g, dir));
+  if (!ours.length && !text.includes(CODEX_BEGIN)) {
+    return { state: 'uninstalled', detail: `no PreToolUse hook entry of ours in ${file}` };
   }
-  if (!text.includes(CODEX_BEGIN)) return { state: 'uninstalled', detail: `no hook entry in ${file}` };
+
+  const trust = codexTrust(text);
+  if (trust.global.length) {
+    return {
+      state: 'degraded',
+      detail: `${file} withholds the trust a hook needs before it runs (${trust.global.join(', ')})`,
+      untrustedProjects: trust.projects,
+    };
+  }
+
+  if (!ours.length) {
+    return {
+      state: 'degraded',
+      detail: `${file} carries a hook block, but no PreToolUse group in it runs ${posix(payloadPaths(dir).bridge)}`,
+      untrustedProjects: trust.projects,
+    };
+  }
   if (!payloadComplete(dir)) {
-    return { state: 'degraded', detail: `the hook is configured but ${payloadPaths(dir).base} is incomplete` };
+    return {
+      state: 'degraded',
+      detail: `the hook is configured but ${payloadPaths(dir).base} is incomplete`,
+      untrustedProjects: trust.projects,
+    };
   }
-  return { state: 'enforced', detail: `${file}` };
+
+  const uncovered = codexTools().filter((t) => !ours.some((g) => codexGroupCovers(g, t)));
+  if (uncovered.length) {
+    return {
+      state: 'degraded',
+      detail: `no PreToolUse matcher of ours covers ${uncovered.join(', ')}`,
+      untrustedProjects: trust.projects,
+    };
+  }
+  return { state: 'enforced', detail: `${file}`, untrustedProjects: trust.projects };
 }
 
 // ---- status ----------------------------------------------------------------------------------
@@ -425,6 +592,11 @@ function status(opts, out) {
   const limitations = [];
   for (const [name, info] of Object.entries(clients)) {
     if (info.state !== 'enforced') limitations.push(`${name}: ${info.state} — ${info.detail}`);
+    const untrusted = Array.isArray(info.untrustedProjects) ? info.untrustedProjects : [];
+    if (untrusted.length) {
+      limitations.push(`${name}: no hook of ours runs in the projects this client has not been `
+        + `told to trust (${untrusted.join(', ')}); admission still refuses there.`);
+    }
   }
   if (!managedPolicy()) {
     limitations.push('claude: this hook is configured in a file on this host, so whoever is sitting '

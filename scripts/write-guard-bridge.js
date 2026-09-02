@@ -3,13 +3,21 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // The host-only bridge between an agent CLI's tool-call hook and the pipeline-first write
-// guard (change-log row `repo-324`). One file, two clients, chosen by the shape of the
-// payload rather than by a flag — the caller is a hook and has nothing to pass.
+// guard (change-log rows `repo-324` and `repo-l2w`). One file, two clients, chosen by the
+// shape of the payload rather than by a flag — the caller is a hook and has nothing to pass.
 //
 //   Claude   {"session_id":…,"cwd":…,"tool_name":"Write|Edit|MultiEdit|NotebookEdit|Bash",
 //             "tool_input":{…}}
+//   Codex    {"session_id":…,"cwd":…,"tool_name":"apply_patch"|"unified_exec"|"Bash",
+//             "tool_input":{"patch":…}|{"command":[argv]|"<command line>"}}
 //   Codex    {"session_id":…,"cwd":…,"hook":"apply_patch"|"unified_exec",
-//             "input":{"patch":…}|{"command":[…]}}
+//   (legacy)  "input":{"patch":…}|{"command":[…]}}
+//
+// The two clients now share the `tool_name` / `tool_input` envelope, so the tool NAME is what
+// selects the reading and the two dialects differ only in what `command` holds: Claude sends
+// one command line as a string, Codex sends an argv array. Both are read here, and the legacy
+// Codex envelope is still read as well — a host mid-upgrade runs whichever the installed
+// client sends, and dropping the older shape would silently unguard it.
 //
 //   exit 0   allow, silent
 //   exit 2   refuse, reason on stderr where the model will read it
@@ -44,46 +52,72 @@ const WRITE_TOOLS = {
   NotebookEdit: 'notebook_path',
 };
 
-// A `unified_exec` command arrives as an argv array. `sh -c "<script>"` is the form an agent
-// actually sends, and joining it back into one string would lose the quoting the script
-// depends on, so the script itself is what gets read.
+// The tool names that carry a shell command, on either client. `Bash` is on both: Claude
+// spells the shell tool path that way, and so does Codex when it runs one through its own
+// Bash tool, which is why the guard's Codex matcher covers all three names.
+const SHELL_TOOLS = new Set(['unified_exec', 'exec', 'shell', 'local_shell', 'Bash']);
+const PATCH_TOOLS = new Set(['apply_patch']);
+
+const SHELLS = /^(sh|bash|dash|zsh|ksh|ash|busybox)$/;
+
+// A shell operand — one argv element — put back into a command line without losing the word
+// boundary it arrived with. Single quotes, because the guard's tokeniser reads them and they
+// suppress every expansion inside.
+function shellQuote(word) {
+  return /[^A-Za-z0-9_@%+=:,./-]/.test(word) ? `'${word.split("'").join("'\\''")}'` : word;
+}
+
+// A Codex `unified_exec` (or `Bash`) command arrives as an argv array; Claude's `Bash` sends
+// one string. `<shell> -c "<script>"` is the form an agent actually sends, and re-joining that
+// would lose the quoting the script depends on, so the script itself is what gets read — from
+// any single-dash flag cluster ending the option list with `c`, because `bash -lc` and
+// `sh -ec` are as common as the bare `-c` and joining them reads as an unknown command rather
+// than as the write they carry.
 function commandOf(value) {
   if (typeof value === 'string') return value;
   if (!Array.isArray(value) || !value.length) return '';
-  const first = String(value[0] || '').split(/[\\/]/).pop();
-  if (value.length >= 3 && /^(sh|bash|dash|zsh|ksh)$/.test(first) && String(value[1]) === '-c') {
-    return String(value[2]);
+  const argv = value.map(String);
+  const first = argv[0].split(/[\\/]/).pop().replace(/\.exe$/i, '');
+  if (SHELLS.test(first)) {
+    for (let i = 1; i < argv.length; i += 1) {
+      const word = argv[i];
+      if (!word.startsWith('-') || word === '--') break;
+      if (/^-[A-Za-z]*$/.test(word) && word.includes('c')) {
+        return i + 1 < argv.length ? argv[i + 1] : '';
+      }
+    }
   }
-  return value.map(String).join(' ');
+  return argv.map(shellQuote).join(' ');
 }
 
+// One payload, one request, whichever envelope it arrived in. The legacy Codex envelope names
+// its tool in `hook` and its arguments in `input`; the current one — Claude's too — names them
+// in `tool_name` and `tool_input`.
 function requestFrom(payload) {
-  const cwd = path.resolve(String((payload && payload.cwd) || process.cwd()));
-  const sessionId = String((payload && (payload.session_id || payload.sessionId)) || '');
+  const body = payload && typeof payload === 'object' ? payload : {};
+  const cwd = path.resolve(String(body.cwd || process.cwd()));
+  const sessionId = String(body.session_id || body.sessionId || '');
   const base = { cwd, sessionId };
 
-  const hook = String((payload && payload.hook) || '');
-  if (hook) {
-    const input = (payload && payload.input) || {};
-    if (hook === 'apply_patch') {
-      const patch = String(input.patch || input.input || '');
-      return patch ? { ...base, action: 'patch', patch } : null;
-    }
-    if (hook === 'unified_exec' || hook === 'exec' || hook === 'shell') {
-      const command = commandOf(input.command || input.argv || input.cmd);
-      return command.trim() ? { ...base, action: 'shell', command } : null;
-    }
-    return null;
-  }
+  const legacy = String(body.hook || '');
+  const tool = legacy || String(body.tool_name || body.toolName || '');
+  if (!tool) return null;
+  const raw = legacy ? body.input : (body.tool_input || body.toolInput || body.input);
+  const input = raw && typeof raw === 'object' ? raw : {};
 
-  const tool = String((payload && payload.tool_name) || '');
-  if (Object.prototype.hasOwnProperty.call(WRITE_TOOLS, tool)) {
-    const file = String(((payload && payload.tool_input) || {})[WRITE_TOOLS[tool]] || '');
-    return file ? { ...base, action: 'write', path: file } : null;
+  if (PATCH_TOOLS.has(tool)) {
+    const patch = String(input.patch || input.diff || input.input || '');
+    return patch.trim() ? { ...base, action: 'patch', patch } : null;
   }
-  if (tool === 'Bash') {
-    const command = String(((payload && payload.tool_input) || {}).command || '');
+  if (SHELL_TOOLS.has(tool)) {
+    const value = input.command !== undefined ? input.command
+      : (input.argv !== undefined ? input.argv : input.cmd);
+    const command = commandOf(value);
     return command.trim() ? { ...base, action: 'shell', command } : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(WRITE_TOOLS, tool)) {
+    const file = String(input[WRITE_TOOLS[tool]] || '');
+    return file ? { ...base, action: 'write', path: file } : null;
   }
   return null;
 }

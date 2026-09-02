@@ -85,7 +85,12 @@ and Codex refuse at the moment of the tool call, which is where a refusal is use
 local hook can be disabled, a client can be configured without it, and a specialized tool
 path can bypass it entirely — so `status` reports each client as `enforced`, `degraded`,
 `disabled`, `unsupported` or `uninstalled` and never claims complete enforcement while any
-of that is true. Admission is the backstop that is not optional: `scripts/freeze.js`,
+of that is true. Both clients are installed as `PreToolUse` matcher groups over the tool
+paths `contracts/write-protection.json` declares, and `enforced` means every step between
+that file and a refused tool call was checked — the group runs this installation's own
+bridge by exact path, its payload is complete, hooks are not switched off, the trust a hook
+needs is not withheld, and a matcher covers every declared tool path (change-log row
+`repo-l2w`). Admission is the backstop that is not optional: `scripts/freeze.js`,
 `scripts/prepare-batch.js` and `runner/run.js` all call the same check over the real
 integration checkout before they mutate it, and a protected path that is staged, unstaged
 or untracked without matching planning or frozen-test provenance refuses the whole
@@ -94,8 +99,9 @@ moving anything.
 
 Managed client policy: an organization that needs non-disableable local policy must not
 rely on either client's own configuration file, because both live on the operator's host
-and both are editable there. Deploy the Codex hook block, and the Claude `PreToolUse`
-entry, through centrally managed configuration your operators cannot rewrite — a
+and both are editable there. Deploy both clients' `PreToolUse` entries — Codex's hook block
+in `config.toml`, Claude's in `settings.json` — through centrally managed configuration
+your operators cannot rewrite: a
 mandatory-profile MDM payload, a read-only mounted config directory, or your own equivalent
 — and set `WRITE_PROTECTION_MANAGED=1` in that same managed environment so `status` is
 entitled to report enforcement as complete. Until then it will not, and that is the honest

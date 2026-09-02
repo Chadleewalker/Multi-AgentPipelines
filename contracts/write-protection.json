@@ -88,7 +88,7 @@
       "configFile": "settings.json"
     },
     "codex": {
-      "toolPaths": ["apply_patch", "unified_exec"],
+      "toolPaths": ["apply_patch", "unified_exec", "Bash"],
       "configFile": "config.toml"
     }
   }

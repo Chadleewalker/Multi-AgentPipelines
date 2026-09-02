@@ -2566,6 +2566,20 @@ untracked freeze receipt beside a suite is controller metadata rather than a cha
 frozen path — the same narrow exemption `scripts/protected-tree.js` already makes
 (change-log row `sibling-receipt-normalization`).
 
+**A hook is wired the way the client reads it, and `status` asks every step between the
+configuration file and a refused tool call** (change-log row `repo-l2w`). Each client's
+guarded tool paths are declared in `contracts/write-protection.json` — `Write`, `Edit`,
+`MultiEdit`, `NotebookEdit` and `Bash` for Claude, `apply_patch`, `unified_exec` and `Bash`
+for Codex — and both clients are installed as `PreToolUse` matcher groups and send the same
+`tool_name` / `tool_input` event, differing only in that Codex's `command` is an argv array
+where Claude's is a string. Writing a configuration a client never reads is not a partial
+control but no control at all, so `enforced` is reported only when a group runs this
+installation's own bridge *by exact path*, its payload is complete, hooks are not switched
+off in either spelling, the trust a hook needs is not withheld, and a matcher of ours covers
+every declared tool path — and the uncovered ones are named. Centrally managed policy says
+who may edit that file; it is never a substitute for the wiring, so a managed host with an
+uncovered tool path is still not enforced.
+
 **A refusal takes nothing away.** It never resets, cleans, stashes, overwrites, commits or
 moves a file; the diagnostic names the exact paths and the command that helps.
 `write-protection.js recover` adds a dedicated worktree with `git worktree add` — registered,
