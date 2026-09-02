@@ -126,6 +126,20 @@ function parseArgs(argv) {
   return opts;
 }
 
+// `path.isAbsolute` answers for the platform that is RUNNING, not for the path it is handed:
+// `C:/probe` is absolute on the Windows host and relative inside a Linux task container, so a
+// mapping the operator writes on the host is refused by the same command in the image and the
+// frozen regression that pins the refusal message goes red for the wrong reason. Ask both
+// flavours instead, and resolve with the one that recognised the path — `path.win32.resolve`
+// would rewrite a POSIX root and `path.posix.resolve` would flatten a drive letter into a
+// relative segment. `C:probe` is drive-RELATIVE and neither flavour calls it absolute, which is
+// the discrimination a bare regex over `^[A-Za-z]:` would lose.
+function absoluteProbeFlavour(probe) {
+  if (path.posix.isAbsolute(probe)) return path.posix;
+  if (path.win32.isAbsolute(probe)) return path.win32;
+  return null;
+}
+
 function managedProbeMap(opts, ids) {
   if (!opts.managedProbes.length) return { ok: true, entries: null };
   if (opts.probe) return { ok: false, error: '--probe and --managed-probe cannot be combined' };
@@ -141,8 +155,9 @@ function managedProbeMap(opts, ids) {
     const probe = raw.slice(at + 1);
     if (!ids.includes(id)) return { ok: false, error: `--managed-probe names unrequested issue ${id}` };
     if (mapped.has(id)) return { ok: false, error: `--managed-probe is repeated for ${id}` };
-    if (!path.isAbsolute(probe)) return { ok: false, error: `--managed-probe for ${id} must name an absolute directory` };
-    mapped.set(id, path.resolve(probe));
+    const flavour = absoluteProbeFlavour(probe);
+    if (!flavour) return { ok: false, error: `--managed-probe for ${id} must name an absolute directory` };
+    mapped.set(id, flavour.resolve(probe));
   }
   const missing = ids.filter((id) => !mapped.has(id));
   if (missing.length) return { ok: false, error: `--managed-probe is missing: ${missing.join(', ')}` };

@@ -1731,6 +1731,24 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     complete tracked-path snapshot instead of two Git children per candidate. Any malformed,
     incomplete or failed snapshot keeps all uncertain sidecars protected.
 
+    **A protected manifest entry records the mode Git records, never the mode the filesystem
+    reports** (change-log row `repo-yk4`). The same rule governs every classification the host
+    and a task container must agree on: ask the artifact, not the platform that happens to be
+    running. A Windows checkout bind-mounted into a Linux container shows `0o777` for files a
+    clean in-container copy shows as `0o644`; Git sees no difference across that boundary, so a
+    manifest that hashed the twelve permission bits called an untouched tree "changed after it
+    was proven" and discarded an expensive proven gate. Entries therefore carry one of Git's own
+    four modes — `100644`, `100755`, `120000`, `40000` — resolved the way `ce_mode_from_stat`
+    resolves them: the executable bit counts only where the checkout's `core.filemode` says the
+    filesystem carries one, and where it does not the index (`git ls-files --stage`) is the
+    oracle. Byte identity, symlink identity and an executable-bit change Git *does* record remain
+    exactly as sensitive as before; only the axis Git never recorded is dropped. The same defect
+    reached the managed-probe mapping through `path.isAbsolute`, which answers for the running
+    platform: `scripts/freeze.js` now accepts a probe directory that either `path.posix` or
+    `path.win32` calls absolute and resolves it with the flavour that recognised it, so a drive,
+    UNC or POSIX root is admitted and a drive-relative `C:probe` still refused, identically on
+    both platforms.
+
     Proof execution also emits a fixed, validated stage vocabulary for prepare, probe-agent,
     pre-gate protected check, gate, post-gate protected check and marker write. Batch workers carry
     those events on a prefixed stderr side channel while retaining the one-JSON stdout protocol;

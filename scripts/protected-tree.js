@@ -24,6 +24,19 @@ const GIT_TIMEOUT_MS = 60000;
 // normal (and present in real projects), so exact-width validation would turn generated cache
 // sidecars into protected test evidence.
 const GENERATED_GODOT_UID = /^uid:\/\/[a-y0-8]{1,13}\r?\n?$/;
+// Git records four object modes and nothing else. Everything a filesystem adds on top of them
+// is invisible to Git, so it must be invisible to a manifest whose whole job is to notice what
+// Git would notice: a Windows checkout bind-mounted into a Linux container shows 0o777 for every
+// file where a clean in-container copy shows 0o644, `git status` is clean across that boundary,
+// and hashing the raw twelve bits therefore made `managedArtifactsIntact` call an untouched tree
+// "changed after it was proven" and discard an expensive proven gate.
+const GIT_MODE_FILE = '100644';
+const GIT_MODE_EXEC = '100755';
+const GIT_MODE_LINK = '120000';
+const GIT_MODE_DIR = '40000';
+// A fifo, socket or device node has no Git mode at all: Git cannot record one, so neither this
+// module nor any comparison built on it may claim to have read one.
+const GIT_MODE_NONE = 'none';
 
 function sha(bytes) { return crypto.createHash('sha256').update(bytes).digest('hex'); }
 function normalize(rel) { return String(rel).split(path.sep).join('/').replace(/^\.\//, '').replace(/\/+$/, ''); }
@@ -133,12 +146,63 @@ function gitFileHashes(root, rels, run = spawnSync) {
   return hashes;
 }
 
-function entryFor(root, rel, gitBacked, gitHashes = null) {
+// Whether Git trusts this working tree's executable bit. `core.filemode` is probed once at
+// clone or init time and travels in the checkout's own config, which is exactly what makes it
+// the right oracle here: a Windows-created checkout says `false` and keeps saying `false` when
+// a Linux container reads it through a bind mount, so both sides of a managed proof agree about
+// a bit neither filesystem represents the same way. Where the setting is absent, fall back to
+// Git's own compile-time default rather than to whatever the mount happens to show.
+function executableBitIsTrusted(root, run = spawnSync) {
+  const result = run('git', ['config', '--get', 'core.filemode'], {
+    cwd: root, encoding: 'utf8', maxBuffer: 1024 * 1024,
+    timeout: GIT_TIMEOUT_MS, killSignal: 'SIGKILL',
+  });
+  const value = String((result && result.stdout) || '').trim().toLowerCase();
+  if (['false', 'off', 'no', '0'].includes(value)) return false;
+  if (['true', 'on', 'yes', '1'].includes(value)) return true;
+  return process.platform !== 'win32';
+}
+
+// The index is the second half of that oracle. Where the executable bit is not trusted, Git
+// keeps recording whatever mode the entry already carries, so `git ls-files --stage` — not the
+// filesystem — is what says whether a tracked path is executable in Git's eyes. Read only when
+// it is needed: on a trusted filesystem the stat answers, and this call is one spawn saved.
+function indexFileModes(root, run = spawnSync) {
+  const modes = new Map();
+  const result = run('git', ['ls-files', '--stage', '-z'], {
+    cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
+    timeout: GIT_TIMEOUT_MS, killSignal: 'SIGKILL',
+  });
+  if (!result || result.status !== 0 || result.error || result.signal) return modes;
+  for (const record of String(result.stdout || '').split('\0')) {
+    const tab = record.indexOf('\t');
+    if (tab === -1) continue;
+    const mode = record.slice(0, 6);
+    if (/^[0-7]{6}$/.test(mode)) modes.set(normalize(record.slice(tab + 1)), mode);
+  }
+  return modes;
+}
+
+// Git's own `ce_mode_from_stat`, stated for this module: a link is a link, a tree is a tree, and
+// a regular file is executable only where the executable bit is trusted — otherwise the index
+// says. Nothing else about `stat.mode` reaches the manifest.
+function gitModeOf(stat, rel, modeSource) {
+  if (stat.isSymbolicLink()) return GIT_MODE_LINK;
+  if (stat.isDirectory()) return GIT_MODE_DIR;
+  if (!stat.isFile()) return GIT_MODE_NONE;
+  const source = modeSource || {};
+  if (source.trusted === false) {
+    return (source.index && source.index.get(rel)) === GIT_MODE_EXEC ? GIT_MODE_EXEC : GIT_MODE_FILE;
+  }
+  return (stat.mode & 0o111) ? GIT_MODE_EXEC : GIT_MODE_FILE;
+}
+
+function entryFor(root, rel, gitBacked, gitHashes = null, modeSource = null) {
   const file = path.resolve(root, ...rel.split('/'));
   if (!within(root, file)) throw new Error(`protected match escapes the repository: ${rel}`);
   let stat;
   try { stat = fs.lstatSync(file); } catch { return `missing`; }
-  const mode = (stat.mode & 0o7777).toString(8);
+  const mode = gitModeOf(stat, rel, modeSource);
   if (stat.isSymbolicLink()) return `link:${mode}:${sha(Buffer.from(fs.readlinkSync(file)))}`;
   if (stat.isFile()) {
     if (gitBacked) {
@@ -173,9 +237,15 @@ function protectedManifest(repoRoot, policy, issueId, run = spawnSync) {
     } catch { return false; }
   });
   const gitHashes = gitBacked ? gitFileHashes(root, regularFiles, run) : null;
+  // A repo-shaped tree with no index has no Git to ask, so the platform default stands in for
+  // `core.filemode` and there is no index to consult. That is not a gap this module can close:
+  // where Git is absent there is no recorded mode, and inventing one would be the plausible-but-
+  // wrong evidence the whole comparison exists to refuse.
+  const trusted = gitBacked ? executableBitIsTrusted(root, run) : process.platform !== 'win32';
+  const modeSource = { trusted, index: (!trusted && gitBacked) ? indexFileModes(root, run) : null };
   const out = new Map();
   for (const rel of matches.sort()) {
-    out.set(rel, entryFor(root, rel, gitBacked, gitHashes));
+    out.set(rel, entryFor(root, rel, gitBacked, gitHashes, modeSource));
   }
   return [...out.entries()].sort((a, b) => Buffer.from(a[0]).compare(Buffer.from(b[0])));
 }
