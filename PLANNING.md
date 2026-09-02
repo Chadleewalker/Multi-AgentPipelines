@@ -25,6 +25,45 @@ redo:
 - A thin per-project Dockerfile sits beside it, `FROM` the pinned base image (§6).
 - Beads is initialized in the host working copy (`bd init`; see `beads/issue-template.md`).
 - The base image is built (`docker/base/`, checks: `scripts/test-base-image.sh`).
+- Write protection is installed on this machine (`node scripts/write-protection.js install`,
+  then `node scripts/write-protection.js status`). Because the target carries
+  `pipeline.config.json`, it is pipeline-first by default and this session cannot change
+  product, configuration, control or frozen paths by hand — see the section below before
+  you reach for an editor.
+
+## Planning under pipeline-first protection
+
+A planning session reads everything and writes almost nothing, which is what the protection
+is shaped around. Declared planning and design paths stay open to you: the spec draft, the
+design doc, this playbook, the notes under `docs/`. The acceptance suite you author in §3 is
+opened for exactly the issue you are authoring it for, and for nothing else — another
+issue's suite is somebody else's frozen evidence. Product code, `pipeline.config.json`, the
+control-plane contracts and the frozen paths are closed, in the shared checkout and in every
+worktree alike; a worktree is isolation, not authority.
+
+Two things follow for this playbook. First, the write hooks refuse at the tool call but they
+are not the perimeter — a local hook can be switched off and a tool path can go uncovered —
+so **admission** re-runs the same check over the real integration checkout inside §6's
+freeze, inside `scripts/prepare-batch.js`, and again at dispatch. A freeze that refuses with
+a list of protected paths is that check, not a broken gate: the paths it names are edits
+nobody planned. Second, nothing is ever taken off you. Recover them into a Git-registered
+worktree of their own, originals untouched, and then decide file by file:
+
+```bash
+node scripts/write-protection.js status                   # what is enforced, honestly
+node scripts/write-protection.js recover --target <dir> --issue <id>
+```
+
+If you genuinely need to work by hand for a while — a repair to the pipeline's own tooling,
+an experiment that is not a task — that is a person's decision and it is taken explicitly:
+
+```bash
+node scripts/write-protection.js allow-writes --target <dir> --session <id> --minutes 60
+node scripts/write-protection.js revoke --target <dir> --session <id>
+```
+
+It covers one repository and one session, expires on its own, and appears in `status` until
+it does. Nothing inside the tree opts out, so there is no file to add and none to remove.
 
 ## The Session, Step by Step
 

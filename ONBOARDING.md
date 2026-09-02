@@ -369,6 +369,42 @@ step 7. Minutes of work, and only when the ingredient list actually changes.
 The steady rhythm is: **plan → run → review PRs in the morning → merge or send back** —
 and "send back" is itself just the next planning session.
 
+**What onboarding turns on, the moment `pipeline.config.json` lands.** That file at the
+project's integration fork point is the marker for pipeline-first write protection: from
+then on an agent session in that checkout reads freely and does not change product,
+configuration, control or frozen paths by hand — in the shared checkout and in every
+worktree, because a worktree is isolation and not authority. Install the hooks once per
+machine and check them honestly:
+
+```bash
+node scripts/write-protection.js install
+node scripts/write-protection.js status
+```
+
+`status` reports each client as enforced, degraded, disabled, unsupported or uninstalled,
+and will not call enforcement complete while a hook lives in a file the operator can edit.
+That honesty is the point: a hook is prevention, and the layer that does not depend on one
+is **admission**, which re-runs the same check over the real checkout inside the freeze,
+inside batch preparation and again at dispatch, refusing by name rather than tidying
+anything away. A refusal never resets, cleans, stashes, overwrites, commits or moves a
+file. When you have hand-made edits it will not carry, give them a Git-registered home of
+their own and keep the originals:
+
+```bash
+node scripts/write-protection.js recover --target <dir> --issue <id>
+```
+
+If a person decides to work in the project by hand for a while, that decision is explicit,
+scoped to one repository and one session, visible in `status`, and revocable:
+
+```bash
+node scripts/write-protection.js allow-writes --target <dir> --session <id> --minutes 60
+node scripts/write-protection.js revoke --target <dir> --session <id>
+```
+
+Nothing you can commit into the project opts out of any of this — that is what makes the
+default worth having.
+
 One line ends each review, per PR (DESIGN.md §5, change-log row `repo-1ie`):
 
 ```bash

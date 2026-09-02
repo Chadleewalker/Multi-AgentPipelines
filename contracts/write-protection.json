@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "protectionMarker": "pipeline.config.json",
+  "roles": {
+    "planner": {
+      "summary": "an interactive planning session drafting a spec and amending the design record",
+      "scope": "target",
+      "pathClasses": ["planning"]
+    },
+    "test-author": {
+      "summary": "authoring the acceptance suite for one issue, and nothing else",
+      "scope": "issue-suite",
+      "pathClasses": ["frozen"]
+    },
+    "probe": {
+      "summary": "a green probe tree in which the criteria are already satisfied",
+      "scope": "target",
+      "pathClasses": ["product"]
+    },
+    "task": {
+      "summary": "autonomous execution inside the workspace the pipeline created for it",
+      "scope": "workspace",
+      "pathClasses": ["product"]
+    },
+    "interactive": {
+      "summary": "an ordinary session with no host-granted authority at all",
+      "scope": "target",
+      "pathClasses": []
+    }
+  },
+  "pathClasses": {
+    "planning": [
+      "PLANNING.md",
+      "DESIGN.md",
+      "ONBOARDING.md",
+      "SETUP.md",
+      "README.md",
+      "CLAUDE.md",
+      "docs/**"
+    ],
+    "product": [
+      "runner/**",
+      "scripts/**",
+      "pipeline/**",
+      "docker/**",
+      "advisors/**",
+      "beads/**",
+      "tools/**",
+      "schemas/**",
+      "tests/**",
+      "src/**",
+      "lib/**",
+      "app/**",
+      "bin/**",
+      "Dockerfile",
+      "Makefile",
+      "package.json"
+    ],
+    "frozen": [
+      "tests/acceptance/**"
+    ],
+    "config": [
+      "pipeline.config.json",
+      "run.config.*.json",
+      ".gitignore",
+      ".gitattributes"
+    ],
+    "control": [
+      "contracts/**",
+      "runner/control-plane.js"
+    ]
+  },
+  "classPrecedence": ["frozen", "control", "config", "planning", "product"],
+  "admissionClasses": ["product", "config", "frozen", "control"],
+  "denyReasons": [
+    "pipeline-first",
+    "role-path",
+    "lease-invalid",
+    "unknown-shell-form",
+    "unknown-patch-form",
+    "interpreter-write",
+    "destructive-git"
+  ],
+  "clientStates": ["enforced", "degraded", "disabled", "unsupported", "uninstalled"],
+  "clients": {
+    "claude": {
+      "toolPaths": ["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash"],
+      "configFile": "settings.json"
+    },
+    "codex": {
+      "toolPaths": ["apply_patch", "unified_exec"],
+      "configFile": "config.toml"
+    }
+  }
+}

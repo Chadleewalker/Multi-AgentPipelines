@@ -33,6 +33,7 @@ const { successfulArtifactFailure } = require('./artifact-schema');
 const { commandFor } = require('./host-shell');
 const { runSync, timeoutFor } = require('./process');
 const { writeManifest, writeReport } = require('./report');
+const writeProtection = require('../scripts/write-protection-policy');
 
 // Diff size on the branch — the report's final tie-breaker (§4.9).
 function diffLines(cfg, dir, forkPoint) {
@@ -543,6 +544,22 @@ async function main() {
     process.exit(2);
   }
   log.info(t, 'subscription token loaded');
+
+  // The write-protection backstop (change-log row `repo-324`). Ahead of preflight on purpose:
+  // it holds no lock and creates no network, so a refusal here has nothing to compensate for.
+  // A dispatch clones and mutates the integration checkout, and hand-made edits to protected
+  // paths sitting in it are edits the pipeline never agreed to carry — so they stop the run
+  // and are reported by name, never tidied away.
+  const admitted = writeProtection.admit(cfg.targetRepoPath, {});
+  if (!admitted.admit) {
+    log.error(t, 'ADMISSION REFUSED — no tasks launched: the integration checkout carries '
+      + `changes to protected paths with no provenance (${admitted.refusals.map((r) => r.path).join(', ')})`);
+    for (const line of writeProtection.admissionRefusal(admitted, { label: admitted.target })) {
+      log.error(t, line);
+    }
+    process.exitCode = 1;
+    return;
+  }
 
   const pre = preflight(cfg, REPO_ROOT, log);
   if (!pre.ok) {

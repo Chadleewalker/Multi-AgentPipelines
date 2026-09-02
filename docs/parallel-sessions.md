@@ -314,3 +314,75 @@ it; a session determined to route around it can, and that is not what it is for.
 are `bash scripts/test-session-guard.sh`, and half of them assert that ordinary work still
 goes through — a guard that refused everything would pass every "it blocks X" case and be
 worthless.
+
+## 9. The folder rule is not the pipeline rule
+
+§8 keeps two sessions out of one folder. It has nothing to say about the question one layer
+up: whether a session should be changing this project by hand **at all**.
+
+Those are different failures and they need different answers. A session that takes a
+worktree and implements a feature in it has broken no rule in §8 — every file it touched
+was its own, on its own branch, colliding with nobody. It has still bypassed the pipeline,
+and with it the frozen spec, the deterministic verifier, the evidence and the review that
+are the only reasons to trust what came back. A worktree is **isolation, not authority**.
+
+So a second rule sits beside the first, at the same place — the write:
+
+```bash
+node scripts/write-protection.js install     # both clients' hooks, once per machine
+node scripts/write-protection.js status      # what is enforced, and what is not
+```
+
+The marker is `pipeline.config.json` at the selected integration fork point. A checkout
+that carries it is **pipeline-first** by default, in the shared checkout and in every
+ordinary worktree alike: product, configuration, control and frozen-path writes are
+refused, and read-only inspection is untouched. A checkout without it is exactly as
+unprotected as it was before — the same "silent in every project that does not carry it"
+property §8's guard has, and for the same reason. Deleting the file from your working tree
+does not help: the fork point is what counts, and no tracked or model-editable marker opts
+out.
+
+**Authority is a host record.** `write-protection.js lease --grant` writes one outside every
+repository, binding a role to one canonical target, its Git common directory, the issue and
+run identity, the controlling process and its start identity, the allowed path classes, an
+expiry and an unguessable token. A lease a model could write is not a lease, so nothing
+inside a repository is ever read as one. The pipeline grants its own leases; you will not
+normally type that command.
+
+**The one way out is yours to give.** When you genuinely want to work by hand for a while:
+
+```bash
+node scripts/write-protection.js allow-writes --target <dir> --session <id> --minutes 60
+node scripts/write-protection.js revoke --target <dir> --session <id>
+```
+
+It is scoped to one repository and one session, expires on its own, is listed by `status`,
+and lives on the host where no session can grant itself one. That is deliberately unlike
+`.session-guard-off`: the folder rule's exemption is a local judgement about a folder, and
+this one is a decision about a project, so it is not a file in the project.
+
+**Hooks are prevention, not a perimeter, and the tool says so.** A local hook can be
+switched off, a client can be configured without one, and a specialized tool path can go
+uncovered — so `status` reports each client as `enforced`, `degraded`, `disabled`,
+`unsupported` or `uninstalled`, and refuses to call enforcement complete while any of that
+is true. The layer that is not optional is **admission**: `scripts/freeze.js`,
+`scripts/prepare-batch.js` and `runner/run.js` each run the same check over the real
+integration checkout before they mutate it, and a protected path that is staged, unstaged
+or untracked with no matching planning or frozen-test provenance stops the operation and is
+named exactly.
+
+**Nothing is ever taken away from you.** A refusal resets, cleans, stashes, overwrites,
+commits and moves precisely nothing; your files stay where you left them. When you have
+edits that admission will not carry:
+
+```bash
+node scripts/write-protection.js recover --target <dir> --issue <id>
+```
+
+That creates a dedicated Git-registered worktree — `git worktree list` can find it, its
+branch reviews and merges like any other — plus a patch/copy manifest naming every file it
+carried across. Untracked bytes are copied verbatim, because a patch cannot represent a file
+git has never seen. Run it as often as you like: each run takes a fresh home and never
+overwrites an earlier one, and the only thing it changes in the target is the worktree
+registry inside the Git common directory. The index, the working tree, HEAD, the stash stack
+and every original file are exactly as they were.

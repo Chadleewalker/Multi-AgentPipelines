@@ -90,6 +90,7 @@ on the shared base image, and `bd init` — [`PLANNING.md`](PLANNING.md) walks t
 | `ONBOARDING.md` | once per project: making a repo a valid pipeline target |
 | `PLANNING.md` | how a spec and its frozen tests get written and approved |
 | `docs/STATUS.md` | historical status archive retained in place for stable links |
+| `contracts/` | the machine-readable policy every component reads instead of restating it — control-plane outcomes and defaults, and the write-protection role and path-class vocabulary |
 | `advisors/` | the specialist registry — one charter per critic/advisor lens |
 | `runner/` | the host-side orchestrator — plain JavaScript, no dependencies, no LLM |
 | `pipeline/` | what runs *inside* a container: entrypoint, verifier, agent stubs |
@@ -108,6 +109,9 @@ on the shared base image, and `bd init` — [`PLANNING.md`](PLANNING.md) walks t
   means.
 - A specialist agent may advise, never gate.
 - The container gets one credential and no route out beyond the Anthropic endpoints.
+- A checkout carrying `pipeline.config.json` is pipeline-first: an agent session reads
+  freely and does not change product, configuration, control or frozen paths by hand. See
+  `node scripts/write-protection.js status`.
 
 `CLAUDE.md` states these as hard rules with the reasoning behind each.
 

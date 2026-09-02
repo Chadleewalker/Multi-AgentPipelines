@@ -19,6 +19,7 @@ const { buildBrief } = require('./spec-brief');
 const author = require('./author-tests');
 const proof = require('./prove-tests');
 const prepState = require('../runner/preparation-state');
+const writeProtection = require('./write-protection-policy');
 
 const ROOT = path.resolve(__dirname, '..');
 const WORKER = path.join(__dirname, 'prepare-batch-worker.js');
@@ -646,6 +647,21 @@ async function execute(opts, io = {}, seams = {}) {
     if (!integration.ok || (value.integrationHead && value.integrationHead !== integration.head)) {
       err(`prepare-batch: integration base moved or is unsynchronized after this batch snapshot${integration.error ? ` — ${integration.error}` : ''}; start a new batch.`);
       return EXIT_ATTENTION;
+    }
+  }
+
+  // The write-protection backstop (change-log row `repo-324`), before the lock and before any
+  // worker is launched: preparation promotes suites into this checkout, and a checkout already
+  // carrying hand-made protected edits is one where promotion would mix them into evidence
+  // nobody agreed to. Reported, never cleaned up.
+  if (opts.mode !== 'acknowledge-interrupted') {
+    const admitted = writeProtection.admit(cfg.targetRepoPath, { issues: ids });
+    if (!admitted.admit) {
+      err('prepare-batch: refusing to prepare — the integration checkout is not admissible.');
+      for (const line of writeProtection.admissionRefusal(admitted, { label: admitted.target, issues: ids })) {
+        err(`               ${line}`);
+      }
+      return EXIT_REFUSED;
     }
   }
 

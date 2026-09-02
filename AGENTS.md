@@ -4,9 +4,31 @@ Read `docs/control-plane.md` before changing the runner. It identifies the autho
 machine-readable contracts and validation profiles; do not copy mutable rosters or enums
 into this file.
 
-## Non-Interactive Shell Commands
+<!-- BEGIN WRITE PROTECTION -->
+## Pipeline-First Writes
 
-Always use non-interactive flags with file operations so aliases cannot hang the session:
+This checkout is run by Multi-Agent Pipelines, so changes to it are made by a pipeline run
+rather than by hand. Agent write hooks refuse product, configuration, control and
+frozen-path edits here, and freeze, preparation and dispatch admission refuse them again
+over the real checkout even where no hook was ever installed. Read-only inspection is
+unaffected.
+
+Plan the change, freeze its acceptance suite, and let a run make it. If you have already
+edited by hand, move that work somewhere safe instead of undoing it:
+
+```bash
+node scripts/write-protection.js status     # what is enforced here, honestly
+node scripts/write-protection.js recover    # a Git-registered home for refused edits
+```
+
+A person may lift this for one repository and one session with
+`node scripts/write-protection.js allow-writes`; nothing inside the tree opts out, and no
+file you can edit will change the answer.
+<!-- END WRITE PROTECTION -->
+
+## Noninteractive Shell Commands
+
+Always use noninteractive flags with file operations so aliases cannot hang the session:
 
 ```bash
 cp -f source dest
