@@ -122,7 +122,11 @@ images exist. A missing prerequisite is a pre-mutation refusal, not a partially 
 
 On the host, use Beads for durable work state and `bd prime` for the current workflow.
 Do not commit, push, or synchronize the Dolt database unless the active user or repository
-profile authorizes it. Preserve unrelated working-tree changes.
+profile authorizes it. Preserve unrelated working-tree changes. In a checkout whose
+integration fork point carries `pipeline.config.json`, read anything and change product,
+configuration, control and frozen paths through a pipeline run rather than by hand; see
+**Write protection** above for what is refused, how to check enforcement honestly, and how
+refused edits are recovered.
 
 Inside a task container:
 
