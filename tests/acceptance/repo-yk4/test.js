@@ -85,9 +85,9 @@ function rmrf(target) {
 // One mapping question per row, asked twice — once with this host's own path semantics and
 // once with Linux's. Data rather than code so the driver below needs no string escaping.
 const CASES = [
-  { key: 'driveForward', probes: ['a=C:/proof/probe'], probe: null, half: false, ids: ['a'] },
-  { key: 'driveBack', probes: ['a=C:\\proof\\probe'], probe: null, half: false, ids: ['a'] },
-  { key: 'driveSpaces', probes: ['a=Z:\\proof dir\\probe'], probe: null, half: false, ids: ['a'] },
+  { key: 'driveForward', probes: ['a=C:/path/to'], probe: null, half: false, ids: ['a'] },
+  { key: 'driveBack', probes: ['a=C:\\path\\to'], probe: null, half: false, ids: ['a'] },
+  { key: 'driveSpaces', probes: ['a=Z:\\path\\to proof'], probe: null, half: false, ids: ['a'] },
   { key: 'unc', probes: ['a=\\\\server\\share\\probe'], probe: null, half: false, ids: ['a'] },
   { key: 'posix', probes: ['a=/srv/proof/probe'], probe: null, half: false, ids: ['a'] },
   { key: 'pair', probes: ['a=C:/one', 'b=D:\\two'], probe: null, half: false, ids: ['a', 'b'] },
