@@ -2566,6 +2566,24 @@ untracked freeze receipt beside a suite is controller metadata rather than a cha
 frozen path — the same narrow exemption `scripts/protected-tree.js` already makes
 (change-log row `sibling-receipt-normalization`).
 
+**A client integration is judged by what the client dispatches, never by what it accepts.**
+Both client hooks are emitted in that client's own official schema and read back through it:
+for Codex, one `[[hooks.PreToolUse]]` matcher group per canonical tool path, each followed by
+a nested `[[hooks.PreToolUse.hooks]]` handler declaring `type = "command"` and running this
+installation's own bridge, with the tool paths owned by `contracts/write-protection.json` and
+no second copy in prose or code. `status` parses the configuration and answers whether such a
+handler exists, is typed, points at the exact installed bridge, and covers every declared tool
+path; it reports `degraded` otherwise and never treats the presence of our own marker block as
+evidence. That distinction is not theoretical. Two earlier shapes were accepted by Codex's
+parser and dispatched by nothing — a config a `status` that searched for the block called
+`enforced` while `apply_patch` rewrote a product file in front of it (change-log row
+`repo-ak5`). What settles the question is therefore neither prose nor a structural test but a
+host black-box session, documented in `docs/control-plane.md`: a disposable trusted checkout,
+an ordinary session with no hook-trust bypass, and a refused `apply_patch`. It is a manual
+step by necessity — the client is network- and credential-bound, so no suite in this
+repository can run it — which is one more reason admission below is the layer the guarantee
+actually rests on.
+
 **A refusal takes nothing away.** It never resets, cleans, stashes, overwrites, commits or
 moves a file; the diagnostic names the exact paths and the command that helps.
 `write-protection.js recover` adds a dedicated worktree with `git worktree add` — registered,

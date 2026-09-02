@@ -8,8 +8,17 @@
 //
 //   Claude   {"session_id":…,"cwd":…,"tool_name":"Write|Edit|MultiEdit|NotebookEdit|Bash",
 //             "tool_input":{…}}
+//   Codex    {"session_id":…,"cwd":…,"tool_name":"Bash"|"apply_patch",
+//             "tool_input":{"command":[argv]|"<line>"}}
 //   Codex    {"session_id":…,"cwd":…,"hook":"apply_patch"|"unified_exec",
-//             "input":{"patch":…}|{"command":[…]}}
+//   (legacy)  "input":{"patch":…}|{"command":[…]}}
+//
+// The current Codex PreToolUse envelope puts the request in the SAME place on both tool
+// paths: `tool_input.command`. On `Bash` that is a shell argv or command line; on
+// `apply_patch` it is the patch itself, usually as one element of an argv whose first word
+// is the tool's own name. The legacy `hook` / `input` dialect is still read, because a host
+// may be running an older client and dropping it would silently unguard that host
+// (change-log row `repo-ak5`).
 //
 //   exit 0   allow, silent
 //   exit 2   refuse, reason on stderr where the model will read it
@@ -44,17 +53,49 @@ const WRITE_TOOLS = {
   NotebookEdit: 'notebook_path',
 };
 
-// A `unified_exec` command arrives as an argv array. `sh -c "<script>"` is the form an agent
-// actually sends, and joining it back into one string would lose the quoting the script
-// depends on, so the script itself is what gets read.
+// The Codex shell tool paths, current name first. `Bash` is what the current client sends;
+// the rest are the names older and neighbouring clients use for the same thing.
+const SHELL_TOOLS = new Set(['Bash', 'unified_exec', 'exec', 'shell', 'local_shell']);
+const PATCH_TOOLS = new Set(['apply_patch']);
+
+const baseName = (token) => String(token || '').split(/[\\/]/).pop().replace(/\.(exe|cmd|bat)$/i, '');
+const asText = (v) => String(v === undefined || v === null ? '' : v);
+
+// `sh -c "<script>"` is the form an agent actually sends, and joining the argv back into one
+// line would hand the guard `bash` — a command it has no opinion about — instead of the script
+// it was given. The flags arrive clustered as often as not (`bash -lc`, `sh -ec`), so the
+// cluster is matched rather than a literal `-c`.
+function shellScriptOf(parts) {
+  if (!/^(sh|bash|dash|zsh|ksh)$/.test(baseName(parts[0]))) return null;
+  for (let i = 1; i < parts.length; i += 1) {
+    if (/^-[A-Za-z]*c$/.test(parts[i])) return i + 1 < parts.length ? parts[i + 1] : null;
+    if (!parts[i].startsWith('-')) return null;
+  }
+  return null;
+}
+
+// A shell command arrives as an argv array or as one command line, depending on the client.
 function commandOf(value) {
   if (typeof value === 'string') return value;
   if (!Array.isArray(value) || !value.length) return '';
-  const first = String(value[0] || '').split(/[\\/]/).pop();
-  if (value.length >= 3 && /^(sh|bash|dash|zsh|ksh)$/.test(first) && String(value[1]) === '-c') {
-    return String(value[2]);
-  }
-  return value.map(String).join(' ');
+  const parts = value.map(asText);
+  const script = shellScriptOf(parts);
+  return script === null ? parts.join(' ') : script;
+}
+
+// Both patch dialects the guard can read, and the two argv shapes they arrive in. Where an
+// element carries patch syntax that element IS the patch; otherwise the leading element is the
+// tool's own name and everything after it is the body. A patch this cannot find is not a patch
+// this refuses blindly — an empty answer means there is nothing to judge, and the guard's own
+// `unknown-patch-form` covers the case where something arrived and could not be read.
+const PATCH_SYNTAX = /^\*\*\*\s+(?:Begin Patch|End Patch|Add|Update|Delete|Move)\b|^(?:---|\+\+\+|@@|diff --git)/m;
+
+function patchOf(value) {
+  if (typeof value === 'string') return value;
+  if (!Array.isArray(value) || !value.length) return '';
+  const parts = value.map(asText);
+  const carriers = parts.filter((p) => PATCH_SYNTAX.test(p));
+  return carriers.length ? carriers.join('\n') : parts.slice(1).join('\n');
 }
 
 function requestFrom(payload) {
@@ -66,7 +107,7 @@ function requestFrom(payload) {
   if (hook) {
     const input = (payload && payload.input) || {};
     if (hook === 'apply_patch') {
-      const patch = String(input.patch || input.input || '');
+      const patch = patchOf(input.patch !== undefined ? input.patch : input.input);
       return patch ? { ...base, action: 'patch', patch } : null;
     }
     if (hook === 'unified_exec' || hook === 'exec' || hook === 'shell') {
@@ -77,12 +118,19 @@ function requestFrom(payload) {
   }
 
   const tool = String((payload && payload.tool_name) || '');
+  const input = (payload && payload.tool_input) || {};
   if (Object.prototype.hasOwnProperty.call(WRITE_TOOLS, tool)) {
-    const file = String(((payload && payload.tool_input) || {})[WRITE_TOOLS[tool]] || '');
+    const file = String(input[WRITE_TOOLS[tool]] || '');
     return file ? { ...base, action: 'write', path: file } : null;
   }
-  if (tool === 'Bash') {
-    const command = String(((payload && payload.tool_input) || {}).command || '');
+  if (PATCH_TOOLS.has(tool)) {
+    const carried = input.command !== undefined ? input.command
+      : (input.patch !== undefined ? input.patch : input.input);
+    const patch = patchOf(carried);
+    return patch.trim() ? { ...base, action: 'patch', patch } : null;
+  }
+  if (SHELL_TOOLS.has(tool)) {
+    const command = commandOf(input.command !== undefined ? input.command : (input.argv || input.cmd));
     return command.trim() ? { ...base, action: 'shell', command } : null;
   }
   return null;

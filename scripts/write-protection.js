@@ -340,17 +340,293 @@ function claudeState(dir) {
 
 function codexConfigFile(dir) { return path.join(dir, 'config.toml'); }
 
+// ---- just enough TOML to read a Codex configuration --------------------------------------------
+//
+// Table headers, array-of-table headers, dotted and quoted keys, strings, booleans, integers,
+// arrays and inline tables. `status` has to answer what the client will actually DO with this
+// file, and searching for our own marker block cannot answer that: the shape shipped by
+// change-log row `repo-324` and the one drafted for `repo-l2w` were both accepted by Codex's
+// parser and both ignored by its hook dispatcher, so a present block proved nothing.
+
+function tomlStripComment(line) {
+  let out = '';
+  let quote = null;
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
+    if (quote) {
+      out += ch;
+      if (ch === '\\' && quote === '"') { out += line[i + 1] || ''; i += 1; continue; }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; out += ch; continue; }
+    if (ch === '#') break;
+    out += ch;
+  }
+  return out;
+}
+
+function tomlDepth(s) {
+  let depth = 0;
+  let quote = null;
+  for (let i = 0; i < s.length; i += 1) {
+    const ch = s[i];
+    if (quote) {
+      if (ch === '\\' && quote === '"') { i += 1; continue; }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === '[' || ch === '{') depth += 1;
+    else if (ch === ']' || ch === '}') depth -= 1;
+  }
+  return depth;
+}
+
+// A value may span lines. A table header never does, and is balanced, so joining on an
+// unclosed bracket cannot swallow one.
+function tomlLogicalLines(text) {
+  const raw = String(text || '').split(/\r?\n/).map(tomlStripComment);
+  const out = [];
+  for (let i = 0; i < raw.length; i += 1) {
+    let line = raw[i].trim();
+    if (!line) continue;
+    while (tomlDepth(line) > 0 && i + 1 < raw.length) { i += 1; line += ` ${raw[i].trim()}`; }
+    out.push(line);
+  }
+  return out;
+}
+
+// Quoted key segments carry dots of their own — a `[projects."…"]` header naming a checkout
+// whose path contains a dot is two segments, not three.
+function tomlKeyPath(src) {
+  const segs = [];
+  let cur = '';
+  let quote = null;
+  for (let i = 0; i < src.length; i += 1) {
+    const ch = src[i];
+    if (quote) {
+      if (ch === quote) { quote = null; continue; }
+      cur += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === '.') { segs.push(cur.trim()); cur = ''; continue; }
+    cur += ch;
+  }
+  segs.push(cur.trim());
+  return segs.filter((s) => s.length);
+}
+
+function tomlValue(src, start) {
+  let i = start;
+  while (i < src.length && /\s/.test(src[i])) i += 1;
+  const ch = src[i];
+  if (ch === '"' || ch === "'") {
+    const quote = ch;
+    let out = '';
+    i += 1;
+    while (i < src.length) {
+      const c = src[i];
+      if (quote === '"' && c === '\\') { out += src[i + 1] === 'n' ? '\n' : (src[i + 1] || ''); i += 2; continue; }
+      if (c === quote) { i += 1; break; }
+      out += c;
+      i += 1;
+    }
+    return { value: out, i };
+  }
+  if (ch === '[') {
+    const arr = [];
+    i += 1;
+    for (;;) {
+      while (i < src.length && /[\s,]/.test(src[i])) i += 1;
+      if (i >= src.length || src[i] === ']') { i += 1; break; }
+      const r = tomlValue(src, i);
+      arr.push(r.value);
+      i = r.i;
+    }
+    return { value: arr, i };
+  }
+  if (ch === '{') {
+    const obj = {};
+    i += 1;
+    for (;;) {
+      while (i < src.length && /[\s,]/.test(src[i])) i += 1;
+      if (i >= src.length || src[i] === '}') { i += 1; break; }
+      let key = '';
+      if (src[i] === '"' || src[i] === "'") { const r = tomlValue(src, i); key = r.value; i = r.i; }
+      else { while (i < src.length && !/[=\s]/.test(src[i])) { key += src[i]; i += 1; } }
+      while (i < src.length && /\s/.test(src[i])) i += 1;
+      if (src[i] === '=') i += 1;
+      const r = tomlValue(src, i);
+      tomlAssign(obj, tomlKeyPath(key), r.value);
+      i = r.i;
+    }
+    return { value: obj, i };
+  }
+  let tok = '';
+  while (i < src.length && !/[,\]}]/.test(src[i])) { tok += src[i]; i += 1; }
+  tok = tok.trim();
+  if (tok === 'true') return { value: true, i };
+  if (tok === 'false') return { value: false, i };
+  if (/^-?\d+$/.test(tok)) return { value: Number(tok), i };
+  return { value: tok, i };
+}
+
+function tomlDescend(root, segs) {
+  let node = root;
+  for (const seg of segs) {
+    if (!node[seg] || typeof node[seg] !== 'object') node[seg] = {};
+    if (Array.isArray(node[seg])) {
+      if (!node[seg].length) node[seg].push({});
+      node = node[seg][node[seg].length - 1];
+    } else node = node[seg];
+  }
+  return node;
+}
+
+function tomlAssign(table, segs, value) {
+  if (!segs.length) return;
+  const holder = tomlDescend(table, segs.slice(0, -1));
+  holder[segs[segs.length - 1]] = value;
+}
+
+// The first `=` that is not inside a string or a bracket.
+function tomlSplitAssign(line) {
+  let quote = null;
+  let depth = 0;
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
+    if (quote) {
+      if (ch === '\\' && quote === '"') { i += 1; continue; }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === '[' || ch === '{') depth += 1;
+    else if (ch === ']' || ch === '}') depth -= 1;
+    else if (ch === '=' && depth === 0) return [line.slice(0, i).trim(), line.slice(i + 1).trim()];
+  }
+  return null;
+}
+
+function parseToml(text) {
+  const root = {};
+  let table = root;
+  for (const line of tomlLogicalLines(text)) {
+    const arrayHeader = /^\[\[(.+)\]\]$/.exec(line);
+    const tableHeader = arrayHeader ? null : /^\[(.+)\]$/.exec(line);
+    if (arrayHeader || tableHeader) {
+      const segs = tomlKeyPath((arrayHeader || tableHeader)[1].trim());
+      if (!segs.length) { table = root; continue; }
+      const holder = tomlDescend(root, segs.slice(0, -1));
+      const last = segs[segs.length - 1];
+      if (arrayHeader) {
+        if (!Array.isArray(holder[last])) holder[last] = [];
+        const fresh = {};
+        holder[last].push(fresh);
+        table = fresh;
+      } else if (Array.isArray(holder[last])) {
+        if (!holder[last].length) holder[last].push({});
+        table = holder[last][holder[last].length - 1];
+      } else {
+        if (!holder[last] || typeof holder[last] !== 'object') holder[last] = {};
+        table = holder[last];
+      }
+      continue;
+    }
+    const kv = tomlSplitAssign(line);
+    if (!kv) continue;
+    tomlAssign(table, tomlKeyPath(kv[0]), tomlValue(kv[1], 0).value);
+  }
+  return root;
+}
+
+// ---- what the official Codex hook schema looks like, read and written --------------------------
+
+const asArray = (v) => (Array.isArray(v) ? v : (v === undefined || v === null ? [] : [v]));
+
+function preToolUseGroups(cfg) {
+  const hooks = cfg && cfg.hooks;
+  if (!hooks || typeof hooks !== 'object' || Array.isArray(hooks)) return [];
+  return asArray(hooks.PreToolUse).filter((g) => g && typeof g === 'object' && !Array.isArray(g));
+}
+
+// The NESTED handler list of a matcher group. A command written on the matcher group itself is
+// parsed happily by Codex and dispatched by nothing, which is the whole reason this reader
+// descends instead of grepping.
+const nestedHandlers = (group) => asArray(group && group.hooks)
+  .filter((h) => h && typeof h === 'object' && !Array.isArray(h));
+
+function argvOf(value) {
+  if (Array.isArray(value)) return value.map(String).filter((s) => s.length);
+  const one = String(value === undefined || value === null ? '' : value).trim();
+  if (!one) return [];
+  return (one.match(/"[^"]*"|'[^']*'|\S+/g) || []).map((t) => t.replace(/^["']|["']$/g, ''));
+}
+
+function samePath(a, b) {
+  const norm = (p) => path.resolve(String(p)).split(path.sep).join('/');
+  const x = norm(a);
+  const y = norm(b);
+  return process.platform === 'win32' ? x.toLowerCase() === y.toLowerCase() : x === y;
+}
+
+// Whether a table — a handler, or a matcher group carrying the command directly — names THIS
+// installation's own bridge. Both platform spellings are read, because the file is written once
+// and may be read on either.
+function namesBridge(table, bridge) {
+  const argvs = [argvOf(table && table.command), argvOf(table && table.command_windows),
+    argvOf(table && table.argv)];
+  return argvs.some((argv) => argv.some((a) => samePath(a, bridge)));
+}
+
+// A group covers a tool when its own matcher does. An ABSENT matcher is not coverage: the
+// criterion is about per-tool matcher groups, and a group declaring no matcher declares none.
+const groupCovers = (group, tool) => asArray(group && group.matcher)
+  .some((m) => String(m).trim() && matcherCovers(m, [tool]));
+
+// EFFECTIVE, as `status` must mean it: nested, typed `command`, and running our exact bridge.
+function effectiveGroups(cfg, bridge) {
+  return preToolUseGroups(cfg)
+    .filter((g) => nestedHandlers(g)
+      .some((h) => String(h.type || '') === 'command' && namesBridge(h, bridge)));
+}
+
+function mentionsSigil(node) {
+  if (Array.isArray(node)) return node.some(mentionsSigil);
+  if (node && typeof node === 'object') return Object.values(node).some(mentionsSigil);
+  return typeof node === 'string' && node.includes(SIGIL);
+}
+
+function untrustedProjects(cfg) {
+  const projects = cfg && cfg.projects;
+  if (!projects || typeof projects !== 'object' || Array.isArray(projects)) return [];
+  return Object.keys(projects).filter((key) => {
+    const entry = projects[key];
+    return entry && typeof entry === 'object' && String(entry.trust_level || '') === 'untrusted';
+  });
+}
+
+// One matcher group per canonical tool path, each followed by ONE nested command handler. That
+// nesting is the whole repair: the flat `[[hooks.apply_patch]]` block of change-log row
+// `repo-324` and the matcher-level `command` drafted for `repo-l2w` are both valid TOML that
+// Codex reads and never runs.
 function codexBlock(bridge) {
-  return [
+  const tools = policy.contract().clients.codex.toolPaths;
+  const lines = [
     CODEX_BEGIN,
     '# Installed by node scripts/write-protection.js install — remove with `uninstall`.',
-    '[[hooks.apply_patch]]',
-    `command = ["node", "${posix(bridge)}"]`,
-    '',
-    '[[hooks.unified_exec]]',
-    `command = ["node", "${posix(bridge)}"]`,
-    CODEX_END,
-  ].join('\n');
+    '# One PreToolUse matcher group per canonical tool path, each with a NESTED command',
+    '# handler. A `command` written on the matcher group itself parses and never runs.',
+  ];
+  for (const tool of tools) {
+    lines.push('', `[[hooks.PreToolUse]]`, `matcher = "^${tool}$"`, '',
+      '[[hooks.PreToolUse.hooks]]', 'type = "command"',
+      `command = ["node", "${posix(bridge)}"]`);
+  }
+  lines.push(CODEX_END);
+  return lines.join('\n');
 }
 
 function stripCodex(text) {
@@ -389,20 +665,83 @@ function uninstallCodex(dir) {
   return { ok: true };
 }
 
+// Every spelling of "the client will run no hook of ours", whether or not our entry is still
+// written down in the file.
+function codexHooksOff(cfg, text) {
+  if (cfg && cfg.hooks === false) return 'sets hooks = false';
+  if (cfg && cfg.features && cfg.features.hooks === false) return 'sets hooks = false under [features]';
+  if (cfg && cfg.hooks && typeof cfg.hooks === 'object' && !Array.isArray(cfg.hooks)
+    && cfg.hooks.enabled === false) return 'sets enabled = false under [hooks]';
+  if (/^\s*hooks\s*=\s*false\b/m.test(String(text))) return 'sets hooks = false';
+  return null;
+}
+
+// Why a configuration that carries our block still runs nothing. Each answer names the thing a
+// person has to change, because "degraded" on its own is where the last two attempts at this
+// wiring both looked healthy.
+function codexIneffectiveDetail(cfg, bridge, file) {
+  const groups = preToolUseGroups(cfg);
+  if (groups.some((g) => namesBridge(g, bridge))) {
+    return `${file} puts our hook command directly on a hooks.PreToolUse matcher group, where `
+      + 'Codex parses it and never runs it; the command belongs in a nested '
+      + '[[hooks.PreToolUse.hooks]] handler';
+  }
+  const ours = groups.flatMap(nestedHandlers).filter((h) => namesBridge(h, bridge));
+  if (ours.length) {
+    return `${file} has a nested hooks.PreToolUse.hooks handler for this bridge that does not `
+      + 'declare type = "command", so Codex does not dispatch it';
+  }
+  return `${file} configures no nested hooks.PreToolUse.hooks handler of type "command" that `
+    + `runs ${posix(bridge)}`;
+}
+
 function codexState(dir) {
+  const tools = policy.contract().clients.codex.toolPaths;
   let stat = null;
   try { stat = fs.statSync(dir); } catch { stat = null; }
   if (stat && !stat.isDirectory()) return { state: 'unsupported', detail: `${dir} is not a directory` };
   const { file, text } = readCodex(dir);
   if (text === null) return { state: 'uninstalled', detail: `no ${file}` };
+
+  let cfg = {};
+  let unreadable = null;
+  try { cfg = parseToml(text); } catch (e) { cfg = {}; unreadable = String(e && e.message); }
+
   // Switched off at the client wins over everything else: a config that turns hooks off has
   // turned OURS off too, whether or not the entry is still written down in it.
-  if (/^\s*hooks\s*=\s*false\b/m.test(text)) {
-    return { state: 'disabled', detail: `${file} sets hooks = false, so no hook of ours runs` };
+  const off = codexHooksOff(cfg, text);
+  if (off) return { state: 'disabled', detail: `${file} ${off}, so no hook of ours runs` };
+
+  if (!text.includes(CODEX_BEGIN) && !mentionsSigil(cfg)) {
+    return { state: 'uninstalled', detail: `no hook entry in ${file}` };
   }
-  if (!text.includes(CODEX_BEGIN)) return { state: 'uninstalled', detail: `no hook entry in ${file}` };
+  if (unreadable) {
+    return { state: 'degraded', detail: `${file} could not be read as TOML (${unreadable}), so what it configures cannot be judged` };
+  }
+  // Trust is upstream of every hook: Codex runs none at all where the root is untrusted.
+  if (String(cfg.trust_level || '') === 'untrusted') {
+    return { state: 'disabled', detail: `${file} declares trust_level = "untrusted", so Codex runs no hook of ours anywhere` };
+  }
   if (!payloadComplete(dir)) {
     return { state: 'degraded', detail: `the hook is configured but ${payloadPaths(dir).base} is incomplete` };
+  }
+
+  const bridge = payloadPaths(dir).bridge;
+  const effective = effectiveGroups(cfg, bridge);
+  if (!effective.length) {
+    return { state: 'degraded', detail: codexIneffectiveDetail(cfg, bridge, file) };
+  }
+  const uncovered = tools.filter((t) => !effective.some((g) => groupCovers(g, t)));
+  if (uncovered.length) {
+    return { state: 'degraded', detail: `no effective nested PreToolUse handler covers ${uncovered.join(', ')} in ${file}` };
+  }
+  const untrusted = untrustedProjects(cfg);
+  if (untrusted.length) {
+    return {
+      state: 'degraded',
+      detail: `${file} declares ${untrusted.length} project(s) untrusted, and Codex runs no hook `
+        + `in them: ${untrusted.slice(0, 3).join(', ')}`,
+    };
   }
   return { state: 'enforced', detail: `${file}` };
 }

@@ -101,6 +101,50 @@ mandatory-profile MDM payload, a read-only mounted config directory, or your own
 entitled to report enforcement as complete. Until then it will not, and that is the honest
 answer rather than a gap.
 
+### Black-box check: proving the Codex hook actually fires
+
+A hook block that parses is not a hook that runs, and this project has written that mistake
+twice. The flat `[[hooks.apply_patch]]` tables of change-log row `repo-324` and the
+matcher-group `command` key drafted for issue `repo-l2w` were both accepted by Codex without
+complaint and dispatched by nothing; the second was reported `enforced` while an ordinary
+session rewrote `runner/run.js` in front of it. `status` now reads the nested
+`[[hooks.PreToolUse.hooks]]` handler, its `type` and the exact installed bridge path rather
+than the presence of our marker block — but nothing this repository can assert proves the
+*client* agrees. Only a live session does. Run this recipe whenever the emitted block or the
+bridge changes, and run it nowhere near a checkout you care about:
+
+1. **Take a disposable clone.** `git clone <this-repo> /tmp/codex-hook-smoke`, or any
+   throwaway copy of a checkout carrying `pipeline.config.json`. Expect to delete it
+   afterwards either way: if the wiring is broken this is the checkout that gets written to,
+   and that is the evidence.
+2. **Install and read the status.** `node scripts/write-protection.js install`, then
+   `node scripts/write-protection.js status`. Codex must read `enforced`. Anything else
+   names what is missing, and the session below would prove nothing until it is fixed.
+3. **Mark the disposable checkout trusted**, exactly the way you would trust an ordinary
+   project — the `[projects."…"]` entry in `config.toml`, or answering the client's own
+   prompt on first use. Codex runs no hook at all in a project it does not trust, so a
+   refusal from an untrusted checkout is not evidence about hooks.
+4. **Start an ordinary session in it.** No flag that bypasses hook trust — in particular no
+   `dangerously-bypass-hook-trust` and no dangerously-bypass-approvals variant. What is being
+   measured is what a normal session can do, so a session run any other way answers a
+   different question.
+5. **Ask it to change a protected file with `apply_patch`** — replacing the contents of
+   `runner/run.js` is the case that failed before. Ask for `apply_patch` by name so the
+   attempt lands on the tool path under test rather than on the shell one.
+6. **Read the two answers.** The session must be refused with the `write-protection:` text on
+   its stderr, and `git status` in the disposable checkout must be clean afterwards. A clean
+   tree with no refusal text is not a pass: it usually means the model chose a different tool
+   path, so try again and name `apply_patch`. A modified `runner/run.js` is the failure this
+   recipe exists to catch, whatever `status` said in step 2.
+7. **Check the shell path too**, in the same session: a `Bash` write to `runner/run.js` must
+   be refused, and read-only inspection such as `git status` or `cat runner/run.js` must
+   still work. A guard that refuses everything is as unusable as one that refuses nothing.
+
+Where no Codex client is available — a container, CI, a machine that has only Claude — the
+deterministic half still holds: `tests/acceptance/repo-ak5/` executes the command the emitted
+configuration names, against a disposable fixture checkout, and asserts both verdicts on both
+tool paths. It skips the live session explicitly rather than passing quietly.
+
 ## Validation profiles
 
 `scripts/test-ci.sh` is the mandatory Docker-free publication profile. Its `--list`
