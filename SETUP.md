@@ -255,6 +255,12 @@ worktree of its own. To work by hand deliberately, grant yourself
 `node scripts/write-protection.js allow-writes --target <dir> --session <id>` and `revoke`
 when you are done.
 
+A Codex reading of `enforced` says the configuration names a handler the client should
+dispatch; it cannot say the client dispatched it, and twice now a block Codex parsed
+happily ran nothing (change-log row `repo-ak5`). Whenever the emitted block or the bridge
+changes, settle it with the black-box session in `docs/control-plane.md` — a disposable
+trusted clone, an ordinary session with no hook-trust bypass, and a refused `apply_patch`.
+
 ---
 
 ## Part C — Prove it works before you trust it
