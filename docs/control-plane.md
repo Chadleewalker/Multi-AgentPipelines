@@ -122,6 +122,10 @@ The deterministic half needs no Codex and runs anywhere: `WRITE_PROTECTION_CODEX
 `install` and `status --json` at any directory, so a planted profile is judged exactly as a
 real one is, and the string command the profile names can be spawned directly with one hook
 payload on stdin — exit 0 allows, exit 2 refuses with the reason on stderr.
+`scripts/write-protection.js` exports `parseToml`, `codexState` and `claudeState` for the
+same purpose in-process. Either way the profile is judged on what it says: `command` may be
+a TOML string, `command_windows` may carry a platform-specific one, and an array in either
+key is `degraded` rather than a shape a caller may assume works.
 `tests/acceptance/repo-gy3/test.js` is the worked example of both halves.
 
 Managed client policy: an organization that needs non-disableable local policy must not

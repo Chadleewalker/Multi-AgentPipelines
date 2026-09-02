@@ -365,7 +365,13 @@ this one is a decision about a project, so it is not a file in the project.
 switched off, a client can be configured without one, and a specialized tool path can go
 uncovered — so `status` reports each client as `enforced`, `degraded`, `disabled`,
 `unsupported` or `uninstalled`, and refuses to call enforcement complete while any of that
-is true. The layer that is not optional is **admission**: `scripts/freeze.js`,
+is true. It reaches those states by **reading the client's configuration the way the client
+will**, not by finding the marker comment `install` wrote: a Codex profile whose hook
+command is an array rather than a string is `degraded`, because that is a value Codex
+rejects outright, and so is a handler that names some other file than the bridge this
+installation put in place. An `enforced` is therefore a statement about the profile, not a
+session that was observed refusing; `docs/control-plane.md` has the black-box recipe for
+the second question. The layer that is not optional is **admission**: `scripts/freeze.js`,
 `scripts/prepare-batch.js` and `runner/run.js` each run the same check over the real
 integration checkout before they mutate it, and a protected path that is staged, unstaged
 or untracked with no matching planning or frozen-test provenance stops the operation and is
