@@ -26,8 +26,8 @@
 //            group and never that a coexisting, unrelated `[[hooks.PreToolUse]]` group must also
 //            be gone.
 //   C1  §C1  a CURRENT Codex PreToolUse payload (`tool_name: "Bash"|"apply_patch"`,
-//            `tool_input.command` as an argv array — the shape `repo-ak5` and `repo-gy3`
-//            established) that names a protected write gets back, on exit 0 — the exit Codex
+//            `tool_input.command` as a STRING, as the official contract and a real 0.151 host
+//            both send it) that names a protected write gets back, on exit 0 — the exit Codex
 //            reads as "the hook ran and rendered a decision", never a crash — one JSON object on
 //            stdout: `hookSpecificOutput.hookEventName === "PreToolUse"`,
 //            `hookSpecificOutput.permissionDecision === "deny"`, and a write-protection-worded
@@ -38,11 +38,12 @@
 //            a raw `{status, stdout, stderr}` the way a Codex hook harness would: exit 2 with a
 //            plain-text reason and no JSON body, the exact shape PR #82 shipped, is read as a
 //            HOOK EXECUTION FAILURE, never as a deliberate `deny`, so it is proved NOT to count
-//            as enforcement. Fed the real bridge's answers to both current-dialect tool paths —
-//            `Bash` and `apply_patch` — for a protected write, the same interpreter reads
-//            `decision: "deny"` from both. The legacy `hook`/`input` dialect and the Claude
-//            dialect are unmoved by any of this — proved in `guard.js`, because that is a
-//            statement about what did NOT change.
+//            as enforcement. Fed the INSTALLED Codex command's answers to both current tool
+//            paths — `Bash` and `apply_patch` — for a protected write, the same interpreter reads
+//            `decision: "deny"` from both. Codex and Claude both carry Bash as a STRING, so the
+//            installed commands must identify their client explicitly: payload shape is not a
+//            discriminator. The installed Claude command and a no-identity legacy bridge call
+//            remain on exit 2 plus stderr.
 //   C3  §C3  `install`'s plain-text output tells activation and trust apart and names the exact
 //            interactive step, `/hooks`, for a non-managed installation. A non-managed,
 //            correctly-shaped Codex configuration is NOT reported `enforced` until a new
@@ -61,11 +62,13 @@
 //            dispatch that produced them is confirmed to have actually run — never after a spawn
 //            error or a missing exit code, which would make "unchanged" ambiguous rather than
 //            evidence. The written human recipe (open an interactive session, run `/hooks`,
-//            trust both exact definitions, then attempt `apply_patch` from a SEPARATE normal
-//            session with no bypass flag) is required to exist in the documentation and is
-//            checked for containing it; it is never executed here.
-//   C5  §C5  the change log and the documentation both explicitly correct `repo-gy3` and PR #82,
-//            in the vocabulary this issue introduces — trust and a structured denial schema.
+//            trust both exact definitions, then attempt one `apply_patch` write and one `Bash`
+//            string-command write from SEPARATE normal sessions with no bypass flag) is required
+//            to exist in the documentation and is checked for containing it; it is never executed
+//            here.
+//   C5  §C5  the change log and documentation explicitly correct `repo-gy3`, PR #82 and rejected
+//            PR #83, in the vocabulary this issue introduces — trust, explicit client identity,
+//            the official string command input, and a structured denial schema.
 //            C5's "existing frozen suites remain untouched" and "mandatory regressions pass"
 //            clauses are proved in `guard.js`, for the reason `repo-gy3/guard.js` gives for the
 //            same two clauses: they are statements about what did NOT change.
@@ -85,9 +88,10 @@
 // scripts/write-guard-bridge.js
 //   Unmoved: the legacy `hook`/`input` dialect and the Claude dialect, both on exit 2 plus a
 //   plain-text reason on stderr (`guard.js`).
-//   Moved by this issue: the CURRENT Codex dialect — `{"tool_name":"Bash",
-//   "tool_input":{"command":[argv]}}` and `{"tool_name":"apply_patch","tool_input":{"command":…}}`
-//   — answers with exit 0 and, for a refusal, one JSON object on stdout carrying
+//   Moved by this issue: the CURRENT Codex dialect — both `{"tool_name":"Bash",…}` and
+//   `{"tool_name":"apply_patch",…}` carry `tool_input.command` as a STRING — answers with exit 0
+//   when invoked through an installed command that explicitly identifies Codex, and, for a
+//   refusal, writes one JSON object on stdout carrying
 //   `hookSpecificOutput.hookEventName`, `hookSpecificOutput.permissionDecision` and a
 //   write-protection-worded reason under `hookSpecificOutput`, under whatever key name it likes —
 //   `command`/`command_windows` was left free the same way in `repo-gy3`, so the reason's OWN key
@@ -120,6 +124,13 @@
 //     reuse `"degraded"`, or add an entirely new top-level field, so long as `status` stops
 //     answering `"enforced"` for a non-managed, unreviewed, correctly-shaped Codex client and
 //     starts answering it once `review` has run against exactly what is installed.
+//
+// D4. Rejected PR #83 guessed that a Bash command ARRAY identified Codex while a Bash command
+//     STRING identified Claude. Real Codex 0.151 sends the official string form. After both exact
+//     hooks were interactively reviewed, apply_patch was blocked but Bash therefore returned the
+//     Claude exit-2 response; Codex logged `PreToolUse Failed` and executed the protected write.
+//     C0-C4 correct that false green by binding client identity in the installed command and by
+//     exercising the identical Bash STRING payload through both installed client invocations.
 'use strict';
 const crypto = require('crypto');
 const fs = require('fs');
@@ -135,6 +146,7 @@ const CHANGE_LOG = path.join(REPO, 'docs', 'change-log.md');
 const REF = 'repo-wwi';
 const CORRECTED_REF = 'repo-gy3';
 const CORRECTED_PR = 82;
+const REJECTED_PR = 83;
 
 const TOOL_BASH = 'Bash';
 const TOOL_PATCH = 'apply_patch';
@@ -183,6 +195,18 @@ function node(script, args, opts = {}) {
     env: envWith(opts.env || {}), cwd: opts.cwd || tmp, input: opts.input,
   });
   return { status: r.status, stdout: r.stdout || '', stderr: r.stderr || '', json: lastJson(r.stdout) };
+}
+
+function hookCommand(command, payload, opts = {}) {
+  const argv = normalizeArgv(command);
+  if (!argv.length) return { status: null, stdout: '', stderr: '', json: null,
+    error: new Error('no hook command') };
+  const r = spawnSync(argv[0], argv.slice(1), {
+    encoding: 'utf8', timeout: 120000, windowsHide: true,
+    env: envWith(opts.env || {}), cwd: opts.cwd || tmp, input: JSON.stringify(payload),
+  });
+  return { status: r.status, stdout: r.stdout || '', stderr: r.stderr || '',
+    json: lastJson(r.stdout), error: r.error || null };
 }
 
 function git(dir, args) {
@@ -475,6 +499,7 @@ function effectiveCommandValue(handler) {
   return (gen || win).value;
 }
 const handlerArgv = (handler) => normalizeArgv(effectiveCommandValue(handler));
+const carriesClient = (argv, client) => argv.some((arg, i) => arg === '--client' && argv[i + 1] === client);
 
 const OURS = /write-guard|write-protection/;
 const mentionsOurs = (value) => normalizeArgv(value).some((a) => OURS.test(posix(String(a))));
@@ -685,6 +710,7 @@ try {
   fs.mkdirSync(CLAUDE_DIR, { recursive: true });
   fs.mkdirSync(CODEX_DIR, { recursive: true });
   const CODEX_CONFIG = path.join(CODEX_DIR, 'config.toml');
+  const CLAUDE_SETTINGS = path.join(CLAUDE_DIR, 'settings.json');
   const clientEnv = { WRITE_PROTECTION_CLAUDE_DIR: CLAUDE_DIR, WRITE_PROTECTION_CODEX_DIR: CODEX_DIR };
 
   // =====================================================================================
@@ -707,7 +733,7 @@ try {
     '',
   ].join('\n');
   fs.writeFileSync(CODEX_CONFIG, CODEX_KEEP);
-  fs.writeFileSync(path.join(CLAUDE_DIR, 'settings.json'), `${JSON.stringify({
+  fs.writeFileSync(CLAUDE_SETTINGS, `${JSON.stringify({
     permissions: { allow: ['Bash(ls *)'] },
   }, null, 2)}\n`);
 
@@ -735,6 +761,8 @@ try {
       handlers.length > 0 && handlers.every(everyCommandIsAString))) seen.structural += 1;
     if (check('C0 ... naming the EXACT installed bridge',
       handlers.length > 0 && handlers.every((h) => namesExactBridge(handlerArgv(h), CODEX_DIR, BRIDGE_SHA)))) seen.structural += 1;
+    if (check('C0 ... and explicitly identifying the Codex client to that bridge',
+      handlers.length > 0 && handlers.every((h) => carriesClient(handlerArgv(h), 'codex')))) seen.structural += 1;
     const written = commandAssignments(good).filter((a) => mentionsOurs(a.value));
     check(`C0 ... and every such command is WRITTEN as a quoted string in the file, never a bracketed list (raw ${show(written.map((a) => a.raw.slice(0, 80)))})`,
       written.length > 0 && written.every((a) => /^["']/.test(a.raw) && !a.raw.startsWith('[')));
@@ -754,16 +782,27 @@ try {
   const bashGroup = groupsWithExactMatcher(goodCfg, MATCHER_BASH)[0];
   const bashHandler = bashGroup ? nestedHandlers(bashGroup).find((h) => handlerIsOurs(h)) : null;
   const bashCommand = bashHandler ? effectiveCommandValue(bashHandler) : null;
+  const patchGroup = groupsWithExactMatcher(goodCfg, MATCHER_PATCH)[0];
+  const patchHandler = patchGroup ? nestedHandlers(patchGroup).find((h) => handlerIsOurs(h)) : null;
+  const patchCommand = patchHandler ? effectiveCommandValue(patchHandler) : null;
   if (check(`C0 the emitted configuration names a string hook command this suite can run (got ${show(bashCommand)})`,
     isTomlString(bashCommand))) seen.structural += 1;
   if (isTomlString(bashCommand)) {
-    const smoke = spawnSync(normalizeArgv(bashCommand)[0], normalizeArgv(bashCommand).slice(1), {
-      encoding: 'utf8', timeout: 60000, windowsHide: true, cwd: PROT, env: envWith(clientEnv),
-      input: JSON.stringify({ session_id: 'sC0', cwd: PROT, tool_name: TOOL_BASH, tool_input: { command: ['git', 'status'] } }),
-    });
+    const smoke = hookCommand(bashCommand,
+      { session_id: 'sC0', cwd: PROT, tool_name: TOOL_BASH, tool_input: { command: 'git status' } },
+      { cwd: PROT, env: clientEnv });
     check(`C0 that string command is executable and allows a read-only inspection (exit ${smoke.status}, spawn error ${show(smoke.error && smoke.error.message)})`,
       !smoke.error && smoke.status === 0);
   }
+
+  let claudeSettings = null;
+  try { claudeSettings = JSON.parse(fs.readFileSync(CLAUDE_SETTINGS, 'utf8')); } catch { claudeSettings = null; }
+  const claudeCommands = (((claudeSettings && claudeSettings.hooks
+    && claudeSettings.hooks.PreToolUse) || []).flatMap((g) => (g && g.hooks) || []))
+    .map((h) => h && h.command).filter((c) => typeof c === 'string' && mentionsOurs(c));
+  const claudeCommand = claudeCommands[0] || null;
+  check(`C0 the installed Claude command explicitly identifies Claude to the same bridge (got ${show(claudeCommand)})`,
+    Boolean(claudeCommand) && carriesClient(normalizeArgv(claudeCommand), 'claude'));
 
   // The OLD top-level array layout, rebuilt around this installation's own bridge, coexisting
   // with the SAME unrelated `^Read$` group `CODEX_KEEP` declared.
@@ -787,16 +826,19 @@ try {
   // §C1 — the CURRENT Codex dialect answers a protected write with structured JSON on exit 0.
   // =====================================================================================
 
-  const bridge = (payload) => node(BRIDGE, [], { input: JSON.stringify(payload), env: clientEnv });
+  const legacyBridge = (payload) => node(BRIDGE, [], { input: JSON.stringify(payload), env: clientEnv });
+  const codexBash = (payload) => hookCommand(bashCommand, payload, { cwd: PROT, env: clientEnv });
+  const codexPatch = (payload) => hookCommand(patchCommand, payload, { cwd: PROT, env: clientEnv });
 
   const CURRENT_DENIES = [
-    ['Bash, argv array', { session_id: 'sC1', cwd: PROT, tool_name: TOOL_BASH, tool_input: { command: ['bash', '-lc', 'printf taken > runner/run.js'] } }],
-    ['apply_patch, argv naming the patch', { session_id: 'sC1', cwd: PROT, tool_name: TOOL_PATCH, tool_input: { command: [TOOL_PATCH, PATCH_PROTECTED] } }],
-    ['apply_patch, command IS the patch text', { session_id: 'sC1', cwd: PROT, tool_name: TOOL_PATCH, tool_input: { command: PATCH_PROTECTED } }],
+    ['Bash, official string command', codexBash,
+      { session_id: 'sC1', cwd: PROT, tool_name: TOOL_BASH, tool_input: { command: 'printf taken > runner/run.js' } }],
+    ['apply_patch, official string command', codexPatch,
+      { session_id: 'sC1', cwd: PROT, tool_name: TOOL_PATCH, tool_input: { command: PATCH_PROTECTED } }],
   ];
   const denyResults = [];
-  for (const [label, payload] of CURRENT_DENIES) {
-    const r = bridge(payload);
+  for (const [label, invoke, payload] of CURRENT_DENIES) {
+    const r = invoke(payload);
     denyResults.push([label, r]);
     if (check(`C1 a protected write via ${label} answers on the exit Codex treats as a successful hook decision (got ${r.status})`,
       r.status === 0)) seen.dispatch += 1;
@@ -812,11 +854,13 @@ try {
   }
 
   const CURRENT_ALLOWS = [
-    ['Bash `git status`, argv array', { session_id: 'sC1', cwd: PROT, tool_name: TOOL_BASH, tool_input: { command: ['git', 'status'] } }],
-    ['apply_patch touching only an ignored host artifact', { session_id: 'sC1', cwd: PROT, tool_name: TOOL_PATCH, tool_input: { command: [TOOL_PATCH, PATCH_IGNORED] } }],
+    ['Bash `git status`, official string command', codexBash,
+      { session_id: 'sC1', cwd: PROT, tool_name: TOOL_BASH, tool_input: { command: 'git status' } }],
+    ['apply_patch touching only an ignored host artifact', codexPatch,
+      { session_id: 'sC1', cwd: PROT, tool_name: TOOL_PATCH, tool_input: { command: PATCH_IGNORED } }],
   ];
-  for (const [label, payload] of CURRENT_ALLOWS) {
-    const r = bridge(payload);
+  for (const [label, invoke, payload] of CURRENT_ALLOWS) {
+    const r = invoke(payload);
     const hso = r.json && typeof r.json === 'object' && !Array.isArray(r.json) ? r.json.hookSpecificOutput : null;
     if (check(`C1 a read-only ${label} continues — exit 0 and no \`permissionDecision: "deny"\` body (exit ${r.status}, stdout ${show(r.stdout.trim().slice(0, 120))})`,
       r.status === 0 && (!hso || String(hso.permissionDecision) !== 'deny'))) seen.allowed += 1;
@@ -843,7 +887,7 @@ try {
     interpretCodexHookResult(pr82WithStrayJson).hookFailed === true);
 
   const bashDenyResult = denyResults.find(([label]) => label.startsWith('Bash'))[1];
-  const patchDenyResult = denyResults.find(([label]) => label.startsWith('apply_patch, argv'))[1];
+  const patchDenyResult = denyResults.find(([label]) => label.startsWith('apply_patch'))[1];
   const bashInterpreted = interpretCodexHookResult(bashDenyResult);
   const patchInterpreted = interpretCodexHookResult(patchDenyResult);
   if (check(`C2 the interpreter reads \`deny\` from the real bridge's answer to a protected Bash write (got ${show(bashInterpreted)})`,
@@ -851,9 +895,19 @@ try {
   if (check(`C2 ... and from its answer to a protected apply_patch (got ${show(patchInterpreted)})`,
     patchInterpreted.hookFailed === false && patchInterpreted.decision === 'deny')) seen.interpreted += 1;
 
-  const allowInterpreted = interpretCodexHookResult(bridge({ session_id: 'sC2', cwd: PROT, tool_name: TOOL_BASH, tool_input: { command: ['git', 'status'] } }));
+  const allowInterpreted = interpretCodexHookResult(codexBash({ session_id: 'sC2', cwd: PROT,
+    tool_name: TOOL_BASH, tool_input: { command: 'git status' } }));
   check(`C2 ... and \`allow\` from a read-only current-dialect payload (got ${show(allowInterpreted)})`,
     allowInterpreted.hookFailed === false && allowInterpreted.decision === 'allow');
+
+  const sameBashString = { session_id: 'sC2', cwd: PROT, tool_name: TOOL_BASH,
+    tool_input: { command: 'printf taken > runner/run.js' } };
+  const claudeTransport = hookCommand(claudeCommand, sameBashString, { cwd: PROT, env: clientEnv });
+  check(`C2 the identical Bash STRING through the installed Claude invocation preserves exit-2 stderr refusal (got ${claudeTransport.status}, stderr ${show(claudeTransport.stderr.trim().slice(0, 120))})`,
+    claudeTransport.status === 2 && /write-protection/i.test(claudeTransport.stderr));
+  const legacyTransport = legacyBridge(sameBashString);
+  check(`C2 the identical no-identity legacy bridge call preserves exit-2 stderr refusal (got ${legacyTransport.status})`,
+    legacyTransport.status === 2 && /write-protection/i.test(legacyTransport.stderr));
 
   // =====================================================================================
   // §C3 — install output tells activation from trust; a non-managed correct shape alone is
@@ -908,6 +962,16 @@ try {
     check(`C3 ... but a change to one of OUR OWN installed command definitions invalidates the review — no longer \`enforced\` (got ${show(afterMutation.state)})`,
       afterMutation.state !== 'enforced');
   }
+  fs.writeFileSync(CODEX_CONFIG, good);
+  node(CLI, ['review', '--client', 'codex'], { env: clientEnv });
+
+  const missingIdentity = good.replace(/\s+--client\s+codex/g, '');
+  check('C3/C0 the missing-client-identity case was actually constructed', missingIdentity !== good);
+  fs.writeFileSync(CODEX_CONFIG, missingIdentity);
+  const missingIdentityStatus = codexOf(askStatus());
+  check(`C3/C0 a Codex configuration whose handler does not explicitly identify Codex is not enforced (got ${show(missingIdentityStatus.state)})`,
+    CLIENT_STATES.length > 0 && CLIENT_STATES.includes(String(missingIdentityStatus.state))
+    && missingIdentityStatus.state !== 'enforced');
   fs.writeFileSync(CODEX_CONFIG, good);
   node(CLI, ['review', '--client', 'codex'], { env: clientEnv });
 
@@ -977,7 +1041,9 @@ try {
   const BLACKBOX_FILE = path.join(BLACKBOX, 'runner', 'run.js');
   const BLACKBOX_SHA = sha(BLACKBOX_FILE);
   const BLACKBOX_STATUS = gitStatus(BLACKBOX);
-  const patchAttempt = bridge({ session_id: 'sC4', cwd: BLACKBOX, tool_name: TOOL_PATCH, tool_input: { command: [TOOL_PATCH, PATCH_PROTECTED] } });
+  const patchAttempt = hookCommand(patchCommand,
+    { session_id: 'sC4', cwd: BLACKBOX, tool_name: TOOL_PATCH, tool_input: { command: PATCH_PROTECTED } },
+    { cwd: BLACKBOX, env: clientEnv });
   const dispatchRanCleanly = typeof patchAttempt.status === 'number';
   if (check(`C4 the direct-dispatch refusal of a protected apply_patch actually ran, so what follows is evidence and not an ambiguous process failure (status ${show(patchAttempt.status)})`,
     dispatchRanCleanly)) seen.dispatch += 1;
@@ -1001,7 +1067,8 @@ try {
     visit(path.join(REPO, 'docs'), 2);
     return out;
   })();
-  const RECIPE_TERMS = [/\/hooks\b/, new RegExp(TOOL_PATCH, 'i'), /\btrust(ed)?\b/i, /\bgit status\b|\bhash\b/i, /\bseparate\b|\bno bypass\b|\bnormal\b/i];
+  const RECIPE_TERMS = [/\/hooks\b/, new RegExp(TOOL_PATCH, 'i'), new RegExp(TOOL_BASH, 'i'),
+    /\btrust(ed)?\b/i, /\bgit status\b|\bhash\b/i, /\bseparate\b|\bno bypass\b|\bnormal\b/i];
   const recipeHit = (() => {
     for (const file of docFiles) {
       let text = [];
@@ -1013,7 +1080,7 @@ try {
     }
     return null;
   })();
-  check(`C4 the documentation carries the human recipe this suite cannot execute — interactive \`/hooks\` review of both exact definitions, then a SEPARATE normal trusted session attempting apply_patch with denial that leaves the hash and git status unchanged (searched ${docFiles.length} documents; found ${show(recipeHit)})`,
+  check(`C4 the documentation carries the human recipe this suite cannot execute — interactive \`/hooks\` review, then SEPARATE normal trusted apply_patch and Bash string-write attempts whose denials leave hashes and git status unchanged (searched ${docFiles.length} documents; found ${show(recipeHit)})`,
     Boolean(recipeHit));
 
   // =====================================================================================
@@ -1041,14 +1108,20 @@ try {
       new RegExp(CORRECTED_REF, 'i').test(both));
     check(`C5 and the row explicitly names PR #${CORRECTED_PR} as the other claim it corrects`,
       new RegExp(`#\\s*${CORRECTED_PR}\\b`).test(both));
-    check('C5 and the row states this issue\'s own corrected vocabulary — trust, and a structured denial schema',
-      /\btrust\b/i.test(both) && /(structured|hookSpecificOutput|json)/i.test(both));
+    check(`C5 and the row explicitly names rejected PR #${REJECTED_PR}`,
+      new RegExp(`#\\s*${REJECTED_PR}\\b`).test(both));
+    check('C5 and the row states this issue\'s own corrected vocabulary — trust, explicit client identity, string command input, and a structured denial schema',
+      /\btrust\b/i.test(both) && /client/i.test(both) && /string/i.test(both)
+      && /(structured|hookSpecificOutput|json)/i.test(both));
   }
 
   const CORRECTION_TERMS = [
     new RegExp(CORRECTED_REF, 'i'),
     new RegExp(`#\\s*${CORRECTED_PR}\\b`),
+    new RegExp(`#\\s*${REJECTED_PR}\\b`),
     /\btrust\b/i,
+    /client/i,
+    /string/i,
     /(structured|hookSpecificOutput|permissionDecision)/i,
   ];
   const correctionHit = (() => {
@@ -1062,7 +1135,7 @@ try {
     }
     return null;
   })();
-  check(`C5 the documentation explicitly corrects \`${CORRECTED_REF}\` and PR #${CORRECTED_PR} in one passage, naming trust and the structured denial schema (searched ${docFiles.length} documents; found ${show(correctionHit)})`,
+  check(`C5 the documentation explicitly corrects \`${CORRECTED_REF}\`, PR #${CORRECTED_PR}, and rejected PR #${REJECTED_PR} in one passage, naming trust, explicit client identity, string input, and structured denial (searched ${docFiles.length} documents; found ${show(correctionHit)})`,
     Boolean(correctionHit));
 
   // Non-vacuity, said once and out loud.
