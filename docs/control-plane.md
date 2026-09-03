@@ -11,7 +11,7 @@ When two sources disagree, use this order:
    outcomes, Beads ownership metadata, run pseudo-tasks, PR eligibility, and memory
    eligibility. Runtime modules consume this file through `runner/control-plane.js`.
 2. `contracts/write-protection.json` owns the write-protection vocabulary: role roster,
-   path classes, class precedence, deny reasons, and the five client states. Guards,
+   path classes, class precedence, deny reasons, and the client states. Guards,
    hook bridges, admission, status and tests all read it and nothing restates it.
 3. `schemas/*.schema.json` own persisted artifact shapes. The mandatory contract suite
    checks that shared vocabularies agree with the control-plane contract.
@@ -100,6 +100,37 @@ mandatory-profile MDM payload, a read-only mounted config directory, or your own
 — and set `WRITE_PROTECTION_MANAGED=1` in that same managed environment so `status` is
 entitled to report enforcement as complete. Until then it will not, and that is the honest
 answer rather than a gap.
+
+**Codex denial is structured JSON, and non-managed trust is a separate human gate
+(corrects `repo-gy3` and its closed PR #82).** For the current Codex `PreToolUse` dialect
+(`tool_name: "Bash"|"apply_patch"`), a protected write is refused with exit 0 — the exit
+Codex reads as "the hook ran and rendered a decision" — carrying one JSON object on stdout:
+`hookSpecificOutput.hookEventName = "PreToolUse"`, `hookSpecificOutput.permissionDecision =
+"deny"`, and a write-protection reason. PR #82 shipped the official nested
+`[[hooks.PreToolUse]]` TOML-string form with both hooks reviewed and trusted through Codex
+`/hooks`, and still failed open: a normal trusted Codex 0.151.0-alpha.7.1 session ran the
+hook, treated its exit 2 as a HOOK FAILURE rather than a deliberate deny, logged "Failed",
+and completed the protected `apply_patch` anyway. The structured, exit-0 denial above is
+the fix. Project-level trust also proved insufficient on its own, because Codex's `/hooks`
+trust binds to the exact hook *definition*, not to the repository — so a non-managed
+installation that merely has the right shape is reported `unreviewed`, never `enforced`,
+until a person runs the recipe below.
+
+**The human-review recipe** (validated and documented here; the deterministic suite never
+executes it and never claims it occurred):
+1. Install the hooks: `node scripts/write-protection.js install`.
+2. Open an interactive Codex session in the target checkout and run `/hooks`. TRUST both
+   installed entries — the `^Bash$` and `^apply_patch$` matcher groups — by their exact,
+   currently-installed definitions.
+3. Record the review, bound to a digest of those exact definitions:
+   `node scripts/write-protection.js review --client codex`. `status` will not call the
+   Codex client `enforced` without a matching record, and the record stops being honoured
+   the instant either definition changes.
+4. From a SEPARATE, normal trusted Codex session — no bypass flag — attempt an `apply_patch`
+   write to a protected path. The denial should surface as a rendered decision, never as a
+   "Hook Failed" crash, and the protected file's hash and `git status` should remain
+   unchanged. Managed installations (`WRITE_PROTECTION_MANAGED`) are trusted by policy and
+   skip steps 2–3 entirely; `enforced`/`enforcementComplete` do not require personal review.
 
 ## Validation profiles
 

@@ -81,14 +81,14 @@
     "interpreter-write",
     "destructive-git"
   ],
-  "clientStates": ["enforced", "degraded", "disabled", "unsupported", "uninstalled"],
+  "clientStates": ["enforced", "degraded", "disabled", "unsupported", "uninstalled", "unreviewed"],
   "clients": {
     "claude": {
       "toolPaths": ["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash"],
       "configFile": "settings.json"
     },
     "codex": {
-      "toolPaths": ["apply_patch", "unified_exec"],
+      "toolPaths": ["Bash", "apply_patch"],
       "configFile": "config.toml"
     }
   }

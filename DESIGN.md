@@ -2555,9 +2555,25 @@ at the moment of the tool call, which is where a refusal is useful and where a p
 on it. They are also incomplete by construction: a local hook can be switched off, a client
 can be configured without one, and a specialized tool path can bypass it — so
 `write-protection.js status` reports each client as `enforced`, `degraded`, `disabled`,
-`unsupported` or `uninstalled` and refuses to call enforcement complete while any of that
-holds. Claiming a control one does not have is worse than admitting a partial one, because
-the claim is what stops anyone building the second layer. That second layer is **admission**:
+`unsupported`, `uninstalled` or `unreviewed` and refuses to call enforcement complete while
+any of that holds. Claiming a control one does not have is worse than admitting a partial one,
+because the claim is what stops anyone building the second layer. **Activation is not trust**
+(change-log row `repo-wwi`, correcting `repo-gy3` and its closed PR #82): a Codex profile can
+load correctly and dispatch our bridge the moment it is written, yet Codex's own hook trust is
+bound to the exact hook *definition* through an interactive `/hooks` review, and that is a
+property of the client, not of this repository. A centrally managed installation
+(`WRITE_PROTECTION_MANAGED`) is trusted by policy — it cannot be locally disabled — and is
+eligible for `enforced` on shape alone. A non-managed Codex installation reads `unreviewed`
+until `scripts/write-protection.js review --client codex` records that a person ran that
+review, bound to a digest of the two installed command definitions; the record stops being
+honoured the instant either one changes, while an unrelated edit elsewhere in the profile
+leaves it valid. Denial itself is transport-appropriate: the current Codex `PreToolUse`
+dialect answers a protected write with exit 0 and a structured `hookSpecificOutput` JSON body
+(`hookEventName`, `permissionDecision: "deny"`, a write-protection reason) rather than the
+exit 2 PR #82 shipped, because a real trusted Codex session reads a nonzero hook exit as a
+HOOK FAILURE — not a deliberate decision — and dispatches the protected write anyway; the
+Claude and legacy Codex dialects are unmoved and still refuse on exit 2 with a plain-text
+reason. That second layer is **admission**:
 `scripts/freeze.js`, `scripts/prepare-batch.js` and `runner/run.js` each run the same check
 over the real integration checkout before they mutate it, and a protected path that is
 staged, unstaged or untracked without matching planning or frozen-test provenance refuses the
