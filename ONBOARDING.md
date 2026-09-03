@@ -317,6 +317,22 @@ Copy this section in (adjust nothing but the project name):
       path, so a trailing separator or forward-vs-back slashes do not buy you a second
       identity — and a lock left behind by a killed run is taken over by the next one,
       never cleared by hand.
+- [ ] **Ask the user for one integer implementation concurrency**, and record the answer as
+      `concurrency` in that same host-local run config. Ask it once, as a single question —
+      *how many implementation tasks may run at the same time under one coordinated run?* —
+      and state the whole of what the answer buys in the same breath, because this is the
+      only place the operator is asked:
+      it must be an **integer** (a whole number) of 1 or more, and it **caps how many
+      implementation tasks one coordinated run works simultaneously**;
+      **no preference, no answer or no opinion means 1**, which is also the default the
+      runner uses when the config says nothing about it;
+      **higher values increase this host's CPU, RAM and container demand**, since every
+      task running at once is another live container on this machine;
+      and **higher values may consume model-subscription capacity faster**, because those
+      containers spend one shared subscription in parallel rather than one after another.
+      There is no ceiling beyond what the host can carry (change-log row
+      `concurrency-uncapped`); `runner/config.js` refuses anything else by name —
+      `'concurrency' must be a whole number of 1 or more`.
 - [ ] If this pipeline repo is public, add `.sanitize-denylist` (copy
       `.sanitize-denylist.example`): the private project names, hosts and clients that must
       never appear in the tracked tree. Also **git-ignored**, because committing the list of
@@ -346,6 +362,92 @@ Copy this section in (adjust nothing but the project name):
 - [ ] Everything committed and pushed — the container clones from the **remote**
       (§4.2); anything only on the local disk does not exist as far as a run is
       concerned.
+
+## Working one project in parallel — one owner, many bounded workers
+
+New operators read the target lock as "everything about this project is serial", or else
+try to escape it by making a second config. Both readings are wrong, and the three
+sections here are the whole model: one owner, bounded workers beneath it, and looking
+rather than clearing when someone else is the owner.
+
+### One owner per target: the host-global canonical-target lock
+
+Before any other gate, a run or a preparation takes a **host-global lock on the canonical
+target path** — one record per machine per repository, whichever pipeline checkout it was
+started from (change-log row `repo-os9`). That lock is the **authority**: whoever holds it
+is the one coordinator entitled to mutate that target — its queue, its worktrees, its
+branches, its Beads state — for as long as it is held. Everything else about parallelism
+on one project follows from there, and two of the consequences are refusals rather than
+advice:
+
+- **Never write a second `run.config.<project>.json` naming a target that already has
+  one**, as a route to parallelism on the same project. Two configs pointed at one target
+  are not two lanes: the second is refused by name at the lock, and if it ever did get
+  past it would drain one queue twice, with two owners claiming the same issues.
+- **Never reach for an alternate path spelling** to buy a second identity — a trailing
+  separator, forward versus back slashes, a differently-cased drive letter, a second
+  checkout of the same repository. The lock keys on the canonical target path, so every
+  spelling of one repository folds to one key. A spelling that did slip past would not
+  have created a second project; it would have created a second owner of one project,
+  which is the corruption the lock exists to prevent.
+
+What the holder **may** do is fan out. Being the sole mutation authority is not a promise
+to work serially: the owning coordinator may run bounded, **isolated** workers beneath
+itself — each in its own registered **worktree** or clone, each writing only inside its own
+tree, all of them capped by a number the operator chose. The number recorded in step 8 is
+exactly that cap for a run, and the preparation command below is exactly that shape for
+planning. The lock excludes a second owner; it never constrains the owner's own workers.
+
+### Preparing several frozen suites for one project at once
+
+Frozen-test preparation for one project goes through **one named coordinator**, and it is
+that coordinator — not you, and not several terminals — that runs the suites side by side:
+
+```bash
+node scripts/prepare-batch.js start <batch> --config run.config.<project>.json \
+  --issue <issue-id-1> --issue <issue-id-2> --author-concurrency 2
+```
+
+Repeat `--issue` once per suite in the batch — that repetition is what makes it one
+same-project batch rather than several jobs. `--author-concurrency` takes a whole number
+from 1 to 10 (change-log row `preparation-concurrency-ten`) and bounds how many
+test-authoring workers that single coordinator runs at a time. The coordinator owns the
+target lock for the whole batch, reads Beads serially, hands each worker a complete brief
+in its own registered worktree, and keeps a resumable record you can query or resume later.
+
+**Never launch independent `author-tests.js` sessions to get parallel preparation** — not
+two by hand, not one per issue, not in separate terminals. `author-tests.js` is the
+single-suite path and takes the same target ownership for itself, so extra sessions refuse
+each other at best and race over one worktree registry at worst. Repeated `--issue` under
+one `prepare-batch.js start` is the supported way to prepare more than one suite.
+
+### When the target is already owned
+
+A lock you did not take means another coordinator is working that target right now. That
+is the system doing its job, not an error to clear. Look, then wait:
+
+```bash
+node scripts/dashboard.js                     # read-only: every lock, its holder, its liveness
+node scripts/prepare-batch.js status <batch>  # read-only: one known preparation, stage by stage
+```
+
+`node scripts/dashboard.js` is the **read-only** lock and liveness view: it reads the lock
+records and each run's own artifacts and reports which target is held, by which run, and
+whether that holder is still live. It writes nothing. When the holder is a preparation
+whose batch name you already know, `node scripts/prepare-batch.js status <batch>` reports
+that known batch's stages the same read-only way. Neither command touches the holder.
+
+**Never delete a lock, never bypass it, never take over a live holder, and never interrupt,
+kill or cancel one.** Each of those trades a visible wait for two owners of one target, and
+none of them is ever the fix: a record whose owner really is gone is taken over by the next
+run on its own evidence (change-log row `repo-os9`). Wait for the live holder to finish.
+
+Waiting can be **optional** and hands-off. If the user wants one, define a **task-scoped**
+**periodic** check — a re-check on an interval, alive only for the task in hand and ending
+with it — whose **only** effect is to report **held or free**. It starts nothing on either
+answer: it queues no work, claims no lock, changes no file, and never starts work of its
+own. Work begins only when the user, having read that report, **separately approves**
+beginning it. A check that started work by itself would be a takeover with a timer.
 
 ## After onboarding — the life of an onboarded project
 
