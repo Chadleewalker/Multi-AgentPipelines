@@ -11,7 +11,7 @@ When two sources disagree, use this order:
    outcomes, Beads ownership metadata, run pseudo-tasks, PR eligibility, and memory
    eligibility. Runtime modules consume this file through `runner/control-plane.js`.
 2. `contracts/write-protection.json` owns the write-protection vocabulary: role roster,
-   path classes, class precedence, deny reasons, and the five client states. Guards,
+   path classes, class precedence, deny reasons, and the six client states. Guards,
    hook bridges, admission, status and tests all read it and nothing restates it.
 3. `schemas/*.schema.json` own persisted artifact shapes. The mandatory contract suite
    checks that shared vocabularies agree with the control-plane contract.
@@ -66,9 +66,10 @@ product, configuration, control or frozen paths. Absence of that file leaves a c
 exactly as unprotected as it was before. No tracked or model-editable marker opts out.
 
 ```bash
-node scripts/write-protection.js install     # both clients' hooks, host-side only
-node scripts/write-protection.js status      # per-client state, and what is NOT covered
-node scripts/write-protection.js recover     # a Git-registered home for refused edits
+node scripts/write-protection.js install               # both clients' hooks, host-side only
+node scripts/write-protection.js review --client codex # record a person's /hooks trust review
+node scripts/write-protection.js status                # per-client state, and what is NOT covered
+node scripts/write-protection.js recover               # a Git-registered home for refused edits
 ```
 
 Authority is a host record, never a folder. `lease --grant` binds a role to one canonical
@@ -84,8 +85,14 @@ Two enforcement layers, and only one of them is a perimeter. The hook bridges fo
 and Codex refuse at the moment of the tool call, which is where a refusal is useful, but a
 local hook can be disabled, a client can be configured without it, and a specialized tool
 path can bypass it entirely — so `status` reports each client as `enforced`, `degraded`,
-`disabled`, `unsupported` or `uninstalled` and never claims complete enforcement while any
-of that is true. Admission is the backstop that is not optional: `scripts/freeze.js`,
+`disabled`, `unsupported`, `uninstalled` or `untrusted` and never claims complete enforcement
+while any of that is true. `untrusted` is Codex-specific: a non-managed hook can be exactly
+the right shape and still not be `enforced`, because Codex itself does not treat activation
+as trust — a person must run the interactive `/hooks` command and then
+`node scripts/write-protection.js review --client codex`, which binds a digest to the two
+exact installed hook definitions (including their `--client codex` identity) and stops
+honouring it the moment either one changes. Admission is the backstop that is not optional:
+`scripts/freeze.js`,
 `scripts/prepare-batch.js` and `runner/run.js` all call the same check over the real
 integration checkout before they mutate it, and a protected path that is staged, unstaged
 or untracked without matching planning or frozen-test provenance refuses the whole

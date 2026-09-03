@@ -364,8 +364,12 @@ this one is a decision about a project, so it is not a file in the project.
 **Hooks are prevention, not a perimeter, and the tool says so.** A local hook can be
 switched off, a client can be configured without one, and a specialized tool path can go
 uncovered — so `status` reports each client as `enforced`, `degraded`, `disabled`,
-`unsupported` or `uninstalled`, and refuses to call enforcement complete while any of that
-is true. The layer that is not optional is **admission**: `scripts/freeze.js`,
+`unsupported`, `uninstalled` or `untrusted`, and refuses to call enforcement complete while
+any of that is true. `untrusted` names a Codex-specific gap: activation is not trust, and a
+correctly shaped, non-managed Codex hook stays `untrusted` until a person runs the
+interactive `/hooks` command and `node scripts/write-protection.js review --client codex`
+binds a digest to the exact reviewed definitions. The layer that is not optional is
+**admission**: `scripts/freeze.js`,
 `scripts/prepare-batch.js` and `runner/run.js` each run the same check over the real
 integration checkout before they mutate it, and a protected path that is staged, unstaged
 or untracked with no matching planning or frozen-test provenance stops the operation and is

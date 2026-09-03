@@ -2577,6 +2577,71 @@ worktree registry inside the Git common directory; the project files, the index,
 tree, HEAD and the stash stack are byte-identical afterwards, which is the property the
 frozen suite asserts rather than a promise made in prose here.
 
+### 6.4 Codex's official hook dialect needs an identified client, not a guessed one
+
+`repo-gy3` (PR #82) fixed the emitted TOML shape and then answered every Codex dialect with
+`exit 2` regardless, and rejected PR #83's attempt at a live decision assumed the wrong
+discriminator. This corrects both (change-log row `repo-wwi`). A live Codex
+0.151.0-alpha.7.1 session exposed PR #83's mistake: real Codex sends `tool_name: "Bash"` and
+`tool_name: "apply_patch"` with `tool_input.command` as a **string** for both tools — the same
+shape Claude's own `Bash` calls already use — so a bridge that tells the two clients apart by
+whether `command` is a string or an argv array cannot tell them apart at all. PR #83 guessed
+array-vs-string; after both exact hooks were interactively trusted, `apply_patch` was blocked
+correctly but `Bash` fell through to the Claude branch's `exit 2`, which Codex logs as
+`PreToolUse Failed` and then runs the protected write anyway. Direct bridge invocation
+reproduced the same refusal-that-does-nothing. **No criterion, and no branch in the bridge,
+may classify a current Codex request by assuming `tool_input.command` is an array.**
+
+`install` now emits Codex's official inline TOML shape for both tool paths at once:
+`[[hooks.PreToolUse]]` with `matcher = "^Bash$"` and a second group with
+`matcher = "^apply_patch$"` — one per entry in `contracts/write-protection.json`'s
+`clients.codex.toolPaths`, now `["Bash", "apply_patch"]` rather than the legacy
+`["apply_patch", "unified_exec"]` — each followed immediately by its own nested
+`[[hooks.PreToolUse.hooks]]` table carrying `type = "command"` and a `command` written as a
+TOML **string**, never an array: Codex's own loader rejects a sequence there with "invalid
+type: sequence, expected a string" and fails the *whole* profile, which is how PR #81 shipped
+a status that said `enforced` while dispatching nothing. `unified_exec` is no longer an
+installed path; it remains a bridge-side translation dialect only, for whatever
+already-running session still speaks it.
+
+**Client identity travels in the installed command, never in the payload.** Since Codex's
+`Bash` and Claude's `Bash` now send the identical string-command shape, the only honest
+discriminator left is which invocation is calling: the Codex-installed command is
+`node "<bridge>" --client codex`, the Claude-installed command is
+`node "<bridge>" --client claude`, and a bare invocation with no `--client` flag — every
+already-deployed legacy hook, and `repo-324`'s original `hook`/`input` dialect — keeps its
+historical `exit 2` plus a plain-text reason on stderr. Only `--client codex` gets the new
+response: exit 0 (the code Codex reads as "the hook ran and rendered a decision") plus one
+JSON object on stdout carrying `hookSpecificOutput.hookEventName: "PreToolUse"`,
+`hookSpecificOutput.permissionDecision: "deny"` and a `write-protection`-worded
+`permissionDecisionReason`; a read-only payload of the same shape continues silently. An exit
+of 2 with a plain-text reason and no JSON body — the exact shape PR #82 shipped — is read by
+Codex, and by the small interpreter this issue's suite carries, as a **hook execution
+failure**, never as a deliberate deny, so it can never be mistaken for enforcement again.
+
+**Activation is not trust, and Codex's own trust model already draws that line.** A
+non-managed Codex client does not treat a newly installed hook as authoritative until a
+person reviews it through the interactive `/hooks` command — `install`'s own output says so
+and points at it. `status` therefore withholds `enforced` from a correctly-shaped, non-managed
+Codex configuration until `node scripts/write-protection.js review --client codex` has run,
+and that record is bound to **both exact installed definitions, including the `--client
+codex` identity** — a digest over each matcher's nested handler command — so it stops being
+honoured the instant either command changes, while an edit anywhere else in `config.toml`
+leaves it alone. Centrally managed policy (`WRITE_PROTECTION_MANAGED=1`) still needs none of
+this, the same as before. Malformed profiles, disabled hooks, a missing `--client` identity
+and a missing handler for either tool path are all reported as a known, non-`enforced` state —
+never silently upgraded.
+
+**The host verification this repository's own suite cannot perform, and does not claim to.**
+`tests/acceptance/repo-wwi/` spawns no `codex` process, interactively or via `codex exec`, and
+never claims a review happened; an LLM is never the runtime gate (`CLAUDE.md` hard invariant
+4). The recipe a person runs instead: install, open an interactive Codex session, run
+`/hooks`, trust both exact `^Bash$` and `^apply_patch$` definitions, then — from two SEPARATE
+normal Codex sessions with no bypass flag — attempt one protected `apply_patch` write and one
+protected `Bash` string-command write. Both must render as a denial rather than a crash, must
+exit without running the write, and the protected file's hash and `git status` must read
+unchanged afterward, and only because the attempt is confirmed to have actually run at all.
+
 ## 7. Phasing
 
 **V1 — the implementation loop** (this project's first autonomous run):

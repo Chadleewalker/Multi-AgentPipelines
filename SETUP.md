@@ -247,7 +247,11 @@ a project that does not carry them, so your other repositories are unaffected.
 
 `status` will tell you enforcement is **not** complete, and that is correct rather than a
 setup error: these hooks live in configuration files on this machine, so whoever is sitting
-here can disable them. The layer that does not depend on a hook is admission — the freeze,
+here can disable them. Codex also reports `untrusted` rather than `enforced` for a
+correctly shaped, non-managed hook until you run its interactive `/hooks` command to trust
+both installed definitions and record that with
+`node scripts/write-protection.js review --client codex`; that record stops being honoured
+the moment either definition changes. The layer that does not depend on a hook is admission — the freeze,
 batch preparation and the runner each re-check the real checkout before they mutate it. If
 one of them ever refuses with a list of paths, nothing was deleted or reverted; run
 `node scripts/write-protection.js recover --target <dir>` to give that work a Git-registered

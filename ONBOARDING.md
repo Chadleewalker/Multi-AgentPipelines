@@ -381,8 +381,12 @@ node scripts/write-protection.js install
 node scripts/write-protection.js status
 ```
 
-`status` reports each client as enforced, degraded, disabled, unsupported or uninstalled,
-and will not call enforcement complete while a hook lives in a file the operator can edit.
+`status` reports each client as enforced, degraded, disabled, unsupported, uninstalled or
+untrusted, and will not call enforcement complete while a hook lives in a file the operator
+can edit. Codex specifically will not treat a freshly installed, non-managed hook as
+authoritative on shape alone: run its interactive `/hooks` command to trust both installed
+definitions, then record that with `node scripts/write-protection.js review --client codex`,
+or `status` reports it `untrusted` rather than `enforced`.
 That honesty is the point: a hook is prevention, and the layer that does not depend on one
 is **admission**, which re-runs the same check over the real checkout inside the freeze,
 inside batch preparation and again at dispatch, refusing by name rather than tidying
