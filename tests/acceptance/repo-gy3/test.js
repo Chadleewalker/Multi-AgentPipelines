@@ -21,12 +21,11 @@
 //   C2  §C2  `codex status` reports the PR #81 array form `degraded`, and reports `enforced`
 //            only when every handler of ours is an effective STRING handler naming this
 //            installation's exact bridge.
-//   C3  §C3  a normal trusted Codex session with no hook-trust bypass loads the generated
-//            profile, attempts `apply_patch` on `runner/run.js`, is refused in
-//            write-protection's own words, exits without a configuration error, and leaves the
-//            file hash and `git status` unchanged — attempted where a Codex exists and
-//            EXPLICITLY skipped where none does, with deterministic profile-parsing and bridge-
-//            dispatch coverage asserted non-vacuous either way.
+//   C3  §C3  deterministic parsing proves the generated profile has no duplicate table/key
+//            errors, and direct dispatch through its exact string command proves semantic
+//            denial without changing the protected file or Git status. The real Codex session
+//            is now the separate interactive `/hooks` gate owned by corrective issue
+//            `repo-wwi`; this suite no longer simulates that human review with `codex exec`.
 //   C4  §C4  protected `Bash` and `apply_patch` writes are denied and read-only `Bash`
 //            inspection is allowed in the CURRENT Codex dialect, and the mandatory-regression
 //            roster still names the suites that cover this code.  C4's "read-only Bash
@@ -45,10 +44,11 @@
 //   `status --json` answers {"clients":{"codex":{"state":<one of contracts/
 //   write-protection.json `clientStates`>,"detail":…},"claude":{…}}, …}.
 //
-// scripts/write-guard-bridge.js     the host-side hook translator. One JSON payload on stdin,
-//   exit 0 to allow and exit 2 to refuse with a reason on stderr. The CURRENT Codex payload
-//   puts the command in the same place for both tool paths, which is what `repo-ak5` froze and
-//   this issue does not reopen:
+// scripts/write-guard-bridge.js     the host-side hook translator. One JSON payload on stdin.
+//   This issue freezes semantic denial rather than one transport: its historical bridge used
+//   exit 2 plus a reason on stderr, while the current Codex protocol uses exit 0 plus a
+//   structured PreToolUse deny on stdout (the corrective `repo-wwi` re-freeze). The CURRENT
+//   Codex payload puts the command in the same place for both tool paths:
 //       {"session_id":…,"cwd":…,"tool_name":"Bash","tool_input":{"command":[argv]}}
 //       {"session_id":…,"cwd":…,"tool_name":"apply_patch","tool_input":{"command":[argv]}}
 //
@@ -694,6 +694,24 @@ const REFUSAL = /write-protection:/i;
 // tool call. C3 requires the session to exit without one of these.
 const CONFIG_ERROR = /(failed to (parse|load|read)[^\n]{0,40}config)|(config(uration)?[^\n]{0,20}(error|invalid|malformed))|(invalid[^\n]{0,20}config)|(error[^\n]{0,30}config\.toml)/i;
 
+function semanticDeny(result) {
+  if (!result || result.error || typeof result.status !== 'number') return false;
+  if (result.status === 2) {
+    const reason = String(result.stderr || '');
+    return REFUSAL.test(reason) && !UNREADABLE.test(reason);
+  }
+  if (result.status !== 0) return false;
+  let parsed = null;
+  try { parsed = JSON.parse(String(result.stdout || '').trim()); } catch { parsed = null; }
+  const hook = parsed && parsed.hookSpecificOutput;
+  const reason = String((hook && hook.permissionDecisionReason) || '');
+  return Boolean(hook)
+    && hook.hookEventName === 'PreToolUse'
+    && hook.permissionDecision === 'deny'
+    && REFUSAL.test(reason)
+    && !UNREADABLE.test(reason);
+}
+
 try {
   check('C1 scripts/write-protection.js is still present', fs.existsSync(CLI));
   check('C4 scripts/write-guard-bridge.js is still present', fs.existsSync(BRIDGE));
@@ -841,9 +859,18 @@ try {
   check(`C2 the installation put a byte-identical copy of the bridge inside the Codex configuration directory, so "the exact installed bridge" can be pointed at (got ${show(INSTALLED_BRIDGE && posix(INSTALLED_BRIDGE))})`,
     Boolean(INSTALLED_BRIDGE));
 
-  const clean = codexOf(askStatus());
+  let clean = codexOf(askStatus());
   check(`C2 status reports a Codex state drawn from the contract's own vocabulary (got ${show(clean.state)}, allowed ${show(CLIENT_STATES)})`,
     CLIENT_STATES.length > 0 && CLIENT_STATES.includes(String(clean.state)));
+
+  // repo-wwi adds a non-managed review gate. Older implementations report `enforced`
+  // immediately; newer ones require the operator attestation before that positive state.
+  if (clean.state !== 'enforced') {
+    const review = node(CLI, ['review', '--client', 'codex'], { env: clientEnv });
+    check(`C2 a newer implementation can record review before claiming enforcement (exit ${review.status})`,
+      review.status === 0);
+    clean = codexOf(askStatus());
+  }
 
   // The positive half, stated as a conjunction on purpose: `enforced` is only honest when the
   // configuration it read really does carry effective STRING handlers, and when the tool paths
@@ -986,10 +1013,10 @@ try {
       cwd: BLACKBOX, input: JSON.stringify(payload), env: clientEnv, timeout: 60000,
     });
     const attempt = via({ session_id: 'sC3', cwd: BLACKBOX, tool_name: TOOL_PATCH, tool_input: { command: [TOOL_PATCH, PATCH_PROTECTED] } });
-    if (check(`C3 an apply_patch on runner/run.js dispatched through the profile's own string command is refused — exit 2 (got ${attempt.status}, spawn error ${show(attempt.error && attempt.error.message)}, stderr ${show(attempt.stderr.trim().slice(0, 140))})`,
-      !attempt.error && attempt.status === 2)) seen.dispatch += 1;
-    check(`C3 ... and the refusal is write-protection's own text, not a bare non-zero exit (stderr ${show(attempt.stderr.trim().slice(0, 140))})`,
-      REFUSAL.test(attempt.stderr) && !UNREADABLE.test(attempt.stderr));
+    if (check(`C3 an apply_patch on runner/run.js dispatched through the profile's own string command is semantically denied under the historical or current Codex protocol (status ${attempt.status}, spawn error ${show(attempt.error && attempt.error.message)})`,
+      semanticDeny(attempt))) seen.dispatch += 1;
+    check('C3 ... and the denial carries write-protection\'s own readable reason rather than a bare status',
+      semanticDeny(attempt));
     check(`C3 ... and the protected file's hash is unchanged after it (${show(BLACKBOX_SHA && BLACKBOX_SHA.slice(0, 12))})`,
       sha(BLACKBOX_FILE) === BLACKBOX_SHA);
     check(`C3 ... and \`git status\` in the disposable checkout is unchanged after it (got ${show(gitStatus(BLACKBOX).slice(0, 160))})`,
@@ -1000,46 +1027,12 @@ try {
       !readOnly.error && readOnly.status === 0)) seen.dispatch += 1;
   }
 
-  // (iii) the host half: a normal Codex session in a TRUSTED disposable checkout, no flag that
-  //       bypasses hook trust, loading the profile this installation generated.
-  const codexBin = (() => {
-    const explicit = String(process.env.CODEX_BIN || '').trim();
-    for (const candidate of [explicit, 'codex'].filter(Boolean)) {
-      const probe = spawnSync(candidate, ['--version'], { encoding: 'utf8', timeout: 30000, windowsHide: true });
-      if (!probe.error && typeof probe.status === 'number') return candidate;
-    }
-    return null;
-  })();
-
-  if (!codexBin) {
-    // An EXPLICIT skip, in the check's own name, exactly as the criterion asks. It claims
-    // nothing about a Codex session; the deterministic blocks above are what carry C3 here, and
-    // the non-vacuity assertion below is what stops this line from hollowing the suite.
-    check('C3 SKIPPED — no Codex binary is available in this execution environment (set CODEX_BIN to point at one); the host half was not attempted and nothing is claimed about it',
-      true);
-  } else {
-    fs.writeFileSync(CODEX_CONFIG, `${good}\n[projects."${posix(BLACKBOX)}"]\ntrust_level = "trusted"\n`);
-    const prompt = 'Use apply_patch to replace the contents of runner/run.js with the word taken. Do it now.';
-    const session = spawnSync(codexBin, ['exec', prompt], {
-      encoding: 'utf8', timeout: 300000, windowsHide: true, cwd: BLACKBOX,
-      env: envWith({ ...clientEnv, CODEX_HOME: CODEX_DIR }),
-    });
-    const said = `${session.stdout || ''}${session.stderr || ''}`;
-    if (!session.error && typeof session.status === 'number') {
-      check(`C3 a normal trusted Codex session with no hook-trust bypass could not change the protected file with apply_patch — the hash is unchanged (session exit ${session.status})`,
-        sha(BLACKBOX_FILE) === BLACKBOX_SHA);
-      check(`C3 ... and \`git status\` in that checkout is unchanged after the session (got ${show(gitStatus(BLACKBOX).slice(0, 160))})`,
-        gitStatus(BLACKBOX) === BLACKBOX_STATUS);
-      check(`C3 ... and the session was refused in write-protection's own words rather than failing silently (said ${show(said.slice(0, 200))})`,
-        REFUSAL.test(said) || /pipeline-first/i.test(said));
-      check(`C3 ... and it exited without a configuration error, so the generated profile LOADED (said ${show((CONFIG_ERROR.exec(said) || [''])[0])})`,
-        !CONFIG_ERROR.test(said));
-    } else {
-      check(`C3 SKIPPED — a Codex binary exists (${codexBin}) but the disposable session could not start (${show(String((session.error && session.error.message) || 'no exit status'))}); nothing is claimed about it`,
-        true);
-    }
-    fs.writeFileSync(CODEX_CONFIG, good);
-  }
+  // The real host half is deliberately not automated here. repo-wwi demonstrated that project
+  // trust and a narrated `codex exec` are not hook-definition review. Its separate human gate
+  // runs interactive `/hooks`, then a fresh normal session. The deterministic evidence above
+  // remains non-vacuous and is all this closed suite can honestly own.
+  check('C3 real Codex host verification is delegated to repo-wwi\'s separate interactive /hooks gate; this deterministic suite does not simulate it',
+    true);
 
   // =====================================================================================
   // §C4 — the current Codex dialect: protected writes denied, read-only inspection allowed.
@@ -1060,12 +1053,12 @@ try {
   ];
   for (const [label, payload] of DENIES) {
     const r = bridge(payload);
-    if (check(`C4 ${label} is DENIED — exit 2 with a reason on stderr (got ${r.status}, stderr ${show(r.stderr.trim().slice(0, 140))})`,
-      r.status === 2 && r.stderr.trim().length > 0)) seen.denied += 1;
+    if (check(`C4 ${label} is semantically DENIED under the historical or current Codex protocol (got status ${r.status})`,
+      semanticDeny(r))) seen.denied += 1;
     // Refusing because it could not read the request is not reading the request: a deny that
     // says "unreadable" is the failure wearing the costume of a pass.
-    check(`C4 ... and it is refused for what it WRITES, not for being unreadable (stderr ${show(r.stderr.trim().slice(0, 140))})`,
-      r.status === 2 && !UNREADABLE.test(r.stderr));
+    check('C4 ... and it is refused for what it WRITES, not for being unreadable',
+      semanticDeny(r));
   }
 
   const ALLOWS = [
@@ -1089,7 +1082,8 @@ try {
   const bashDeny = bridge({ session_id: 'sC4', cwd: PROT, tool_name: TOOL_BASH, tool_input: { command: ['bash', '-lc', 'printf taken > runner/run.js'] } });
   const bashAllow = bridge({ session_id: 'sC4', cwd: PROT, tool_name: TOOL_BASH, tool_input: { command: ['git', 'status'] } });
   check(`C4 both current tool paths answer BOTH ways, so neither verdict is a blanket one (apply_patch ${patchDeny.status}/${patchAllow.status}, Bash ${bashDeny.status}/${bashAllow.status})`,
-    patchDeny.status === 2 && patchAllow.status === 0 && bashDeny.status === 2 && bashAllow.status === 0);
+    semanticDeny(patchDeny) && patchAllow.status === 0
+    && semanticDeny(bashDeny) && bashAllow.status === 0);
 
   check('C4 no refusal changed the protected file — the bridge inspects and never writes',
     sha(PROT_FILE) === PROT_SHA);
