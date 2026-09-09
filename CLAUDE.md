@@ -92,6 +92,12 @@ node scripts/batch.js pending
 node scripts/batch.js show
 node scripts/verdict.js pending
 
+# record an idea against a project while a run is in flight; starts no child process,
+# creates no Beads issue, takes no target lock
+node scripts/kickoff.js submit --config run.config.<project>.json --packet <file|->
+node scripts/kickoff.js list --config run.config.<project>.json
+node scripts/kickoff.js show --config run.config.<project>.json --id <kp-...>
+
 # isolate interactive sessions
 node scripts/worktree.js new <idea-name>
 node scripts/worktree.js list

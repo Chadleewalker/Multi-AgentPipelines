@@ -58,6 +58,53 @@ To stop a fed run cleanly, create `runs/<run-id>/stop`; active workers finish be
 feed closes. Do not launch a run from an auxiliary worktree because `runs/` is host-local
 and its observer artifacts belong in the main checkout.
 
+## Kickoff intake
+
+`scripts/kickoff.js` records a kickoff packet against a project and returns. It creates no
+runnable Beads issue and starts no model, Docker, Git, worktree or target-lock operation —
+it starts no child process at all — so it is safe to run while a run is in flight.
+
+```bash
+node scripts/kickoff.js submit --config run.config.<project>.json --packet idea.json
+node scripts/kickoff.js list   --config run.config.<project>.json [--json]
+node scripts/kickoff.js show   --config run.config.<project>.json --id kp-… [--json]
+node scripts/kickoff.js --help
+```
+
+The contract is `kickoff-intake/1`, and it is stated in exactly three places that must
+agree: this section, `node scripts/kickoff.js --help`, and the Docker-free tests. The
+packet is a closed JSON object — `version`, `title`, `description`, `constraints`,
+`examples`, `nonGoals`, `priority`, `relations`, `origin` — and any field outside that list
+is refused as `unknown-field`. At most 65536 bytes of packet input as supplied are
+accepted, from a file or from stdin with `--packet -`; one byte more is refused as
+`input-too-large`, before the input is parsed.
+
+State is host-owned, per project, and outside every checkout and every target. It sits
+beside the host-global target lock authority `runner/lock.js` computes for the config's
+canonical `targetRepoPath`, at `<host-global target lock file>.kickoff/proposals/<id>.json`.
+`PIPELINE_GLOBAL_LOCK_DIR` re-aims that root, the same seam the lock itself uses — a test
+seam, not an operator control. Because the key is canonical target identity, equivalent
+spellings of one target path and different pipeline worktrees share one queue.
+
+A proposal id is `kp-` followed by 16 lowercase hexadecimal characters, assigned once at
+submit and never reassigned: the id printed is the id stored, the id `show` accepts, and
+the id `list` keeps reporting. The content hash is `sha256:` followed by 64 lowercase
+hexadecimal characters, taken over the record's immutable `intent` bytes — the canonical
+serialization of the packet as submitted. The original record is immutable; answers and
+stage changes will be append-only events beside it, never edits to it. A record whose
+`intent` no longer hashes to its recorded hash is refused as `tampered-intent`, and a state
+component that is not a real directory is refused as `state-not-a-real-directory`.
+
+Exit codes, spoken by `submit`, `list` and `show` alike:
+
+| Code | Meaning |
+|---|---|
+| 0 | accepted, or the requested report was produced |
+| 2 | usage error — the command line is wrong or incomplete |
+| 3 | packet refused — malformed, too large, or outside the closed shape |
+| 4 | state refused — the intake state is unreadable, tampered, or not a real directory |
+| 5 | no such proposal for this target |
+
 ## Write protection
 
 A checkout whose selected integration fork point carries `pipeline.config.json` is
