@@ -225,8 +225,13 @@ docker build -t pipeline-base:local docker/base
 bash scripts/test-base-image.sh      # expect every line PASS
 ```
 
-Node, git, the Claude CLI and `bd` at pinned versions, with no credentials and no pipeline
-code. The network gatekeeper image builds itself on first run.
+Node, git, both agent CLIs — Claude Code and Codex — and `bd` at pinned versions, with no
+credentials and no pipeline code. Both CLIs ship in one image because the image is per
+project, not per provider; the credential you pass at launch is what decides which of them
+can reach anything. The build itself fails if a pin stops providing its executable, so a
+run config selecting `codex` needs an image built after that pin was added — rebuild this
+one and then the project layer. The network gatekeeper image builds itself on first run,
+one deny-by-default profile per provider.
 
 ### B6. `cp .worktree-carry.example .worktree-carry`
 

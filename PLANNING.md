@@ -228,7 +228,7 @@ critic that never gates leaves no other trace (§3.2, move 4).
 
 **Launch the test author from the generated brief.** The planning command computes the same
 deterministic brief, creates or reuses the issue's dedicated worktree, and opens one headless
-Claude session there with an explicit model alias:
+agent session there with an explicit model alias:
 
 ```bash
 node scripts/author-tests.js <issue-id> --config run.config.<project>.json
@@ -243,6 +243,24 @@ separate green-probe agent and falls back through `testAuthorModel` to `model`; 
 explicit argv values, never a global CLI selection. `testProbeAttempts` bounds the host-feedback
 loop at three by default. `scripts/spec-brief.js` remains the read-only command for inspecting or
 saving the brief without opening a session.
+
+**Which backend those two stages launch is also a run-config decision** (DESIGN.md 6.5,
+change-log row `repo-45g`). `testAuthorProvider` and `testProbeProvider` accept `claude` or
+`codex` and nothing else, falling back to the global `provider`; `testAuthorReasoningEffort`
+and `testProbeReasoningEffort` accept `minimal`, `low`, `medium` or `high` and fall back to
+the global `reasoningEffort`. **Naming none of them is Claude and is the run you already
+know** — the same argv, the same prompt on stdin, the same timeout. A Codex stage runs
+`codex exec` instead, with the brief still on stdin and the model and effort as explicit
+argv, and the launcher reports the effort it used beside the model alias. The per-stage tool
+policy does not move: the author's allowed verifier command and the probe's file-tools-only,
+no-shell rule are the stage's decisions, not the provider's.
+
+A Codex selection is refused **before the target lock, the Beads read and the worktree**, so
+a missing prerequisite leaves nothing to unwind by hand: the `codex` executable must be on
+PATH, and the host must be able to authenticate — either a saved `codex login` or
+`CODEX_API_KEY`, the host being the one place a saved login is allowed to count. Each
+refusal names its own remedy. Claude keeps its historical behaviour of reporting a missing
+executable as an agent failure rather than a pre-gate.
 
 It works out which of three states the issue is in first, because the instructions differ:
 write the tests, freeze a suite the working tree already holds, or re-gate one that is on the

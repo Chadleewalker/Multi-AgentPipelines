@@ -404,7 +404,7 @@ flowchart LR
   AC -->|"valid structured values"| R
   AC -.->|"invalid exit-0 claim → failed"| R
   T -->|"every request"| PX
-  PX -->|"allowed"| AN["The three anthropic.com endpoints"]
+  PX -->|"allowed"| AN["The selected provider's endpoints only<br/>Claude profile · the three anthropic.com endpoints<br/>Codex profile · api.openai.com"]
   PX --x BL["Refused — github.com, npm, everything else"]
   REG -.-> T
   R --> RG
@@ -429,8 +429,16 @@ The sandbox is **per project**. The network and the proxy take their names from 
 config — derived from the project segment of `run.config.<project>.json` when it names
 neither — so two runner processes against two projects draw two copies of this diagram
 side by side, and neither one's `up` or `down` touches the other's plumbing (change-log
-row `repo-jur`). The proxy *image* is shared; only the running container and the network
-are per project.
+row `repo-jur`). The proxy *image* is shared **across projects**; only the running container
+and the network are per project.
+
+It is not shared across **providers**. There are two deny-by-default profiles and two image
+tags — `docker/proxy` for Claude, `docker/proxy-codex` for Codex — and `pipeline-net.sh`
+picks one from `PIPELINE_PROVIDER`, unset meaning Claude (change-log row `repo-45g`).
+Neither list is ever widened to carry both, because one merged allowlist would hand every
+task the union of both providers' endpoints, which is the opposite of an allowlist. The
+pre-run egress gate probes the endpoint of the provider the run actually selected, so a
+green gate is evidence about this run rather than about the other backend.
 
 The shell node is a Windows host-identity gate, not merely a check that some executable
 named `bash` exists (change-log row `verified-host-shell`). The runner proves the shell is
@@ -472,8 +480,10 @@ enters the ordinary failed/blocked row, never done/closed.
 A specialist that needs a different model or a different tool changes nothing structural:
 the coding agent is already swappable through `agentCommand` → `PIPELINE_AGENT_CMD`, and
 the contract is only "a shell command that reads a prompt on stdin and edits files." A
-non-Anthropic tool would additionally need its domain added to the allowlist — the one
-place the closed-network policy would have to be revisited deliberately.
+non-Anthropic tool additionally needs its endpoints allowed, which is the one place the
+closed-network policy has to be revisited deliberately — and that revision has now been
+made once, for Codex, in the shape the policy requires: a **second** deny-by-default
+profile naming only `api.openai.com`, not an extra line in the existing one.
 
 ## What each outcome does
 
