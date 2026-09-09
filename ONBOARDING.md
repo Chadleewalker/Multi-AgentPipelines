@@ -206,6 +206,12 @@ coverage that matters is of the area about to be tasked out, not of the whole sy
       in the pipeline repo, which is public and documents the machinery, never the work
       done with it. This is the same boundary that makes `run.config.<project>.json`
       git-ignored there.
+      Nothing has to be created for this project's **kickoff queue** (§3.10): once its
+      `run.config.<project>.json` exists, `node scripts/kickoff.js submit --config
+      run.config.<project>.json --packet <file|->` records an idea against the target in
+      host-owned state keyed on its canonical path, created on first submit and living
+      outside every checkout — so it never touches this repo, never touches the target,
+      and never crosses the boundary above. PLANNING.md step 0 reads it beside the inbox.
 - [ ] Create `docs/threads/` with a copy of this pipeline repo's `docs/threads/README.md`
       — the durable identity file an idea thread gets from its first exchange (§3.8). One
       file per thread being worked, `docs/threads/<slug>.md`, undated, with status in its

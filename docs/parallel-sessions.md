@@ -160,6 +160,7 @@ in practice, all of it verified on this machine rather than reasoned about.
 |---|---|
 | Commits, branches, tags, remotes | One `.git`. That is what a worktree is. |
 | **The Beads issue database** | **Verified.** Beads finds its database through git's *common directory*, so every worktree reads and writes the **one** database in the main checkout. `bd count` returns the same number from a worktree and from the main checkout, and running `bd` in a worktree creates no second database there. This is the answer to the question that mattered most: N worktrees do **not** mean N issue queues, so the work queue cannot fork the way the code does. `bd worktree info` will tell you what a given folder resolved to. |
+| **The kickoff intake queue** | `scripts/kickoff.js` keys its state on the *target's* canonical identity and writes it beside the host-global project lock, outside every checkout (DESIGN.md §3.10, §4.12). So a submit from a worktree, from the main checkout, or from a second clone of this repo lands in the **one** queue for that project, and `list` from any of them reports the same proposals — the queue cannot fork the way the code does, for the same reason the issue database cannot. What is *not* shared is the file that names the target: `run.config.<project>.json` is git-ignored and absent from a fresh worktree (below), so carry it or submit from the main checkout. |
 
 That Beads result also means the reverse: two sessions writing issues at the same moment
 are writing to the same database, and Beads serialises them with its own lock files. That

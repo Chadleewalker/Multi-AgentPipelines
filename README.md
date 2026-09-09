@@ -96,7 +96,7 @@ on the shared base image, and `bd init` — [`PLANNING.md`](PLANNING.md) walks t
 | `pipeline/` | what runs *inside* a container: entrypoint, verifier, agent stubs |
 | `schemas/` | the frozen contracts between separately-built components — the status file, the verify result, the run manifest, and the event ledger a run appends beside its log |
 | `docker/` | the pinned base image and the allowlist proxy sidecar |
-| `scripts/` | one test suite per build task, the end-to-end pass, and the host-side readers — `audit-runs.js` joins every past run into one report, `dashboard.js` serves the run in flight on localhost, `batch.js` says which frozen batches have never been launched and how the live queue differs from what was frozen; all change nothing |
+| `scripts/` | one test suite per build task, the end-to-end pass, and the host-side readers — `audit-runs.js` joins every past run into one report, `dashboard.js` serves the run in flight on localhost, `batch.js` says which frozen batches have never been launched and how the live queue differs from what was frozen; all change nothing. `kickoff.js` is the one host-side *writer* here, and it writes only its own intake state: it records an idea against a project while a run is in flight, starting no child process and touching neither the target nor Beads |
 | `tests/` | `acceptance/` — per-task tests, frozen at approval; `unit/` — Docker-free suites |
 | `beads/` | the task-queue issue template |
 

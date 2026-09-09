@@ -834,6 +834,89 @@ datable by neither counts as **having worked** the ids it names, labelled `run-t
 a false "pending" invites a double launch, where a false "launched" only sends someone to
 look.
 
+### 3.10 The kickoff intake (the conveyor's front door)
+
+Every path into this pipeline runs through a person being free. §3.2's planning session is
+interactive by hard rule 3 and it should stay that way; §3.8's thread file assumes a session
+is open to write it; §3.9's batch marker is the *last* act of a planning session, not a way
+into one. So a thought that arrives while a run is in flight has exactly two homes: a
+`docs/IDEAS.md` paragraph that nothing ever asks about, or the user's memory. The intake is
+the front door of a **continuous idea conveyor** whose later stages — clarifying questions,
+answers, promotion into a spec — do not exist yet, and it is deliberately built first and
+alone, because the stage that loses ideas is the one before any of them.
+
+**One command records a kickoff packet and returns.** `node scripts/kickoff.js submit
+--config run.config.<project>.json --packet <file|->`, with `list` and `show` beside it,
+each also in `--json`. What it does is write one record. What it does *not* do is the
+design:
+
+**Non-blocking is a structural claim, not a latency one.** A submit creates no runnable
+Beads issue and starts no model, Docker, Git, worktree or target-lock operation. It starts
+**no child process at all**. A tool that shells out inherits every way the thing it shelled
+out to can block, and a tool that takes the target lock is refused by the very run it was
+meant not to disturb — so "safe to run while a run is in flight" is only true if the
+absence of both is a property of the code rather than an expectation about timing. It is
+also why the intake creates no Beads issue: hard rule 1 puts the host's one writer on one
+queue, and an inbox that can start a container is not an inbox (§3.8's own boundary,
+inherited unchanged from `docs/IDEAS.md`).
+
+**Host-owned state, keyed on canonical target identity — and the identity rule is imported,
+never copied.** The queue belongs to the project, not to the checkout that submitted.
+§4.12's host-global run lock already owns exactly that rule: one canonical key per target
+repository, resolved outside every pipeline checkout and every target. The intake state is
+therefore pinned *beside* that authority, at
+`<host-global target lock file>.kickoff/proposals/<id>.json`, the shape
+`preparationUncertainDir` already uses for `<lock>.preparation-uncertain`. Equivalent
+spellings of one target path and different pipeline worktrees reach one queue for free,
+because they compute one file — and `runner/lock.js` stays the only place that decides what
+"the same project" means. Outside the target is what keeps a submit invisible to a run: the
+target's working tree, Git directory, index and Beads database are byte-for-byte untouched.
+Not under `runs/` is §3.8's argument unchanged — `runs/` is host-local run evidence, and a
+half-formed idea is intent about the work rather than a record of it.
+
+**The original is immutable, and future stages are append-only beside it.** A record carries
+the packet as submitted in one `intent` string plus a `sha256:` digest of exactly those
+bytes. Nothing rewrites a record: not a later submit, not a later stage change. Answers to
+clarifying questions and stage transitions will be events *next to* the record, which is the
+same append-only discipline §3.8's Decisions log, §3.1's attempt log and §12's change log
+all already keep, and for the same reason — an amendment absorbed into prose is
+indistinguishable from one never made. An `intent` that no longer hashes to its recorded
+hash is therefore not a record with a correction in it; it is a `tampered-intent` refusal.
+
+**The id is assigned, not derived from content.** Two identical packets are two proposals: a
+person who submits the same idea twice has said something, and a content-addressed id would
+silently merge the second into the first. Uniqueness comes from 64 random bits and an
+exclusive create, so N simultaneous submits produce N records with no coordination and no
+lock of any kind. What "stable" means is the weaker and more useful thing — the id printed
+is the id stored, the id `show` accepts, and the id `list` keeps reporting.
+
+**Fail closed, and leave nothing half-visible.** `proposals/` holds records and nothing
+else: a write is staged in a sibling `staging/` directory and linked into place as one
+filesystem operation, so an interruption leaves either a complete proposal or no visible
+proposal, never a file that is neither. The packet shape is closed — an unknown field is a
+refusal, not an extension — and the input is bounded before it is parsed, because a bound
+applied after the parse has already read whatever arrived. A state component that is not a
+real directory, an unreadable or malformed record, and an input over the bound each refuse
+by name and write nothing. `list` fails closed over the whole directory and `show` over the
+one record it was asked for: a report that silently omitted a bad record is the dangerous
+failure mode, while a `show` that refused because some unrelated record is bad would let one
+damaged file hide the whole queue.
+
+**The contract has exactly three parties and they are checked against each other.**
+`kickoff-intake/1` — version, state location, id rule, hash rule, input bound, refusal names
+and exit-code meanings — is stated in `docs/control-plane.md`, in the CLI's own `--help`,
+and in the Docker-free tests, and the tests assert the other two against their own
+declaration. This is §3.4's rule applied to a contract with no schema file: the values live
+where a reader will look, and nothing may state them a fourth time.
+
+**What this is not, and what comes next.** It is not a queue the runner drains, not a spec,
+and not a promise that anything happens — §3.9's rule that the marker records intent while
+Beads decides what runs applies here one layer earlier. Promotion stays a planning session's
+job (§3.2, §3.3): a proposal becomes a spec when a person and a critic panel say so, and
+never because it was submitted. The stages this makes possible — a clarifying-question
+exchange against a recorded proposal, and a stage vocabulary carried by append-only events —
+are separate work, and neither may weaken any of the properties above.
+
 ## 4. The Implementation Phase (the execution layer)
 
 Carried over from v3, amended over two critic-review rounds; this section is the
@@ -1238,6 +1321,19 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     covered by takeover, not by release, which is why takeover is the mechanism and release
     is the courtesy. A clean end removes the authority only when every claim settled. An
     unfinished claim leaves a released ownership record for the next run to take over.
+
+    **Two host-owned state directories sit beside that authority, and neither is the lock.**
+    `<lock>.preparation-uncertain` carries a preparation worker that outlived its
+    coordinator, and `<lock>.kickoff` carries §3.10's kickoff intake. Both are pinned here
+    for the same reason: the authority's path is the project's canonical identity, computed
+    identically from any checkout and living outside every target, so state keyed on it
+    folds equivalent spellings for free and cannot be reached by a run it must not disturb.
+    They differ in what they may do with it. The preparation marker is consulted *by*
+    admission and refuses a run. The intake is **not a gate and not a queue**: it neither
+    reads nor writes the lock record, takes and waits for nothing, and is invisible to
+    every gate above — a submit succeeds while another run holds the ordinary target lock,
+    and leaves that lock's own authority record byte-for-byte unchanged. Anything later
+    added beside the authority states which of those two it is.
 
     **The Beads checkout and publication remote are one project, proven before either is
     touched.** `targetRepoPath` is the database side of the runner while
@@ -2718,6 +2814,20 @@ that this section did not state. The park half (change-log row `repo-i9y`, 2026-
 task — one wait, one run-level cycle cap, admission checked before the claim so a refused
 task leaves its issue `open`. See 4.7 for the full contract.
 
+**V2 — the continuous idea conveyor:** a way into the pipeline that does not require a
+person to be free (§3.10). Phased deliberately, front door first, because the stage that
+loses ideas is the one before any of them:
+- **Intake** (built; change-log row `continuous-idea-conveyor`): `scripts/kickoff.js`
+  records a versioned kickoff packet in host-owned per-project state keyed on §4.12's
+  canonical target identity, creating no Beads issue and starting no model, container, Git,
+  worktree, target-lock operation or child process at all. The original record is immutable.
+- **The exchange:** clarifying questions asked against a recorded proposal, and answers
+  written back as append-only events beside the original — never edits to it.
+- **Promotion stays interactive.** A proposal becomes a spec through §3.2's session and
+  §3.3's approval, never because it was submitted; hard rule 3 is unchanged. What the
+  conveyor removes is the requirement that a person be available at the moment an idea
+  arrives, not the requirement that a person approve what runs.
+
 **V3 — the second-environment port:** running under a host's existing container workflow,
 repos on a network share, and a local-branch review mode for hosts with no PR service.
 Machine specifics stay in an untracked local note, never in the repo.
@@ -2730,7 +2840,11 @@ Machine specifics stay in an untracked local note, never in the repo.
 - An LLM orchestrator, nested orchestrators, or a leader agent inside containers.
   Orchestrator intelligence (re-planning, cross-task learning) waits until the dumb loop
   has proven itself.
-- Autonomous planning or autonomous spec changes during a run — ever.
+- Autonomous planning or autonomous spec changes during a run — ever. §3.10's kickoff
+  intake is not an exception and is built so it cannot become one: a submitted proposal
+  creates no runnable Beads issue, nothing in `runner/` or `pipeline/` reads the intake
+  state, and promotion into a spec remains a planning session's decision (§3.2, §3.3).
+  An inbox that can start a container is not an inbox.
 - Opening the container network beyond the enumerated Anthropic endpoints.
 - Cost accounting. There is no spend ceiling by design (see 4.6–4.7); real cost tracking
   is a possible V2+ addition if the pipeline ever moves to metered API billing.

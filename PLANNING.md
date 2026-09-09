@@ -67,7 +67,7 @@ it does. Nothing inside the tree opts out, so there is no file to add and none t
 
 ## The Session, Step by Step
 
-### 0. Read the idea inbox and the open threads
+### 0. Read the idea inbox, the open threads and the kickoff queue
 Open [`docs/IDEAS.md`](docs/IDEAS.md) — in *this* repo when the session is about the
 pipeline, in the target project's repo otherwise — and see whether anything parked there
 belongs in this session. It is where "that's probably a good idea" gets written down
@@ -99,6 +99,22 @@ When a thread graduates, its slug is already the change-log ref (§3.8), its sta
 `promoted`, and its `Outcome` names what it became; a thread the session concludes is not
 wanted becomes `dropped` with the reason. Either way the file stays — deleting it throws
 away the reason, which is the only thing that stops the idea coming back.
+
+Then read the kickoff queue for the project this session is about (change-log row
+`continuous-idea-conveyor`, DESIGN.md §3.10):
+
+```bash
+node scripts/kickoff.js list --config run.config.<project>.json
+node scripts/kickoff.js show --config run.config.<project>.json --id kp-…
+```
+
+A kickoff proposal is an idea someone handed the machine *while it was busy* — recorded,
+never started. It is a third inbox and it obeys the same rule as the other two: nothing
+there is a commitment, and a proposal becomes a spec only through the path below, never
+because it was submitted. It differs from an inbox entry in one useful way — it arrives
+with a title, constraints, examples, non-goals and an origin already separated, because
+the packet shape is closed. The record is immutable: read it, cite its id, and let this
+session's `DESIGN.md` section and change-log row be where the decision is written down.
 
 Then run the drift report against the target (change-log row `trace-ledger`):
 
