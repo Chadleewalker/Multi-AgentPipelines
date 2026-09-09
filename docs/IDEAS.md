@@ -24,6 +24,24 @@ Beads issue is the tempting mistake and the wrong one — issues are commitments
 up in `bd ready`, and the queue is what the runner drains unattended. **An inbox that can
 start a container is not an inbox.**
 
+There is one more home now, and it is the only one that does not need a session open: a
+project's **kickoff queue** (DESIGN.md §3.10, change-log row `continuous-idea-conveyor`).
+
+```bash
+node scripts/kickoff.js submit --config run.config.<project>.json --packet <file|->
+```
+
+That records a versioned packet — title, description, constraints, examples, non-goals,
+priority, relations, origin — in host-owned state keyed on the target's canonical identity,
+and returns. It starts no child process, so it is usable at the moment the idea shows up
+even while a run is in flight, and the record it writes is immutable. Two differences decide
+which of the two cheap homes you want. It is **per project**, keyed on the target rather
+than filed in a repo, so an idea about a target goes to that target's queue and never here;
+and its shape is closed, so it suits a thought that already has a title and a constraint,
+where this file is for one that has neither. The boundary above holds there unchanged — a
+submitted proposal creates no Beads issue and starts nothing, and it becomes a spec only
+through the promotion path below. `PLANNING.md` step 0 reads the queue beside this file.
+
 ## The promotion path
 
 An idea is not finished here; it is *parked* here. The way out is the way everything else

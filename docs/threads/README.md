@@ -29,8 +29,11 @@ deliberately refuses to hold, which is why `docs/IDEAS.md` can keep its "resist 
 structure" rule intact. Threads are opened for the entries being worked; most inbox
 entries never get one.
 
-Not every thread starts in the inbox — a user directive, a run finding or a review can
-open one directly. The `origin:` line says which.
+Not every thread starts in the inbox — a user directive, a run finding, a review or a
+kickoff proposal recorded while the machine was busy (DESIGN.md §3.10) can open one
+directly. The `origin:` line says which, and for a proposal it should carry the `kp-` id,
+since the recorded packet is immutable and stays readable with
+`node scripts/kickoff.js show`.
 
 ## The rules
 
@@ -85,7 +88,7 @@ Copy this, fill the header, write one log line, and stop. Everything else accret
 slug:     <kebab-case, = filename, = future change-log ref>
 status:   open
 opened:   <YYYY-MM-DD>
-origin:   <docs/IDEAS.md entry / user directive / run finding / review>
+origin:   <docs/IDEAS.md entry / user directive / run finding / review / kickoff kp-…>
 related:  <design sections, change-log rows, other threads>
 ```
 

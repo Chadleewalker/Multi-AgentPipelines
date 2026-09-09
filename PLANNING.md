@@ -67,7 +67,7 @@ it does. Nothing inside the tree opts out, so there is no file to add and none t
 
 ## The Session, Step by Step
 
-### 0. Read the idea inbox and the open threads
+### 0. Read the idea inbox, the open threads and the kickoff queue
 Open [`docs/IDEAS.md`](docs/IDEAS.md) — in *this* repo when the session is about the
 pipeline, in the target project's repo otherwise — and see whether anything parked there
 belongs in this session. It is where "that's probably a good idea" gets written down
