@@ -398,6 +398,21 @@ tree, all of them capped by a number the operator chose. The number recorded in 
 exactly that cap for a run, and the preparation command below is exactly that shape for
 planning. The lock excludes a second owner; it never constrains the owner's own workers.
 
+**The owner can also be a supervisor, and then the commands themselves are its workers.** One
+live project supervisor holds that same lease and may hand its own `prepare-batch.js` and
+`runner/run.js` a narrow, expiring authority to run *under* its ownership rather than contend
+with it (`DESIGN.md` §3.10, change-log row `repo-rj7`). This changes nothing you type: the
+authority travels in the `PIPELINE_CHILD_AUTHORITY` environment variable, no command line grew
+a flag, and with no supervisor present every command behaves exactly as the rest of this
+section describes. It also changes none of the refusals above — because the supervisor's lease
+*is* the canonical-target lock, a second supervisor and every unrelated coordinator are still
+refused by owner name, and an admitted child takes no lock of its own and releases none. What
+it does change is that a preparation and an implementation worker of one project can be live
+together; the two things that must not overlap, Beads writes and integration publication, stay
+serialized as named critical sections. There is no supervisor command to run yet — it is a
+host-side library a supervising process drives, so nothing in this walkthrough asks you to set
+that variable by hand.
+
 ### Preparing several frozen suites for one project at once
 
 Frozen-test preparation for one project goes through **one named coordinator**, and it is

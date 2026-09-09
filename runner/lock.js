@@ -277,23 +277,33 @@ function isHolderLive(rec) {
 
 // ---- the record ------------------------------------------------------------------------
 
+// The falsifiable evidence `isHolderLive` reads, for this process, right now. Exported so
+// every other host-global record that has to answer "is its owner still there?" — the
+// supervisor lease and the critical-section records in `runner/supervisor.js` — is decided by
+// these rules rather than by a second copy of them that can drift out of step with this one.
+function livenessFields() {
+  return {
+    pid: process.pid,
+    host: os.hostname(),
+    platform: process.platform,
+    takenAtMs: Date.now(),
+    uptimeSeconds: Math.floor(os.uptime()),
+    procStart: procStartTicks(process.pid),
+  };
+}
+
 function selfRecord(runId, canonTarget, observerFile, recoveryOwners = []) {
   const ownerToken = crypto.randomUUID();
   return {
     runId: String(runId),
     ownerToken,
     actor: `pipeline-run-${ownerToken.slice(0, 12)}`,
-    pid: process.pid,
     target: canonTarget,
     observerFile,
     claims: [],
     recoveryOwners,
-    host: os.hostname(),
-    platform: process.platform,
     startedAt: new Date().toISOString(),
-    takenAtMs: Date.now(),
-    uptimeSeconds: Math.floor(os.uptime()),
-    procStart: procStartTicks(process.pid),
+    ...livenessFields(),
   };
 }
 
@@ -477,6 +487,18 @@ function acquire(repoRoot, targetRepoPath, runId, options = {}) {
 function ownedRecord(ownership) {
   if (!ownership || !ownership.authorityFile) throw new Error('lock: run ownership is required');
   const rec = readRecord(ownership.authorityFile);
+  // A supervisor child holds an admission, never this lock: its parent does. It is authorised
+  // for exactly the records keyed on the TARGET rather than on the holder — preparation
+  // uncertainty — and only while that parent is still the live holder. `persistOwned` refuses
+  // it below, so a child can never rewrite the lease record it was let in under.
+  if (ownership.delegation) {
+    const parent = ownership.delegation;
+    if (!rec || rec.target !== ownership.target || rec.runId !== parent.parentId
+        || rec.pid !== parent.parentPid || !isHolderLive(rec)) {
+      throw new Error(`lock: supervisor ${parent.parentId} no longer holds the target lock for child ${parent.nonce}`);
+    }
+    return rec;
+  }
   if (!rec || rec.pid !== process.pid || rec.runId !== ownership.runId
       || rec.ownerToken !== ownership.token || rec.target !== ownership.target) {
     throw new Error(`lock: run ${ownership.runId} no longer owns the target lock`);
@@ -485,6 +507,9 @@ function ownedRecord(ownership) {
 }
 
 function persistOwned(ownership, rec) {
+  if (ownership && ownership.delegation) {
+    throw new Error('lock: a delegated supervisor-child handle may not rewrite the target lock record');
+  }
   writeRecord(ownership.authorityFile, rec);
   writeRecord(ownership.observerFile, rec);
   ownership.recoveryOwners = Array.isArray(rec.recoveryOwners)
@@ -544,7 +569,7 @@ function release(repoRoot, targetRepoPath, ownership) {
 
 module.exports = {
   acquire, release, recordClaim, completeClaim, clearRecoveryOwner,
-  lockPath, globalLockPath, globalLockRoot, canonicalTarget, isHolderLive,
+  lockPath, globalLockPath, globalLockRoot, canonicalTarget, isHolderLive, livenessFields,
   preparationUncertainDir, listPreparationUncertain,
   markPreparationUncertain, clearPreparationUncertain,
   OWNER_TOKEN_KEY, OWNER_RUN_KEY,

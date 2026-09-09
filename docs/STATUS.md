@@ -2046,6 +2046,52 @@ sweep `20260828-145751` is 23/23 including a settled issue reopened onto an `-r2
 Docker queue sweep `20260828-150141` is 27/27, publication sweep `20260828-150407` is
 26/26, and all 33 mandatory Docker-free suites pass.
 
+## One supervisor, scoped children (`repo-rj7`, 2026-09-09)
+
+`runner/supervisor.js` lets one live project supervisor authorize preparation and
+implementation children under its own ownership instead of having those commands compete
+with it, and with each other, as unrelated coordinators (DESIGN.md §3.10, change-log row
+`repo-rj7`).
+
+The decision that made everything else fall out: **the supervisor lease is the existing
+host-global target lock**, taken with the supervisor id as the record's run id. So a second
+supervisor, an unrelated `runner/run.js`, an unrelated `prepare-batch`, `author-tests` and
+`prove-tests` are all refused by the supervisor's own name with no code of their own and no
+second exclusion primitive to keep in step, and canonicalisation, liveness falsification,
+crash takeover and preparation uncertainty are inherited rather than reimplemented. A sidecar
+record beside that lock marks the holder as a supervisor and carries the lease token.
+
+Three things worth knowing before touching this layer:
+
+- **The channel is `PIPELINE_CHILD_AUTHORITY` and no command line changed.**
+  `scripts/prepare-batch.js` asks `admitEntry('preparation', …)` and `runner/preflight.js`
+  asks `admitEntry('implementation', …)`, each as the first thing it does — ahead of the
+  lock, write-protection's read-only backstop excepted, and ahead of Docker, the network and
+  every Beads call. With no supervisor present and nothing in the environment the answer is
+  `standalone`, which is why every existing suite stayed green without a compatibility
+  branch anywhere.
+- **An admitted child takes no lock and releases none.** That is what `lockOwned: false` on
+  the preflight result means, and both `runner/run.js`'s exit handler and
+  `cleanupOwnedLifecycle` now honour it. `cleanupOwnedLifecycle` treats an *absent*
+  `lockOwned` as owned, deliberately: `tests/unit/lifecycle-bounds.test.js` calls it with no
+  ownership at all and requires the release to happen, and that suite is frozen.
+- **Two independent critical sections replace what the lock used to serialize.**
+  `beads-write` and `integration-publish`, keyed on (canonical target, section), one child
+  inside each at a time, a provably dead holder taken over on §4.12's evidence. `run.js`
+  reaches them through `withSection`, which is a straight passthrough when
+  `cfg.childAdmission` is null — so a standalone run's behaviour is unchanged by
+  construction rather than by testing.
+
+**Gap worth knowing, and it is a host obligation:** `runner/supervisor.js` has no re-runnable
+suite, and no task can give it one. Both `tests/unit/` and `scripts/test-*.sh` are frozen
+paths in this repository's own `pipeline.config.json`, so the only coverage is
+`tests/acceptance/repo-rj7/` — a frozen artifact of a finished task that nothing runs again
+(the `repo-dhp` lesson, one layer further out: there the fix was to extract into
+`tests/unit/`, and here that door is shut from inside a run). Extracting `test.js`'s 150
+checks into `tests/unit/supervisor.test.js` plus a `scripts/test-supervisor.sh` wrapper is
+work for an interactive session, and until it happens a change to the lease, grant, admission
+or section logic is judged by nothing.
+
 ## What's next
 
 **The live queue feed shipped on 2026-08-25** — a run re-reads the ready queue while it is

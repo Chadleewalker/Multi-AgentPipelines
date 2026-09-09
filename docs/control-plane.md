@@ -58,6 +58,41 @@ To stop a fed run cleanly, create `runs/<run-id>/stop`; active workers finish be
 feed closes. Do not launch a run from an auxiliary worktree because `runs/` is host-local
 and its observer artifacts belong in the main checkout.
 
+## Supervised operation
+
+One live project supervisor may hold that same host-global canonical-target authority and
+authorize preparation and implementation children under it, instead of having those commands
+contend with it as unrelated coordinators (`runner/supervisor.js`, `DESIGN.md` §3.10,
+change-log row `repo-rj7`). The lease *is* the lock, so a second supervisor and every
+unrelated standalone coordinator are still refused by owner name before any work is launched.
+
+`PIPELINE_CHILD_AUTHORITY` names a file holding one scoped child authority record, and no
+command line changed: `scripts/prepare-batch.js` asks for the `preparation` scope and
+`runner/preflight.js` — and so `runner/run.js` — asks for `implementation`, each as the first
+thing it does, ahead of the lock and therefore ahead of Docker, the network and every Beads
+call. With that variable unset and no supervisor present, admission answers `standalone` and
+every command behaves exactly as described above.
+
+Authority is a host record kept beside the lock, outside every model-editable tree; the file
+and the environment variable only name it, and neither grants anything on its own. A child is
+admitted only when the host record matches the presented authority field for field, names this
+canonical target, is unspent and unexpired, and was granted for the requested scope by a parent
+that is still the live holder. Forged, replayed, expired, wrong-target, wrong-parent, released
+and wrong-scope authority is refused before any Beads, Git, Docker or network mutation, and a
+refusal leaves every ownership record untouched. An admitted child takes no target lock of its
+own and releases none, and it cannot widen its own scope. Two admitted children may be live at
+once, so what the lock used to serialize is now two independent host-global critical sections
+keyed on (canonical target, section): `beads-write` and `integration-publish`, one child inside
+each at a time.
+
+A grant leaves the outstanding list only when its parent settles it as `complete` or
+`released` — never by expiry, a dead parent or a reclaim — so an interrupted supervisor leaves
+a readable record of what it had in flight. A live parent is never taken over, and a provably
+dead one is reclaimed only when a person asks explicitly, without deleting an uncertain
+preparation marker and without declaring its child complete. There is no supervisor CLI:
+`runner/supervisor.js` is a host-side library, and a supervising process takes the lease and
+issues grants through it.
+
 ## Write protection
 
 A checkout whose selected integration fork point carries `pipeline.config.json` is

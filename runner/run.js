@@ -28,6 +28,7 @@ const { runTask } = require('./container');
 const { createPauseGate } = require('./pause');
 const { createFeedSource, fixedSource, ENDINGS } = require('./feed');
 const { fileMemoryNotes, shouldFileMemory } = require('./memory');
+const { withSection } = require('./supervisor');
 const { publish } = require('./publish');
 const { successfulArtifactFailure } = require('./artifact-schema');
 const { commandFor } = require('./host-shell');
@@ -62,7 +63,12 @@ function parseArgs(argv) {
 // unexpected task, report, queue or publication failures therefore take this same path.
 function cleanupOwnedLifecycle(cfg, repoRoot, log, traceId, deps = {}) {
   const down = deps.networkDown || networkDown;
-  const unlock = deps.releaseLock || releaseLock;
+  // A supervisor child owns the network it started and nothing else: the target lease belongs
+  // to its parent, and `lockOwned: false` is preflight saying so. Releasing there would free a
+  // lease this process never took. Absent means owned, so every existing caller is unchanged.
+  const unlock = deps.lockOwned === false
+    ? () => {}
+    : (deps.releaseLock || releaseLock);
   let error = null;
   try {
     const result = down(repoRoot, cfg);
@@ -269,6 +275,22 @@ function logConcerns(log, tr, status) {
 // `gate` is the RUN-level rate-limit park (§7), built once in main() and shared by every
 // task: this function asks it for admission before it starts and reports its own limits
 // into it, but never owns one.
+// The two host-global critical sections (§3.10), as the task body sees them. `withSection` is
+// a straight passthrough when `cfg.childAdmission` is null, so a standalone run — which holds
+// the whole target already — behaves exactly as it always has. Under a supervisor, two
+// authorized workers may be live at once, and these are the two things that still may not
+// overlap: one Beads write with another, and one integration publication with another. A
+// section that cannot be entered within its bound becomes the caller's own ordinary failure,
+// never a write performed outside the section.
+function beadsWrite(cfg, fn, onBlocked) {
+  try { return withSection(cfg.childAdmission, 'beads-write', fn); }
+  catch (e) { return onBlocked(e && e.message ? e.message : String(e)); }
+}
+function integrationPublish(cfg, fn, onBlocked) {
+  try { return withSection(cfg.childAdmission, 'integration-publish', fn); }
+  catch (e) { return onBlocked(e && e.message ? e.message : String(e)); }
+}
+
 async function runOneTask(cfg, issue, log, token, gate, ownership) {
   const tr = log.trace(issue.id);
   const taskDir = log.taskDir(issue.id);
@@ -299,7 +321,11 @@ async function runOneTask(cfg, issue, log, token, gate, ownership) {
   log.info(tr, `starting task (priority ${priority}): ${title}`,
     { event: 'task.started', data: { priority, title } });
 
-  if (!claim(cfg, issue.id, ownership)) {
+  const claimed = beadsWrite(cfg, () => claim(cfg, issue.id, ownership), (why) => {
+    log.error(tr, `could not enter the Beads-write section to claim the issue: ${why}`);
+    return false;
+  });
+  if (!claimed) {
     log.error(tr, 'could not atomically claim the issue for this run; skipping');
     return null;
   }
@@ -311,8 +337,9 @@ async function runOneTask(cfg, issue, log, token, gate, ownership) {
   const exported = exportIssue(cfg, issue.id);
   if (!exported.ok) {
     log.error(tr, `could not export the issue: ${exported.error}`);
-    const settled = finish(cfg, issue.id, { status: 'failed', beads: 'blocked' },
-      [`run ${log.runId}: could not export issue spec — ${exported.error}`], ownership);
+    const settled = beadsWrite(cfg, () => finish(cfg, issue.id, { status: 'failed', beads: 'blocked' },
+      [`run ${log.runId}: could not export issue spec — ${exported.error}`], ownership),
+    (why) => ({ ok: false, transition: null, error: why }));
     if (!settled.ok) log.error(tr, `could not record export failure in Beads: ${settled.error}`);
     return {
       issueId: issue.id,
@@ -329,8 +356,9 @@ async function runOneTask(cfg, issue, log, token, gate, ownership) {
   const ws = prepare(cfg, issue.id, exported.markdown, log, tr);
   if (!ws.ok) {
     log.error(tr, `workspace preparation failed: ${ws.reason}`);
-    const settled = finish(cfg, issue.id, { status: 'failed', beads: 'blocked' },
-      [`run ${log.runId}: workspace preparation failed — ${ws.reason}`], ownership);
+    const settled = beadsWrite(cfg, () => finish(cfg, issue.id, { status: 'failed', beads: 'blocked' },
+      [`run ${log.runId}: workspace preparation failed — ${ws.reason}`], ownership),
+    (why) => ({ ok: false, transition: null, error: why }));
     if (!settled.ok) log.error(tr, `could not record workspace failure in Beads: ${settled.error}`);
     return {
       issueId: issue.id,
@@ -424,7 +452,8 @@ async function runOneTask(cfg, issue, log, token, gate, ownership) {
   // shouldFileMemory() states it once, where a Docker-free test can reach it.
   // Non-fatal by construction: it never throws and never touches the outcome.
   if (shouldFileMemory(outcome.status)) {
-    const mem = fileMemoryNotes(cfg, issue.id, artifacts.status);
+    const mem = beadsWrite(cfg, () => fileMemoryNotes(cfg, issue.id, artifacts.status),
+      (why) => ({ filed: 0, errors: [why] }));
     if (mem.filed) log.info(tr, `memory: filed ${mem.filed} note(s) via bd remember`);
     for (const err of mem.errors) log.error(tr, `memory: could not file a note — ${err}`);
   }
@@ -432,7 +461,7 @@ async function runOneTask(cfg, issue, log, token, gate, ownership) {
   // ---- publish: push what exists, PR what passed (§4.5, T16) ----
   const published = commitCheckError ? {
     ok: false, pushed: false, branch: ws.branch, prUrl: null, error: commitCheckError,
-  } : publish(cfg, {
+  } : integrationPublish(cfg, () => publish(cfg, {
     ws,
     outcome,
     hasCommits: commits,
@@ -443,7 +472,9 @@ async function runOneTask(cfg, issue, log, token, gate, ownership) {
     runId: log.runId,
     // Host-only exact-value discriminator. publish/credential-scan never logs its value.
     secrets: [token],
-  }, log, tr);
+  }, log, tr), (why) => ({
+    ok: false, pushed: false, branch: ws.branch, prUrl: null, error: why,
+  }));
 
   const notes = attemptNotes(log.runId, outcome, artifacts.status, ws.memoryCount);
   if (artifactError) notes.push(artifactError);
@@ -458,10 +489,12 @@ async function runOneTask(cfg, issue, log, token, gate, ownership) {
   if (!published.ok) {
     completionError = `publication incomplete: ${published.error || 'unknown publication failure'}`;
     notes.push(`completion pending: ${completionError}; recover from workspace ${ws.dir}`);
-    settled = finish(cfg, issue.id, { ...outcome, beads: null }, notes, ownership);
+    settled = beadsWrite(cfg, () => finish(cfg, issue.id, { ...outcome, beads: null }, notes, ownership),
+      (why) => ({ ok: false, transition: null, error: why }));
     if (!settled.ok) completionError += `; ${settled.error}`;
   } else {
-    settled = finish(cfg, issue.id, outcome, notes, ownership);
+    settled = beadsWrite(cfg, () => finish(cfg, issue.id, outcome, notes, ownership),
+      (why) => ({ ok: false, transition: null, error: why }));
     if (!settled.ok) completionError = `Beads completion incomplete: ${settled.error}`;
   }
 
@@ -574,10 +607,16 @@ async function main() {
   // a finally; this synchronous exit handler is the last resort for code that calls
   // process.exit directly. A process killed outright runs neither, which is exactly the
   // case stale-lock takeover exists for.
+  // A supervisor child's implementation authority travels on the config, so every Beads write
+  // and every publication below can name the section it must be alone inside. Null for a
+  // standalone run, where the target lock already makes that true.
+  cfg.childAdmission = pre.childAdmission || null;
   const releaseOnExit = () => {
     try { networkDown(REPO_ROOT, cfg); } catch { /* process exit: best effort only */ }
     finally {
-      try { releaseLock(REPO_ROOT, cfg.targetRepoPath, pre.ownership); } catch { /* never mask the real exit */ }
+      if (pre.lockOwned !== false) {
+        try { releaseLock(REPO_ROOT, cfg.targetRepoPath, pre.ownership); } catch { /* never mask the real exit */ }
+      }
     }
   };
   process.on('exit', releaseOnExit);
@@ -745,7 +784,8 @@ async function main() {
       return true;
     })();
   } finally {
-    cleanup = cleanupOwnedLifecycle(cfg, REPO_ROOT, log, t, { ownership: pre.ownership });
+    cleanup = cleanupOwnedLifecycle(cfg, REPO_ROOT, log, t,
+      { ownership: pre.ownership, lockOwned: pre.lockOwned });
     process.removeListener('exit', releaseOnExit);
   }
   if (!cleanup.ok) {

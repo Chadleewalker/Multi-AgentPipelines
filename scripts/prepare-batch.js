@@ -13,6 +13,7 @@ const { spawn } = require('child_process');
 const { loadConfig } = require('../runner/config');
 const { runSync } = require('../runner/process');
 const lock = require('../runner/lock');
+const supervisor = require('../runner/supervisor');
 const { bdJson } = require('../runner/bd');
 const { readyQueue, resolveBranch } = require('../runner/queue');
 const { buildBrief } = require('./spec-brief');
@@ -632,6 +633,22 @@ async function execute(opts, io = {}, seams = {}) {
       ? manifestValue(manifest).config
       : (seams.loadConfig || loadConfig)(configPath);
   } catch (e) { err(`prepare-batch: ${e.message}`); return EXIT_USAGE; }
+
+  // Child admission (§3.10), first: ahead of the write-protection backstop, ahead of the target
+  // lock, ahead of every worker, worktree and Beads read. With no supervisor on this canonical
+  // target this answers `standalone` and the whole path below is unchanged. With one live, a
+  // preparation that presents no scoped grant is refused by that supervisor's name, and a
+  // forged, replayed, expired, wrong-target, wrong-parent or released grant is refused by its
+  // reason — in both cases with nothing launched and no ownership record touched.
+  const entry = (seams.admitEntry || supervisor.admitEntry)('preparation', {
+    targetRepoPath: cfg.targetRepoPath, repoRoot: ROOT, env: process.env,
+  });
+  if (!entry.ok) {
+    err(`prepare-batch: child authority refused (${entry.reason}): ${entry.message} No worker was launched.`);
+    return EXIT_REFUSED;
+  }
+  const childAdmission = entry.mode === 'supervisor-child' ? entry.admission : null;
+
   if (opts.mode !== 'acknowledge-interrupted' && cfg.allowHalfProven === true) {
     err('prepare-batch: all-proven preparation refuses a config with allowHalfProven=true; change that policy explicitly first.');
     return EXIT_REFUSED;
@@ -666,7 +683,13 @@ async function execute(opts, io = {}, seams = {}) {
   }
 
   const acquireOptions = opts.mode === 'acknowledge-interrupted' ? { allowPreparationRecovery: true } : undefined;
-  const held = (seams.acquire || lock.acquire)(ROOT, cfg.targetRepoPath, `prepare-${opts.batch}`, acquireOptions);
+  // An admitted child runs under its parent's lease: the target is already excluded from every
+  // other coordinator, so taking a second lock would only refuse its own parent. It gets a
+  // delegated handle instead, good for the target-keyed preparation-uncertainty records and
+  // for nothing else.
+  const held = childAdmission
+    ? { ok: true, tookOver: false, ownership: supervisor.childOwnership(childAdmission) }
+    : (seams.acquire || lock.acquire)(ROOT, cfg.targetRepoPath, `prepare-${opts.batch}`, acquireOptions);
   if (!held.ok) {
     err(`prepare-batch: target is owned by ${held.holder.runId} (pid ${held.holder.pid || 'unknown'}); no worker was launched.`);
     return EXIT_REFUSED;
@@ -782,8 +805,13 @@ async function execute(opts, io = {}, seams = {}) {
       || results.some((r) => !r.ok) || !strays.ok || strays.ids.length > 0;
     return attention ? EXIT_ATTENTION : 0;
   } finally {
-    try { (seams.release || lock.release)(ROOT, cfg.targetRepoPath, held.ownership); }
-    catch (e) { err(`prepare-batch: target lock release failed: ${e.message}`); }
+    // A child releases nothing: the lease it ran under belongs to its parent, and releasing
+    // another coordinator's ownership record is the one mistake this whole layer exists to
+    // make impossible. Its parent settles the grant instead.
+    if (!childAdmission) {
+      try { (seams.release || lock.release)(ROOT, cfg.targetRepoPath, held.ownership); }
+      catch (e) { err(`prepare-batch: target lock release failed: ${e.message}`); }
+    }
   }
 }
 

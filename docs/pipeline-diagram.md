@@ -248,9 +248,9 @@ missing from `run.json` after an unattended overnight run is a hole in the recor
 The claim in step 1 is Beads' atomic `--claim`, with a unique run actor and owner token in
 the same transaction. A crash can therefore leave an issue `in progress`, but the next
 run reopens it only when actor, run id and token still match a lock owner proven dead — it
-never mass-resets human work. Preflight's **first** gate is a host-global lock on the target
-repo: a second run is refused even from another pipeline checkout. `runs/locks/` retains an
-observer mirror for local readers, not a second authority (change-log row
+never mass-resets human work. Preflight's first **acquiring** gate is a host-global lock on the
+target repo: a second run is refused even from another pipeline checkout. `runs/locks/` retains
+an observer mirror for local readers, not a second authority (change-log row
 `global-run-ownership-and-atomic-claims`).
 
 One check runs even earlier, before preflight is entered at all: **write-protection
@@ -263,6 +263,19 @@ reset, cleaned, stashed or moved. It sits ahead of the lock for the same reason 
 sits ahead of Docker: it acquires nothing, so its refusal has nothing to compensate for.
 `scripts/freeze.js` and `scripts/prepare-batch.js` run the identical check before their own
 first write, which is what makes it a backstop rather than a fourth opinion.
+
+Inside preflight, one gate now sits ahead of the lock as well: **child admission** (§3.10,
+change-log row `repo-rj7`), because it decides *which* exclusion applies. It asks whether this
+canonical target is under a live project supervisor and whether this run was granted scoped
+`implementation` authority by it, reading that authority from `PIPELINE_CHILD_AUTHORITY`. With
+no supervisor and nothing presented the answer is `standalone` and the lock does the rest
+exactly as drawn. With a supervisor live and no authority, the run is refused by that
+supervisor's name having acquired nothing. With valid authority it proceeds under its parent's
+lease and takes no lock of its own, so neither its exit handler nor its teardown boundary
+releases a lease it never took. `scripts/prepare-batch.js` asks the identical question for the
+`preparation` scope in the identical position. The full order is therefore: write-protection
+admission, child admission, the project lock, repository identity, host shell, Docker, image,
+network, egress, stale-issue recovery.
 
 Before the shell/Docker/network gates, preflight also proves the local checkout's fetch
 remote and `targetRepoRemote` reduce to the same repository identity. This binds the task

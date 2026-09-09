@@ -303,6 +303,14 @@ snapshot on stdin; they cannot re-read Beads or choose another worktree. The sam
 lock excludes a normal pipeline run and either standalone author/proof command while preparation
 owns the target.
 
+Under a live project supervisor, preparation instead runs as that supervisor's admitted
+`preparation` child: it takes no lock of its own and releases none, because its parent's lease
+is the same target-global authority and already excludes every other coordinator (DESIGN.md
+§3.10, change-log row `repo-rj7`). Admission happens before the write-protection backstop, the
+lock, and any worker, worktree or Beads read, so a preparation presenting no grant — or a
+forged, replayed, expired, wrong-target, wrong-parent or released one — is refused by name with
+nothing launched. With no supervisor present the paragraph above is exactly what happens.
+
 State is durable under `runs/preparations/<batch>/`. `resume <batch>` reports or continues work
 whose ownership is unambiguous; a worker that may still be alive is never duplicated, and a
 crash with no matching result becomes `interrupted-unknown` and blocks new preparation. Stop the
