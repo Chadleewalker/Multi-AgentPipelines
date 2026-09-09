@@ -17,21 +17,34 @@
 # Task containers join with:
 #   --network "$PIPELINE_NET" -e HTTPS_PROXY=http://$PIPELINE_PROXY:$PIPELINE_PROXY_PORT \
 #   -e HTTP_PROXY=... -e NO_PROXY=localhost,127.0.0.1
+#
+# The allowlist PROFILE is per provider (change-log row `repo-45g`):
+#   PIPELINE_PROVIDER=claude  -> docker/proxy        (Anthropic endpoints only)   [default]
+#   PIPELINE_PROVIDER=codex   -> docker/proxy-codex  (api.openai.com only)
+# Two profiles and two image tags, never one widened list: a single profile permitting both
+# providers would hand every task the union of both, which is the opposite of the point.
+# Unset means claude, so every existing caller and every existing suite is unaffected.
 set -u
 NET="${PIPELINE_NET:-pipeline-net}"
 PROXY="${PIPELINE_PROXY:-pipeline-proxy}"
 PROXY_PORT="${PIPELINE_PROXY_PORT:-3128}"
-# The IMAGE stays shared: identical content for every project, so per-projecting the tag
-# would rebuild the same squid image once per project for nothing.
-IMG=pipeline-proxy:local
+PROVIDER="${PIPELINE_PROVIDER:-claude}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BASE_IMG="${BASE_IMG:-pipeline-base:local}"
+# The IMAGE stays shared ACROSS PROJECTS: identical content for every project, so
+# per-projecting the tag would rebuild the same squid image once per project for nothing.
+# It is NOT shared across providers — a tag has to say which policy it carries.
+case "$PROVIDER" in
+  codex)  PROFILE_DIR="$ROOT/docker/proxy-codex"; IMG=pipeline-proxy-codex:local ;;
+  claude) PROFILE_DIR="$ROOT/docker/proxy";       IMG=pipeline-proxy:local ;;
+  *) echo "pipeline-net.sh: unknown PIPELINE_PROVIDER '$PROVIDER' (expected claude or codex)" >&2; exit 2 ;;
+esac
 
 up() {
   # The build is the one shared step: same tag, same context, so two projects coming up at
   # once either hit the cache or produce the same image. Nothing below touches a name this
   # run was not given.
-  docker build -q -t "$IMG" "$ROOT/docker/proxy" >/dev/null || { echo "proxy image build failed"; exit 1; }
+  docker build -q -t "$IMG" "$PROFILE_DIR" >/dev/null || { echo "proxy image build failed ($PROFILE_DIR)"; exit 1; }
   docker network inspect "$NET" >/dev/null 2>&1 || docker network create --internal "$NET" >/dev/null
   docker rm -f "$PROXY" >/dev/null 2>&1 || true
   docker run -d --name "$PROXY" "$IMG" >/dev/null            # default bridge: egress side
@@ -41,7 +54,7 @@ up() {
   for i in $(seq 1 15); do
     if docker run --rm --network "$NET" "$BASE_IMG" \
          sh -c "curl -s -m 2 -o /dev/null http://$PROXY:$PROXY_PORT" 2>/dev/null; then
-      echo "$NET up (proxy $PROXY ready)"; return 0
+      echo "$NET up (proxy $PROXY ready, $PROVIDER profile from $PROFILE_DIR)"; return 0
     fi
     sleep 1
   done

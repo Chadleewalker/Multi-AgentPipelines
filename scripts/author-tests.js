@@ -8,8 +8,13 @@
 // Freezing, committing and pushing remain explicit human-approved operations.
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { loadConfig } = require('../runner/config');
+const {
+  hostLaunch, providerFor, effortFor, displayName, normalizeOutput, preflightProvider,
+  credentialEnvFor,
+} = require('../runner/agent-provider');
 const { runSync, failureText } = require('../runner/process');
 const { acquire, release } = require('../runner/lock');
 const { buildBrief, verifyCommandError } = require('./spec-brief');
@@ -48,6 +53,54 @@ function parseArgs(argv) {
   return opts;
 }
 
+// ---- host provider readiness (§4.3, §4.12; change-log row `repo-45g`) ---------------
+// Both planning stages launch a real CLI on THIS machine, so both need that CLI to exist
+// and to be able to authenticate. Checked before the target lock, the Beads read and the
+// issue worktree: a missing executable discovered after `git worktree add` has left a tree
+// behind for a reason the operator has to reverse by hand.
+//
+// Host Codex may reuse a saved `codex login` (~/.codex/auth.json), which is why the
+// authentication probe accepts either that or CODEX_API_KEY. A task CONTAINER accepts only
+// the key — that asymmetry is deliberate and is enforced separately by runner/preflight.js,
+// because the saved login is never mounted into a container (§4.10).
+function hostProviderPresent(provider, run = runSync) {
+  const r = run(provider, ['--version'], { label: `${provider} executable probe`, timeoutMs: 30000 });
+  return r.status === 0;
+}
+
+function hostProviderAuthenticated(provider, env = process.env, home = os.homedir()) {
+  if (String(env[credentialEnvFor(provider)] || '').trim()) return true;
+  if (provider !== 'codex') return false;
+  try { return fs.existsSync(path.join(home, '.codex', 'auth.json')); }
+  catch { return false; }
+}
+
+function checkHostProvider(cfg, stages = ['test-author', 'green-probe'], seams = {}) {
+  const probe = seams.hostProviderPresent || hostProviderPresent;
+  const authed = seams.hostProviderAuthenticated || hostProviderAuthenticated;
+  const modelFor = { 'test-author': cfg.testAuthorModel || cfg.model, 'green-probe': cfg.testProbeModel || cfg.testAuthorModel || cfg.model };
+  // Each selected provider is checked once even when both stages select it: two identical
+  // refusals for one missing binary is noise, and the remedy is the same either way.
+  const seen = new Set();
+  for (const stage of stages) {
+    const provider = providerFor(cfg, stage);
+    if (seen.has(provider)) continue;
+    seen.add(provider);
+    // Claude is deliberately NOT pre-gated. Its contract is that a missing executable is a
+    // distinct agent failure carrying the spawn error (tests/unit/author-tests.test.js D3),
+    // and a config naming no provider must behave byte-for-byte as it did before this gate
+    // existed. Adding a probe for it would change an outcome nobody asked to change.
+    if (provider === 'claude') continue;
+    const ready = (seams.preflightProvider || preflightProvider)({ ...cfg, provider }, {
+      executable: () => probe(provider, seams.runSync || runSync),
+      authenticated: () => authed(provider, seams.env || process.env),
+      modelAvailable: () => !!String(modelFor[stage] || '').trim(),
+    });
+    if (!ready.ok) return { ok: false, provider, stage, remedy: ready.remedy };
+  }
+  return { ok: true };
+}
+
 function branchExists(cfg, branch, run = runSync) {
   const r = run('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], {
     cfg, kind: 'git', cwd: cfg.targetRepoPath, label: `find branch ${branch}`,
@@ -72,22 +125,29 @@ function ensureWorktree(built, run = runSync) {
 function launchAuthor(built, model, run = runSync) {
   const unsafeVerifier = verifyCommandError(built && built.policy && built.policy.verifyCommand);
   if (unsafeVerifier) return { status: EXIT_SETUP, stdout: '', stderr: `unsafe verifyCommand: ${unsafeVerifier}` };
-  // -p reads the prompt from stdin when no prompt argv follows it. That avoids both a shell and
-  // Windows' command-line length limit. Permissions stay at the host user's normal policy.
+  // Both backends read the prompt from stdin — `claude -p` with no prompt argv after it,
+  // `codex exec -` — which avoids both a shell and Windows' command-line length limit.
+  // Permissions stay at the host user's normal policy. runner/agent-provider.js owns the
+  // executable and the argument vector for whichever provider this stage selected; the
+  // tool policy below stays here, because the verifier command is this stage's decision.
   const timeoutMs = Math.max(1, Number(built.cfg.wallClockMinutes) || 240) * 60 * 1000;
   const suite = `tests/acceptance/${built.suiteId || built.id}/`;
   const verifier = `${built.policy.verifyCommand} ${suite}`;
   const allowed = `Read,Edit,Write,Glob,Grep,Bash(${verifier})`;
-  return run(process.env.PIPELINE_TEST_AUTHOR_CMD || 'claude', [
-    '-p', '--model', model,
-    '--restricted', '--permission-mode', 'acceptEdits',
-    '--tools', AUTHOR_TOOLS,
-    '--allowedTools', allowed,
-    '--disallowedTools', DENIED_TOOLS,
-    '--no-session-persistence',
-  ], {
+  const launch = hostLaunch({
+    stage: 'test-author',
+    provider: providerFor(built.cfg, 'test-author'),
+    reasoningEffort: effortFor(built.cfg, 'test-author'),
+    model,
+    env: process.env,
+    claude: { tools: AUTHOR_TOOLS, allowedTools: allowed, disallowedTools: DENIED_TOOLS },
+  });
+  return run(launch.command, launch.args, {
       cfg: built.cfg, cwd: built.folder.dir, input: `${built.text}\n`, timeoutMs,
-      label: 'Claude test-author session', maxBuffer: MAX_BUFFER,
+      label: launch.label, maxBuffer: MAX_BUFFER,
+      // hostEnv carries the host-only environment a headless verifier needs, and for a
+      // Codex launch it is also where CODEX_API_KEY reaches the CLI: by value in this
+      // process's own environment only, never in argv (§6).
       env: { ...process.env, ...(built.cfg.hostEnv || {}) },
     });
 }
@@ -171,12 +231,27 @@ function authorIssue(built, configPath, io = {}, seams = {}) {
     err(`author-tests: ${before.error}`); err(failureStep());
     return setup('boundary-before', before.error);
   }
-  out(`Launching Claude with explicit model alias ${model}; freeze/commit/push are not part of this command.`);
+  const provider = providerFor(built.cfg, 'test-author');
+  const agent = displayName(provider);
+  out(`Launching ${agent} with explicit model alias ${model}`
+    + `${provider === 'codex' ? ` at ${effortFor(built.cfg, 'test-author')} reasoning effort` : ''}`
+    + '; freeze/commit/push are not part of this command.');
   const r = (seams.launchAuthor || launchAuthor)(built, model, seams.runSync || runSync);
   if (r.stdout) out(String(r.stdout).trimEnd());
   if (r.stderr) err(String(r.stderr).trimEnd());
+  // Structure, never prose: the normalized record is the only thing read back out of the
+  // transcript, and a transcript with no structured final answer normalizes to nothing.
+  const record = normalizeOutput(provider, r.stdout, model);
+  if (record) {
+    out(`${agent} reported model ${record.model || 'unrecorded'}`
+      + `${record.tokenUsage ? ` (${record.tokenUsage.input} in / ${record.tokenUsage.output} out tokens)` : ''}`);
+    if (record.rateLimit) {
+      err(`${agent} reported a usage limit${record.rateLimit.resetAt ? ` until ${record.rateLimit.resetAt}` : ''};`
+        + ' planning is interactive, so rerun author-tests after the window reopens.');
+    }
+  }
   if (r.status !== 0) {
-    const detail = failureText(r, 'Claude executable failed');
+    const detail = failureText(r, `${agent} executable failed`);
     if (!r.stderr && !r.stdout) err(`author-tests: ${detail}`);
     err(`Outcome: test-author agent failed (exit ${r.status === null ? 'unavailable' : r.status}).`);
     err(failureStep());
@@ -228,6 +303,16 @@ function main(argv, io = {}, seams = {}) {
   let lockCfg;
   try { lockCfg = (seams.loadConfig || loadConfig)(configPath); }
   catch (e) { err(`author-tests: ${(e && e.message) || String(e)}`); return EXIT_USAGE; }
+
+  // Ahead of the target lock on purpose: a refusal here holds nothing, created nothing and
+  // read nothing, so the operator fixes one named prerequisite and reruns. Behind loadConfig
+  // only because the config is what names the providers.
+  const ready = (seams.checkHostProvider || checkHostProvider)(lockCfg, undefined, seams);
+  if (!ready.ok) {
+    err(`author-tests: ${ready.provider} is not ready for the ${ready.stage} stage: ${ready.remedy}`);
+    err('No target ownership, Beads read, worktree or agent session was started.');
+    return EXIT_SETUP;
+  }
 
   // A manual CLI must not race any Beads reader, batch coordinator or implementation run.
   // Load only the host config needed to identify the target, then acquire before buildBrief's
@@ -303,6 +388,6 @@ if (require.main === module) process.exit(main(process.argv.slice(2)));
 
 module.exports = {
   main, parseArgs, ensureWorktree, launchAuthor, nextStep, failureStep, auditAuthorTree, statusPaths,
-  authorIssue,
+  authorIssue, checkHostProvider, hostProviderPresent, hostProviderAuthenticated,
   AUTHOR_TOOLS, DENIED_TOOLS, EXIT_USAGE, EXIT_SETUP, EXIT_AGENT, EXIT_PROBE,
 };

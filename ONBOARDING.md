@@ -317,6 +317,15 @@ Copy this section in (adjust nothing but the project name):
       path, so a trailing separator or forward-vs-back slashes do not buy you a second
       identity — and a lock left behind by a killed run is taken over by the next one,
       never cleared by hand.
+      **Leave `provider` out unless this project actually wants GPT models.** Omitting it
+      (and the per-stage `testAuthorProvider` / `testProbeProvider` / `reasoningEffort`
+      fields) selects Claude and reproduces the historical behaviour exactly. Selecting
+      `codex` additionally requires the `codex` CLI on the host for the planning stages,
+      `CODEX_API_KEY` in `.env.pipeline` for the task containers, and a base image built
+      after the Codex pin was added — each refused by name before anything is created
+      (DESIGN.md 6.5, change-log row `repo-45g`). It also brings up a different proxy
+      profile, so the pre-run egress gate proves reachability of `api.openai.com` rather
+      than of Anthropic's endpoints.
 - [ ] **Ask the user for one integer implementation concurrency**, and record the answer as
       `concurrency` in that same host-local run config. Ask it once, as a single question —
       *how many implementation tasks may run at the same time under one coordinated run?* —

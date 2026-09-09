@@ -8,6 +8,9 @@
 'use strict';
 const path = require('path');
 const { bd, bdJson } = require('./bd');
+const {
+  credentialEnvFor, endpointFor, preflightProvider, providerFor,
+} = require('./agent-provider');
 const { deriveNames } = require('./config');
 const {
   acquire, release, clearRecoveryOwner, OWNER_TOKEN_KEY, OWNER_RUN_KEY,
@@ -32,11 +35,35 @@ function imageExists(image, cfg) {
   return sh(cfg, 'docker', ['image', 'inspect', image], { label: 'Docker image inspection' });
 }
 
+// Does the task image actually carry the selected provider's CLI? An image that exists but
+// has no `codex` in it produces a task that fails inside every container it launches, three
+// attempts deep, with the real cause visible only in an agent log. `--entrypoint` and
+// `--network none` because this proves the image's contents and must not need, or touch,
+// this run's plumbing (§4.10: the probe is not a task).
+function imageSupportsProvider(cfg, provider) {
+  const r = sh(cfg, 'docker', [
+    'run', '--rm', '--network', 'none', '--entrypoint', provider, cfg.image, '--version',
+  ], { label: `image ${provider} CLI probe` });
+  return r.status === 0;
+}
+
+// A container's credential is host-supplied and cannot be recovered from inside it, so its
+// absence is a refusal here rather than an authentication failure per task. The host's own
+// saved Codex login does not answer this question: it is never mounted (§4.10), so a host
+// that can run `codex` interactively can still not authenticate a container.
+function providerCredentialPresent(provider, env = process.env) {
+  return !!String(env[credentialEnvFor(provider)] || '').trim();
+}
+
 // The network, the proxy sidecar and its port are per project (§4.8 — `config.js`
 // derives them when a config names none), and the two shell scripts read them from the
 // environment, each falling back to the historical name when unset. Every call that
 // creates, probes or destroys plumbing goes through here, so a run can only ever act on
 // its own: no code path is left able to reach for a shared default.
+// PIPELINE_PROVIDER travels with them for the same reason: the allowlist PROFILE and the
+// endpoint the gate probes are per provider (§4.8; change-log row `repo-45g`), and a run
+// that brought up one provider's proxy while probing the other's endpoint would have
+// proven nothing about either. Both scripts default to claude when it is unset.
 function netEnv(cfg) {
   if (!cfg || !cfg.network || !cfg.proxyName || !cfg.proxyPort) {
     throw new Error('internal: run config carries no network/proxy names (loadConfig fills them)');
@@ -46,6 +73,7 @@ function netEnv(cfg) {
     PIPELINE_NET: cfg.network,
     PIPELINE_PROXY: cfg.proxyName,
     PIPELINE_PROXY_PORT: String(cfg.proxyPort),
+    PIPELINE_PROVIDER: providerFor(cfg, 'implementation'),
   };
 }
 
@@ -249,6 +277,7 @@ function childPreflight(cfg, repoRoot, log, deps, t, child) {
 function startupGates(cfg, repoRoot, log, deps, t, owned) {
   let keepOwnership = false;
   let networkAttempted = false;
+  const provider = providerFor(cfg, 'implementation');
   try {
     const checkDocker = deps.dockerAvailable || dockerAvailable;
     const checkImage = deps.imageExists || imageExists;
@@ -293,6 +322,43 @@ function startupGates(cfg, repoRoot, log, deps, t, owned) {
     }
     log.info(t, `image ${cfg.image} present`);
 
+    // ---- the selected provider's prerequisites (§4.3; change-log row `repo-45g`) ----
+    // HERE, and not one gate later: everything below this point creates something. The
+    // network and sidecar do not exist yet, no Beads row has been touched, no workspace has
+    // been cloned, no container has run and no agent attempt has been recorded — so a
+    // config that selects Codex on a host with no credential, no usable model or an image
+    // with no `codex` in it is refused with nothing to clean up and one remedy to act on.
+    //
+    // The fourth prerequisite, egress to the selected endpoint, is proven by the egress
+    // gate below rather than here, because it needs the sidecar this gate deliberately
+    // precedes. It is provider-aware through netEnv: the profile that came up and the
+    // endpoint that is probed are the same provider's.
+    //
+    // Claude is deliberately NOT gated here. Its prerequisites are already enforced on the
+    // paths that existed before this gate — run.js refuses a run with no
+    // CLAUDE_CODE_OAUTH_TOKEN before preflight is even called, and the image gate above is
+    // the image check it has always had — and a config naming no provider must reach the
+    // first task through exactly the sequence it reached it through before (§4.3, "absent
+    // fields preserve current behaviour"). A new probe for the default backend would change
+    // an outcome nobody asked to change, and would need a Docker call this repo's own
+    // Docker-free suites drive preflight without.
+    if (provider !== 'claude') {
+      const providerReady = (deps.preflightProvider || preflightProvider)(cfg, {
+        authenticated: () => providerCredentialPresent(provider, deps.env || process.env),
+        modelAvailable: () => !!String(cfg.model || '').trim(),
+        imageSupports: () => (deps.imageSupportsProvider || imageSupportsProvider)(cfg, provider),
+      });
+      if (!providerReady.ok) {
+        return {
+          ok: false,
+          providerRefused: true,
+          reason: `provider '${provider}' is not ready: ${providerReady.remedy}`,
+        };
+      }
+      log.info(t, `provider ${provider} ready (${providerReady.checked.join(', ')} verified;`
+        + ` egress to ${endpointFor(provider)} is proven by the gate below)`);
+    }
+
     // Set before invoking `up`: the script can create the network and then fail. Any
     // attempted startup therefore owns a compensating `down` on every non-success path.
     networkAttempted = true;
@@ -301,7 +367,13 @@ function startupGates(cfg, repoRoot, log, deps, t, owned) {
     log.info(t, 'network + proxy sidecar up');
 
     const eg = checkEgress(repoRoot, cfg);
-    if (!eg.ok) return { ok: false, reason: `egress check failed — allowlist not in force: ${eg.output.trim()}` };
+    if (!eg.ok) {
+      return {
+        ok: false,
+        reason: `egress check failed — allowlist not in force: ${eg.output.trim()}`
+          + ` (the ${provider} profile must reach ${endpointFor(provider)} and nothing else)`,
+      };
+    }
     log.info(t, 'egress check passed (allowlist in force)');
 
     const stale = recover(cfg, log, t, owned.ownership);
@@ -338,5 +410,6 @@ function startupGates(cfg, repoRoot, log, deps, t, owned) {
 
 module.exports = {
   preflight, networkUp, networkDown, egressCheck, imageExists, dockerAvailable,
+  imageSupportsProvider, providerCredentialPresent,
   recoverStaleIssues, metadataOf, ownedBy, verifyRepoIdentity,
 };

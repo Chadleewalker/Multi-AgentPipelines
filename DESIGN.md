@@ -938,13 +938,20 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
    git host (see network policy); its local commits land on the host filesystem and
    therefore survive container teardown. Fresh container + fresh clone every time;
    everything inside the container is disposable, so "kill the container" is always safe.
-3. **Inside the container, agents are ephemeral headless invocations** (`claude -p`,
-   run with permissions bypassed — acceptable *only* because the container has a closed
-   network, a disposable filesystem, and no git credentials) in a fixed sequence driven by the
-   entrypoint script: **code → verify → (retry, up to the attempt cap — default 3) →
-   implementation commit → docs-only agent → final verify → docs commit**.
+3. **Inside the container, agents are ephemeral headless invocations** (`claude -p` or
+   `codex exec`, run with permissions bypassed — acceptable *only* because the container has
+   a closed network, a disposable filesystem, and no git credentials) in a fixed sequence
+   driven by the entrypoint script: **code → verify → (retry, up to the attempt cap —
+   default 3) → implementation commit → docs-only agent → final verify → docs commit**.
+   **Which backend runs is a run-config decision, not a per-file one** (see 6.5): the runner
+   passes `PIPELINE_PROVIDER` only for a non-default provider, so an absent value means
+   `claude` and every field of this contract is unchanged.
    The agent command is read from the `PIPELINE_AGENT_CMD` environment variable,
-   defaulting to the headless `claude -p` invocation when unset — this is the deliberate
+   defaulting to the selected provider's headless invocation when unset — the headless
+   `claude -p` invocation, or the noninteractive `codex exec` one with the prompt on stdin,
+   an explicit model and reasoning effort, ephemeral state, the operator's own Codex config
+   and rules ignored, and `CODEX_API_KEY` excluded by name from the environment Codex hands
+   to anything the model spawns. That variable is also the deliberate
    test seam that lets the E2E pass substitute deterministic stubs (see section 7). The docs phase is one agent invocation
    that writes the change summary into the status file and updates in-repo docs the change
    affects. Its writable Git delta is limited by deterministic scaffolding to regular
@@ -976,6 +983,19 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
    docs phase additionally keeps stderr out of the file its summary is read from, and the
    entrypoint seeds this workspace's trust/onboarding flags into the CLI's config before
    the first call so the untrusted-workspace warning is not emitted at all.
+   **A Codex invocation is read the same way and by the same rule**, from a different
+   shape: `codex exec --json` emits JSONL, so the final answer is the last
+   `item.completed` carrying an `agent_message`, usage comes from `turn.completed`, and a
+   rate limit is a `turn.failed` whose `error.code` names one — matched on the *code*,
+   never on the message, which is the model's prose and may say anything. One reader
+   (`pipeline/agent-output.js`) normalizes both backends to
+   `{provider, configuredModel, model, tokenUsage, finalText, rateLimit}` and returns
+   **null** when a transcript carries no structured final answer and no structured
+   rate-limit outcome. Null is what makes prose non-authoritative: a log that merely
+   *says* the window reopened normalizes to nothing, so no caller can read a pause or a
+   success out of it. That module lives under `pipeline/` because only `pipeline/` is
+   mounted into a container (4.10) and `runner/agent-provider.js` re-exports it, so the
+   host and the container cannot grow two parsers that disagree.
    **That same `modelUsage` table is also the per-task cost record.** Every agent
    invocation of a task — each code attempt and the docs call — contributes its per-model
    token counts (`inputTokens`, `outputTokens`, `cacheReadInputTokens`,
@@ -1111,25 +1131,34 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
    silently missing from `run.json` after an unattended overnight run is a hole in the
    record. Work is preserved and the operator decides, since a pipeline that cannot get
    a usage window has nothing useful left to try.
-8. **Closed network.** Container egress is allowlisted to **the Anthropic-operated
-   endpoints headless Claude Code requires to function** (API plus auth/token refresh),
-   enumerated explicitly in the proxy configuration — and nothing else: no git hosts, no
-   package registries, no third-party hosts. Mechanism: an internal no-egress Docker
+8. **Closed network.** Container egress is allowlisted to **the endpoints the selected
+   agent CLI requires to function and nothing else** — no git hosts, no package
+   registries, no third-party hosts. Mechanism: an internal no-egress Docker
    network plus an HTTP CONNECT proxy sidecar with a domain allowlist (TLS passed through,
    not intercepted), reached by the CLI via standard proxy environment variables. The
-   *mechanism* may be revisited at implementation; the *policy* — Anthropic endpoints
-   only, each one listed in config — may not. The starting allowlist is
-   `api.anthropic.com` plus whatever auth endpoints empirical testing of headless
-   `claude -p` shows are required; the enumeration is finalized (within the policy) by the
-   network task. **The network and the sidecar are per project, never per pipeline** — a
+   *mechanism* may be revisited at implementation; the *policy* — deny by default, one
+   provider's concrete endpoints per profile, each one listed in config — may not. The
+   Claude profile (`docker/proxy`) is `api.anthropic.com` plus the auth endpoints
+   empirical testing of headless `claude -p` showed are required; the Codex profile
+   (`docker/proxy-codex`) is `api.openai.com` and nothing else, because container Codex
+   authenticates with `CODEX_API_KEY` and never reaches an interactive login flow.
+   **The two profiles are separate images and neither is ever widened to carry both
+   providers** — one merged list would hand every task the union of both, which is the
+   opposite of the point — and `scripts/pipeline-net.sh` selects the profile from
+   `PIPELINE_PROVIDER`, unset meaning `claude`.
+   **The network and the sidecar are per project, never per pipeline** — a
    run acts only on the plumbing it owns, so a second runner process against a different
    project can be in flight without either one creating, restarting or destroying the
-   other's (4.12 says where the names come from). The proxy *image* stays shared: the
-   allowlist is identical for every project, and the policy above is what may not vary.
-   A **pre-run egress check** (throwaway container: allowed endpoint
-   reachable, at least two non-allowlisted hosts unreachable, bounded under 60 seconds)
+   other's (4.12 says where the names come from). The proxy *image* stays shared **across
+   projects**: within one provider the allowlist is identical for every project, and the
+   policy above is what may not vary. It is deliberately not shared across providers,
+   because a tag has to say which policy it carries.
+   A **pre-run egress check** (throwaway container: the *selected* provider's endpoint
+   reachable, at least two non-allowlisted hosts unreachable, no direct egress without the
+   proxy, bounded under 60 seconds)
    runs before every run, **against that run's own network and proxy** — a gate that
-   passes against different plumbing proves nothing — and **aborts the run** on failure. Dependencies are baked into
+   passes against different plumbing, or against the other provider's endpoint, proves
+   nothing — and **aborts the run** on failure. Dependencies are baked into
    the image at planning time (see 3.4). Knowledge gaps are mitigated in the repo
    (vendored docs, `CLAUDE.md` conventions, API details attached to the issue at planning
    time). Tasks needing live internet research belong in the interactive queue, not the
@@ -2325,24 +2354,30 @@ exist. Thread: `docs/threads/merge-order.md`.
   hard-require one, but nothing is built for one yet either.
 - **Host prerequisites:** Docker Desktop, Git Bash, Node, the `gh` CLI (authenticated to
   GitHub), `bd` (the runner is the sole Beads writer and runs it host-side — 4.12; until
-  it's installed, scripts fall back to running `bd` in the base image), and the Claude
-  Code CLI with `CLAUDE_CODE_OAUTH_TOKEN` available on the host — the host itself makes
-  the minimal rate-limit probe calls (4.7).
+  it's installed, scripts fall back to running `bd` in the base image), and the agent CLI
+  for whichever provider the run config selects (6.5) — the Claude Code CLI with
+  `CLAUDE_CODE_OAUTH_TOKEN`, and for a Codex selection the Codex CLI with either a saved
+  `codex login` or `CODEX_API_KEY`. The host itself makes the minimal rate-limit probe
+  calls (4.7) and runs the planning-side test author and green probe.
 - **Review happens as GitHub PRs.** Projects fed through the pipeline must have a GitHub
   remote. (An environment with no PR host — repos on a network share, say — would need a
   local-branch review mode. Out of scope for V1.)
 - **Docker runs from Git Bash on the reference host**, not WSL (known issue: that machine's
   WSL distro has no Docker Desktop integration). The runner must not assume WSL either way.
-- **Auth:** `CLAUDE_CODE_OAUTH_TOKEN` is passed to containers as an environment variable
-  at `docker run` — never baked into an image layer. Headless `claude -p` honors it;
-  interactive `claude` does not (known issue) — the pipeline is headless-only anyway.
+- **Auth:** the selected provider's credential — `CLAUDE_CODE_OAUTH_TOKEN` or
+  `CODEX_API_KEY`, never both (6.5) — is passed to containers **by variable name** at
+  `docker run`, so the value never enters an argument list, a log line or an image layer.
+  Headless `claude -p` honors its token; interactive `claude` does not (known issue) — the
+  pipeline is headless-only anyway. A container never receives the host's saved
+  `~/.codex/auth.json`; it is not mounted, by design.
 - **Runner implementation: Node.js.** Decision, for cross-platform reasons: `node` is
   the same command on Windows and Linux (no `python` vs `python3` split), handles JSON
   natively for Beads/Claude output, and can enforce wall-clock timeouts with an independent
   worker clock + bounded `docker kill` without relying on a platform `timeout` command.
   Plain JavaScript, no framework.
 - **Image strategy: shared base + thin per-project layer.** The base image (Node, git,
-  the Claude Code CLI, `bd` — **no pipeline scaffolding**; the entrypoint and verifier
+  both agent CLIs — Claude Code and Codex — and `bd`; **no pipeline scaffolding**, since
+  the entrypoint and verifier
   are mounted at runtime per 4.10) is maintained in this repo; each target project gets
   a thin hand-written Dockerfile (`FROM` the base, plus its `pipeline.config.json`
   dependencies — see 3.4 for the drift cross-check). Versions of the base OS, Node, and
@@ -2724,6 +2759,66 @@ normal Codex sessions with no bypass flag — attempt one protected `apply_patch
 protected `Bash` string-command write. Both must render as a denial rather than a crash, must
 exit without running the write, and the protected file's hash and `git status` must read
 unchanged afterward, and only because the attempt is confirmed to have actually run at all.
+
+### 6.5 Two agent providers, one adapter
+
+The pipeline supports two agent backends, `claude` and `codex`, and the vocabulary is
+**closed**: a run config naming anything else is refused by field name before a worktree, a
+Beads read, a container or an agent attempt exists. Selection is global (`provider`) with a
+per-stage override for the two host launch points (`testAuthorProvider`,
+`testProbeProvider`), and each stage also carries a validated `reasoningEffort` — one of
+`minimal`, `low`, `medium`, `high` — inherited from the global value when absent. **Every
+one of those fields is optional and absence means Claude**, so a config written before this
+existed produces the same argv, the same stdin, the same environment, the same timeout and
+the same Docker argument list, byte for byte.
+
+**One adapter constructs every host launch.** `runner/agent-provider.js` owns the executable
+and the argument vector for both backends and holds the roster of launch points, so a third
+stage cannot be wired to a provider without appearing there. The alternative — a provider
+flag inside each launcher — is a run that silently mixes backends because the flag reached
+two of the three places that build a command line. The per-stage tool policy stays with its
+launcher: the test author's allowed verifier command and the green probe's shell-free rule
+are that stage's decisions, not the provider's.
+
+**The credential is named, never valued, and never both.** A Claude task container receives
+`CLAUDE_CODE_OAUTH_TOKEN` by variable name; a Codex task container receives `CODEX_API_KEY`
+by variable name; neither ever receives the other, because an unused credential in a task
+container is reach the task has no need of. The value crosses only in the `docker run`
+process environment — never in Docker argv, a log line, an image layer, Git, or a collected
+artifact. For Codex there is a fourth place it must not reach: **the environment Codex hands
+to commands the model runs.** Two `-c` arguments answer that, and both are load-bearing —
+the key is excluded by name (`shell_environment_policy.filters.CODEX_API_KEY="exclude"`) AND
+the CLI's own default secret-name excludes are left switched on
+(`shell_environment_policy.ignore_default_excludes=false`), because the default list is a
+moving target and our own key name is the one thing we know must never leak.
+`--strict-config` is what makes those two arguments a protection rather than a decoration: a
+`-c` key the CLI does not understand becomes an error instead of a silently dropped policy.
+
+**Host authentication and container authentication are deliberately asymmetric.** A host
+Codex launch may reuse a saved `codex login` (`~/.codex/auth.json`), because the operator is
+present and that is the authentication they already have. A task container may not: that
+file is **never mounted** — 4.10 enumerates the container's inputs and it is not one of them
+— so container Codex authenticates with `CODEX_API_KEY` or not at all. Mounting it would put
+a long-lived credential inside the disposable thing, which is the boundary the whole design
+rests on.
+
+**Every prerequisite of the selected provider is a refusal before the first mutation.**
+Missing executable, missing authentication, no configured model, an image with no such CLI
+in it, or egress that cannot reach the provider's endpoint each refuse independently and
+name the exact remedy. The host launcher checks executable, authentication and model ahead
+of the target lock, the Beads read and `git worktree add`; the runner checks authentication,
+model and image support ahead of the network, the sidecar, stale-issue recovery and every
+Beads write, and the endpoint check is the pre-run egress gate of item 8, which needs the
+sidecar and therefore runs immediately after it. Claude is not gated by these probes,
+because its prerequisites were already enforced on the paths that existed before them and
+adding a probe for the default backend would change an outcome nobody asked to change.
+
+**The live check this repository's deterministic suites cannot make.** Every Codex check in
+the mandatory profile is deterministic — fake executables, planted JSONL, a fixed argv — and
+none of them can prove the configured GPT model exists, answers, and is what the account
+serves. `scripts/codex-live-smoke.js` makes exactly one read-only live `codex exec` call and
+prints the model as evidence. It is opt-in behind `CODEX_LIVE_SMOKE=1` and exits 0 when that
+is unset, so no sweep ever reaches a network, an account or a quota as a side effect.
 
 ## 7. Phasing
 

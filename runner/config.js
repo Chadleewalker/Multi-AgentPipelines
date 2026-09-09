@@ -8,6 +8,10 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const CONTROL_PLANE = require('./control-plane');
+const {
+  PROVIDERS, REASONING_EFFORTS, DEFAULT_PROVIDER, DEFAULT_REASONING_EFFORT,
+  isProvider, isReasoningEffort,
+} = require('./agent-provider');
 
 // Defaults are part of the public run-config contract. Their rationale and validation
 // remain here; their values come from contracts/control-plane.json so operator guides,
@@ -175,6 +179,26 @@ function loadConfig(file) {
       throw new Error(`run.config.json: '${k}' must be null or a non-empty model alias`);
     }
   }
+  // ---- agent provider selection (§4.3; change-log row `repo-45g`) -------------------
+  // A CLOSED vocabulary, globally and per host launch stage. Closed and refused here
+  // because the alternative is an unknown value reaching an executable name or a `-c`
+  // policy key — the first spawns nothing, the second is rejected by the CLI under
+  // `--strict-config`, and both arrive after planning has already built a worktree.
+  // Stage fields inherit the global selection; the global one defaults to Claude, so a
+  // config that names none of this behaves exactly as it did before the field existed.
+  for (const k of ['provider', 'testAuthorProvider', 'testProbeProvider']) {
+    if (raw[k] !== undefined && raw[k] !== null && !isProvider(raw[k])) {
+      throw new Error(`run.config.json: '${k}' must be one of ${PROVIDERS.join('|')}`);
+    }
+  }
+  // Reasoning effort is a Codex decision, so it is validated for every provider and used
+  // by one: a config that pins an effort and then selects Claude has said something
+  // harmless, while a MISSPELLED effort has said something that would fail at launch.
+  for (const k of ['reasoningEffort', 'testAuthorReasoningEffort', 'testProbeReasoningEffort']) {
+    if (raw[k] !== undefined && raw[k] !== null && !isReasoningEffort(raw[k])) {
+      throw new Error(`run.config.json: '${k}' must be one of ${REASONING_EFFORTS.join('|')}`);
+    }
+  }
   if (!/^[A-Za-z0-9][A-Za-z0-9._/:@-]*$/.test(raw.image)) {
     throw new Error(`run.config.json: 'image' must be a safe Docker image reference`);
   }
@@ -188,6 +212,20 @@ function loadConfig(file) {
     }
   }
   const cfg = { ...DEFAULTS, ...raw, configPath: p };
+  // Provider and effort are resolved HERE and not in DEFAULTS, because DEFAULTS is the
+  // canonical frozen contract object from contracts/control-plane.json (a unit suite pins
+  // the identity) and a per-stage fallback chain is not a constant. Every reader therefore
+  // sees three concrete providers and three concrete efforts, never an absent field to
+  // interpret for itself.
+  cfg.provider = isProvider(raw.provider) ? raw.provider : DEFAULT_PROVIDER;
+  cfg.testAuthorProvider = isProvider(raw.testAuthorProvider) ? raw.testAuthorProvider : cfg.provider;
+  cfg.testProbeProvider = isProvider(raw.testProbeProvider) ? raw.testProbeProvider : cfg.provider;
+  cfg.reasoningEffort = isReasoningEffort(raw.reasoningEffort)
+    ? raw.reasoningEffort : DEFAULT_REASONING_EFFORT;
+  cfg.testAuthorReasoningEffort = isReasoningEffort(raw.testAuthorReasoningEffort)
+    ? raw.testAuthorReasoningEffort : cfg.reasoningEffort;
+  cfg.testProbeReasoningEffort = isReasoningEffort(raw.testProbeReasoningEffort)
+    ? raw.testProbeReasoningEffort : cfg.reasoningEffort;
   // An explicit name always wins; derivation fills only what the config left out.
   const derived = deriveNames(p);
   if (!cfg.network) cfg.network = derived.network;
@@ -198,14 +236,20 @@ function loadConfig(file) {
   return cfg;
 }
 
-// The subscription token (§6): git-ignored .env.pipeline, or the ambient env.
-function loadToken(repoRoot) {
+// The selected provider's credential (§6): git-ignored .env.pipeline, or the ambient env.
+// The name is a parameter so one reader serves both backends —
+// CLAUDE_CODE_OAUTH_TOKEN by default (every existing caller), CODEX_API_KEY for a Codex
+// run. Only ever the VALUE is returned; nothing here logs it, and the runner hands it to
+// `docker run` by name (runner/container.js).
+function loadToken(repoRoot, name = 'CLAUDE_CODE_OAUTH_TOKEN') {
+  const variable = /^[A-Z][A-Z0-9_]*$/.test(String(name || '')) ? name : 'CLAUDE_CODE_OAUTH_TOKEN';
   const f = path.join(repoRoot, '.env.pipeline');
   if (fs.existsSync(f)) {
-    const m = fs.readFileSync(f, 'utf8').match(/^\s*CLAUDE_CODE_OAUTH_TOKEN\s*=\s*(.+?)\s*$/m);
+    const m = fs.readFileSync(f, 'utf8')
+      .match(new RegExp(`^\\s*${variable}\\s*=\\s*(.+?)\\s*$`, 'm'));
     if (m) return m[1].replace(/^["']|["']$/g, '');
   }
-  return process.env.CLAUDE_CODE_OAUTH_TOKEN || '';
+  return process.env[variable] || '';
 }
 
 module.exports = { loadConfig, loadToken, deriveNames, DEFAULTS, MAX_CONCURRENCY };

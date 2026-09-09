@@ -11,26 +11,83 @@
 #   [T10 inserts rate-limit exit 20]
 #
 # Inputs (§4.10): /workspace mount (repo on task branch), /workspace/.run/issue.md,
-#   ISSUE_ID, PIPELINE_AGENT_CMD (test seam; defaults to headless claude), token+proxy env.
+#   ISSUE_ID, PIPELINE_AGENT_CMD (test seam; defaults to the selected provider's headless
+#   command), PIPELINE_PROVIDER (claude — the default — or codex), credential+proxy env.
 # Outputs (§4.11): exit 0 verified / 10 stuck / 11 tampered / 30 internal error,
 #   plus /workspace/.run/status.json (schema: schemas/status.schema.json).
 set -u
 WS="${WORKSPACE:-/workspace}"
 RUN="$WS/.run"
 PIPE="${PIPELINE_DIR:-/pipeline}"
+# Which backend this task runs on (§4.3; change-log row `repo-45g`). The runner passes
+# PIPELINE_PROVIDER only for a non-default provider, so an absent value means claude and
+# every existing run is byte-for-byte unchanged.
+PROVIDER="${PIPELINE_PROVIDER:-claude}"
 # The model is pinned by the runner (§4.3) so runs are reproducible and quality cannot
 # drift when the account default changes. An explicit PIPELINE_AGENT_CMD owns its flags.
 MODEL_ARG=""
 [ -n "${PIPELINE_MODEL:-}" ] && MODEL_ARG=" --model ${PIPELINE_MODEL}"
-AGENT_CMD="${PIPELINE_AGENT_CMD:-claude -p --dangerously-skip-permissions${MODEL_ARG}}"
+if [ "$PROVIDER" = codex ]; then
+  # The noninteractive Codex contract, matching the host launches built by
+  # runner/agent-provider.js: prompt on stdin (the trailing `-`), explicit model and
+  # reasoning effort, ephemeral state, the operator's own config and rules ignored, and a
+  # shell environment policy that keeps CODEX_API_KEY out of everything the model spawns
+  # while leaving the CLI's own default secret-name excludes switched on. `--strict-config`
+  # is what makes those two policy keys load-bearing: a key this CLI does not understand
+  # is an error here rather than a silently dropped protection.
+  EFFORT="${PIPELINE_REASONING_EFFORT:-medium}"
+  DEFAULT_AGENT_CMD="codex exec${MODEL_ARG} -c model_reasoning_effort=\"$EFFORT\""
+  DEFAULT_AGENT_CMD="$DEFAULT_AGENT_CMD -c shell_environment_policy.ignore_default_excludes=false"
+  DEFAULT_AGENT_CMD="$DEFAULT_AGENT_CMD -c shell_environment_policy.filters.CODEX_API_KEY=\"exclude\""
+  DEFAULT_AGENT_CMD="$DEFAULT_AGENT_CMD --approve-for-me --ephemeral --ignore-user-config"
+  DEFAULT_AGENT_CMD="$DEFAULT_AGENT_CMD --ignore-rules --strict-config --json -"
+  AGENT_CMD="${PIPELINE_AGENT_CMD:-$DEFAULT_AGENT_CMD}"
+else
+  # Spelled out rather than routed through a variable: scripts/test-entrypoint.sh pins this
+  # exact default as the Claude contract, and a frozen suite that greps a literal is the
+  # thing standing between "the default was preserved" and "the default was rewritten".
+  AGENT_CMD="${PIPELINE_AGENT_CMD:-claude -p --dangerously-skip-permissions${MODEL_ARG}}"
+fi
 
 # When we own the invocation, ask for JSON so the RESOLVED model id can be recorded (a
 # `--model opus` alias hides which Opus actually ran) and so the docs phase hands back a
 # summary with no CLI chatter around it. The human-readable text is extracted back out
-# (envelope.js), so agent logs stay readable. A caller-supplied PIPELINE_AGENT_CMD
-# (stubs, overrides) owns its own flags and gets none of this; extraction copes either way.
+# (envelope.js / agent-output.js), so agent logs stay readable. A caller-supplied
+# PIPELINE_AGENT_CMD (stubs, overrides) owns its own flags and gets none of this;
+# extraction copes either way. Codex asks for its JSONL with `--json` in the command above,
+# so it must NOT also receive Claude's `--output-format json`.
 AGENT_FORMAT=""
-[ -z "${PIPELINE_AGENT_CMD:-}" ] && AGENT_FORMAT="--output-format json"
+if [ -z "${PIPELINE_AGENT_CMD:-}" ] && [ "$PROVIDER" != codex ]; then
+  AGENT_FORMAT="--output-format json"
+fi
+
+# Provider-aware transcript readers (§4.3). Both are structural: they read the CLI's own
+# JSON/JSONL, never the model's prose, so nothing the model writes can declare a pause or
+# a success. Claude keeps envelope.js exactly as it was.
+#
+# rate_limit_reset: prints the canonical reset instant and returns 0 when the transcript
+# carries structured rate-limit evidence, non-zero when it does not.
+rate_limit_reset() { # rate_limit_reset <log>
+  if [ "$PROVIDER" = codex ]; then
+    node "$PIPE/agent-output.js" ratelimit "$1" codex
+    return $?
+  fi
+  grep -qiE 'usage limit|rate.?limit' "$1" || return 1
+  grep -oiE 'usage limit reached\|[0-9]+' "$1" | grep -oE '[0-9]+$' | head -1 \
+    | while read -r EPOCH; do
+        [ -n "$EPOCH" ] && node -e "console.log(new Date($EPOCH*1000).toISOString())"
+      done
+  return 0
+}
+
+# flatten_agent_log: rewrite the log to the final agent text and print the resolved model.
+flatten_agent_log() { # flatten_agent_log <log>
+  if [ "$PROVIDER" = codex ]; then
+    node "$PIPE/agent-output.js" flatten "$1" codex "${PIPELINE_MODEL:-}"
+  else
+    node "$PIPE/envelope.js" flatten "$1" "${PIPELINE_MODEL:-}"
+  fi
+}
 # Attempt cap (§4.6): tunable per run via run.config.json maxAttempts, which the
 # runner forwards as PIPELINE_MAX_ATTEMPTS. Anything unset or non-numeric falls back
 # to 3 — the cap must always be a positive integer or the retry loop breaks.
@@ -163,12 +220,11 @@ while :; do
   } > "$RUN/prompt-$N.md"
   if ! sh -c "$AGENT_CMD $AGENT_FORMAT" < "$RUN/prompt-$N.md" > "$RUN/agent-$N.log" 2>&1; then
     # ---- rate-limit detection (§4.7, T10): a pause, never a failed attempt ----
-    if grep -qiE 'usage limit|rate.?limit' "$RUN/agent-$N.log"; then
-      EPOCH=$(grep -oiE 'usage limit reached\|[0-9]+' "$RUN/agent-$N.log" | grep -oE '[0-9]+$' | head -1)
-      if [ -n "${EPOCH:-}" ]; then
-        RESET=$(node -e "console.log(new Date($EPOCH*1000).toISOString())")
-        node "$PIPE/status.js" set rateLimitResetAt "$RESET"
-      fi
+    # Provider-aware, and structural for both backends: Codex says so in a `turn.failed`
+    # error code, Claude in its own `usage limit reached|<epoch>` form. A log that merely
+    # discusses rate limits in prose is NOT a pause.
+    if RESET=$(rate_limit_reset "$RUN/agent-$N.log"); then
+      [ -n "${RESET:-}" ] && node "$PIPE/status.js" set rateLimitResetAt "$RESET"
       exit 20   # runner parks the task; attempts[] untouched — interrupted ≠ failed
     fi
     die30 "agent command failed on attempt $N (see agent-$N.log)"
@@ -186,7 +242,7 @@ while :; do
   # run leaves it unset; the empty string means "no alias" and is not an error. stderr is
   # NOT swallowed: an alias that matches nothing is a diagnostic a human must see in the
   # run log, and hiding it is how the wrong model went unnoticed in the first place.
-  MODEL=$(node "$PIPE/envelope.js" flatten "$RUN/agent-$N.log" "${PIPELINE_MODEL:-}") || MODEL=""
+  MODEL=$(flatten_agent_log "$RUN/agent-$N.log") || MODEL=""
   [ -n "$MODEL" ] && node "$PIPE/status.js" set model "$MODEL" 2>/dev/null
 
   # ---- verify phase: the authoritative gate (§4.4) ----
@@ -266,7 +322,7 @@ while :; do
         fi
 
         node "$PIPE/status.js" set phase docs 2>/dev/null
-        node "$PIPE/status.js" summary "$RUN/docs-out.txt" || true
+        node "$PIPE/status.js" summary "$RUN/docs-out.txt" "$PROVIDER" || true
         # An agent-created commit is not trusted as a phase boundary. Collapse any such
         # commit back onto VERIFIED_HEAD and let deterministic scaffolding author one delta.
         if ! git reset --soft "$VERIFIED_HEAD" || ! git add -A; then

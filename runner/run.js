@@ -15,6 +15,7 @@
 const fs = require('fs');
 const path = require('path');
 const { loadConfig, loadToken } = require('./config');
+const { credentialEnvFor, providerFor } = require('./agent-provider');
 const { startRun } = require('./log');
 const { preflight, networkDown } = require('./preflight');
 const { release: releaseLock } = require('./lock');
@@ -571,12 +572,20 @@ async function main() {
   log.info(t, `target: ${cfg.targetRepoPath} -> ${cfg.targetRepoRemote}`,
     { event: 'run.target', data: { url: cfg.targetRepoRemote } });
 
-  const token = loadToken(REPO_ROOT);
+  // The credential belongs to the SELECTED provider (§4.3; change-log row `repo-45g`) and
+  // is loaded before anything else so a run with no way to authenticate stops here — ahead
+  // of the write-protection backstop, the project lock, the network, and every Beads write.
+  // A container Codex has no saved login to fall back on: it is CODEX_API_KEY or nothing.
+  const provider = providerFor(cfg, 'implementation');
+  const credentialEnv = credentialEnvFor(provider);
+  const token = loadToken(REPO_ROOT, credentialEnv);
   if (!token) {
-    log.error(t, 'no CLAUDE_CODE_OAUTH_TOKEN (.env.pipeline or environment) — tasks cannot authenticate');
+    log.error(t, `no ${credentialEnv} (.env.pipeline or environment) — ${provider} tasks cannot`
+      + ` authenticate. Remedy: put ${credentialEnv}=<value> in the git-ignored .env.pipeline`
+      + `${provider === 'codex' ? ' (a saved host `codex login` does not reach a task container — its auth file is never mounted)' : ''}.`);
     process.exit(2);
   }
-  log.info(t, 'subscription token loaded');
+  log.info(t, `${provider} credential loaded (${credentialEnv}, by name)`);
 
   // The write-protection backstop (change-log row `repo-324`). Ahead of preflight on purpose:
   // it holds no lock and creates no network, so a refusal here has nothing to compensate for.

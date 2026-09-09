@@ -44,6 +44,36 @@ The project lock is host-global. A second run for the same canonical repository 
 refused; different repositories may run independently. The host is the sole Beads writer
 and the sole holder of Git and GitHub credentials.
 
+### Selecting an agent provider
+
+`provider` is `claude` or `codex`, and nothing else is accepted. The two host launch
+stages may override it with `testAuthorProvider` and `testProbeProvider`, and each stage
+carries a `reasoningEffort` of `minimal`, `low`, `medium` or `high` that it inherits from
+the global value when absent. Omitting all of these is the same run it always was.
+
+A Codex selection needs three things the operator supplies, and each has its own refusal
+naming the remedy: the `codex` CLI on PATH for the host stages, authentication, and a task
+image carrying the CLI. Authentication is asymmetric on purpose — a host launch may reuse
+a saved `codex login`, while a task container requires `CODEX_API_KEY` in the git-ignored
+`.env.pipeline`, because the saved login file is never mounted into a container. A run
+whose selected provider is unauthenticated stops before the project lock; one whose model
+or image is wrong stops before the network, the sidecar and every Beads write.
+
+Codex tasks bring up a separate deny-by-default proxy profile (`docker/proxy-codex`,
+`api.openai.com` only). The Anthropic-only profile is unchanged and neither is widened to
+carry both. The pre-run egress gate probes the selected provider's endpoint, so a passing
+gate is evidence about this run rather than about the other backend.
+
+One deliberately live check exists and is opt-in, because everything else about Codex here
+is deterministic and therefore cannot confirm the configured GPT model actually answers:
+
+```bash
+CODEX_LIVE_SMOKE=1 node scripts/codex-live-smoke.js --config run.config.<project>.json
+```
+
+It makes one read-only `codex exec` call and prints the model as evidence. Without the
+environment variable it sends nothing and exits 0, so no sweep reaches a live endpoint.
+
 Useful read-only controls:
 
 ```bash
@@ -174,6 +204,9 @@ Inside a task container:
 
 - `/workspace/.run/issue.md` and `/workspace/.run/memory.md` are read-only inputs.
 - Never edit `tests/acceptance/` or a path frozen by `pipeline.config.json`.
+- The agent CLI is whichever provider the run selected; `PIPELINE_PROVIDER` names it and
+  is absent for the default Claude backend. The container holds exactly one provider
+  credential, by variable name, and no host login file.
 - The deterministic verifier decides the result after the agent exits.
 - Docker, Beads, Git credentials, and general network access are unavailable by design.
 - Record durable insights with `node /pipeline/status.js note "..."` and suspected spec

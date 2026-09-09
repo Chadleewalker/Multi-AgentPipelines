@@ -11,12 +11,18 @@ const { spawn } = require('child_process');
 const { toMountPath } = require('./bd');
 const { createDeadlineWatchdog } = require('./deadline-watchdog');
 const { timeoutFor } = require('./process');
+const {
+  CLAUDE_CREDENTIAL_ENV, CODEX_CREDENTIAL_ENV, credentialEnvFor, effortFor, providerFor,
+} = require('./agent-provider');
 
 // Windows/Git Bash: Docker needs C:/... mount sources, and MSYS must not rewrite
 // container-side paths like /workspace into C:\Program Files\Git\workspace.
 const DOCKER_ENV = { ...process.env, MSYS_NO_PATHCONV: '1' };
+// The kill path needs no credential at all, so neither provider's is left in its
+// environment — both names, because a Claude run and a Codex run share this module.
 const WATCHDOG_DOCKER_ENV = { ...DOCKER_ENV };
-delete WATCHDOG_DOCKER_ENV.CLAUDE_CODE_OAUTH_TOKEN;
+delete WATCHDOG_DOCKER_ENV[CLAUDE_CREDENTIAL_ENV];
+delete WATCHDOG_DOCKER_ENV[CODEX_CREDENTIAL_ENV];
 
 // The container's inputs are exactly these (§4.10) — nothing else crosses the boundary.
 function buildArgs(cfg, opts) {
@@ -35,9 +41,23 @@ function buildArgs(cfg, opts) {
     '-e', `HTTP_PROXY=${cfg.proxyUrl}`,
     '-e', 'NO_PROXY=localhost,127.0.0.1',
   ];
-  // Token by name only: the value comes from the runner's environment, so it never
-  // appears in an argument list, a log line, or an image layer (§6).
-  if (token) args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN');
+  // Credential by name only: the value comes from the runner's environment, so it never
+  // appears in an argument list, a log line, or an image layer (§6). WHICH name depends on
+  // the provider this run selected — a Codex task gets CODEX_API_KEY and no Claude token,
+  // and a Claude task is unchanged. Neither ever gets both: an unused credential in a task
+  // container is reach the task has no need of.
+  //
+  // The host's saved Codex login is deliberately NOT involved. `~/.codex/auth.json` is
+  // never mounted (§4.10 lists the container's inputs, and that is not one of them);
+  // container Codex authenticates with CODEX_API_KEY or not at all.
+  const provider = providerFor(cfg, 'implementation');
+  if (token) args.push('-e', credentialEnvFor(provider));
+  // Only ever pushed for a non-default provider, so a Claude run's argv is byte-identical
+  // to what it was before this field existed and the entrypoint's default stays claude.
+  if (provider !== 'claude') {
+    args.push('-e', `PIPELINE_PROVIDER=${provider}`);
+    args.push('-e', `PIPELINE_REASONING_EFFORT=${effortFor(cfg, 'implementation')}`);
+  }
   if (cfg.agentCommand) args.push('-e', `PIPELINE_AGENT_CMD=${cfg.agentCommand}`);
   // The entrypoint appends --model to its default headless invocation; an explicit
   // agentCommand (stubs, overrides) owns its own flags and ignores this.
@@ -60,8 +80,10 @@ function runTask(cfg, opts, log, traceId) {
       event: 'container.launched',
       data: { name: opts.containerName, budgetMinutes: Math.round(budgetMs / 60000) },
     });
+    // The value crosses here and nowhere else: `docker run` was handed the variable NAME
+    // above, and reads it out of this environment.
     const child = spawn('docker', args, {
-      env: { ...DOCKER_ENV, CLAUDE_CODE_OAUTH_TOKEN: opts.token || '' },
+      env: { ...DOCKER_ENV, [credentialEnvFor(providerFor(cfg, 'implementation'))]: opts.token || '' },
     });
     child.stdout.pipe(logStream);
     child.stderr.pipe(logStream);

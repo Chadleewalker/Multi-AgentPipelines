@@ -13,9 +13,10 @@
 //   node status.js set <key> <value>       changeSummary | stuckState |
 //                                          rateLimitResetAt | docsPhaseError |
 //                                          model | phase (code|verify|docs)
-//   node status.js summary <file>          set changeSummary from a docs-phase log
-//                                          (envelope result if there is one, else the
-//                                          raw text; trimmed, tail 2000)
+//   node status.js summary <file> [prov]   set changeSummary from a docs-phase log
+//                                          (the provider's structured final text if there
+//                                          is one, else the raw text; trimmed, tail 2000).
+//                                          `prov` is claude (the default) or codex.
 //   node status.js note <text>             propose one memory note (§3.6 out-channel;
 //                                          append-only, head 500, silently capped at 20)
 //   node status.js concern <text>          report that the frozen spec is itself wrong
@@ -64,10 +65,23 @@ switch (cmd) {
     // agent's envelope result and fall back to the raw file only when there is no
     // envelope (plain-text agents and stubs). Extraction is deterministic — no LLM.
     if (!fs.existsSync(FILE)) { console.error(`status.js: ${FILE} missing (init first)`); process.exit(2); }
+    //
+    // Provider-aware, and the Codex reader is required LAZILY on purpose: this file's only
+    // dependency on the claude path stays ./envelope.js, so a fixture that copies exactly
+    // status.js + envelope.js into a throwaway /pipeline still works (several frozen
+    // acceptance suites do exactly that). Nothing loads agent-output.js unless a Codex run
+    // asks for it.
     let raw = '';
     try { raw = fs.readFileSync(args[0] || '', 'utf8'); } catch { raw = ''; }
-    const env = require('./envelope.js').parse(raw);
-    const text = (env ? env.result : raw).trim().slice(-2000);
+    let final = null;
+    if (String(args[1] || 'claude') === 'codex') {
+      const record = require('./agent-output.js').normalizeOutput('codex', raw);
+      final = record && record.finalText !== null ? record.finalText : null;
+    } else {
+      const env = require('./envelope.js').parse(raw);
+      final = env ? env.result : null;
+    }
+    const text = (final === null ? raw : final).trim().slice(-2000);
     // Nothing to say is not a failure: the docs phase is non-fatal after success.
     if (!text) break;
     const o = load();

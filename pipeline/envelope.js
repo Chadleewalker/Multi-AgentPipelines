@@ -80,7 +80,21 @@ function chooseModel(modelUsage, alias) {
   return { model: best, aliasMiss };
 }
 
-// -> { result, model, aliasMiss } | null   (model is null when there is no modelUsage)
+// Token counts are advisory data from another process. `usage` is null when the envelope
+// emitted none — "the CLI reported no usage" and "the CLI billed nothing" are different
+// facts, and a zero would report the second. Added for the provider-aware normalization in
+// agent-output.js so both backends record usage from ONE scan of the log; every existing
+// caller reads `result`/`model`/`aliasMiss` and is unaffected by the extra key.
+function envelopeUsage(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const n = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  const input = n(raw.input_tokens);
+  const output = n(raw.output_tokens);
+  if (input === null && output === null) return null;
+  return { input: input === null ? 0 : input, output: output === null ? 0 : output };
+}
+
+// -> { result, model, aliasMiss, usage } | null   (model is null when there is no modelUsage)
 // `expectedAlias` is optional; absent, empty or whitespace-only all mean "no alias".
 function parse(text, expectedAlias) {
   const lines = String(text).split('\n');
@@ -92,7 +106,7 @@ function parse(text, expectedAlias) {
     if (!j || typeof j !== 'object' || Array.isArray(j)) continue;
     if (typeof j.result !== 'string') continue;
     const { model, aliasMiss } = chooseModel(j.modelUsage, expectedAlias);
-    return { result: j.result, model, aliasMiss };
+    return { result: j.result, model, aliasMiss, usage: envelopeUsage(j.usage) };
   }
   return null;
 }

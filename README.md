@@ -48,9 +48,11 @@ Setting up a machine that has never seen this before — tool by tool, with the 
 prove each step worked — is [`SETUP.md`](SETUP.md).
 
 ```bash
-# 1. put your Claude subscription token where the runner can find it
-#    (git-ignored; get one with `claude setup-token`)
+# 1. put your agent credential where the runner can find it
+#    (git-ignored; get a Claude one with `claude setup-token`)
 echo 'CLAUDE_CODE_OAUTH_TOKEN=...' > .env.pipeline
+#    a run config selecting "provider": "codex" needs CODEX_API_KEY in the same file
+#    instead — a saved host `codex login` never reaches a task container
 
 # 2. prove the whole thing works, using scripted stubs — no model calls
 bash scripts/e2e.sh
@@ -95,7 +97,7 @@ on the shared base image, and `bd init` — [`PLANNING.md`](PLANNING.md) walks t
 | `runner/` | the host-side orchestrator — plain JavaScript, no dependencies, no LLM |
 | `pipeline/` | what runs *inside* a container: entrypoint, verifier, agent stubs |
 | `schemas/` | the frozen contracts between separately-built components — the status file, the verify result, the run manifest, and the event ledger a run appends beside its log |
-| `docker/` | the pinned base image and the allowlist proxy sidecar |
+| `docker/` | the pinned base image and one deny-by-default allowlist proxy sidecar per agent provider — `proxy/` for Claude, `proxy-codex/` for Codex, never one list carrying both |
 | `scripts/` | one test suite per build task, the end-to-end pass, and the host-side readers — `audit-runs.js` joins every past run into one report, `dashboard.js` serves the run in flight on localhost, `batch.js` says which frozen batches have never been launched and how the live queue differs from what was frozen; all change nothing |
 | `tests/` | `acceptance/` — per-task tests, frozen at approval; `unit/` — Docker-free suites |
 | `beads/` | the task-queue issue template |

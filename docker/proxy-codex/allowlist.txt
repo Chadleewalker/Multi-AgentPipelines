@@ -1,0 +1,11 @@
+# Egress allowlist (DESIGN.md 4.8) for a Codex task: the OpenAI-operated endpoint the
+# noninteractive `codex exec` CLI requires - and nothing else. Concrete domains only; no
+# wildcards, no prefix or suffix patterns, no second provider.
+# Policy (frozen): deny by default. Enumeration (delegated): api.openai.com is the model
+# API, and it is the only host a container Codex needs because it authenticates with
+# CODEX_API_KEY. The interactive login flow is NOT reachable from a task container by
+# design (docker/base carries no saved login and the host's is never mounted), so the
+# hosts that flow would need are deliberately absent.
+# This file is a SEPARATE profile from docker/proxy: neither list is ever widened to carry
+# both providers, because one merged list would grant every task the union of both.
+api.openai.com

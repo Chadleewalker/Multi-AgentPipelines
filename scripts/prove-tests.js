@@ -15,6 +15,7 @@ const os = require('os');
 const path = require('path');
 
 const { loadConfig } = require('../runner/config');
+const { hostLaunch, providerFor, effortFor } = require('../runner/agent-provider');
 const { runSync, failureText } = require('../runner/process');
 const { acquire, release } = require('../runner/lock');
 const { compareSuites } = require('./freeze-gate');
@@ -392,16 +393,19 @@ function probePrompt(built, previous = '') {
 
 function launchProbe(built, prepared, model, previous = '', run = runSync) {
   const timeoutMs = Math.max(1, Number(built.cfg.wallClockMinutes) || 240) * 60 * 1000;
-  return run(process.env.PIPELINE_TEST_PROBE_CMD || 'claude', [
-    '-p', '--model', model,
-    '--restricted', '--permission-mode', 'acceptEdits',
-    '--tools', PROBE_TOOLS,
-    '--allowedTools', PROBE_TOOLS,
-    '--disallowedTools', PROBE_DENIED,
-    '--no-session-persistence',
-  ], {
+  // One adapter builds this argv too (runner/agent-provider.js). The probe's shell-free
+  // rule stays here: PROBE_TOOLS/PROBE_DENIED are this stage's policy, not the provider's.
+  const launch = hostLaunch({
+    stage: 'green-probe',
+    provider: providerFor(built.cfg, 'green-probe'),
+    reasoningEffort: effortFor(built.cfg, 'green-probe'),
+    model,
+    env: process.env,
+    claude: { tools: PROBE_TOOLS, allowedTools: PROBE_TOOLS, disallowedTools: PROBE_DENIED },
+  });
+  return run(launch.command, launch.args, {
     cfg: built.cfg, cwd: prepared.probe, input: `${probePrompt(built, previous)}\n`, timeoutMs,
-    label: 'Claude green-probe session', maxBuffer: MAX_BUFFER,
+    label: launch.label, maxBuffer: MAX_BUFFER,
     // hostEnv belongs only to the host verifier below. It must not alter Claude's executable,
     // module loader, Git behavior, or permission configuration.
     env: { ...process.env },
