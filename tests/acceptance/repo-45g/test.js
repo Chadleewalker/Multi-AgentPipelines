@@ -1,13 +1,15 @@
 // Frozen acceptance test — repo-45g: add the Codex GPT provider and switch the conveyor.
 // The Beads issue is canonical. PAIRING: C1 §config, C2 §host-launch, C3 §container,
-// C4 §egress, C5 §normalization, C6 §admission, C7 §fixtures. guard.js alone proves
+// C4 §egress, C5 §normalization, C6 §admission and image CLI capability, C7 §fixtures. guard.js alone proves
 // C1's byte-for-byte legacy fallback plus the legacy portion of C2/C7. Every check labels
 // its criterion; no orphan criterion or check is intentional.
 //
 // Frozen interface (necessary because the issue names behaviours, not a JS surface):
-// runner/agent-provider.js exports PROVIDERS, REASONING_EFFORTS, normalizeOutput, and
-// preflightProvider. The existing author-tests.js and prove-tests.js launch through that
-// one adapter. `normalizeOutput(provider, raw, configuredModel)` returns
+// runner/agent-provider.js exports PROVIDERS, REASONING_EFFORTS, CODEX_REQUIRED_EXEC_FLAGS,
+// missingCodexCapabilities(helpText), normalizeOutput, and preflightProvider. runner/preflight.js
+// exports imageSupportsProvider(cfg, provider, execute), whose execute seam has the existing
+// sh(cfg, command, args, opts) signature. The existing author-tests.js and prove-tests.js launch
+// through that one adapter. `normalizeOutput(provider, raw, configuredModel)` returns
 // {provider, configuredModel, model, tokenUsage, finalText, rateLimit:{resetAt,evidence}}
 // or null when no structured final or rate-limit outcome exists. `preflightProvider(cfg, deps)` returns
 // {ok:false, remedy} before calling a supplied side-effect seam, or {ok:true}; deps has
@@ -24,6 +26,28 @@ const PROBE = require(path.join(REPO, 'scripts', 'prove-tests.js'));
 const CONTAINER = require(path.join(REPO, 'runner', 'container.js'));
 const ADAPTER_FILE = path.join(REPO, 'runner', 'agent-provider.js');
 let adapter = null; try { adapter = require(ADAPTER_FILE); } catch { adapter = null; }
+const PREFLIGHT_FILE = path.join(REPO, 'runner', 'preflight.js');
+let preflight = null; try { preflight = require(PREFLIGHT_FILE); } catch { preflight = null; }
+const CODEX_REQUIRED_EXEC_FLAGS = [
+  '--approve-for-me', '--ephemeral', '--ignore-user-config', '--ignore-rules', '--strict-config',
+];
+const CODEX_058_EXEC_HELP = [
+  'Codex 0.58.0',
+  'Usage: codex exec [OPTIONS] [PROMPT]',
+  'Options:',
+  '  --model <MODEL>',
+  '  --json',
+].join('\n');
+const CODEX_CURRENT_EXEC_HELP = [
+  'Codex current',
+  'Usage: codex exec [OPTIONS] [PROMPT]',
+  'Options:',
+  '  --approve-for-me',
+  '  --ephemeral',
+  '  --ignore-user-config',
+  '  --ignore-rules',
+  '  --strict-config',
+].join('\n');
 let failed = 0;
 function check(name, yes, detail = '') {
   console.log(`${yes ? 'ok' : 'FAIL'} - ${name}${yes || !detail ? '' : ` — ${detail}`}`);
@@ -33,6 +57,16 @@ function capture(fn) {
   let call = null;
   const r = fn((command, args, opts) => { call = { command, args, opts }; return { status: 47, stdout: 'fake executable', stderr: '' }; });
   return { call, r };
+}
+function helpExecute(helpText, status = 0) {
+  const calls = [];
+  return {
+    calls,
+    execute(cfg, command, args, opts) {
+      calls.push({ cfg, command, args, opts });
+      return { status, stdout: helpText, stderr: '' };
+    },
+  };
 }
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'accept-45g-'));
 function config(raw, suffix) {
@@ -108,6 +142,23 @@ try {
     author.call && author.call.opts.env.CODEX_API_KEY === codexSecret && !author.call.args.includes(codexSecret)
       && author.call.args.includes('shell_environment_policy.ignore_default_excludes=false')
       && author.call.args.includes('shell_environment_policy.filters.CODEX_API_KEY="exclude"'), launchView(author.call));
+  check('C3 Codex declares the exact frozen exec capability roster and rejects every capability missing from planted Codex 0.58 help',
+    adapter && JSON.stringify(adapter.CODEX_REQUIRED_EXEC_FLAGS) === JSON.stringify(CODEX_REQUIRED_EXEC_FLAGS)
+      && typeof adapter.missingCodexCapabilities === 'function'
+      && JSON.stringify(adapter.missingCodexCapabilities(CODEX_058_EXEC_HELP)) === JSON.stringify(CODEX_REQUIRED_EXEC_FLAGS),
+    adapter ? JSON.stringify(adapter.CODEX_REQUIRED_EXEC_FLAGS) : 'agent provider unavailable');
+  check('C3 Codex structural current exec --help containing every required capability has no missing capability',
+    adapter && typeof adapter.missingCodexCapabilities === 'function'
+      && JSON.stringify(adapter.missingCodexCapabilities(CODEX_CURRENT_EXEC_HELP)) === '[]');
+  const dockerfile = fs.readFileSync(path.join(REPO, 'docker', 'base', 'Dockerfile'), 'utf8');
+  const dockerBuildInstructions = dockerfile.replace(/\\\r?\n/g, ' ').split(/\r?\n/)
+    .filter((line) => /^\s*RUN\s/.test(line));
+  check('C3 Dockerfile pins @openai/codex@0.154.0 exactly and checks codex exec --help for every required capability at build time',
+    /@openai\/codex@0\.154\.0(?=\s|$)/.test(dockerfile)
+      && dockerBuildInstructions.some((instruction) => /codex\s+exec\s+--help/.test(instruction)
+        && CODEX_REQUIRED_EXEC_FLAGS.every((flag) => instruction.includes(flag))), dockerfile);
+  check('C3 source-level pin sanity specifically rejects incompatible @openai/codex@0.58.0',
+    !/@openai\/codex@0\.58\.0(?=\s|$)/.test(dockerfile), dockerfile);
   // C4 — a dedicated concrete OpenAI deny-by-default profile; the Anthropic profile must survive.
   const codexAllow = path.join(REPO, 'docker', 'proxy-codex', 'allowlist.txt');
   const anthAllow = path.join(REPO, 'docker', 'proxy', 'allowlist.txt');
@@ -147,6 +198,35 @@ try {
     proseOnly === null, JSON.stringify(proseOnly));
 
   // C6 — each selected-provider prerequisite refuses before any later mutation seam.
+  const codexImageArgs = ['run', '--rm', '--network', 'none', '--entrypoint', 'codex', 'fixture:codex', 'exec', '--help'];
+  const oldCodexImage = helpExecute(CODEX_058_EXEC_HELP);
+  const currentCodexImage = helpExecute(CODEX_CURRENT_EXEC_HELP);
+  const oldCodexSupported = preflight && typeof preflight.imageSupportsProvider === 'function'
+    ? preflight.imageSupportsProvider({ image: 'fixture:codex' }, 'codex', oldCodexImage.execute) : null;
+  const currentCodexSupported = preflight && typeof preflight.imageSupportsProvider === 'function'
+    ? preflight.imageSupportsProvider({ image: 'fixture:codex' }, 'codex', currentCodexImage.execute) : null;
+  check('C6 Codex image support runs exact isolated codex exec --help Docker argv and rejects planted Codex 0.58 help',
+    oldCodexSupported === false && oldCodexImage.calls.length === 1
+      && oldCodexImage.calls[0].command === 'docker'
+      && JSON.stringify(oldCodexImage.calls[0].args) === JSON.stringify(codexImageArgs), JSON.stringify(oldCodexImage.calls));
+  check('C6 Codex image support accepts planted current exec --help only after the same exact isolated Docker argv',
+    currentCodexSupported === true && currentCodexImage.calls.length === 1
+      && currentCodexImage.calls[0].command === 'docker'
+      && JSON.stringify(currentCodexImage.calls[0].args) === JSON.stringify(codexImageArgs), JSON.stringify(currentCodexImage.calls));
+  const claudeImageArgs = ['run', '--rm', '--network', 'none', '--entrypoint', 'claude', 'fixture:claude', '--version'];
+  const claudeImageOk = helpExecute('claude version');
+  const claudeImage = helpExecute('claude version', 23);
+  const claudeSupportedOk = preflight && typeof preflight.imageSupportsProvider === 'function'
+    ? preflight.imageSupportsProvider({ image: 'fixture:claude' }, 'claude', claudeImageOk.execute) : null;
+  const claudeSupported = preflight && typeof preflight.imageSupportsProvider === 'function'
+    ? preflight.imageSupportsProvider({ image: 'fixture:claude' }, 'claude', claudeImage.execute) : null;
+  check('C6 Claude image support preserves the historical exact claude --version Docker argv and status behavior',
+    claudeSupportedOk === true && claudeImageOk.calls.length === 1
+      && claudeImageOk.calls[0].command === 'docker'
+      && JSON.stringify(claudeImageOk.calls[0].args) === JSON.stringify(claudeImageArgs)
+      && claudeSupported === false && claudeImage.calls.length === 1
+      && claudeImage.calls[0].command === 'docker'
+      && JSON.stringify(claudeImage.calls[0].args) === JSON.stringify(claudeImageArgs), JSON.stringify(claudeImage.calls));
   const preflightCases = [
     ['executable', /install.*codex|codex.*path/i],
     ['authenticated', /codex login|CODEX_API_KEY|authenticat/i],
