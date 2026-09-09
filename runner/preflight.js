@@ -15,6 +15,7 @@ const {
 const { resolveHostShell, commandFor } = require('./host-shell');
 const { runSync, failureText } = require('./process');
 const { verifyRepoIdentity } = require('./repo-identity');
+const { admitEntry } = require('./supervisor');
 
 // The historical shared pair, which is what a config with no project segment gets.
 // Asked for by name rather than spelled out again, so the two files cannot drift.
@@ -166,6 +167,37 @@ function recoverStaleIssues(cfg, log, traceId, ownership, io = {}) {
 function preflight(cfg, repoRoot, log, deps = {}) {
   const t = `${log.runId}/preflight`;
 
+  // ---- child admission: ahead of the project lock itself (§3.10) ----
+  // Ahead of the lock because it decides WHICH exclusion applies. With no supervisor on this
+  // canonical target and no child authority presented, it answers `standalone` and everything
+  // below is exactly today's behaviour. With a supervisor live, an unrelated run is refused by
+  // that supervisor's name before it can take a lock, probe Docker, create a network or write
+  // to Beads; with valid implementation authority, the run proceeds under its parent's
+  // ownership and takes no target lock of its own.
+  const admitChild = deps.admitEntry || admitEntry;
+  const entry = admitChild('implementation', {
+    targetRepoPath: cfg.targetRepoPath, repoRoot, env: deps.env || process.env,
+  });
+  if (!entry.ok) {
+    return {
+      ok: false,
+      locked: true,                    // nothing was started — run.js skips teardown
+      childAuthorityRefused: true,
+      reason: `child authority refused (${entry.reason}): ${entry.message}`,
+    };
+  }
+  const child = entry.mode === 'supervisor-child' ? entry.admission : null;
+  if (child) {
+    // The same line a standalone run writes, because the project lock IS held for this target
+    // — by the parent, not by this process. Saying anything else would leave the dashboard's
+    // live view unable to tell a supervised run from one that never got the project at all.
+    log.info(t, `project lock held for ${cfg.targetRepoPath} by supervisor ${child.parent.id}`
+      + ` (pid ${child.parent.pid}); admitted as its child under grant ${child.nonce}`
+      + `${child.issueId ? ` for ${child.issueId}` : ''}, so this run takes no lock of its own`,
+    { event: 'lock.held', data: { path: cfg.targetRepoPath } });
+    return childPreflight(cfg, repoRoot, log, deps, t, child);
+  }
+
   // ---- the project lock: FIRST, ahead of every other gate (§4.12) ----
   // First and not merely early. It is the only purely local check — everything after it
   // probes Docker or writes to Beads, and a refusal that arrives after `bd update` has
@@ -190,6 +222,31 @@ function preflight(cfg, repoRoot, log, deps = {}) {
   }
   log.info(t, `project lock held for ${cfg.targetRepoPath}`,
     { event: 'lock.held', data: { path: cfg.targetRepoPath } });
+  return startupGates(cfg, repoRoot, log, deps, t, {
+    ownership: held.ownership,
+    lockOwned: true,
+    releaseOwnership: () => release(repoRoot, cfg.targetRepoPath, held.ownership),
+  });
+}
+
+// A supervisor child runs exactly the same gates in exactly the same order, and owns exactly
+// the same compensation for the plumbing it starts. The one difference is ownership: the
+// parent's lease already excludes every other coordinator from this canonical target, so the
+// child takes no lock and must never release the one it was let in under.
+function childPreflight(cfg, repoRoot, log, deps, t, child) {
+  return startupGates(cfg, repoRoot, log, deps, t, {
+    ownership: null,
+    lockOwned: false,
+    childAdmission: child,
+    releaseOwnership: () => {},
+  });
+}
+
+// Everything after admission and the lock. Extracted so the standalone and supervisor-child
+// paths cannot drift apart in gate ORDER — the order is the contract (§4.12): identity, shell,
+// Docker, image, network, egress, stale-issue recovery, and a compensating teardown on every
+// unsuccessful path.
+function startupGates(cfg, repoRoot, log, deps, t, owned) {
   let keepOwnership = false;
   let networkAttempted = false;
   try {
@@ -247,7 +304,7 @@ function preflight(cfg, repoRoot, log, deps = {}) {
     if (!eg.ok) return { ok: false, reason: `egress check failed — allowlist not in force: ${eg.output.trim()}` };
     log.info(t, 'egress check passed (allowlist in force)');
 
-    const stale = recover(cfg, log, t, held.ownership);
+    const stale = recover(cfg, log, t, owned.ownership);
     if (stale.error) log.error(t, `stale-issue recovery skipped: ${stale.error}`);
 
     keepOwnership = true;
@@ -255,8 +312,9 @@ function preflight(cfg, repoRoot, log, deps = {}) {
       ok: true,
       recovered: stale.recovered || [],
       networkOwned: true,
-      lockOwned: true,
-      ownership: held.ownership,
+      lockOwned: owned.lockOwned,
+      ownership: owned.ownership,
+      ...(owned.childAdmission ? { childAdmission: owned.childAdmission } : {}),
     };
   } catch (e) {
     return { ok: false, unexpected: true, reason: `preflight failed unexpectedly: ${e && e.message ? e.message : e}` };
@@ -272,7 +330,7 @@ function preflight(cfg, repoRoot, log, deps = {}) {
       } catch (e) {
         log.error(t, `preflight cleanup threw while tearing down network plumbing: ${e && e.message ? e.message : e}`);
       } finally {
-        release(repoRoot, cfg.targetRepoPath, held.ownership);
+        owned.releaseOwnership();
       }
     }
   }

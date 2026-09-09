@@ -834,6 +834,75 @@ datable by neither counts as **having worked** the ids it names, labelled `run-t
 a false "pending" invites a double launch, where a false "launched" only sends someone to
 look.
 
+### 3.10 One supervisor authority with scoped child operations
+
+§4.12's host-global target lock gives one canonical target one live coordinator, and every
+standalone command in this repository — the runner, `scripts/prepare-batch.js`,
+`scripts/author-tests.js`, `scripts/prove-tests.js` — competes for it as a peer. That is
+exactly right while the commands are strangers to each other: the loser is refused by the
+winner's name before it can read Beads, and the sole-writer rule (4.10) survives.
+
+It is the wrong shape the moment a **project supervisor** wants to run those commands. A
+supervisor that holds the target and then launches its own preparation, or its own
+implementation run, is refused by itself; a supervisor that does not hold the target is not
+supervising anything, and the two children then race each other for a lock neither should
+own. Both escapes on offer are worse than the problem — dropping the lock for supervised
+work removes the only thing keeping two writers off one queue, and giving each command a
+second, private exclusion primitive means two authorities to keep in step, which is one
+more than can be kept in step.
+
+**So the lease IS the lock.** A supervisor takes the same host-global canonical-target
+authority `runner/lock.js` takes, with its supervisor id as the record's run id. Nothing
+about identity, liveness, crash takeover, the observer mirror or preparation uncertainty
+changes, and every standalone coordinator refuses by the supervisor's own name with no code
+of its own. A sidecar record beside that lock says "this holder is a supervisor" and carries
+the lease token; it can grant nothing the lock did not already grant, and its only job is to
+let the entry paths tell a supervised project from an ordinary one.
+
+**Authority is a host record, not a file you hold.** A supervisor grants a child a narrow,
+expiring authority: one scope (`preparation` or `implementation`), one issue, one batch, one
+canonical target, the parent's id and controlling pid, an unguessable nonce and an expiry.
+The grant is written outside every model-editable tree, beside the lock. A child is admitted
+only when the presented authority matches that host record field for field, names this
+canonical target, was granted by a parent that is *still live and still the holder*, is
+unspent, unsettled and unexpired, and was issued for the scope the entry point is asking for.
+Copying the authority file or exporting the environment variable therefore buys nothing: the
+record is the authority and the file is only a way to name it. Every refusal is decided
+before any Beads, Git, Docker or network mutation, and no refusal edits or removes an
+ownership record — a refusal that rewrote state would be a way to attack the thing it
+protects.
+
+**The channel is the environment, and no command line changes.** `PIPELINE_CHILD_AUTHORITY`
+names a file holding one authority record; `scripts/prepare-batch.js` asks for
+`preparation` and `runner/preflight.js` (and so `runner/run.js`) asks for
+`implementation`, each as the first thing it does. Set and admitted, the entry path proceeds
+and takes **no target lock of its own** — its parent's lease already excludes everyone else,
+and a child that locked would only refuse its parent. Set and refused, it stops with the
+refusal reason before it has mutated anything. Unset with no supervisor present, it is
+today's behaviour exactly, which is the property that lets standalone operation stay green
+without a compatibility branch anywhere: admission answers `standalone` and the existing
+lock does the rest.
+
+**Two sections, not one lock.** Two authorized children may be live at once — that is the
+point of the layer — so the serialization the target lock used to provide has to come from
+somewhere. It comes from two named host-global critical sections keyed on (canonical target,
+section): `beads-write` and `integration-publish`. At most one admitted child is inside one
+named section at a time, and the two are **independent** resources, because a rule that made
+one exclude the other would serialize the workers completely and leave "two workers live
+together" with no content. A child may enter those two sections and no others; a section
+whose holder is provably gone is taken over on the same falsifiable evidence §4.12 uses for
+the lock, since a section nobody can be shown to be inside is the block-forever case again.
+
+**Interruption produces evidence, never inference.** A grant is removed from the outstanding
+list by exactly one thing: its parent settling it as `complete` or `released`. Not by
+expiry, not by the parent dying, not by a reclaim. So a killed supervisor leaves a readable
+list of what it had in flight, and a successor is refused the lease until a person asks for
+the reclaim explicitly — a live parent is never taken over, however many supervisors ask and
+whatever they ask for, and a provably dead one is reclaimed without deleting an uncertain
+preparation marker and without declaring its child complete. A child holds an admission and
+no lease, so it cannot grant itself anything, cannot widen its own scope by rewriting the
+authority it was handed (the host record disagrees), and cannot reach a third section.
+
 ## 4. The Implementation Phase (the execution layer)
 
 Carried over from v3, amended over two critic-review rounds; this section is the
@@ -1238,6 +1307,20 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     covered by takeover, not by release, which is why takeover is the mechanism and release
     is the courtesy. A clean end removes the authority only when every claim settled. An
     unfinished claim leaves a released ownership record for the next run to take over.
+
+    **Child admission comes before the lock, because it decides which exclusion applies**
+    (§3.10, change-log row `repo-rj7`). The first thing the runner's preflight does — ahead of
+    the lock, and so ahead of Docker, the network and every Beads call — is ask whether this
+    canonical target is under a supervisor and whether this run was granted scoped
+    `implementation` authority by it. With no supervisor and no authority presented the answer
+    is `standalone` and everything above happens unchanged. With a supervisor live and no
+    authority, the run is refused by that supervisor's name having acquired nothing. With
+    valid authority, the run proceeds under its parent's lease and takes no lock of its own,
+    which is why `lockOwned` is false for it and why neither its exit handler nor its teardown
+    boundary releases a lease it never took. `scripts/prepare-batch.js` asks the identical
+    question for the `preparation` scope in the identical position. The gate order is
+    therefore: write-protection admission, child admission, the project lock, repository
+    identity, host shell, Docker, image, network, egress, stale-issue recovery.
 
     **The Beads checkout and publication remote are one project, proven before either is
     touched.** `targetRepoPath` is the database side of the runner while
@@ -2718,6 +2801,14 @@ that this section did not state. The park half (change-log row `repo-i9y`, 2026-
 task — one wait, one run-level cycle cap, admission checked before the claim so a refused
 task leaves its issue `open`. See 4.7 for the full contract.
 
+**A third half, added later:** one runner juggling N containers is still the rule for one
+project's *queue*, and it is now possible for a preparation and an implementation worker of
+the same project to be live at once under one supervisor (§3.10, change-log row `repo-rj7`).
+That does not reopen "N runners on one queue": the supervisor's lease is the same host-global
+target authority, the children are admitted rather than self-appointed, and the two things the
+old lock was serializing — Beads writes and integration publication — remain serialized as
+named critical sections. What changed is who may hold the target, not how many may write.
+
 **V3 — the second-environment port:** running under a host's existing container workflow,
 repos on a network share, and a local-branch review mode for hosts with no PR service.
 Machine specifics stay in an untracked local note, never in the repo.
@@ -2729,7 +2820,12 @@ Machine specifics stay in an untracked local note, never in the repo.
   item (see §7), built only after the shadow trial.
 - An LLM orchestrator, nested orchestrators, or a leader agent inside containers.
   Orchestrator intelligence (re-planning, cross-task learning) waits until the dumb loop
-  has proven itself.
+  has proven itself. **The supervisor of §3.10 is not an exception to this** and is worth
+  distinguishing precisely, because the words are close enough to be read as one: it is a
+  deterministic ownership authority — a lease, a scope, a nonce and an expiry — that decides
+  who may hold a canonical target. It makes no decision about what work to do, in what order,
+  or whether a result is good, and no model runs inside it. What is still out of scope is
+  exactly what was out of scope before: intelligence in the coordinator.
 - Autonomous planning or autonomous spec changes during a run — ever.
 - Opening the container network beyond the enumerated Anthropic endpoints.
 - Cost accounting. There is no spend ceiling by design (see 4.6–4.7); real cost tracking
