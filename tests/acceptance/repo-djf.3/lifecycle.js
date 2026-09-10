@@ -5,7 +5,9 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { spawn } = require('child_process');
 const AUTH = require('../../../runner/codex-auth');
+const AUTH_PATH = require.resolve('../../../runner/codex-auth');
 
 let failed = 0;
 function check(name, yes, detail = '') {
@@ -13,6 +15,23 @@ function check(name, yes, detail = '') {
   if (!yes) failed = 1;
 }
 function delay(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+function waitForLock(child) {
+  return new Promise((resolve, reject) => {
+    let text = '';
+    const timeout = setTimeout(() => reject(new Error('child did not acquire the lifecycle lock')), 1500);
+    child.stdout.on('data', chunk => {
+      text += String(chunk);
+      if (text.includes('LOCKED')) { clearTimeout(timeout); resolve(); }
+    });
+    child.once('error', error => { clearTimeout(timeout); reject(error); });
+    child.once('exit', code => {
+      if (!text.includes('LOCKED')) { clearTimeout(timeout); reject(new Error(`lock child exited ${code}`)); }
+    });
+  });
+}
+function waitForExit(child) {
+  return new Promise(resolve => child.once('exit', resolve));
+}
 
 async function main() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'accept-djf3-lock-'));
@@ -97,6 +116,64 @@ async function main() {
       refreshCopiedWhileLocked && persisted.tokens.refresh_token === 'refreshed'
         && !fs.existsSync(task) && fs.existsSync(path.join(durable, 'auth.json')),
       JSON.stringify({ refreshCopiedWhileLocked, persisted, taskExists: fs.existsSync(task) }));
+
+    const faultRoot = path.join(root, 'fault-durable');
+    const faultTask = path.join(faultRoot, 'tasks', 'fault-task');
+    fs.mkdirSync(faultTask, { recursive: true });
+    const durableAuth = path.join(faultRoot, 'auth.json');
+    const priorBytes = JSON.stringify({ tokens: { refresh_token: 'recoverable-prior' } });
+    fs.writeFileSync(durableAuth, priorBytes);
+    fs.writeFileSync(path.join(faultTask, 'auth.json'), JSON.stringify({ tokens: { refresh_token: 'new-refresh' } }));
+    let directOverwriteAttempted = false;
+    const faultFs = Object.create(fs);
+    faultFs.copyFileSync = (source, destination) => {
+      if (path.resolve(destination) === path.resolve(durableAuth)) {
+        directOverwriteAttempted = true;
+        fs.writeFileSync(destination, '{ injected torn write');
+        throw new Error('injected direct-overwrite failure');
+      }
+      return fs.copyFileSync(source, destination);
+    };
+    let faultError = null;
+    try {
+      await AUTH.releaseTaskCache({
+        hostPath: faultTask, cacheRoot: faultRoot, fs: faultFs, retryMs: 5, timeoutMs: 1000,
+      });
+    } catch (error) { faultError = error; }
+    const afterFault = fs.readFileSync(durableAuth, 'utf8');
+    const atomicSuccess = !directOverwriteAttempted
+      && JSON.parse(afterFault).tokens.refresh_token === 'new-refresh' && !fs.existsSync(faultTask);
+    const recoverableFailure = directOverwriteAttempted && !!faultError
+      && afterFault === priorBytes && fs.existsSync(path.join(faultTask, 'auth.json'));
+    check('C4 refresh persistence is atomic: a failed direct overwrite cannot corrupt the durable cache or delete the recoverable task copy',
+      atomicSuccess || recoverableFailure,
+      JSON.stringify({ directOverwriteAttempted, faultError: faultError && faultError.message,
+        afterFault, taskExists: fs.existsSync(faultTask) }));
+
+    const staleRoot = path.join(root, 'stale-durable');
+    const childCode = [
+      "const auth=require(process.argv[1]);",
+      "const root=process.argv[2];",
+      "Promise.resolve(auth.withCacheLock({cacheRoot:root},async()=>{process.stdout.write('LOCKED\\n');await new Promise(()=>{});})).catch(()=>process.exit(2));",
+    ].join('');
+    const child = spawn(process.execPath, ['-e', childCode, AUTH_PATH, staleRoot],
+      { stdio: ['ignore', 'pipe', 'pipe'] });
+    try {
+      await waitForLock(child);
+      child.kill('SIGKILL');
+      await waitForExit(child);
+      const recovered = await Promise.race([
+        Promise.resolve(AUTH.withCacheLock(
+          { cacheRoot: staleRoot, retryMs: 5, timeoutMs: 750, staleMs: 0 },
+          () => 'recovered',
+        )),
+        delay(1200).then(() => 'timeout'),
+      ]);
+      check('C4 a dead lock owner is recoverable, so an interrupted process cannot permanently brick ChatGPT workers',
+        recovered === 'recovered', JSON.stringify({ recovered }));
+    } finally {
+      if (child.exitCode === null) child.kill('SIGKILL');
+    }
   } finally {
     try { fs.rmSync(root, { recursive: true, force: true }); } catch {}
   }

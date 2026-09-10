@@ -64,6 +64,21 @@ try {
     clean && output.some(line => /authentication.*chatgpt|chatgpt.*authentication/i.test(line))
       && output.some(line => /PASS.*live smoke/i.test(line)),
     JSON.stringify({ clean, output }));
+
+  const emptyOutput = [];
+  const emptyResult = SMOKE.main(
+    ['--image', taskImage, '--model', 'gpt-5.6-terra', '--reasoning-effort', 'low'],
+    {
+      env: { CODEX_LIVE_SMOKE: '1', CODEX_HOME: sourceHome },
+      runSync: () => ({ status: 0, stdout: '', stderr: '' }),
+      codexAuth: fakeAuth,
+      out: line => emptyOutput.push(String(line)),
+      err: line => emptyOutput.push(String(line)),
+    },
+  );
+  check('C5 a zero-exit Docker process without a structured Codex answer is not reported as a passing live subscription smoke',
+    emptyResult === 1 && !emptyOutput.some(line => /PASS.*live smoke/i.test(line)),
+    JSON.stringify({ emptyResult, emptyOutput }));
 } catch (error) {
   check('C5 public pinned-image smoke harness completes', false,
     error && (error.stack || error.message) || String(error));
