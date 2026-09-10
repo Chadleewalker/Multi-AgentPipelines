@@ -16,6 +16,9 @@ const { resolveHostShell, commandFor } = require('./host-shell');
 const { runSync, failureText } = require('./process');
 const { verifyRepoIdentity } = require('./repo-identity');
 const { admitEntry } = require('./supervisor');
+const {
+  normalizeProvider, providerFor, missingCodexCapabilities,
+} = require('./agent-provider');
 
 // The historical shared pair, which is what a config with no project segment gets.
 // Asked for by name rather than spelled out again, so the two files cannot drift.
@@ -32,6 +35,28 @@ function imageExists(image, cfg) {
   return sh(cfg, 'docker', ['image', 'inspect', image], { label: 'Docker image inspection' });
 }
 
+// Does the task image actually carry a usable CLI for the SELECTED provider (§4.12)?
+// `image inspect` proves the image is present, not that it can run this run's agent — an
+// image built before the Codex pin, or with an older CLI, passes that gate and then fails
+// inside every task container with no host-side diagnostic.
+//
+// Isolated on purpose: `--network none` so a capability probe cannot reach a model
+// endpoint, and `--entrypoint` so the image's own entrypoint is not what answers.
+function imageSupportsProvider(cfg, provider, execute = sh) {
+  const image = cfg && cfg.image;
+  if (normalizeProvider(provider) === 'codex') {
+    const probe = execute(cfg, 'docker',
+      ['run', '--rm', '--network', 'none', '--entrypoint', 'codex', image, 'exec', '--help'],
+      { label: 'Codex CLI capability probe' });
+    if (!probe || probe.status !== 0) return false;
+    return missingCodexCapabilities(`${probe.stdout || ''}${probe.stderr || ''}`).length === 0;
+  }
+  const probe = execute(cfg, 'docker',
+    ['run', '--rm', '--network', 'none', '--entrypoint', 'claude', image, '--version'],
+    { label: 'Claude CLI capability probe' });
+  return !!probe && probe.status === 0;
+}
+
 // The network, the proxy sidecar and its port are per project (§4.8 — `config.js`
 // derives them when a config names none), and the two shell scripts read them from the
 // environment, each falling back to the historical name when unset. Every call that
@@ -46,6 +71,9 @@ function netEnv(cfg) {
     PIPELINE_NET: cfg.network,
     PIPELINE_PROXY: cfg.proxyName,
     PIPELINE_PROXY_PORT: String(cfg.proxyPort),
+    // Which allowlist the sidecar is built from and which endpoint the gate proves
+    // reachable. One profile per provider — never one profile widened to both.
+    PIPELINE_PROXY_PROFILE: providerFor(cfg),
   };
 }
 
@@ -293,6 +321,21 @@ function startupGates(cfg, repoRoot, log, deps, t, owned) {
     }
     log.info(t, `image ${cfg.image} present`);
 
+    // Only for a non-default provider: a Claude run's image gate is exactly the presence
+    // check above, as it has always been, so an untouched run config launches nothing new.
+    const provider = providerFor(cfg);
+    if (provider !== 'claude') {
+      const supports = (deps.imageSupportsProvider || imageSupportsProvider)(cfg, provider);
+      if (!supports) {
+        return {
+          ok: false,
+          reason: `image '${cfg.image}' has no usable ${provider} CLI with every required`
+            + ` capability — rebuild the pinned base image during planning (§3.4); the runner never builds`,
+        };
+      }
+      log.info(t, `image ${cfg.image} runs the selected ${provider} CLI`);
+    }
+
     // Set before invoking `up`: the script can create the network and then fail. Any
     // attempted startup therefore owns a compensating `down` on every non-success path.
     networkAttempted = true;
@@ -337,6 +380,6 @@ function startupGates(cfg, repoRoot, log, deps, t, owned) {
 }
 
 module.exports = {
-  preflight, networkUp, networkDown, egressCheck, imageExists, dockerAvailable,
-  recoverStaleIssues, metadataOf, ownedBy, verifyRepoIdentity,
+  preflight, networkUp, networkDown, egressCheck, imageExists, imageSupportsProvider,
+  dockerAvailable, recoverStaleIssues, metadataOf, ownedBy, verifyRepoIdentity,
 };

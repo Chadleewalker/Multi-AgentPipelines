@@ -23,8 +23,9 @@ Three phases joined by a task queue:
    rather than in someone's memory, and says how the live queue differs from it before
    anything starts.
 2. **Implementation** (autonomous) — a plain script on your PC works through the queue.
-   Each task gets a fresh container that can reach nothing except three Anthropic
-   endpoints, holds no git credentials, and cannot edit its own tests. It writes code,
+   Each task gets a fresh container that can reach nothing except the handful of
+   endpoints its own model provider needs, holds no git credentials, and cannot edit its
+   own tests. It writes code,
    the verifier runs the frozen tests, and it retries at most three times.
 3. **Review** (with you) — verified work arrives as a pull request carrying the spec, a
    change summary, and the verification evidence. Failed work arrives as a pushed branch
@@ -48,9 +49,11 @@ Setting up a machine that has never seen this before — tool by tool, with the 
 prove each step worked — is [`SETUP.md`](SETUP.md).
 
 ```bash
-# 1. put your Claude subscription token where the runner can find it
-#    (git-ignored; get one with `claude setup-token`)
+# 1. put your model credential where the runner can find it
+#    (git-ignored; get a Claude one with `claude setup-token`)
 echo 'CLAUDE_CODE_OAUTH_TOKEN=...' > .env.pipeline
+#    a run whose config selects "provider": "codex" reads CODEX_API_KEY from the same
+#    file instead — one credential per run, never both in a container
 
 # 2. prove the whole thing works, using scripted stubs — no model calls
 bash scripts/e2e.sh
@@ -108,7 +111,8 @@ on the shared base image, and `bd init` — [`PLANNING.md`](PLANNING.md) walks t
 - Specs and tests are frozen before a run; nothing during a run can change what "done"
   means.
 - A specialist agent may advise, never gate.
-- The container gets one credential and no route out beyond the Anthropic endpoints.
+- The container gets one credential — the selected provider's, never both — and no route
+  out beyond that provider's own allowlisted endpoints.
 - A checkout carrying `pipeline.config.json` is pipeline-first: an agent session reads
   freely and does not change product, configuration, control or frozen paths by hand. See
   `node scripts/write-protection.js status`.

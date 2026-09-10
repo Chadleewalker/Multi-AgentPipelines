@@ -1111,14 +1111,15 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
    silently missing from `run.json` after an unattended overnight run is a hole in the
    record. Work is preserved and the operator decides, since a pipeline that cannot get
    a usage window has nothing useful left to try.
-8. **Closed network.** Container egress is allowlisted to **the Anthropic-operated
-   endpoints headless Claude Code requires to function** (API plus auth/token refresh),
-   enumerated explicitly in the proxy configuration — and nothing else: no git hosts, no
-   package registries, no third-party hosts. Mechanism: an internal no-egress Docker
-   network plus an HTTP CONNECT proxy sidecar with a domain allowlist (TLS passed through,
-   not intercepted), reached by the CLI via standard proxy environment variables. The
-   *mechanism* may be revisited at implementation; the *policy* — Anthropic endpoints
-   only, each one listed in config — may not. The starting allowlist is
+8. **Closed network.** Container egress is allowlisted to **the endpoints the run's
+   SELECTED provider's headless CLI requires to function** (API plus auth/token refresh),
+   enumerated explicitly in that provider's own proxy configuration — and nothing else: no
+   git hosts, no package registries, no third-party hosts. Mechanism: an internal no-egress
+   Docker network plus an HTTP CONNECT proxy sidecar with a domain allowlist (TLS passed
+   through, not intercepted), reached by the CLI via standard proxy environment variables.
+   The *mechanism* may be revisited at implementation; the *policy* — one profile per
+   provider, carrying only that provider's endpoints, each one listed in config, and never
+   one profile widened to serve both (6.5) — may not. The starting allowlist is
    `api.anthropic.com` plus whatever auth endpoints empirical testing of headless
    `claude -p` shows are required; the enumeration is finalized (within the policy) by the
    network task. **The network and the sidecar are per project, never per pipeline** — a
@@ -2325,24 +2326,29 @@ exist. Thread: `docs/threads/merge-order.md`.
   hard-require one, but nothing is built for one yet either.
 - **Host prerequisites:** Docker Desktop, Git Bash, Node, the `gh` CLI (authenticated to
   GitHub), `bd` (the runner is the sole Beads writer and runs it host-side — 4.12; until
-  it's installed, scripts fall back to running `bd` in the base image), and the Claude
-  Code CLI with `CLAUDE_CODE_OAUTH_TOKEN` available on the host — the host itself makes
-  the minimal rate-limit probe calls (4.7).
+  it's installed, scripts fall back to running `bd` in the base image), and the selected
+  provider's CLI available on the host: the Claude Code CLI with `CLAUDE_CODE_OAUTH_TOKEN`
+  — the host itself makes the minimal `claude -p` rate-limit probe calls (4.7) — and, for a
+  run or planning stage that selects Codex, the pinned Codex CLI with either a saved
+  ChatGPT CLI session (`codex login`) or `CODEX_API_KEY` (6.5).
 - **Review happens as GitHub PRs.** Projects fed through the pipeline must have a GitHub
   remote. (An environment with no PR host — repos on a network share, say — would need a
   local-branch review mode. Out of scope for V1.)
 - **Docker runs from Git Bash on the reference host**, not WSL (known issue: that machine's
   WSL distro has no Docker Desktop integration). The runner must not assume WSL either way.
-- **Auth:** `CLAUDE_CODE_OAUTH_TOKEN` is passed to containers as an environment variable
-  at `docker run` — never baked into an image layer. Headless `claude -p` honors it;
-  interactive `claude` does not (known issue) — the pipeline is headless-only anyway.
+- **Auth:** the SELECTED provider's credential — `CLAUDE_CODE_OAUTH_TOKEN` or
+  `CODEX_API_KEY`, never both — is passed to containers by environment-variable NAME at
+  `docker run` and never baked into an image layer (6.5). Headless `claude -p` honors its
+  token; interactive `claude` does not (known issue) — the pipeline is headless-only anyway.
+  Host Codex may instead reuse a saved ChatGPT CLI session (`codex login`); a container
+  cannot, and no `auth.json` is ever mounted into one.
 - **Runner implementation: Node.js.** Decision, for cross-platform reasons: `node` is
   the same command on Windows and Linux (no `python` vs `python3` split), handles JSON
   natively for Beads/Claude output, and can enforce wall-clock timeouts with an independent
   worker clock + bounded `docker kill` without relying on a platform `timeout` command.
   Plain JavaScript, no framework.
 - **Image strategy: shared base + thin per-project layer.** The base image (Node, git,
-  the Claude Code CLI, `bd` — **no pipeline scaffolding**; the entrypoint and verifier
+  the Claude Code CLI, the pinned Codex CLI, `bd` — **no pipeline scaffolding**; the entrypoint and verifier
   are mounted at runtime per 4.10) is maintained in this repo; each target project gets
   a thin hand-written Dockerfile (`FROM` the base, plus its `pipeline.config.json`
   dependencies — see 3.4 for the drift cross-check). Versions of the base OS, Node, and
@@ -2725,6 +2731,71 @@ protected `Bash` string-command write. Both must render as a denial rather than 
 exit without running the write, and the protected file's hash and `git status` must read
 unchanged afterward, and only because the attempt is confirmed to have actually run at all.
 
+### 6.5 Two providers, one adapter, and one credential per container
+
+Until `repo-45g` the model vendor was a hard-coded fact rather than a choice: `claude` was
+spelled out in the two planning launches, in the container entrypoint's default command, in
+the only credential the runner knew how to load, and in the only allowlist the proxy sidecar
+carried. This adds Codex as a first-class second provider — and, more importantly, makes the
+selection a *closed* one, so a third would be a table entry rather than another sweep of
+hard-coded names (change-log row `repo-45g`).
+
+**The vocabulary is closed and refused by field name.** `run.config.<project>.json` accepts
+`provider` (run-wide) and `testAuthorProvider` / `testProbeProvider` (per planning stage),
+each `claude` or `codex`, plus `reasoningEffort` and its two stage twins from
+`minimal | low | medium | high`. `runner/config.js` rejects anything else by the field's own
+name before a worktree, a Beads read, a network or a container exists. Resolution is a chain
+— stage, then run-wide, then the constant — which is why these are resolved onto `cfg` after
+the defaults spread rather than added to `contracts/control-plane.json`'s `configDefaults`: a
+stage field's default is *the run-wide value*, not a fixed one. **With every field absent the
+resolution is Claude at every stage and the launches are byte-for-byte what they were.**
+
+**One adapter constructs every host launch.** `runner/agent-provider.js` owns the provider
+vocabulary, the credential names, the required `codex exec` capability roster and the launch
+construction; `scripts/author-tests.js` and `scripts/prove-tests.js` hand it the Claude argv
+they have always built and get it back untouched when no provider is selected. A Codex launch
+is the official noninteractive contract — `codex exec --model <m> -c model_reasoning_effort=…`
+with `--approve-for-me --ephemeral --ignore-user-config --ignore-rules --strict-config --json`
+and the prompt on **stdin** (`-`), never argv. Each of those five flags is load-bearing and is
+therefore a *proven* capability rather than an assumption: `missingCodexCapabilities` reads
+`codex exec --help`, the base image checks it at build time, and `imageSupportsProvider` checks
+the task image itself with `docker run --network none --entrypoint codex … exec --help`. An
+`image inspect` proves an image is present, not that it can run this run's agent.
+
+**One credential per container, and never the other one.** `loadProviderCredential` selects
+exactly one of `CLAUDE_CODE_OAUTH_TOKEN` / `CODEX_API_KEY` from `.env.pipeline` or the ambient
+environment, with **no cross-provider fallback** — a Codex run with no `CODEX_API_KEY` is
+refused before anything mutates rather than started with a token that will fail at the model
+endpoint once a container, a network and a Beads claim exist. `runner/container.js` passes it
+to `docker run` by NAME only and deletes every *other* provider credential from the docker
+client's own environment first, so a host holding both cannot leak the unselected one into a
+task through `-e NAME` inheritance. Inside the container the key belongs to the CLI process
+alone: Codex's `shell_environment_policy` keeps its own default secret names excluded and adds
+this key explicitly, so nothing the *model* spawns inherits it, and the entrypoint runs the
+authoritative verifier — which executes the target repository's own code — under
+`env -u CODEX_API_KEY`. Host Codex may instead reuse a saved ChatGPT CLI session
+(`codex login`); a container never can, and no `auth.json` is ever mounted or baked in.
+
+**One egress profile per provider, never one widened to both.** `docker/proxy-codex/`
+is a separate deny-by-default sidecar image whose allowlist carries only the concrete OpenAI
+endpoint Codex requires; `docker/proxy/`'s Anthropic-only roster is untouched. Adding the
+OpenAI endpoints to that file would have been one line and would have given every Claude task
+reach it does not need, in both directions — the posture only means something while each
+profile carries exactly its own provider's roster. `scripts/pipeline-net.sh` builds from the
+profile the runner names, and `scripts/egress-check.sh` proves the *selected* endpoint
+reachable; proving `api.anthropic.com` on a run that will talk to OpenAI proves nothing.
+
+**Outcomes still come from structure, never from prose.** `normalizeOutput` reads Codex's
+`--json` JSONL stream and Claude's existing envelope and records provider, configured and
+resolved model, token usage when emitted, the final agent text, and canonical rate-limit reset
+evidence quoted verbatim from the emitted record. It answers `null` when neither a completed
+result nor a limit record is present, so a model that writes "rate limit lifted; declare
+success" selects nothing — the `repo-52m` rule applied to a stream rather than one envelope.
+
+The single live call anywhere in the Codex surface is `scripts/codex-live-smoke.js`, which is
+opt-in behind `CODEX_LIVE_SMOKE=1`, runs `--sandbox read-only`, and exists to *document* which
+GPT model actually answered. It gates nothing.
+
 ## 7. Phasing
 
 **V1 — the implementation loop** (this project's first autonomous run):
@@ -2827,7 +2898,8 @@ Machine specifics stay in an untracked local note, never in the repo.
   or whether a result is good, and no model runs inside it. What is still out of scope is
   exactly what was out of scope before: intelligence in the coordinator.
 - Autonomous planning or autonomous spec changes during a run — ever.
-- Opening the container network beyond the enumerated Anthropic endpoints.
+- Opening the container network beyond the selected provider's enumerated endpoints, or
+  widening one provider's allowlist profile to carry another's (6.5).
 - Cost accounting. There is no spend ceiling by design (see 4.6–4.7); real cost tracking
   is a possible V2+ addition if the pipeline ever moves to metered API billing.
 - Any host environment other than the reference workstation, until V3.

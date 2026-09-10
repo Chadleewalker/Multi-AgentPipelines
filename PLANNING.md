@@ -673,7 +673,8 @@ has everything it needs to know.
   the remedy in the run report, but it still costs that task its slot in the batch.
 - The per-project image exists; Docker Desktop is running.
 - Anything the task needs to *know* (API details, conventions) is in the repo or attached
-  to the issue — the container has no internet beyond the Anthropic endpoints (§4.8).
+  to the issue — the container has no internet beyond the selected provider's own
+  allowlisted endpoints (§4.8, §6.5).
 - **Last act: write the batch marker** (§3.9) — one JSON object at
   `runs/batches/<project>-<YYYY-MM-DD>.json` **in this repo** (git-ignored; never in the
   target's tree, since it names a project and its issue ids). Required keys: `runConfig`

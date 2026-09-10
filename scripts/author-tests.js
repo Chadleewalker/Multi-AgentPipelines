@@ -10,6 +10,7 @@
 const fs = require('fs');
 const path = require('path');
 const { loadConfig } = require('../runner/config');
+const AGENT = require('../runner/agent-provider');
 const { runSync, failureText } = require('../runner/process');
 const { acquire, release } = require('../runner/lock');
 const { buildBrief, verifyCommandError } = require('./spec-brief');
@@ -72,24 +73,37 @@ function ensureWorktree(built, run = runSync) {
 function launchAuthor(built, model, run = runSync) {
   const unsafeVerifier = verifyCommandError(built && built.policy && built.policy.verifyCommand);
   if (unsafeVerifier) return { status: EXIT_SETUP, stdout: '', stderr: `unsafe verifyCommand: ${unsafeVerifier}` };
-  // -p reads the prompt from stdin when no prompt argv follows it. That avoids both a shell and
-  // Windows' command-line length limit. Permissions stay at the host user's normal policy.
+  // Both providers read the prompt from stdin — Claude's `-p` with no prompt argv, Codex's
+  // trailing `-`. That avoids both a shell and Windows' command-line length limit, and it
+  // keeps a spec brief out of any process listing. The Claude argv below is unchanged and
+  // is what a config with no provider selection still gets, byte for byte; the adapter
+  // returns it untouched. Permissions stay at the host user's normal policy.
   const timeoutMs = Math.max(1, Number(built.cfg.wallClockMinutes) || 240) * 60 * 1000;
   const suite = `tests/acceptance/${built.suiteId || built.id}/`;
   const verifier = `${built.policy.verifyCommand} ${suite}`;
   const allowed = `Read,Edit,Write,Glob,Grep,Bash(${verifier})`;
-  return run(process.env.PIPELINE_TEST_AUTHOR_CMD || 'claude', [
-    '-p', '--model', model,
-    '--restricted', '--permission-mode', 'acceptEdits',
-    '--tools', AUTHOR_TOOLS,
-    '--allowedTools', allowed,
-    '--disallowedTools', DENIED_TOOLS,
-    '--no-session-persistence',
-  ], {
+  const provider = AGENT.providerFor(built.cfg, 'test-author');
+  return AGENT.launch({
+    provider,
+    model,
+    reasoningEffort: AGENT.reasoningEffortFor(built.cfg, 'test-author'),
+    command: process.env.PIPELINE_TEST_AUTHOR_CMD || null,
+    claudeArgs: [
+      '-p', '--model', model,
+      '--restricted', '--permission-mode', 'acceptEdits',
+      '--tools', AUTHOR_TOOLS,
+      '--allowedTools', allowed,
+      '--disallowedTools', DENIED_TOOLS,
+      '--no-session-persistence',
+    ],
+    runOptions: {
       cfg: built.cfg, cwd: built.folder.dir, input: `${built.text}\n`, timeoutMs,
-      label: 'Claude test-author session', maxBuffer: MAX_BUFFER,
+      label: `${provider} test-author session`, maxBuffer: MAX_BUFFER,
+      // hostEnv is the author stage's own environment (a licence path, a binary that is
+      // not on PATH) and carries the selected provider's key on a Codex host.
       env: { ...process.env, ...(built.cfg.hostEnv || {}) },
-    });
+    },
+  }, run);
 }
 
 function quote(value) {

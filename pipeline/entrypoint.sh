@@ -22,15 +22,33 @@ PIPE="${PIPELINE_DIR:-/pipeline}"
 # drift when the account default changes. An explicit PIPELINE_AGENT_CMD owns its flags.
 MODEL_ARG=""
 [ -n "${PIPELINE_MODEL:-}" ] && MODEL_ARG=" --model ${PIPELINE_MODEL}"
-AGENT_CMD="${PIPELINE_AGENT_CMD:-claude -p --dangerously-skip-permissions${MODEL_ARG}}"
+# Which provider this task was launched for (§4.3, §6.8). The runner passes it; an unset
+# value means Claude, so a container started by an older runner behaves exactly as before.
+PROVIDER="${PIPELINE_PROVIDER:-claude}"
+EFFORT="${PIPELINE_REASONING_EFFORT:-medium}"
+if [ "$PROVIDER" = "codex" ]; then
+  # The official `codex exec` noninteractive contract, with the prompt on stdin (`-`).
+  # shell_environment_policy keeps CODEX_API_KEY (and Codex's own default secret names)
+  # out of every command the MODEL spawns; the CLI process itself still has it.
+  AGENT_DEFAULT="codex exec${MODEL_ARG} -c model_reasoning_effort=\"$EFFORT\""
+  AGENT_DEFAULT="$AGENT_DEFAULT -c shell_environment_policy.ignore_default_excludes=false"
+  AGENT_DEFAULT="$AGENT_DEFAULT -c shell_environment_policy.filters.CODEX_API_KEY=\"exclude\""
+  AGENT_DEFAULT="$AGENT_DEFAULT --approve-for-me --ephemeral --ignore-user-config"
+  AGENT_DEFAULT="$AGENT_DEFAULT --ignore-rules --strict-config --json -"
+else
+  AGENT_DEFAULT="claude -p --dangerously-skip-permissions${MODEL_ARG}"
+fi
+AGENT_CMD="${PIPELINE_AGENT_CMD:-$AGENT_DEFAULT}"
 
 # When we own the invocation, ask for JSON so the RESOLVED model id can be recorded (a
 # `--model opus` alias hides which Opus actually ran) and so the docs phase hands back a
 # summary with no CLI chatter around it. The human-readable text is extracted back out
 # (envelope.js), so agent logs stay readable. A caller-supplied PIPELINE_AGENT_CMD
 # (stubs, overrides) owns its own flags and gets none of this; extraction copes either way.
+# Codex's own default command above already asks for structured JSONL with --json, so this
+# is the Claude-only flag it has always been.
 AGENT_FORMAT=""
-[ -z "${PIPELINE_AGENT_CMD:-}" ] && AGENT_FORMAT="--output-format json"
+[ -z "${PIPELINE_AGENT_CMD:-}" ] && [ "$PROVIDER" != "codex" ] && AGENT_FORMAT="--output-format json"
 # Attempt cap (§4.6): tunable per run via run.config.json maxAttempts, which the
 # runner forwards as PIPELINE_MAX_ATTEMPTS. Anything unset or non-numeric falls back
 # to 3 — the cap must always be a positive integer or the retry loop breaks.
@@ -40,6 +58,14 @@ case "$MAX_ATTEMPTS" in
 esac
 
 die30() { echo "entrypoint: $1" >&2; exit 30; }
+
+# The authoritative gate runs the TARGET repository's own verify command, i.e. code this
+# pipeline did not write. The model credential is for the agent CLI and nothing else, so
+# it is stripped here rather than trusted not to be read (§6). One command per call site:
+# nothing may sit between the verifier and the `VRC=$?` that reads its exit code.
+run_verifier() {
+  env -u CODEX_API_KEY node "$PIPE/verify.js"
+}
 
 # A successful implementation commit is the recovery point for the non-fatal docs phase.
 # Rejected docs work is removed as a whole; retaining its Markdown subset after the same
@@ -194,7 +220,7 @@ while :; do
   # invocation and the `VRC=$?` that captures its exit code — a command in between
   # clobbers `$?` and every outcome below it is decided on the wrong number.
   node "$PIPE/status.js" set phase verify 2>/dev/null
-  node "$PIPE/verify.js"
+  run_verifier
   VRC=$?
   case "$VRC" in
     0)
@@ -256,7 +282,7 @@ while :; do
         # The authoritative gate must judge the tree that can become the branch tip. Even
         # allowed Markdown can affect a project's generated artifacts or acceptance rules.
         node "$PIPE/status.js" set phase verify 2>/dev/null
-        node "$PIPE/verify.js"
+        run_verifier
         DOCS_VERIFY_RC=$?
         if [ "$DOCS_VERIFY_RC" -ne 0 ]; then
           restore_verified "$VERIFIED_HEAD" "$VERIFIED_RESULT_PRESENT" "$VERIFIED_RESULT"

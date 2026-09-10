@@ -404,7 +404,7 @@ flowchart LR
   AC -->|"valid structured values"| R
   AC -.->|"invalid exit-0 claim → failed"| R
   T -->|"every request"| PX
-  PX -->|"allowed"| AN["The three anthropic.com endpoints"]
+  PX -->|"allowed"| AN["The selected provider's endpoints only"]
   PX --x BL["Refused — github.com, npm, everything else"]
   REG -.-> T
   R --> RG
@@ -429,8 +429,9 @@ The sandbox is **per project**. The network and the proxy take their names from 
 config — derived from the project segment of `run.config.<project>.json` when it names
 neither — so two runner processes against two projects draw two copies of this diagram
 side by side, and neither one's `up` or `down` touches the other's plumbing (change-log
-row `repo-jur`). The proxy *image* is shared; only the running container and the network
-are per project.
+row `repo-jur`). The proxy *image* is shared within a provider profile — `docker/proxy` for
+Claude, `docker/proxy-codex` for Codex, each carrying only its own vendor's endpoints; only
+the running container and the network are per project.
 
 The shell node is a Windows host-identity gate, not merely a check that some executable
 named `bash` exists (change-log row `verified-host-shell`). The runner proves the shell is
@@ -471,9 +472,12 @@ enters the ordinary failed/blocked row, never done/closed.
 
 A specialist that needs a different model or a different tool changes nothing structural:
 the coding agent is already swappable through `agentCommand` → `PIPELINE_AGENT_CMD`, and
-the contract is only "a shell command that reads a prompt on stdin and edits files." A
-non-Anthropic tool would additionally need its domain added to the allowlist — the one
-place the closed-network policy would have to be revisited deliberately.
+the contract is only "a shell command that reads a prompt on stdin and edits files." Claude
+and Codex are first-class selections rather than overrides — `provider` in the run config
+picks the credential, the container command and the egress profile together (DESIGN.md
+§6.5). Any *third* tool would still need its own allowlist profile, carrying only its own
+endpoints; widening an existing profile to cover it is the one thing the closed-network
+policy does not allow.
 
 ## What each outcome does
 

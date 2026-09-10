@@ -8,6 +8,10 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const CONTROL_PLANE = require('./control-plane');
+const {
+  PROVIDERS, REASONING_EFFORTS, CREDENTIAL_NAMES,
+  normalizeProvider, normalizeReasoningEffort, validProvider, validReasoningEffort,
+} = require('./agent-provider');
 
 // Defaults are part of the public run-config contract. Their rationale and validation
 // remain here; their values come from contracts/control-plane.json so operator guides,
@@ -19,6 +23,13 @@ const REQUIRED = ['targetRepoPath', 'targetRepoRemote', 'image'];
 // park (§4.7) already answers that at any N. Kept as a named export so the suites that pin the
 // validation contract have one place to read it from; null means "no upper bound".
 const MAX_CONCURRENCY = null;
+// The provider vocabulary itself lives in runner/agent-provider.js — the module that also
+// constructs every launch — so a value this loader accepts cannot drift from one an
+// adapter knows how to run. These are only the field names it appears under.
+const PROVIDER_FIELDS = ['provider', 'testAuthorProvider', 'testProbeProvider'];
+const REASONING_EFFORT_FIELDS = [
+  'reasoningEffort', 'testAuthorReasoningEffort', 'testProbeReasoningEffort',
+];
 
 // ---- per-project network + proxy names (§4.8, §4.12) -------------------------------
 // The task network and the proxy sidecar are per project, not per pipeline: two runner
@@ -187,7 +198,35 @@ function loadConfig(file) {
       throw new Error(`run.config.json: '${k}' must be a non-empty string when present`);
     }
   }
+  // ---- provider selection (§4.3, §6.8) -----------------------------------------------
+  // A CLOSED vocabulary, refused by field name here rather than by a spawn that fails
+  // obscurely after a worktree exists. `provider` is the run-wide selection; the two stage
+  // fields override it for the planning-side test author and green probe independently,
+  // because those are host launches under a person's eye while the implementation agent is
+  // not. Absent means absent: nothing below writes a provider field the config omitted.
+  for (const k of PROVIDER_FIELDS) {
+    if (raw[k] !== undefined && raw[k] !== null && !validProvider(raw[k])) {
+      throw new Error(`run.config.json: '${k}' must be one of ${PROVIDERS.join(' | ')}`);
+    }
+  }
+  for (const k of REASONING_EFFORT_FIELDS) {
+    if (raw[k] !== undefined && raw[k] !== null && !validReasoningEffort(raw[k])) {
+      throw new Error(`run.config.json: '${k}' must be one of ${REASONING_EFFORTS.join(' | ')}`
+        + ' (reasoning effort)');
+    }
+  }
   const cfg = { ...DEFAULTS, ...raw, configPath: p };
+  // Resolved AFTER the spread and deliberately NOT in contracts/control-plane.json's
+  // configDefaults: a stage field's default is the run-wide value, and the run-wide value's
+  // default is the constant — a chain, not a single value a defaults table could carry.
+  // With every field absent this resolves to Claude at every stage, which is what makes an
+  // untouched run config byte-for-byte the pre-Codex pipeline.
+  cfg.provider = normalizeProvider(raw.provider);
+  cfg.testAuthorProvider = normalizeProvider(raw.testAuthorProvider || cfg.provider);
+  cfg.testProbeProvider = normalizeProvider(raw.testProbeProvider || cfg.provider);
+  cfg.reasoningEffort = normalizeReasoningEffort(raw.reasoningEffort);
+  cfg.testAuthorReasoningEffort = normalizeReasoningEffort(raw.testAuthorReasoningEffort || cfg.reasoningEffort);
+  cfg.testProbeReasoningEffort = normalizeReasoningEffort(raw.testProbeReasoningEffort || cfg.reasoningEffort);
   // An explicit name always wins; derivation fills only what the config left out.
   const derived = deriveNames(p);
   if (!cfg.network) cfg.network = derived.network;
@@ -198,14 +237,45 @@ function loadConfig(file) {
   return cfg;
 }
 
-// The subscription token (§6): git-ignored .env.pipeline, or the ambient env.
-function loadToken(repoRoot) {
+// ---- the host credential boundary (§6) -----------------------------------------------
+// One provider, one credential, selected here and nowhere else. Source order is the
+// historical one: the git-ignored .env.pipeline first, then the ambient environment.
+// The env argument exists so a test can make this deterministic without mutating
+// process.env; production callers pass nothing and get the real environment.
+//
+// There is NO cross-provider fallback. A Codex run that finds no CODEX_API_KEY must be
+// refused by name, not started with a Claude token that will fail at the model endpoint
+// after a container, a network and a Beads claim already exist.
+function readEnvPipeline(repoRoot, name) {
   const f = path.join(repoRoot, '.env.pipeline');
-  if (fs.existsSync(f)) {
-    const m = fs.readFileSync(f, 'utf8').match(/^\s*CLAUDE_CODE_OAUTH_TOKEN\s*=\s*(.+?)\s*$/m);
-    if (m) return m[1].replace(/^["']|["']$/g, '');
-  }
-  return process.env.CLAUDE_CODE_OAUTH_TOKEN || '';
+  if (!fs.existsSync(f)) return '';
+  const m = fs.readFileSync(f, 'utf8')
+    .match(new RegExp(`^\\s*${name}\\s*=\\s*(.+?)\\s*$`, 'm'));
+  return m ? m[1].replace(/^["']|["']$/g, '') : '';
 }
 
-module.exports = { loadConfig, loadToken, deriveNames, DEFAULTS, MAX_CONCURRENCY };
+function loadProviderCredential(repoRoot, provider, env = process.env) {
+  const name = CREDENTIAL_NAMES[normalizeProvider(provider)];
+  const fromFile = readEnvPipeline(repoRoot, name);
+  if (fromFile) return { name, value: fromFile };
+  const raw = env && typeof env[name] === 'string' ? env[name].trim() : '';
+  return raw ? { name, value: raw } : null;
+}
+
+// The one diagnostic a missing credential produces. Kept as a function so the Claude
+// wording stays byte-identical to the line the runner has always printed.
+function missingCredentialDiagnostic(provider) {
+  const name = CREDENTIAL_NAMES[normalizeProvider(provider)];
+  return `no ${name} (.env.pipeline or environment) — tasks cannot authenticate`;
+}
+
+// The historical Claude-only accessor, now one call away from the general one.
+function loadToken(repoRoot) {
+  const credential = loadProviderCredential(repoRoot, 'claude');
+  return credential ? credential.value : '';
+}
+
+module.exports = {
+  loadConfig, loadToken, loadProviderCredential, missingCredentialDiagnostic,
+  deriveNames, DEFAULTS, MAX_CONCURRENCY,
+};

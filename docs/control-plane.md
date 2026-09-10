@@ -58,6 +58,51 @@ To stop a fed run cleanly, create `runs/<run-id>/stop`; active workers finish be
 feed closes. Do not launch a run from an auxiliary worktree because `runs/` is host-local
 and its observer artifacts belong in the main checkout.
 
+## Model provider selection
+
+A run selects one model provider from a closed vocabulary — `claude` or `codex`
+(`runner/agent-provider.js`, `DESIGN.md` §6.5, change-log row `repo-45g`). The run config
+carries `provider` run-wide plus `testAuthorProvider` / `testProbeProvider` for the two
+host-side planning stages, and `reasoningEffort` (`minimal | low | medium | high`) with the
+same two stage twins. Resolution is a chain — stage, then run-wide, then the constant — so
+these are resolved in `runner/config.js` rather than in `contracts/control-plane.json`'s
+`configDefaults`, whose values are fixed. **With every field absent the resolution is Claude
+at every stage and every launch is byte-for-byte what it was before.** An out-of-vocabulary
+value is refused by its own field name before a worktree, a Beads read, a network or a
+container exists.
+
+`provider` selects only the vendor. The `model`, `testAuthorModel` and `testProbeModel`
+fields still name the model, and a Codex run needs a model id that provider understands —
+the example config's Claude aliases are not one.
+
+Selecting a provider selects three things together, and they are not independently
+configurable:
+
+- **The credential.** `CLAUDE_CODE_OAUTH_TOKEN` or `CODEX_API_KEY`, read from the
+  git-ignored `.env.pipeline` or the ambient environment, with no cross-provider fallback.
+  Containers receive it by environment-variable name only, and every other provider's
+  credential is removed from the docker client's environment first. On the host, Codex may
+  instead reuse a saved ChatGPT CLI session (`codex login`); inside a container it cannot,
+  and no `auth.json` is ever mounted.
+- **The container command.** The runner passes `PIPELINE_PROVIDER`, and
+  `pipeline/entrypoint.sh` selects that provider's noninteractive invocation.
+- **The egress profile.** `docker/proxy` carries the Anthropic endpoints, `docker/proxy-codex`
+  the OpenAI ones, and `PIPELINE_PROXY_PROFILE` picks which sidecar `scripts/pipeline-net.sh`
+  builds and which endpoint `scripts/egress-check.sh` proves reachable. One profile per
+  provider: widening either to carry the other's endpoints is refused by design, not by a
+  check.
+
+A missing executable, credential, model, image capability or route fails before any
+mutation and names its remedy. For a non-default provider, preflight additionally proves
+the *task image* can run that provider's CLI with every required capability — presence in
+`docker image inspect` is not that proof — so rebuild the pinned base image during planning
+if it predates the Codex pin. The one live model call in the Codex surface is opt-in and
+documentary:
+
+```bash
+CODEX_LIVE_SMOKE=1 node scripts/codex-live-smoke.js   # read-only; reports the model that answered
+```
+
 ## Supervised operation
 
 One live project supervisor may hold that same host-global canonical-target authority and

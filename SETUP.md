@@ -68,6 +68,12 @@ npm install -g @anthropic-ai/claude-code
 
 Run `claude` in any folder and sign in with the A1 account.
 
+Claude is the default provider and the only one this setup needs. A run or planning stage
+that selects `"provider": "codex"` also needs the Codex CLI on the host — install it the
+same way (`npm install -g @openai/codex`, matching the pin in `docker/base/Dockerfile`) and
+either run `codex login` to reuse a saved ChatGPT session or supply `CODEX_API_KEY` at B2.
+Task containers never reuse a saved session; that is what the key is for.
+
 ### A4. Let Claude Code install the rest
 
 Start `claude` anywhere — you do not need the clone yet — and give it this:
@@ -102,8 +108,8 @@ session, so it can read the error with you.
 Three things it will not think to tell you:
 
 - **Docker Desktop must be left running.** It is what isolates each task: a throwaway
-  container that reaches three Anthropic addresses and nothing else. The runner checks it is
-  up and stops if not. Its installer wants a reboot and may add its own WSL plumbing — both
+  container that reaches the handful of addresses its own model provider needs and nothing
+  else. The runner checks it is up and stops if not. Its installer wants a reboot and may add its own WSL plumbing — both
   fine; rule 4 is about the terminal *you* type in.
 - **Every `.sh` script in this project runs from Git Bash.** PowerShell is fine for `git` and
   the `winget` lines above, nothing else.
@@ -138,7 +144,8 @@ claude setup-token
 
 A long-lived token, separate from the A3 sign-in. Keep it to copy once at B2. Do not paste it
 into a session. One subscription per person: at your limit a run parks itself, waits for the
-window to reopen, and carries on.
+window to reopen, and carries on. A Codex run parks the same way; its credential is the
+`CODEX_API_KEY` from A3, also copied once at B2.
 
 ### A8. The harness plugin — optional, and not a clone
 
@@ -189,6 +196,12 @@ echo 'CLAUDE_CODE_OAUTH_TOKEN=<token from A7>' > .env.pipeline
 Git-ignored, and must stay that way. Passed to containers by name at launch, never baked into
 an image.
 
+The same file holds `CODEX_API_KEY=<key>` on its own line if you intend to run anything with
+`"provider": "codex"`. A run loads only the selected provider's credential and there is no
+fallback between them, so a Codex run with no key is refused before it locks the target,
+takes a worktree or starts a container — and a host holding both keys still hands a task
+exactly one.
+
 ### B3. Install the git hooks
 
 ```bash
@@ -220,8 +233,10 @@ docker build -t pipeline-base:local docker/base
 bash scripts/test-base-image.sh      # expect every line PASS
 ```
 
-Node, git, the Claude CLI and `bd` at pinned versions, with no credentials and no pipeline
-code. The network gatekeeper image builds itself on first run.
+Node, git, the Claude CLI, the Codex CLI and `bd` at pinned versions, with no credentials and
+no pipeline code. The Codex pin proves its own `codex exec` capabilities during the build, so
+a bad pin fails here rather than inside every task container. The network gatekeeper image
+builds itself on first run — one image per provider profile, whichever the run selects.
 
 ### B6. `cp .worktree-carry.example .worktree-carry`
 
@@ -372,9 +387,10 @@ Adding a feature later is a planning session, not a re-onboarding.
 4. **A fresh clone does not carry the issue database.** B3 and B4 are what fetch it.
 5. **Suites go stale silently.** Sweep after merging a batch of PRs, before an overnight run,
    and when picking up a cold branch. One suite nobody re-ran accumulated three bugs.
-6. **Anything a container needs must be in the repository.** No internet beyond Anthropic. If
-   an agent keeps failing for want of an API reference, vendor the docs in — never open the
-   network.
+6. **Anything a container needs must be in the repository.** No internet beyond the model
+   provider's own endpoints. If an agent keeps failing for want of an API reference, vendor
+   the docs in — never open the network, and never widen one provider's allowlist to carry
+   another's.
 7. **"Repository not found" usually means the wrong GitHub account is active**, not a typo.
 8. **Read `docs/pipeline-map.built.html`**, not `pipeline-map.html`.
 9. **A frozen suite you committed but did not push does not run.** Confirm it is on the remote:
@@ -407,8 +423,8 @@ in your way, that is a conversation, not a workaround:
   result to report, not a problem to fix mid-run.
 - **The thing that judges the work is a plain script, never an AI.** It reads the tests as
   frozen, not as they are now.
-- **The container gets one credential and no route out.** Bake dependencies into the image at
-  planning time instead.
+- **The container gets one credential — the selected provider's — and no route out.** Bake
+  dependencies into the image at planning time instead.
 - **The approval points are the design, not friction.** You approve intent before a run and
   results after. Never route around one.
 
