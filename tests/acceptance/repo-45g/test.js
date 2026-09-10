@@ -14,6 +14,11 @@
 // or null when no structured final or rate-limit outcome exists. `preflightProvider(cfg, deps)` returns
 // {ok:false, remedy} before calling a supplied side-effect seam, or {ok:true}; deps has
 // executable(), authenticated(), modelAvailable(), imageSupports(), egress(), and sideEffect().
+// Amendment PR #90: runner/config.js exports
+// loadProviderCredential(repoRoot, provider, env), returning { name, value } or null. Its optional
+// env parameter makes the host credential boundary deterministic without changing process.env.
+// The C3/C6 child-process fixture invokes container.runTask with opts.credential ({ name, value })
+// and replaces only its Docker spawn, preserving the production launch construction boundary.
 'use strict';
 const crypto = require('crypto');
 const fs = require('fs');
@@ -73,6 +78,7 @@ function helpExecute(helpText, status = 0) {
 }
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'accept-45g-'));
 let c3FixtureBase = null;
+const credentialFixtureBases = [];
 function config(raw, suffix) {
   const p = path.join(tmp, `run.config.${suffix}.json`);
   fs.writeFileSync(p, JSON.stringify({ targetRepoPath: 'C:/fixture', targetRepoRemote: 'https://example.invalid/x.git', image: 'fixture:codex', ...raw }));
@@ -174,6 +180,93 @@ function codexCredentialFixture(secret) {
     status: readJson(path.join(ws, '.run', 'status.json')),
   };
 }
+function runProviderContainerFixture(base, provider, credential) {
+  const capture = path.join(base, `${provider}-container-capture.json`);
+  const script = [
+    "'use strict';",
+    "const Module = require('module'), EventEmitter = require('events');",
+    'const originalLoad = Module._load;',
+    'let call = null; const logs = [];',
+    'Module._load = function(request, parent, isMain) {',
+    "  if (request === 'child_process') {",
+    '    const real = originalLoad.apply(this, arguments);',
+    '    return { ...real, spawn(command, args, opts) {',
+    '      call = { command, args, env: opts.env }; const child = new EventEmitter();',
+    '      child.stdout = { pipe() {} }; child.stderr = { pipe() {} };',
+    "      process.nextTick(() => child.emit('close', 0)); return child;",
+    '    }};',
+    '  }',
+    "  if (request === 'fs') { const real = originalLoad.apply(this, arguments); return { ...real, createWriteStream() { return {}; } }; }",
+    '  return originalLoad.apply(this, arguments);',
+    '};',
+    "const container = require(process.env.C3_CONTAINER_FILE);",
+    "const crypto = require('crypto');",
+    "const hash = (value) => crypto.createHash('sha256').update(value || '').digest('hex');",
+    "const credential = { name: process.env.C3_CREDENTIAL_NAME, value: process.env.C3_CREDENTIAL_VALUE };",
+    "const log = { info(trace, text) { logs.push(String(text)); }, error(trace, text) { logs.push(String(text)); } };",
+    "container.runTask({ network: 'fixture-net', proxyUrl: 'http://fixture-proxy:3128', image: 'fixture:image', wallClockMinutes: 1 },",
+    "  { containerName: 'fixture-' + process.env.C3_PROVIDER, workspaceDir: 'C:/fixture/workspace', pipelineDir: 'C:/fixture/pipeline',",
+    "    issueId: 'repo-45g', taskDir: process.cwd(), credential, watchdogFactory: () => ({ fired: false, cancel: async () => {} }) }, log, 'fixture')",
+    "  .then(() => console.log(JSON.stringify({ command: call && call.command, args: call && call.args, envKeys: Object.keys((call && call.env) || {}).sort(),",
+    "    credentialHash: hash(call && call.env && call.env[credential.name]), logs })))",
+    "  .catch(() => { process.exitCode = 1; });",
+  ].join('\n');
+  const run = spawnSync(process.execPath, ['-e', script], {
+    encoding: 'utf8', timeout: 60000,
+    env: {
+      ...process.env, C3_CONTAINER_FILE: path.join(REPO, 'runner', 'container.js'), C3_PROVIDER: provider,
+      C3_CREDENTIAL_NAME: credential && credential.name, C3_CREDENTIAL_VALUE: credential && credential.value,
+    },
+  });
+  fs.writeFileSync(capture, run.stdout || '');
+  return { run, capture: readJson(capture) };
+}
+function providerCredentialFixture() {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'accept-45g-credential-'));
+  credentialFixtureBases.push(base);
+  const envFile = path.join(base, '.env.pipeline');
+  const planted = {
+    codexFile: `codex-file-${crypto.randomBytes(12).toString('hex')}`,
+    codexAmbient: `codex-ambient-${crypto.randomBytes(12).toString('hex')}`,
+    claudeFile: `claude-file-${crypto.randomBytes(12).toString('hex')}`,
+    claudeAmbient: `claude-ambient-${crypto.randomBytes(12).toString('hex')}`,
+    codexBoth: `codex-both-${crypto.randomBytes(12).toString('hex')}`,
+    claudeBoth: `claude-both-${crypto.randomBytes(12).toString('hex')}`,
+  };
+  const load = (provider, env) => typeof CONFIG.loadProviderCredential === 'function'
+    ? CONFIG.loadProviderCredential(base, provider, env) : null;
+  // Codex has no Claude fallback: first prove .env.pipeline and then ambient-only selection.
+  fs.writeFileSync(envFile, `CODEX_API_KEY=${planted.codexFile}\n`);
+  const codexFromFile = load('codex', {});
+  fs.rmSync(envFile, { force: true });
+  const codexFromAmbient = load('codex', { CODEX_API_KEY: planted.codexAmbient });
+  const codexMissing = load('codex', {});
+  // Claude retains its historical source order and missing-token outcome.
+  fs.writeFileSync(envFile, `CLAUDE_CODE_OAUTH_TOKEN=${planted.claudeFile}\n`);
+  const claudeFromFile = load('claude', {});
+  fs.rmSync(envFile, { force: true });
+  const claudeFromAmbient = load('claude', { CLAUDE_CODE_OAUTH_TOKEN: planted.claudeAmbient });
+  const claudeMissing = load('claude', {});
+  // These values deliberately differ. Each selected value then traverses real runTask launch
+  // construction, while the subprocess replaces only `docker` and returns a redacted capture.
+  fs.writeFileSync(envFile, [
+    `CODEX_API_KEY=${planted.codexBoth}`,
+    `CLAUDE_CODE_OAUTH_TOKEN=${planted.claudeBoth}`,
+    '',
+  ].join('\n'));
+  const codexBoth = load('codex', {});
+  const claudeBoth = load('claude', {});
+  const codexTask = runProviderContainerFixture(base, 'codex', codexBoth);
+  const claudeTask = runProviderContainerFixture(base, 'claude', claudeBoth);
+  // .env.pipeline is input, not a runner artifact. Remove it before inspecting every generated
+  // fixture artifact for either planted value, including any fake launch capture a future seam adds.
+  fs.rmSync(envFile, { force: true });
+  const artifacts = filesBelow(base).map((file) => read(file) || '');
+  return {
+    planted, codexFromFile, codexFromAmbient, codexMissing, claudeFromFile, claudeFromAmbient, claudeMissing,
+    codexBoth, claudeBoth, codexTask, claudeTask, artifacts,
+  };
+}
 try {
   // C1 — closed global/stage selections and reasoning validation.
   const codex = config({ provider: 'codex', model: 'gpt-5.3-codex', reasoningEffort: 'high',
@@ -250,6 +343,53 @@ try {
   check('C3 planted Codex key is absent from fake CLI argv, entrypoint logs, and every captured fixture artifact',
     !c3ArgvHasSecret && !c3RunText.includes(secret) && !c3ArtifactHasSecret,
     JSON.stringify({ argv: c3ArgvHasSecret, log: c3RunText.includes(secret), artifact: c3ArtifactHasSecret }));
+  // PR #90 amendment — this is the host-side boundary, before preflight or Docker. The temporary
+  // root keeps .env.pipeline selection deterministic; its fake Docker observes the real runTask
+  // launch construction that hands exactly one selected credential to its child process.
+  const providerCredentials = providerCredentialFixture();
+  const isCredential = (credential, name, value) => credential
+    && credential.name === name && credential.value === value;
+  const codexLaunchIsolated = providerCredentials.codexTask.run.status === 0 && providerCredentials.codexTask.capture
+    && providerCredentials.codexTask.capture.command === 'docker'
+    && providerCredentials.codexTask.capture.args.includes('CODEX_API_KEY')
+    && !providerCredentials.codexTask.capture.args.includes('CLAUDE_CODE_OAUTH_TOKEN')
+    && providerCredentials.codexTask.capture.envKeys.includes('CODEX_API_KEY')
+    && !providerCredentials.codexTask.capture.envKeys.includes('CLAUDE_CODE_OAUTH_TOKEN')
+    && providerCredentials.codexTask.capture.credentialHash === crypto.createHash('sha256').update(providerCredentials.planted.codexBoth).digest('hex');
+  const claudeLaunchIsolated = providerCredentials.claudeTask.run.status === 0 && providerCredentials.claudeTask.capture
+    && providerCredentials.claudeTask.capture.command === 'docker'
+    && providerCredentials.claudeTask.capture.args.includes('CLAUDE_CODE_OAUTH_TOKEN')
+    && !providerCredentials.claudeTask.capture.args.includes('CODEX_API_KEY')
+    && providerCredentials.claudeTask.capture.envKeys.includes('CLAUDE_CODE_OAUTH_TOKEN')
+    && !providerCredentials.claudeTask.capture.envKeys.includes('CODEX_API_KEY')
+    && providerCredentials.claudeTask.capture.credentialHash === crypto.createHash('sha256').update(providerCredentials.planted.claudeBoth).digest('hex');
+  const plantedValues = Object.values(providerCredentials.planted);
+  const launchArgvLeaks = [providerCredentials.codexTask.capture, providerCredentials.claudeTask.capture]
+    .some((capture) => capture && plantedValues.some((value) => (capture.args || []).join('\n').includes(value)));
+  const launchLogLeaks = [providerCredentials.codexTask.run, providerCredentials.claudeTask.run]
+    .some((run) => plantedValues.some((value) => `${run.stdout || ''}${run.stderr || ''}`.includes(value)));
+  const fixtureArtifactLeaks = providerCredentials.artifacts
+    .some((text) => plantedValues.some((value) => text.includes(value)));
+  check('C3/C6 provider-aware config boundary selects the exact Codex .env.pipeline or ambient CODEX_API_KEY with no Claude fallback',
+    isCredential(providerCredentials.codexFromFile, 'CODEX_API_KEY', providerCredentials.planted.codexFile)
+      && isCredential(providerCredentials.codexFromAmbient, 'CODEX_API_KEY', providerCredentials.planted.codexAmbient)
+      && providerCredentials.codexMissing === null,
+    JSON.stringify({ loader: typeof CONFIG.loadProviderCredential, codexMissing: providerCredentials.codexMissing === null }));
+  check('C3/C6 provider-aware config boundary preserves Claude .env.pipeline and ambient selection plus its historical missing-token diagnostic',
+    isCredential(providerCredentials.claudeFromFile, 'CLAUDE_CODE_OAUTH_TOKEN', providerCredentials.planted.claudeFile)
+      && isCredential(providerCredentials.claudeFromAmbient, 'CLAUDE_CODE_OAUTH_TOKEN', providerCredentials.planted.claudeAmbient)
+      && providerCredentials.claudeMissing === null
+      && typeof CONFIG.missingCredentialDiagnostic === 'function'
+      && CONFIG.missingCredentialDiagnostic('claude') === 'no CLAUDE_CODE_OAUTH_TOKEN (.env.pipeline or environment) — tasks cannot authenticate',
+    JSON.stringify({ loader: typeof CONFIG.loadProviderCredential, diagnostic: typeof CONFIG.missingCredentialDiagnostic }));
+  check('C3/C6 both planted provider credentials remain paired to their own environment-variable name at the bounded container launch seam',
+    isCredential(providerCredentials.codexBoth, 'CODEX_API_KEY', providerCredentials.planted.codexBoth)
+      && isCredential(providerCredentials.claudeBoth, 'CLAUDE_CODE_OAUTH_TOKEN', providerCredentials.planted.claudeBoth)
+      && codexLaunchIsolated && claudeLaunchIsolated,
+    JSON.stringify({ seam: 'runTask fake-docker', codex: !!codexLaunchIsolated, claude: !!claudeLaunchIsolated }));
+  check('C3/C6 provider credential fixture never puts planted values in Docker argv, logs, or generated artifacts',
+    !launchArgvLeaks && !launchLogLeaks && !fixtureArtifactLeaks,
+    JSON.stringify({ argv: launchArgvLeaks, log: launchLogLeaks, artifact: fixtureArtifactLeaks }));
   check('C3 captured Codex launch keeps the authentication key in its process environment but not argv, with default and explicit secret-name filtering',
     author.call && author.call.opts.env.CODEX_API_KEY === codexSecret && !author.call.args.includes(codexSecret)
       && author.call.args.includes('shell_environment_policy.ignore_default_excludes=false')
@@ -375,5 +515,8 @@ try {
 } finally {
   try { fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch { /* disposable */ }
   try { if (c3FixtureBase) fs.rmSync(c3FixtureBase, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch { /* disposable */ }
+  for (const base of credentialFixtureBases) {
+    try { fs.rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch { /* disposable */ }
+  }
 }
 process.exit(failed);
