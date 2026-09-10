@@ -404,7 +404,7 @@ flowchart LR
   AC -->|"valid structured values"| R
   AC -.->|"invalid exit-0 claim → failed"| R
   T -->|"every request"| PX
-  PX -->|"allowed"| AN["The three anthropic.com endpoints"]
+  PX -->|"allowed"| AN["The selected provider's endpoints only — the three anthropic.com ones, or api.openai.com"]
   PX --x BL["Refused — github.com, npm, everything else"]
   REG -.-> T
   R --> RG
@@ -472,8 +472,13 @@ enters the ordinary failed/blocked row, never done/closed.
 A specialist that needs a different model or a different tool changes nothing structural:
 the coding agent is already swappable through `agentCommand` → `PIPELINE_AGENT_CMD`, and
 the contract is only "a shell command that reads a prompt on stdin and edits files." A
-non-Anthropic tool would additionally need its domain added to the allowlist — the one
-place the closed-network policy would have to be revisited deliberately.
+non-Anthropic tool additionally needs its domain allowlisted, and that is the one place the
+closed-network policy is revisited deliberately — which is exactly what a second provider
+did (change-log row `repo-45g`, `DESIGN.md` §6.5). Codex is a first-class backend rather
+than an `agentCommand` override: `provider` selects it per run and per planning stage, one
+adapter constructs the launch in Codex's own `codex exec` contract, and it gets its **own**
+deny-by-default proxy profile allowing only `api.openai.com`. The Anthropic profile is not
+widened to cover it — a task holds one model credential, so it reaches one provider.
 
 ## What each outcome does
 

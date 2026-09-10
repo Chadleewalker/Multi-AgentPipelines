@@ -173,7 +173,7 @@ Verified by listing both folders: present in the main checkout, absent in a fres
 
 | Path | What it is | Carry it? |
 |---|---|---|
-| `.env.pipeline` | the Claude subscription token | only for a session that launches runs — and those belong in the main checkout anyway |
+| `.env.pipeline` | the selected provider's one model credential — a Claude subscription token, or `CODEX_API_KEY` | only for a session that launches runs — and those belong in the main checkout anyway |
 | `run.config.*.json` | per-project runner config | same |
 | `.sanitize-denylist` | the host-only publication denylist | **yes** — without it `scripts/test-sanitize.sh` skips its project-specific checks and passes something it should have caught |
 | `docs/user-profile.md` | your profile | not needed; the live copy is at `~/.claude/CLAUDE.md` |

@@ -68,6 +68,12 @@ npm install -g @anthropic-ai/claude-code
 
 Run `claude` in any folder and sign in with the A1 account.
 
+Claude is the default backend and everything below assumes it. If you intend to run a
+project on the Codex provider instead (`DESIGN.md` §6.5), install that CLI too —
+`npm install -g @openai/codex` — and authenticate it with `codex login` or `CODEX_API_KEY`;
+the host launchers refuse a selected provider whose CLI or credential is missing, naming
+the remedy, before they create anything.
+
 ### A4. Let Claude Code install the rest
 
 Start `claude` anywhere — you do not need the clone yet — and give it this:
@@ -102,7 +108,8 @@ session, so it can read the error with you.
 Three things it will not think to tell you:
 
 - **Docker Desktop must be left running.** It is what isolates each task: a throwaway
-  container that reaches three Anthropic addresses and nothing else. The runner checks it is
+  container that reaches its own provider's addresses — the three Anthropic ones, or
+  `api.openai.com` for a Codex project — and nothing else. The runner checks it is
   up and stops if not. Its installer wants a reboot and may add its own WSL plumbing — both
   fine; rule 4 is about the terminal *you* type in.
 - **Every `.sh` script in this project runs from Git Bash.** PowerShell is fine for `git` and
@@ -226,8 +233,11 @@ docker build -t pipeline-base:local docker/base
 bash scripts/test-base-image.sh      # expect every line PASS
 ```
 
-Node, git, the Claude CLI and `bd` at pinned versions, with no credentials and no pipeline
-code. The network gatekeeper image builds itself on first run.
+Node, git, the Claude CLI, the Codex CLI and `bd` at pinned versions, with no credentials and
+no pipeline code. The build fails if the pinned Codex cannot offer the `codex exec`
+capabilities an autonomous run needs, because an older one accepts `codex exec` and rejects
+them — a silently different agent rather than an error (`DESIGN.md` §6.5). The network
+gatekeeper image builds itself on first run, in the profile the selected provider names.
 
 ### B6. `cp .worktree-carry.example .worktree-carry`
 
@@ -378,7 +388,8 @@ Adding a feature later is a planning session, not a re-onboarding.
 4. **A fresh clone does not carry the issue database.** B3 and B4 are what fetch it.
 5. **Suites go stale silently.** Sweep after merging a batch of PRs, before an overnight run,
    and when picking up a cold branch. One suite nobody re-ran accumulated three bugs.
-6. **Anything a container needs must be in the repository.** No internet beyond Anthropic. If
+6. **Anything a container needs must be in the repository.** No internet beyond the one model
+   provider the run selected. If
    an agent keeps failing for want of an API reference, vendor the docs in — never open the
    network.
 7. **"Repository not found" usually means the wrong GitHub account is active**, not a typo.

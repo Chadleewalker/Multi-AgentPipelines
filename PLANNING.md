@@ -228,7 +228,7 @@ critic that never gates leaves no other trace (§3.2, move 4).
 
 **Launch the test author from the generated brief.** The planning command computes the same
 deterministic brief, creates or reuses the issue's dedicated worktree, and opens one headless
-Claude session there with an explicit model alias:
+agent session there with an explicit model alias:
 
 ```bash
 node scripts/author-tests.js <issue-id> --config run.config.<project>.json
@@ -241,7 +241,16 @@ the optional `testAuthorModel` in the run config when the test author should dif
 implementation `model`; otherwise the launcher uses `model`. `testProbeModel` may pin the
 separate green-probe agent and falls back through `testAuthorModel` to `model`; all aliases are
 explicit argv values, never a global CLI selection. `testProbeAttempts` bounds the host-feedback
-loop at three by default. `scripts/spec-brief.js` remains the read-only command for inspecting or
+loop at three by default.
+
+Which **backend** those two stages use is selected the same way (`DESIGN.md` §6.5, change-log
+row `repo-45g`): `testAuthorProvider` and `testProbeProvider` name `claude` or `codex`,
+falling back to the run-wide `provider` and then to `claude`, and `testAuthorReasoningEffort`
+/ `testProbeReasoningEffort` fall back to `reasoningEffort` for a Codex stage. Leaving all of
+them out is what every existing config does and keeps today's Claude behaviour exactly. A
+Codex stage needs the Codex CLI on the host — authenticated by `codex login` or
+`CODEX_API_KEY` — and the launcher refuses a missing executable, credential or model with the
+remedy **before** it creates or reuses a worktree. `scripts/spec-brief.js` remains the read-only command for inspecting or
 saving the brief without opening a session.
 
 It works out which of three states the issue is in first, because the instructions differ:

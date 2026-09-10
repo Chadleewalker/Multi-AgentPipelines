@@ -274,7 +274,8 @@ Copy this section in (adjust nothing but the project name):
 
 ```markdown
 ### Working inside the pipeline container (read this when you are the coding agent in a run)
-- This is a locked-down Docker container: the network reaches Anthropic endpoints only.
+- This is a locked-down Docker container: the network reaches your own model provider's
+  endpoints only — the Anthropic ones, or `api.openai.com` on a Codex run.
   No package installs, no web lookups — everything you need is in this repo, the issue
   file, or the memory file.
 - Your task is `/workspace/.run/issue.md`; project memory is `/workspace/.run/memory.md`.
@@ -309,7 +310,8 @@ Copy this section in (adjust nothing but the project name):
       allowlist proxy are per project, and the runner derives both names from that
       `<project>` segment when the config gives none (change-log row `repo-jur`). Two
       projects whose configs are both called `run.config.json` share one network and one
-      sidecar, so starting the second run destroys the first run's route to Anthropic.
+      sidecar, so starting the second run destroys the first run's route to its model
+      provider.
       Set `network` / `proxyName` explicitly only if you want particular names.
       **One config per target repo.** A run locks its target repo before any other gate,
       so a second config aimed at the same repo is refused by name rather than draining

@@ -938,7 +938,9 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
    git host (see network policy); its local commits land on the host filesystem and
    therefore survive container teardown. Fresh container + fresh clone every time;
    everything inside the container is disposable, so "kill the container" is always safe.
-3. **Inside the container, agents are ephemeral headless invocations** (`claude -p`,
+3. **Inside the container, agents are ephemeral headless invocations** (`claude -p`, or
+   the matching `codex exec` noninteractive command when the run selects that provider —
+   6.5; the entrypoint reads `PIPELINE_PROVIDER` and unset means `claude`,
    run with permissions bypassed — acceptable *only* because the container has a closed
    network, a disposable filesystem, and no git credentials) in a fixed sequence driven by the
    entrypoint script: **code → verify → (retry, up to the attempt cap — default 3) →
@@ -956,7 +958,11 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
    success stands with `docsPhaseError` as evidence (change-log row `final-verification-boundary`). Phases of
    a task are scaffolding, not an LLM decision. No leader agent inside. **Agent output is a contract artifact, so it is
    read structurally, never scraped.** When the entrypoint owns the invocation (no
-   `PIPELINE_AGENT_CMD`) both agent phases request `--output-format json`, and the
+   `PIPELINE_AGENT_CMD`) both agent phases request structured output — `--output-format
+   json` from Claude, `--json` from `codex exec` — and the reader for the selected
+   provider flattens it (6.5: `pipeline/agent-output.js` reads Codex's JSONL events; the
+   Claude path below is unchanged, and a Claude task still works when `/pipeline` carries
+   only the envelope reader). The
    envelope reader (`pipeline/envelope.js`) takes the last line of the log that parses to
    a JSON object with a string `result` — that result is the change summary, and the
    resolved model id recorded per 4.11 is **selected** from its `modelUsage`, never simply
@@ -1071,13 +1077,19 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
    wall-clock cap, and the subscription window itself is the spending limit — see next
    item.
 7. **Rate limits are pauses, not failures — and the only "billing" mechanism.** The
-   pipeline runs on a Claude subscription. When a `claude -p` call fails with a
+   pipeline runs on a Claude subscription, or on the selected provider's account (6.5).
+   When an agent call fails with a
    usage-limit error, the entrypoint exits immediately with the "rate-limited" code,
-   recording the window-reset time in the status file when the error reports one. The
+   recording the window-reset time in the status file when the error reports one — from
+   Claude's `usage limit reached|<epoch>` line or from Codex's `turn.failed` JSONL event,
+   each read as the CLI's own structured evidence and never scraped from prose, and an
+   absent instant records nothing rather than inventing one. The
    runner parks — the pause is an attempt-log note; the issue simply stays
    in-progress — and waits until the reset time or, if none was reported, probes on a fixed
-   interval (default 15 minutes) with a minimal `claude -p` call **run directly on the
-   host** (the host has the CLI and token; see section 6). It then relaunches a **fresh
+   interval (default 15 minutes) with a minimal call to **the selected provider's own CLI,
+   run directly on the host** (the host has that CLI and credential; see section 6 — a
+   Codex run probes Codex, read-only, because asking the other vendor answers
+   "inconclusive" forever and relaunches blind). It then relaunches a **fresh
    container reusing the same host-side clone and workspace**: `/workspace/.run/` persists
    across the relaunch, so the entrypoint reads the prior attempt count from the status
    file and continues it — the attempt cap is a per-task invariant, never reset by a
@@ -1111,23 +1123,29 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
    silently missing from `run.json` after an unattended overnight run is a hole in the
    record. Work is preserved and the operator decides, since a pipeline that cannot get
    a usage window has nothing useful left to try.
-8. **Closed network.** Container egress is allowlisted to **the Anthropic-operated
-   endpoints headless Claude Code requires to function** (API plus auth/token refresh),
+8. **Closed network.** Container egress is allowlisted to **the endpoints the selected
+   provider's headless CLI requires to function** (API plus auth/token refresh),
    enumerated explicitly in the proxy configuration — and nothing else: no git hosts, no
    package registries, no third-party hosts. Mechanism: an internal no-egress Docker
    network plus an HTTP CONNECT proxy sidecar with a domain allowlist (TLS passed through,
    not intercepted), reached by the CLI via standard proxy environment variables. The
-   *mechanism* may be revisited at implementation; the *policy* — Anthropic endpoints
-   only, each one listed in config — may not. The starting allowlist is
+   *mechanism* may be revisited at implementation; the *policy* — **one provider's**
+   endpoints only, each one listed in config, and **never both providers in one profile**
+   (6.5: a task holds one model credential, so it is given reach to one provider's
+   endpoints) — may not. The Claude allowlist is
    `api.anthropic.com` plus whatever auth endpoints empirical testing of headless
    `claude -p` shows are required; the enumeration is finalized (within the policy) by the
-   network task. **The network and the sidecar are per project, never per pipeline** — a
+   network task. Codex is its own deny-by-default profile in `docker/proxy-codex/`,
+   allowing exactly `api.openai.com`, and `docker/proxy/` is unchanged.
+   **The network and the sidecar are per project, never per pipeline** — a
    run acts only on the plumbing it owns, so a second runner process against a different
    project can be in flight without either one creating, restarting or destroying the
-   other's (4.12 says where the names come from). The proxy *image* stays shared: the
-   allowlist is identical for every project, and the policy above is what may not vary.
-   A **pre-run egress check** (throwaway container: allowed endpoint
-   reachable, at least two non-allowlisted hosts unreachable, bounded under 60 seconds)
+   other's (4.12 says where the names come from). The proxy *image* stays shared across
+   projects and differs only by provider profile: the allowlist is identical for every
+   project on one provider, and the policy above is what may not vary.
+   A **pre-run egress check** (throwaway container: the **selected** provider's allowed
+   endpoint reachable, the same two non-allowlisted hosts and direct egress unreachable for
+   either provider, bounded under 60 seconds)
    runs before every run, **against that run's own network and proxy** — a gate that
    passes against different plumbing proves nothing — and **aborts the run** on failure. Dependencies are baked into
    the image at planning time (see 3.4). Knowledge gaps are mitigated in the repo
@@ -1161,7 +1179,12 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     `/workspace/.run/issue.md`; the project memories exported to a read-only file at
     `/workspace/.run/memory.md` (3.6); and the environment variables `ISSUE_ID`,
     `PIPELINE_AGENT_CMD` (normally unset — see 4.3), `PIPELINE_MAX_ATTEMPTS` (the 4.6
-    attempt cap), the OAuth token, and proxy variables. The container command is the entrypoint at its `/pipeline` path. The
+    attempt cap), `PIPELINE_PROVIDER` and — for Codex only — `PIPELINE_REASONING_EFFORT`
+    (6.5; an unset provider means `claude`, so a container launched by a runner that
+    predates providers gets exactly what it always got), **the selected provider's one
+    credential, passed by NAME** (`CLAUDE_CODE_OAUTH_TOKEN` or `CODEX_API_KEY` — a task is
+    given one of them, never both, and never a mounted host `auth.json`), and proxy
+    variables. The container command is the entrypoint at its `/pipeline` path. The
     entrypoint composes the coding prompt from the issue file; the runner writes a
     `.git/info/exclude` entry for `.run/` at clone time so contract artifacts never end
     up in commits. Every spec,
@@ -1239,7 +1262,11 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     every runner Git call (`gitTimeoutMs`, default 60000), the bound on short Docker,
     GitHub and host-shell lifecycle calls (`lifecycleTimeoutMs`, default 120000; both
     validated identically), network/proxy identifiers, an optional `agentCommand` override (passed
-    into containers as `PIPELINE_AGENT_CMD` — how the E2E pass injects its stubs), and an
+    into containers as `PIPELINE_AGENT_CMD` — how the E2E pass injects its stubs), the
+    optional agent-backend selection (`provider` plus the two planning-stage overrides and
+    `reasoningEffort` with the same overrides — closed vocabularies, validated by field
+    name, resolving stage → run-wide → `claude`, so a config naming none of them is the
+    pre-provider config unchanged; 6.5), and an
     optional `hostShell`. When `hostShell` is absent, startup resolves and verifies one;
     when it is present, startup verifies that exact command rather than silently falling
     back. **The network and proxy names are per project and have no shared
@@ -1794,15 +1821,23 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     **The skipped handoff is now a bounded planning command** (change-log row
     `test-author-launcher`). `scripts/author-tests.js` consumes the brief builder's structured
     state rather than parsing its prose, creates or reuses only the issue worktree named by
-    that builder, and launches `claude -p --model <alias>` there with the brief on stdin. The
+    that builder, and launches the selected provider there with the brief on stdin — every
+    launch it makes is constructed by the one adapter (§6.5), as `claude -p --model <alias>`
+    or as `codex exec` with an explicit model and reasoning effort. The
     alias comes from the optional planning-only `testAuthorModel`, falling back to `model`, and
-    is always explicit so host-global CLI preferences cannot select the author. The session is
+    is always explicit so host-global CLI preferences cannot select the author; the backend
+    comes from `testAuthorProvider`, falling back to `provider`, then to `claude`. The session is
     bounded by the run's wall clock and the shared host-process output cap, uses argv spawning
     without a shell, and runs in Claude's restricted mode with `acceptEdits`. Restricted mode
     confines file tools to the issue worktree and protects Git/configuration files; the launcher
     exposes only read/edit/search plus Bash, pre-authorizes only the target's exact verifier, and
     explicitly denies Git mutation, Beads, and freeze commands. Every other Bash command remains
-    unapproved in the noninteractive session. Ready, freeze and re-gate states do
+    unapproved in the noninteractive session. A Codex author is confined by its own native
+    equivalents rather than by translated Claude flags (§6.5): the worktree as the
+    workspace-write sandbox root, `--approve-for-me` for a session with no human to answer
+    an approval, and `--ignore-user-config --ignore-rules --ephemeral` so nothing of the
+    host's own Codex configuration reaches the run and nothing of the run survives it.
+    Ready, freeze and re-gate states do
     not launch a writer. Success and failure both stop at a report and the mandatory human
     approval step; the command never invokes the freeze/commit/push path.
 
