@@ -78,16 +78,16 @@ the example config's Claude aliases are not one.
 Selecting a provider selects three things together, and they are not independently
 configurable:
 
-- **The credential.** `CLAUDE_CODE_OAUTH_TOKEN` or `CODEX_API_KEY`, read from the
-  git-ignored `.env.pipeline` or the ambient environment, with no cross-provider fallback.
+- **The credential.** Claude and API-key Codex runs read their selected key from the
+  git-ignored `.env.pipeline` or ambient environment, with no cross-provider fallback. Codex also has an explicit `codexAuth: "chatgpt"` mode: before the lock it validates `codex login` device authentication and seeds `auth.json` to a host-private pipeline cache. Each trusted worker mounts only a writable task copy at `/root/.codex`; no `CODEX_API_KEY`, `CODEX_HOME`, or operator home enters it.
   Containers receive it by environment-variable name only, and every other provider's
-  credential is removed from the docker client's environment first. On the host, Codex may
+  credential is removed from the docker client's environment first. API-key mode may
   instead reuse a saved ChatGPT CLI session (`codex login`); inside a container it cannot,
   and no `auth.json` is ever mounted.
 - **The container command.** The runner passes `PIPELINE_PROVIDER`, and
   `pipeline/entrypoint.sh` selects that provider's noninteractive invocation.
 - **The egress profile.** `docker/proxy` carries the Anthropic endpoints, `docker/proxy-codex`
-  the OpenAI ones, and `PIPELINE_PROXY_PROFILE` picks which sidecar `scripts/pipeline-net.sh`
+  the three concrete Codex hosts `api.openai.com`, `chatgpt.com` and `ab.chatgpt.com`, and `PIPELINE_PROXY_PROFILE` picks which sidecar `scripts/pipeline-net.sh`
   builds and which endpoint `scripts/egress-check.sh` proves reachable. One profile per
   provider: widening either to carry the other's endpoints is refused by design, not by a
   check.

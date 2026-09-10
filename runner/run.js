@@ -16,6 +16,7 @@ const fs = require('fs');
 const path = require('path');
 const { loadConfig, loadProviderCredential, missingCredentialDiagnostic } = require('./config');
 const { credentialNameFor, providerFor } = require('./agent-provider');
+const codexAuth = require("./codex-auth");
 const { startRun } = require('./log');
 const { preflight, networkDown } = require('./preflight');
 const { release: releaseLock } = require('./lock');
@@ -93,54 +94,30 @@ function cleanupOwnedLifecycle(cfg, repoRoot, log, traceId, deps = {}) {
 // verify.json into the task's log dir — enough to exercise every §4.11 transition.
 // One task container (§4.10). PIPELINE_EXEC_STUB replaces the container with a local
 // script — used by the runner's own test suites to exercise outcome paths cheaply;
-// real runs always take the docker path.
 async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClockMinutes) {
   const stub = process.env.PIPELINE_EXEC_STUB;
   if (stub) {
-    // Asynchronous on purpose (§7): spawnSync here would serialise every stubbed task and
-    // make the worker pool unobservable to exactly the Docker-free suites that prove it.
-    // The invocation stays `bash <stub>` — an explicit interpreter, so a stub script never
-    // fails with EFTYPE on the Windows host — and the environment contract is unchanged,
-    // because the existing Docker suites depend on both. Output is discarded rather than
-    // piped: spawnSync's pipes were never read either, and an unread pipe would now block
-    // a chatty stub instead of quietly filling a buffer nobody looks at.
     const completed = await new Promise((resolve) => {
-      const child = require('child_process').spawn(commandFor(cfg), [stub], {
-        cwd: ws.dir,
-        stdio: ['ignore', 'ignore', 'ignore'],
-        env: { ...process.env, ISSUE_ID: issue.id, TASK_DIR: taskDir, WORKSPACE: ws.dir, RUN_DIR: path.join(ws.dir, '.run') },
-      });
-      let finished = false;
-      let timedOut = false;
-      const timer = setTimeout(() => {
-        timedOut = true;
-        try { child.kill('SIGKILL'); } catch { /* close/error settles the result */ }
-      }, timeoutFor(cfg, 'lifecycle'));
-      const settle = (code) => {
-        if (finished) return;
-        finished = true;
-        clearTimeout(timer);
-        resolve({ code, timedOut });
-      };
-      child.on('error', () => settle(null));      // same shape spawnSync reported: no status
-      child.on('close', (code) => settle(code));  // null when a signal killed it
+      const child = require("child_process").spawn(commandFor(cfg), [stub], { cwd: ws.dir, stdio: ["ignore", "ignore", "ignore"], env: { ...process.env, ISSUE_ID: issue.id, TASK_DIR: taskDir, WORKSPACE: ws.dir, RUN_DIR: path.join(ws.dir, ".run") } });
+      let finished = false; let timedOut = false;
+      const timer = setTimeout(() => { timedOut = true; try { child.kill("SIGKILL"); } catch {} }, timeoutFor(cfg, "lifecycle"));
+      const settle = (code) => { if (finished) return; finished = true; clearTimeout(timer); resolve({ code, timedOut }); };
+      child.on("error", () => settle(null)); child.on("close", (code) => settle(code));
     });
-    log.info(traceId, `exec stub exited ${completed.timedOut ? 'timeout' : completed.code}`);
-    return { exitCode: completed.timedOut || completed.code === 124 ? 'killed' : completed.code };
+    log.info(traceId, `exec stub exited ${completed.timedOut ? "timeout" : completed.code}`);
+    return { exitCode: completed.timedOut || completed.code === 124 ? "killed" : completed.code };
   }
-  // Container names must be unique across relaunches (§4.7 resume).
   const attempt = (executeTask.counter = (executeTask.counter || 0) + 1);
-  return runTask(cfg, {
-    containerName: `task-${issue.id}-${log.runId}-${attempt}`.replace(/[^A-Za-z0-9_.-]/g, '-'),
-    workspaceDir: ws.dir,
-    pipelineDir: path.join(REPO_ROOT, 'pipeline'),
-    issueId: issue.id,
-    taskDir,
-    // Paired with its environment-variable NAME here, so the container layer never has to
-    // guess which provider a bare value belongs to.
-    credential: { name: credentialNameFor(providerFor(cfg)), value: token },
-    wallClockMinutes: wallClockMinutes || cfg.wallClockMinutes,
-  }, log, traceId);
+  const authCache = providerFor(cfg) === "codex" && cfg.codexAuth === "chatgpt"
+    ? codexAuth.stageTaskCache({ cacheRoot: cfg.codexAuthCacheRoot, taskId: `${issue.id}-${attempt}` }) : null;
+  try {
+    return await runTask(cfg, {
+      containerName: `task-${issue.id}-${log.runId}-${attempt}`.replace(/[^A-Za-z0-9_.-]/g, "-"),
+      workspaceDir: ws.dir, pipelineDir: path.join(REPO_ROOT, "pipeline"), issueId: issue.id, taskDir,
+      ...(authCache ? { authCache } : { credential: { name: credentialNameFor(providerFor(cfg)), value: token } }),
+      wallClockMinutes: wallClockMinutes || cfg.wallClockMinutes,
+    }, log, traceId);
+  } finally { if (authCache) codexAuth.releaseTaskCache(authCache); }
 }
 
 // ---- the bounded worker pool (§7, §4.12) ------------------------------------------
@@ -579,13 +556,14 @@ async function main() {
   // a Beads claim, a network or a container exists, rather than failing at the model
   // endpoint once all of them do. With no provider selected this is exactly the historical
   // Claude token load and the historical diagnostic.
-  const credential = loadProviderCredential(REPO_ROOT, cfg.provider);
-  if (!credential) {
+  const chatgptAuth = providerFor(cfg) === 'codex' && cfg.codexAuth === 'chatgpt';
+  const credential = chatgptAuth ? null : loadProviderCredential(REPO_ROOT, cfg.provider);
+  if (!chatgptAuth && !credential) {
     log.error(t, missingCredentialDiagnostic(cfg.provider));
     process.exit(2);
   }
-  const token = credential.value;
-  log.info(t, `subscription token loaded (${credential.name})`);
+  const token = credential ? credential.value : "";
+  log.info(t, chatgptAuth ? "ChatGPT authentication mode selected (pipeline-private cache)" : `subscription token loaded (${credential.name})`);
 
   // The write-protection backstop (change-log row `repo-324`). Ahead of preflight on purpose:
   // it holds no lock and creates no network, so a refusal here has nothing to compensate for.

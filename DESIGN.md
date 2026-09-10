@@ -2776,6 +2776,8 @@ authoritative verifier — which executes the target repository's own code — u
 `env -u CODEX_API_KEY`. Host Codex may instead reuse a saved ChatGPT CLI session
 (`codex login`); a container never can, and no `auth.json` is ever mounted or baked in.
 
+**Codex authentication is explicit.** A Codex run selects `codexAuth: "api-key"` or `"chatgpt"`; absent legacy Codex configuration remains API-key mode. ChatGPT mode confirms a usable saved `codex login` device session and seeds only `auth.json` into a host-private pipeline cache before the target lock, Beads, network, workspace or container. Each trusted task receives a separately staged writable copy at `/root/.codex`, while `CODEX_API_KEY`, `CODEX_HOME`, other provider credentials and the operator home are absent. Cleanup copies a valid refresh back atomically under the cache lock, then removes the task copy. The pinned image retains `USER node` and makes this mount traversable and writable by that user.
+
 **One egress profile per provider, never one widened to both.** `docker/proxy-codex/`
 is a separate deny-by-default sidecar image whose allowlist carries only the concrete OpenAI
 endpoint Codex requires; `docker/proxy/`'s Anthropic-only roster is untouched. Adding the

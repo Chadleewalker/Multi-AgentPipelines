@@ -15,6 +15,7 @@ const {
 const { resolveHostShell, commandFor } = require('./host-shell');
 const { runSync, failureText } = require('./process');
 const { verifyRepoIdentity } = require('./repo-identity');
+const codexAuth = require("./codex-auth");
 const { admitEntry } = require('./supervisor');
 const {
   normalizeProvider, providerFor, missingCodexCapabilities,
@@ -193,6 +194,11 @@ function recoverStaleIssues(cfg, log, traceId, ownership, io = {}) {
 // Every gate after the lock can leave something behind, so each of them releases it on
 // the way out: an abort at preflight must leave the project free (§4.12).
 function preflight(cfg, repoRoot, log, deps = {}) {
+  if (providerFor(cfg) === "codex" && cfg.codexAuth === "chatgpt") {
+    const auth = (deps.codexAuthPreflight || codexAuth.preflight)({ mode: "chatgpt", env: deps.env || process.env, cacheRoot: cfg.codexAuthCacheRoot });
+    if (!auth.ok) return { ok: false, authRefused: true, reason: auth.reason };
+    cfg.codexAuthCacheRoot = auth.cacheRoot;
+  }
   const t = `${log.runId}/preflight`;
 
   // ---- child admission: ahead of the project lock itself (§3.10) ----

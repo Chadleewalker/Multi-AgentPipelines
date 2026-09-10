@@ -147,6 +147,15 @@ function main(argv, io = {}) {
   return result.status === 0 ? 0 : 1;
 }
 
+function runChatgptContainerSmoke(opts = {}) {
+  const run = opts.run || runSync; const out = opts.out || console.log; const env = { ...(opts.env || process.env) };
+  delete env.CODEX_API_KEY; delete env.CODEX_HOME;
+  const cache = opts.authCache;
+  if (!cache || !cache.mount) { (opts.err || console.error)("codex-live-smoke: ChatGPT cache is required"); return { status: 2 }; }
+  out("Authentication: ChatGPT managed session cache");
+  return run("docker", ["run", "--rm", "-v", cache.mount, "-w", "/workspace", opts.image, "codex", ...smokeArgs({ model: opts.model || DEFAULT_MODEL, reasoningEffort: opts.reasoningEffort || "low" })], { env, input: `${PROMPT}\n`, timeoutMs: TIMEOUT_MS, label: "Codex ChatGPT container live smoke" });
+}
+
 if (require.main === module) process.exit(main(process.argv.slice(2)));
 
-module.exports = { main, parseArgs, smokeArgs, DEFAULT_MODEL };
+module.exports = { main, parseArgs, smokeArgs, runChatgptContainerSmoke, DEFAULT_MODEL };

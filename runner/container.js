@@ -62,6 +62,7 @@ function buildArgs(cfg, opts) {
     '-e', `HTTP_PROXY=${cfg.proxyUrl}`,
     '-e', 'NO_PROXY=localhost,127.0.0.1',
   ];
+  if (opts.authCache && opts.authCache.mount) args.push("-v", opts.authCache.mount);
   // Credential by NAME only: the value is placed in the docker client's own environment
   // below, so it never appears in an argument list, a log line, or an image layer (§6).
   if (credential) args.push('-e', credential.name);
@@ -97,8 +98,9 @@ function runTask(cfg, opts, log, traceId) {
     const credential = credentialFor(cfg, opts);
     const childEnv = { ...DOCKER_ENV };
     for (const name of CREDENTIAL_ENV_NAMES) delete childEnv[name];
+    delete childEnv.CODEX_HOME;
     if (credential) childEnv[credential.name] = credential.value;
-    const child = spawn('docker', args, { env: childEnv });
+    const child = (opts.spawn || spawn)("docker", args, { env: childEnv });
     child.stdout.pipe(logStream);
     child.stderr.pipe(logStream);
 

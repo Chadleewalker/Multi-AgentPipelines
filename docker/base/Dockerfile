@@ -38,5 +38,8 @@ RUN help="$(codex exec --help 2>&1)" \
 
 # Tasks run as the image's non-root "node" user; /workspace is the bind-mounted
 # per-task clone (§4.2) and the default working directory.
+# Keep the non-root task user while allowing its private ChatGPT cache mount to refresh.
+
+RUN mkdir -p /root/.codex && chmod 755 /root && chown -R node:node /root/.codex
 USER node
 WORKDIR /workspace
