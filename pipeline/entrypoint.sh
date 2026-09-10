@@ -11,7 +11,8 @@
 #   [T10 inserts rate-limit exit 20]
 #
 # Inputs (§4.10): /workspace mount (repo on task branch), /workspace/.run/issue.md,
-#   ISSUE_ID, PIPELINE_AGENT_CMD (test seam; defaults to headless claude), token+proxy env.
+#   ISSUE_ID, PIPELINE_PROVIDER (claude | codex; unset means claude), PIPELINE_AGENT_CMD
+#   (test seam; defaults to the selected provider's noninteractive command), token+proxy env.
 # Outputs (§4.11): exit 0 verified / 10 stuck / 11 tampered / 30 internal error,
 #   plus /workspace/.run/status.json (schema: schemas/status.schema.json).
 set -u
@@ -22,15 +23,35 @@ PIPE="${PIPELINE_DIR:-/pipeline}"
 # drift when the account default changes. An explicit PIPELINE_AGENT_CMD owns its flags.
 MODEL_ARG=""
 [ -n "${PIPELINE_MODEL:-}" ] && MODEL_ARG=" --model ${PIPELINE_MODEL}"
-AGENT_CMD="${PIPELINE_AGENT_CMD:-claude -p --dangerously-skip-permissions${MODEL_ARG}}"
+# Which backend this task was launched for (§6.5). Unset is claude, so a container started
+# by a runner that predates providers behaves exactly as it always did.
+AGENT_PROVIDER="${PIPELINE_PROVIDER:-claude}"
+if [ "$AGENT_PROVIDER" = codex ]; then
+  # The official `codex exec` noninteractive contract, spelled the same way the host
+  # launcher spells it (runner/agent-provider.js): prompt on stdin (`-`), model and
+  # reasoning effort explicit, no user config or rules from outside this container, no
+  # session state left behind, and an environment policy that keeps CODEX_API_KEY — and
+  # the default secret name patterns — out of every command the model itself spawns.
+  # Structured JSONL (`--json`) is what the outcome is read from; prose decides nothing.
+  CODEX_EFFORT="${PIPELINE_REASONING_EFFORT:-medium}"
+  CODEX_AGENT_CMD="codex exec${MODEL_ARG} -c 'model_reasoning_effort=\"${CODEX_EFFORT}\"'"
+  CODEX_AGENT_CMD="$CODEX_AGENT_CMD -c 'shell_environment_policy.ignore_default_excludes=false'"
+  CODEX_AGENT_CMD="$CODEX_AGENT_CMD -c 'shell_environment_policy.filters.CODEX_API_KEY=\"exclude\"'"
+  CODEX_AGENT_CMD="$CODEX_AGENT_CMD --approve-for-me --ephemeral --ignore-user-config --ignore-rules --strict-config --json -"
+  AGENT_CMD="${PIPELINE_AGENT_CMD:-$CODEX_AGENT_CMD}"
+else
+  AGENT_CMD="${PIPELINE_AGENT_CMD:-claude -p --dangerously-skip-permissions${MODEL_ARG}}"
+fi
 
 # When we own the invocation, ask for JSON so the RESOLVED model id can be recorded (a
 # `--model opus` alias hides which Opus actually ran) and so the docs phase hands back a
 # summary with no CLI chatter around it. The human-readable text is extracted back out
-# (envelope.js), so agent logs stay readable. A caller-supplied PIPELINE_AGENT_CMD
-# (stubs, overrides) owns its own flags and gets none of this; extraction copes either way.
+# (envelope.js for Claude, agent-output.js for Codex), so agent logs stay readable. A
+# caller-supplied PIPELINE_AGENT_CMD (stubs, overrides) owns its own flags and gets none
+# of this; extraction copes either way. The Codex command above already carries `--json`,
+# because its `-` prompt argument has to stay last.
 AGENT_FORMAT=""
-[ -z "${PIPELINE_AGENT_CMD:-}" ] && AGENT_FORMAT="--output-format json"
+[ -z "${PIPELINE_AGENT_CMD:-}" ] && [ "$AGENT_PROVIDER" != codex ] && AGENT_FORMAT="--output-format json"
 # Attempt cap (§4.6): tunable per run via run.config.json maxAttempts, which the
 # runner forwards as PIPELINE_MAX_ATTEMPTS. Anything unset or non-numeric falls back
 # to 3 — the cap must always be a positive integer or the retry loop breaks.
@@ -164,10 +185,19 @@ while :; do
   if ! sh -c "$AGENT_CMD $AGENT_FORMAT" < "$RUN/prompt-$N.md" > "$RUN/agent-$N.log" 2>&1; then
     # ---- rate-limit detection (§4.7, T10): a pause, never a failed attempt ----
     if grep -qiE 'usage limit|rate.?limit' "$RUN/agent-$N.log"; then
-      EPOCH=$(grep -oiE 'usage limit reached\|[0-9]+' "$RUN/agent-$N.log" | grep -oE '[0-9]+$' | head -1)
-      if [ -n "${EPOCH:-}" ]; then
-        RESET=$(node -e "console.log(new Date($EPOCH*1000).toISOString())")
-        node "$PIPE/status.js" set rateLimitResetAt "$RESET"
+      # The reset instant comes from the CLI's own structured evidence, per provider:
+      # Claude's `usage limit reached|<epoch>` line, Codex's turn.failed JSONL event.
+      # Neither is scraped from prose, and an absent instant records nothing rather than
+      # inventing one — the runner would park the whole queue until it.
+      if [ "$AGENT_PROVIDER" = codex ]; then
+        RESET=$(node "$PIPE/agent-output.js" ratelimit "$RUN/agent-$N.log") || RESET=""
+        [ -n "${RESET:-}" ] && node "$PIPE/status.js" set rateLimitResetAt "$RESET"
+      else
+        EPOCH=$(grep -oiE 'usage limit reached\|[0-9]+' "$RUN/agent-$N.log" | grep -oE '[0-9]+$' | head -1)
+        if [ -n "${EPOCH:-}" ]; then
+          RESET=$(node -e "console.log(new Date($EPOCH*1000).toISOString())")
+          node "$PIPE/status.js" set rateLimitResetAt "$RESET"
+        fi
       fi
       exit 20   # runner parks the task; attempts[] untouched — interrupted ≠ failed
     fi
@@ -186,7 +216,15 @@ while :; do
   # run leaves it unset; the empty string means "no alias" and is not an error. stderr is
   # NOT swallowed: an alias that matches nothing is a diagnostic a human must see in the
   # run log, and hiding it is how the wrong model went unnoticed in the first place.
-  MODEL=$(node "$PIPE/envelope.js" flatten "$RUN/agent-$N.log" "${PIPELINE_MODEL:-}") || MODEL=""
+  if [ "$AGENT_PROVIDER" = codex ]; then
+    # Codex reports its events as JSONL rather than one envelope, so the same two jobs —
+    # flatten the log to the final agent text and report the model that ran — are done by
+    # the Codex reader. When its events name no model, the configured one is what ran.
+    MODEL=$(node "$PIPE/agent-output.js" flatten "$RUN/agent-$N.log") || MODEL=""
+    [ -z "$MODEL" ] && MODEL="${PIPELINE_MODEL:-}"
+  else
+    MODEL=$(node "$PIPE/envelope.js" flatten "$RUN/agent-$N.log" "${PIPELINE_MODEL:-}") || MODEL=""
+  fi
   [ -n "$MODEL" ] && node "$PIPE/status.js" set model "$MODEL" 2>/dev/null
 
   # ---- verify phase: the authoritative gate (§4.4) ----

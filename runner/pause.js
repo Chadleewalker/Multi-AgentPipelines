@@ -10,6 +10,9 @@
 // Two layers: waitForWindow is ONE wait, and createPauseGate (§7) is the run-level park
 // that owns the single shared wait and the single cycle counter for the whole run.
 'use strict';
+const {
+  CODEX_API_KEY_ENV, codexReadOnlyArgs, normalizeOutput, providerOf,
+} = require('./agent-provider');
 const { DEFAULTS } = require('./config');
 const { commandFor } = require('./host-shell');
 const { runSync } = require('./process');
@@ -23,6 +26,28 @@ function probeHost(token, hostShell, cfg) {
   // PIPELINE_PROBE_CMD is a test seam (same idea as PIPELINE_AGENT_CMD): it replaces
   // the real CLI call so suites can exercise the probe path without burning the window.
   const stub = process.env.PIPELINE_PROBE_CMD;
+  // A Codex run asks Codex (§6.5): probing the other vendor's CLI with the other vendor's
+  // credential answers "inconclusive" forever, which parks nothing and relaunches blind.
+  // The seam above still wins, so every suite that stubs the probe is unaffected.
+  const codexModel = String((cfg && cfg.model) || '').trim();
+  if (!stub && providerOf(cfg && cfg.provider) === 'codex') {
+    // No model to ask with is not a reason to spin: report inconclusive and let the
+    // relaunched container discover the truth, exactly as an unusable CLI does below.
+    if (!codexModel) return { open: true, note: 'no model configured for the codex rate-limit probe' };
+    const probe = runSync('codex', codexReadOnlyArgs(codexModel, cfg && cfg.reasoningEffort), {
+      cfg,
+      label: 'rate-limit probe',
+      input: 'ok\n',
+      env: { ...process.env, [CODEX_API_KEY_ENV]: token || process.env[CODEX_API_KEY_ENV] || '' },
+    });
+    const raw = `${probe.stdout || ''}${probe.stderr || ''}`;
+    // The outcome is read from the CLI's structured events, not from what it printed.
+    const limited = normalizeOutput('codex', raw, codexModel);
+    if (limited && limited.rateLimit) return { open: false };
+    if (probe.status === 0) return { open: true };
+    if (/usage limit|rate.?limit/i.test(raw)) return { open: false };
+    return { open: true, note: (raw.split('\n')[0] || 'probe inconclusive').trim() };
+  }
   const r = stub
     ? runSync(hostShell || 'sh', ['-c', stub], { cfg, label: 'rate-limit probe seam' })
     : runSync('claude', ['-p', 'ok', '--max-turns', '1'], {

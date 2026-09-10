@@ -1,0 +1,8 @@
+# Egress allowlist (DESIGN.md 4.8, 6.5): the OpenAI-operated endpoint a headless
+# Codex task requires - and nothing else. Concrete domains only; no wildcards.
+# Policy (frozen): OpenAI endpoints only, and only the ones a container Codex actually
+# uses. A container Codex authenticates with CODEX_API_KEY, so it talks to the API host
+# and never to the interactive sign-in flow - which is why no sign-in host is listed here.
+# This profile is deliberately separate from the Claude one: neither may be widened to
+# both providers, because a task gets exactly one model credential and one destination.
+api.openai.com

@@ -189,6 +189,12 @@ echo 'CLAUDE_CODE_OAUTH_TOKEN=<token from A7>' > .env.pipeline
 Git-ignored, and must stay that way. Passed to containers by name at launch, never baked into
 an image.
 
+A project that selects the Codex provider (`"provider": "codex"` in its run config —
+`DESIGN.md` §6.5) needs `CODEX_API_KEY=<key>` in this same file instead. A task container is
+given exactly one credential, by name; a container Codex never receives a mounted host
+`auth.json`, though a host-side `codex exec` command may reuse saved `codex login`
+authentication.
+
 ### B3. Install the git hooks
 
 ```bash

@@ -48,8 +48,10 @@ Setting up a machine that has never seen this before — tool by tool, with the 
 prove each step worked — is [`SETUP.md`](SETUP.md).
 
 ```bash
-# 1. put your Claude subscription token where the runner can find it
-#    (git-ignored; get one with `claude setup-token`)
+# 1. put your model credential where the runner can find it (git-ignored).
+#    Claude — the default — is a subscription token from `claude setup-token`;
+#    a project whose config sets "provider": "codex" needs CODEX_API_KEY here
+#    instead. A task is given exactly one of them, by name, never by value.
 echo 'CLAUDE_CODE_OAUTH_TOKEN=...' > .env.pipeline
 
 # 2. prove the whole thing works, using scripted stubs — no model calls

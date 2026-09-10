@@ -8,7 +8,9 @@
 // Freezing, committing and pushing remain explicit human-approved operations.
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+const agentProvider = require('../runner/agent-provider');
 const { loadConfig } = require('../runner/config');
 const { runSync, failureText } = require('../runner/process');
 const { acquire, release } = require('../runner/lock');
@@ -72,24 +74,76 @@ function ensureWorktree(built, run = runSync) {
 function launchAuthor(built, model, run = runSync) {
   const unsafeVerifier = verifyCommandError(built && built.policy && built.policy.verifyCommand);
   if (unsafeVerifier) return { status: EXIT_SETUP, stdout: '', stderr: `unsafe verifyCommand: ${unsafeVerifier}` };
-  // -p reads the prompt from stdin when no prompt argv follows it. That avoids both a shell and
-  // Windows' command-line length limit. Permissions stay at the host user's normal policy.
+  // Both backends read the prompt from stdin (`claude -p` with no prompt argv, `codex exec -`).
+  // That avoids a shell and Windows' command-line length limit, and it is the only shape in
+  // which a spec of any size — or one containing quotes — reaches the model unaltered.
+  // Permissions stay at the host user's normal policy.
   const timeoutMs = Math.max(1, Number(built.cfg.wallClockMinutes) || 240) * 60 * 1000;
   const suite = `tests/acceptance/${built.suiteId || built.id}/`;
   const verifier = `${built.policy.verifyCommand} ${suite}`;
   const allowed = `Read,Edit,Write,Glob,Grep,Bash(${verifier})`;
-  return run(process.env.PIPELINE_TEST_AUTHOR_CMD || 'claude', [
-    '-p', '--model', model,
-    '--restricted', '--permission-mode', 'acceptEdits',
-    '--tools', AUTHOR_TOOLS,
-    '--allowedTools', allowed,
-    '--disallowedTools', DENIED_TOOLS,
-    '--no-session-persistence',
-  ], {
+  // One adapter constructs this launch (§6.5). The provider and its reasoning effort are the
+  // test-author stage's, falling back to the run-wide selection; the Claude roster below is
+  // used only when Claude is the selected backend, and is unchanged.
+  const launch = agentProvider.hostLaunch({
+    provider: built.cfg.testAuthorProvider || built.cfg.provider,
+    reasoningEffort: built.cfg.testAuthorReasoningEffort || built.cfg.reasoningEffort,
+    model,
+    commandOverride: process.env.PIPELINE_TEST_AUTHOR_CMD,
+    claude: { tools: AUTHOR_TOOLS, allowedTools: allowed, disallowedTools: DENIED_TOOLS },
+  });
+  return run(launch.command, launch.args, {
       cfg: built.cfg, cwd: built.folder.dir, input: `${built.text}\n`, timeoutMs,
-      label: 'Claude test-author session', maxBuffer: MAX_BUFFER,
+      label: `${launch.provider} test-author session`, maxBuffer: MAX_BUFFER,
+      // hostEnv carries the host-only environment a headless verifier needs, and — for a
+      // Codex author — the CODEX_API_KEY that authenticates the CLI. It travels in the
+      // child's ENVIRONMENT, never in argv; the exec argv above tells Codex to keep it out
+      // of every command the model itself spawns.
       env: { ...process.env, ...(built.cfg.hostEnv || {}) },
     });
+}
+
+// Host Codex is allowed to be authenticated the way a person's own CLI is — criterion 6
+// says a HOST run may reuse saved ChatGPT CLI authentication, where a CONTAINER run must
+// have CODEX_API_KEY. This only reads whether the file exists; nothing here opens it, and
+// nothing ever copies or mounts it into a container.
+function savedCodexAuth(home = os.homedir()) {
+  try { return fs.existsSync(path.join(home, '.codex', 'auth.json')); }
+  catch { return false; }
+}
+
+// The stages this command will actually launch, deduplicated. Author and probe select
+// independently, so a run can legitimately have one of each.
+function stageProviders(cfg) {
+  return [...new Set([
+    agentProvider.providerOf((cfg && cfg.testAuthorProvider) || (cfg && cfg.provider)),
+    agentProvider.providerOf((cfg && cfg.testProbeProvider) || (cfg && cfg.provider)),
+  ])];
+}
+
+// Refuse a selected provider this host cannot actually run, BEFORE a worktree is created,
+// Beads is read or an agent is launched — with the remedy, not the symptom (criterion 6).
+// The Claude path is skipped entirely: it gains no gate it did not have, so a missing
+// claude executable stays exactly what it has always been, an agent failure with its
+// spawn diagnostic attached.
+function checkHostProvider(cfg, seams = {}) {
+  const run = seams.runSync || runSync;
+  const env = seams.env || process.env;
+  for (const provider of stageProviders(cfg)) {
+    if (provider === 'claude') continue;
+    const ready = agentProvider.preflightProvider({ ...cfg, provider }, {
+      executable: () => {
+        const probe = run(agentProvider.executableFor(provider), ['--version'], {
+          cfg, kind: 'lifecycle', label: `${provider} executable probe`,
+        });
+        return probe && probe.status === 0;
+      },
+      authenticated: () => !!env[agentProvider.credentialEnvFor(provider)]
+        || (provider === 'codex' && (seams.savedCodexAuth || savedCodexAuth)()),
+    });
+    if (!ready.ok) return ready;
+  }
+  return { ok: true };
 }
 
 function quote(value) {
@@ -164,6 +218,12 @@ function authorIssue(built, configPath, io = {}, seams = {}) {
     const result = setup('probe-model', 'no probe model is available; set testProbeModel, testAuthorModel or model in the run config');
     err(`author-tests: ${result.error}`);
     return result;
+  }
+
+  const provider = (seams.checkHostProvider || checkHostProvider)(built.cfg, seams);
+  if (!provider.ok) {
+    err(`author-tests: ${provider.remedy}`); err(failureStep());
+    return setup('provider', provider.remedy);
   }
 
   const before = (seams.auditAuthorTree || auditAuthorTree)(built, seams.runSync || runSync);
@@ -273,6 +333,10 @@ function main(argv, io = {}, seams = {}) {
       out(nextStep(built.suiteId || opts.id, configPath));
       return EXIT_OK;
     }
+    // Ahead of `git worktree add`: a host that cannot run the selected provider must not
+    // leave a worktree and a branch behind for a person to clean up (criterion 6).
+    const providerReady = (seams.checkHostProvider || checkHostProvider)(built.cfg, seams);
+    if (!providerReady.ok) { err(`author-tests: ${providerReady.remedy}`); return EXIT_SETUP; }
     const made = ensureWorktree(built, seams.runSync || runSync);
     if (!made.ok) { err(`author-tests: cannot prepare ${built.folder.dir}: ${made.error}`); return EXIT_SETUP; }
     if (!fs.existsSync(built.folder.dir)) { err(`author-tests: worktree was not created: ${built.folder.dir}`); return EXIT_SETUP; }
@@ -303,6 +367,6 @@ if (require.main === module) process.exit(main(process.argv.slice(2)));
 
 module.exports = {
   main, parseArgs, ensureWorktree, launchAuthor, nextStep, failureStep, auditAuthorTree, statusPaths,
-  authorIssue,
+  authorIssue, checkHostProvider, stageProviders, savedCodexAuth,
   AUTHOR_TOOLS, DENIED_TOOLS, EXIT_USAGE, EXIT_SETUP, EXIT_AGENT, EXIT_PROBE,
 };

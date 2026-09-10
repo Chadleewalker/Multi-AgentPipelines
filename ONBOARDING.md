@@ -317,6 +317,16 @@ Copy this section in (adjust nothing but the project name):
       path, so a trailing separator or forward-vs-back slashes do not buy you a second
       identity — and a lock left behind by a killed run is taken over by the next one,
       never cleared by hand.
+- [ ] **Decide the agent provider**, if it is not the default. `provider` selects `claude`
+      or `codex` for the whole run, and `testAuthorProvider` / `testProbeProvider` select
+      independently for the two planning-side stages; `reasoningEffort` (and its two stage
+      overrides) tunes a Codex run (`DESIGN.md` §6.5, change-log row `repo-45g`). Leaving
+      all of them out keeps today's Claude behaviour exactly. A Codex project needs
+      `CODEX_API_KEY` in this repo's git-ignored `.env.pipeline` — a container Codex never
+      receives a mounted host `auth.json` — and its tasks reach `api.openai.com` through
+      the separate `docker/proxy-codex/` allowlist rather than the Anthropic one. The
+      preflight refuses a missing executable, credential, model, image capability or
+      endpoint with its remedy before anything is created.
 - [ ] **Ask the user for one integer implementation concurrency**, and record the answer as
       `concurrency` in that same host-local run config. Ask it once, as a single question —
       *how many implementation tasks may run at the same time under one coordinated run?* —

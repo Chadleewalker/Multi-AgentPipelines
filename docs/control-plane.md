@@ -44,6 +44,38 @@ The project lock is host-global. A second run for the same canonical repository 
 refused; different repositories may run independently. The host is the sole Beads writer
 and the sole holder of Git and GitHub credentials.
 
+## Selecting an agent provider
+
+A run config selects its backend (`DESIGN.md` §6.5, change-log row `repo-45g`). All of
+these fields are optional and a config naming none of them keeps today's Claude behaviour
+exactly:
+
+| Field | Values | Applies to |
+| --- | --- | --- |
+| `provider` | `claude`, `codex` | the whole run |
+| `testAuthorProvider`, `testProbeProvider` | `claude`, `codex` | the two planning-side stages |
+| `reasoningEffort` | `minimal`, `low`, `medium`, `high` | the whole run (Codex only) |
+| `testAuthorReasoningEffort`, `testProbeReasoningEffort` | as above | the two planning-side stages |
+
+Resolution is stage field, else the run-wide field, else `claude`. A value outside either
+vocabulary is refused by field name before a run starts.
+
+The host holds one credential per provider and gives a task exactly one:
+`CLAUDE_CODE_OAUTH_TOKEN` or `CODEX_API_KEY`, read from the git-ignored `.env.pipeline` or
+the environment and passed to `docker run` by NAME. A host Codex command may instead reuse
+saved `codex login` authentication; a container Codex may not — no `auth.json` is mounted
+into a task. Egress follows the selection: `docker/proxy-codex/` allows only
+`api.openai.com`, `docker/proxy/` remains Anthropic-only, and neither is widened to both.
+A missing executable, credential, model, image capability or endpoint is refused with its
+remedy before any worktree, Beads write, publication, container or agent attempt.
+
+The deterministic suites never call a model. To check that the configured GPT model is one
+this account can actually run, opt in explicitly:
+
+```bash
+CODEX_LIVE_SMOKE=1 node scripts/codex-live-smoke.js
+```
+
 Useful read-only controls:
 
 ```bash

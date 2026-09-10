@@ -14,6 +14,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+const agentProvider = require('../runner/agent-provider');
 const { loadConfig } = require('../runner/config');
 const { runSync, failureText } = require('../runner/process');
 const { acquire, release } = require('../runner/lock');
@@ -392,18 +393,20 @@ function probePrompt(built, previous = '') {
 
 function launchProbe(built, prepared, model, previous = '', run = runSync) {
   const timeoutMs = Math.max(1, Number(built.cfg.wallClockMinutes) || 240) * 60 * 1000;
-  return run(process.env.PIPELINE_TEST_PROBE_CMD || 'claude', [
-    '-p', '--model', model,
-    '--restricted', '--permission-mode', 'acceptEdits',
-    '--tools', PROBE_TOOLS,
-    '--allowedTools', PROBE_TOOLS,
-    '--disallowedTools', PROBE_DENIED,
-    '--no-session-persistence',
-  ], {
+  // The same one adapter the test author launches through (§6.5): the probe stage selects
+  // its own provider and reasoning effort, falling back to the run-wide selection.
+  const launch = agentProvider.hostLaunch({
+    provider: built.cfg.testProbeProvider || built.cfg.provider,
+    reasoningEffort: built.cfg.testProbeReasoningEffort || built.cfg.reasoningEffort,
+    model,
+    commandOverride: process.env.PIPELINE_TEST_PROBE_CMD,
+    claude: { tools: PROBE_TOOLS, allowedTools: PROBE_TOOLS, disallowedTools: PROBE_DENIED },
+  });
+  return run(launch.command, launch.args, {
     cfg: built.cfg, cwd: prepared.probe, input: `${probePrompt(built, previous)}\n`, timeoutMs,
-    label: 'Claude green-probe session', maxBuffer: MAX_BUFFER,
-    // hostEnv belongs only to the host verifier below. It must not alter Claude's executable,
-    // module loader, Git behavior, or permission configuration.
+    label: `${launch.provider} green-probe session`, maxBuffer: MAX_BUFFER,
+    // hostEnv belongs only to the host verifier below. It must not alter the agent's
+    // executable, module loader, Git behavior, or permission configuration.
     env: { ...process.env },
   });
 }

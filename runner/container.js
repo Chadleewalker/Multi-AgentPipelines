@@ -8,6 +8,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
+const { credentialEnvFor, providerOf, reasoningEffortOf } = require('./agent-provider');
 const { toMountPath } = require('./bd');
 const { createDeadlineWatchdog } = require('./deadline-watchdog');
 const { timeoutFor } = require('./process');
@@ -15,8 +16,10 @@ const { timeoutFor } = require('./process');
 // Windows/Git Bash: Docker needs C:/... mount sources, and MSYS must not rewrite
 // container-side paths like /workspace into C:\Program Files\Git\workspace.
 const DOCKER_ENV = { ...process.env, MSYS_NO_PATHCONV: '1' };
+// The kill path needs no credential of either backend, so it carries neither.
 const WATCHDOG_DOCKER_ENV = { ...DOCKER_ENV };
 delete WATCHDOG_DOCKER_ENV.CLAUDE_CODE_OAUTH_TOKEN;
+delete WATCHDOG_DOCKER_ENV.CODEX_API_KEY;
 
 // The container's inputs are exactly these (§4.10) — nothing else crosses the boundary.
 function buildArgs(cfg, opts) {
@@ -35,9 +38,18 @@ function buildArgs(cfg, opts) {
     '-e', `HTTP_PROXY=${cfg.proxyUrl}`,
     '-e', 'NO_PROXY=localhost,127.0.0.1',
   ];
-  // Token by name only: the value comes from the runner's environment, so it never
-  // appears in an argument list, a log line, or an image layer (§6).
-  if (token) args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN');
+  // Credential by name only: the value comes from the runner's environment, so it never
+  // appears in an argument list, a log line, or an image layer (§6). WHICH name depends on
+  // the selected provider — CLAUDE_CODE_OAUTH_TOKEN for Claude, CODEX_API_KEY for Codex —
+  // and a task is given exactly one of them, never both. A Codex task is never given the
+  // host's saved ChatGPT CLI authentication either: no auth.json is mounted anywhere here.
+  const provider = providerOf(cfg.provider);
+  if (token) args.push('-e', credentialEnvFor(provider));
+  // The entrypoint selects the matching noninteractive command from these (§4.3).
+  args.push('-e', `PIPELINE_PROVIDER=${provider}`);
+  if (provider === 'codex') {
+    args.push('-e', `PIPELINE_REASONING_EFFORT=${reasoningEffortOf(cfg.reasoningEffort)}`);
+  }
   if (cfg.agentCommand) args.push('-e', `PIPELINE_AGENT_CMD=${cfg.agentCommand}`);
   // The entrypoint appends --model to its default headless invocation; an explicit
   // agentCommand (stubs, overrides) owns its own flags and ignores this.
@@ -60,9 +72,16 @@ function runTask(cfg, opts, log, traceId) {
       event: 'container.launched',
       data: { name: opts.containerName, budgetMinutes: Math.round(budgetMs / 60000) },
     });
-    const child = spawn('docker', args, {
-      env: { ...DOCKER_ENV, CLAUDE_CODE_OAUTH_TOKEN: opts.token || '' },
-    });
+    // The value crosses here and nowhere else: `docker run` is told the NAME in argv above
+    // and reads the value out of this process environment under the same name. The OTHER
+    // provider's credential is removed rather than left ambient — the task is given one
+    // model credential (§6), and `docker run` is the last place that could leak a second.
+    const credentialEnv = credentialEnvFor(cfg.provider);
+    const dockerEnv = { ...DOCKER_ENV, [credentialEnv]: opts.token || '' };
+    for (const name of ['CLAUDE_CODE_OAUTH_TOKEN', 'CODEX_API_KEY']) {
+      if (name !== credentialEnv) delete dockerEnv[name];
+    }
+    const child = spawn('docker', args, { env: dockerEnv });
     child.stdout.pipe(logStream);
     child.stderr.pipe(logStream);
 

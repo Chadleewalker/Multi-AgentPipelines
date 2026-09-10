@@ -14,6 +14,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const { credentialEnvFor, providerOf } = require('./agent-provider');
 const { loadConfig, loadToken } = require('./config');
 const { startRun } = require('./log');
 const { preflight, networkDown } = require('./preflight');
@@ -571,12 +572,16 @@ async function main() {
   log.info(t, `target: ${cfg.targetRepoPath} -> ${cfg.targetRepoRemote}`,
     { event: 'run.target', data: { url: cfg.targetRepoRemote } });
 
-  const token = loadToken(REPO_ROOT);
+  // The credential of the SELECTED provider (§6.5), by name: CLAUDE_CODE_OAUTH_TOKEN for
+  // Claude, CODEX_API_KEY for Codex. Refused here, before the lock, the network and any
+  // Beads write — a run that cannot authenticate has nothing useful to start.
+  const credentialName = credentialEnvFor(cfg.provider);
+  const token = loadToken(REPO_ROOT, cfg.provider);
   if (!token) {
-    log.error(t, 'no CLAUDE_CODE_OAUTH_TOKEN (.env.pipeline or environment) — tasks cannot authenticate');
+    log.error(t, `no ${credentialName} (.env.pipeline or environment) — tasks cannot authenticate`);
     process.exit(2);
   }
-  log.info(t, 'subscription token loaded');
+  log.info(t, `${credentialName} loaded for the ${providerOf(cfg.provider)} provider`);
 
   // The write-protection backstop (change-log row `repo-324`). Ahead of preflight on purpose:
   // it holds no lock and creates no network, so a refusal here has nothing to compensate for.

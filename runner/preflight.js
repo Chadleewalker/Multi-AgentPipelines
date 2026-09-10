@@ -7,6 +7,9 @@
 // issues, and tear the network down at run end.
 'use strict';
 const path = require('path');
+const {
+  imageProbe, missingCodexCapabilities, preflightProvider, providerOf, credentialEnvFor,
+} = require('./agent-provider');
 const { bd, bdJson } = require('./bd');
 const { deriveNames } = require('./config');
 const {
@@ -32,6 +35,22 @@ function imageExists(image, cfg) {
   return sh(cfg, 'docker', ['image', 'inspect', image], { label: 'Docker image inspection' });
 }
 
+// Does the task image actually provide the SELECTED provider's CLI, with the capabilities
+// an autonomous run needs? `docker image inspect` proves a tag exists, not that the agent
+// inside it can run — and an image built before the Codex pin, or with an older Codex, is
+// a silently different agent rather than a failure (§6.5). The probe is isolated by
+// construction: `--network none`, no mount, no credential, and no model call. Claude is
+// asked the same `--version` question it has always been asked.
+function imageSupportsProvider(cfg, provider, execute = sh) {
+  const probe = imageProbe(provider, cfg && cfg.image);
+  const r = execute(cfg, probe.command, probe.args, {
+    label: `${providerOf(provider)} CLI capability probe`,
+  });
+  if (!r || r.status !== 0) return false;
+  if (providerOf(provider) !== 'codex') return true;
+  return missingCodexCapabilities(`${r.stdout || ''}\n${r.stderr || ''}`).length === 0;
+}
+
 // The network, the proxy sidecar and its port are per project (§4.8 — `config.js`
 // derives them when a config names none), and the two shell scripts read them from the
 // environment, each falling back to the historical name when unset. Every call that
@@ -46,6 +65,10 @@ function netEnv(cfg) {
     PIPELINE_NET: cfg.network,
     PIPELINE_PROXY: cfg.proxyName,
     PIPELINE_PROXY_PORT: String(cfg.proxyPort),
+    // Which deny-by-default proxy profile this run's plumbing is built from, and which
+    // endpoint the egress gate must find reachable. The two scripts default to the
+    // historical Anthropic-only profile when it is unset, so nothing changes for Claude.
+    PIPELINE_PROVIDER: providerOf(cfg.provider),
   };
 }
 
@@ -293,6 +316,22 @@ function startupGates(cfg, repoRoot, log, deps, t, owned) {
     }
     log.info(t, `image ${cfg.image} present`);
 
+    // ---- the selected provider's own prerequisites (§6.5) ----
+    // SKIPPED ENTIRELY when the selection is Claude, which is every config written before
+    // this existed: a run that names no provider must not acquire a new way to fail. For
+    // Codex both questions are asked before the network exists, so a refusal here has no
+    // plumbing to compensate for and nothing has been claimed, cloned or published.
+    if (providerOf(cfg.provider) !== 'claude') {
+      const supports = deps.imageSupportsProvider || imageSupportsProvider;
+      const env = deps.env || process.env;
+      const ready = (deps.preflightProvider || preflightProvider)(cfg, {
+        authenticated: () => !!env[credentialEnvFor(cfg.provider)],
+        imageSupports: () => supports(cfg, cfg.provider, deps.execute || sh),
+      });
+      if (!ready.ok) return { ok: false, providerUnready: true, reason: ready.remedy };
+      log.info(t, `image ${cfg.image} provides the ${ready.provider} CLI, and its credential is present`);
+    }
+
     // Set before invoking `up`: the script can create the network and then fail. Any
     // attempted startup therefore owns a compensating `down` on every non-success path.
     networkAttempted = true;
@@ -337,6 +376,6 @@ function startupGates(cfg, repoRoot, log, deps, t, owned) {
 }
 
 module.exports = {
-  preflight, networkUp, networkDown, egressCheck, imageExists, dockerAvailable,
-  recoverStaleIssues, metadataOf, ownedBy, verifyRepoIdentity,
+  preflight, networkUp, networkDown, egressCheck, imageExists, imageSupportsProvider,
+  dockerAvailable, recoverStaleIssues, metadataOf, ownedBy, verifyRepoIdentity,
 };

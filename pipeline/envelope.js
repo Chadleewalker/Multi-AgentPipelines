@@ -80,7 +80,9 @@ function chooseModel(modelUsage, alias) {
   return { model: best, aliasMiss };
 }
 
-// -> { result, model, aliasMiss } | null   (model is null when there is no modelUsage)
+// -> { result, model, aliasMiss, usage } | null  (model is null when there is no
+// modelUsage; usage is the envelope's own `usage` block, or null when it carries none —
+// additive, so every existing caller that reads result/model is unaffected).
 // `expectedAlias` is optional; absent, empty or whitespace-only all mean "no alias".
 function parse(text, expectedAlias) {
   const lines = String(text).split('\n');
@@ -92,7 +94,8 @@ function parse(text, expectedAlias) {
     if (!j || typeof j !== 'object' || Array.isArray(j)) continue;
     if (typeof j.result !== 'string') continue;
     const { model, aliasMiss } = chooseModel(j.modelUsage, expectedAlias);
-    return { result: j.result, model, aliasMiss };
+    const usage = j.usage && typeof j.usage === 'object' && !Array.isArray(j.usage) ? j.usage : null;
+    return { result: j.result, model, aliasMiss, usage };
   }
   return null;
 }

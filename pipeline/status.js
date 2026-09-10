@@ -66,8 +66,20 @@ switch (cmd) {
     if (!fs.existsSync(FILE)) { console.error(`status.js: ${FILE} missing (init first)`); process.exit(2); }
     let raw = '';
     try { raw = fs.readFileSync(args[0] || '', 'utf8'); } catch { raw = ''; }
-    const env = require('./envelope.js').parse(raw);
-    const text = (env ? env.result : raw).trim().slice(-2000);
+    let final = null;
+    if (process.env.PIPELINE_PROVIDER === 'codex') {
+      // Codex writes JSONL, so the envelope reader below would find nothing and the raw
+      // fallback would put a wall of events in the PR body. The Codex reader is required
+      // HERE, inside this branch, and defensively: a Claude task must still work when
+      // /pipeline carries nothing but this file and envelope.js.
+      try { const parsed = require('./agent-output.js').parse(raw); if (parsed) final = parsed.finalText; }
+      catch { final = null; }
+    }
+    if (final === null || final === undefined) {
+      const env = require('./envelope.js').parse(raw);
+      final = env ? env.result : raw;
+    }
+    const text = final.trim().slice(-2000);
     // Nothing to say is not a failure: the docs phase is non-fatal after success.
     if (!text) break;
     const o = load();

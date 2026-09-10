@@ -8,6 +8,9 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const CONTROL_PLANE = require('./control-plane');
+const {
+  PROVIDERS, REASONING_EFFORTS, DEFAULT_PROVIDER, DEFAULT_REASONING_EFFORT, credentialEnvFor,
+} = require('./agent-provider');
 
 // Defaults are part of the public run-config contract. Their rationale and validation
 // remain here; their values come from contracts/control-plane.json so operator guides,
@@ -175,6 +178,26 @@ function loadConfig(file) {
       throw new Error(`run.config.json: '${k}' must be null or a non-empty model alias`);
     }
   }
+  // The agent backend (§6.5). A CLOSED vocabulary, refused by field name before anything
+  // is created: `provider` is the run-wide selection and the two stage fields override it
+  // for the planning-side test author and green probe. A value outside the vocabulary is
+  // not a typo the CLI can report usefully — it would reach `spawn` as an executable name
+  // after a worktree exists, so it is rejected here where nothing has happened yet.
+  for (const k of ['provider', 'testAuthorProvider', 'testProbeProvider']) {
+    if (raw[k] !== undefined && raw[k] !== null
+        && (typeof raw[k] !== 'string' || !PROVIDERS.includes(raw[k]))) {
+      throw new Error(`run.config.json: '${k}' must be one of ${PROVIDERS.join(' | ')}`);
+    }
+  }
+  // Reasoning effort is handed to Codex as a `-c model_reasoning_effort=` value, so an
+  // unvalidated string reaches a CLI running under --strict-config, which fails the whole
+  // invocation rather than one flag. Claude ignores it; the field stays legal either way.
+  for (const k of ['reasoningEffort', 'testAuthorReasoningEffort', 'testProbeReasoningEffort']) {
+    if (raw[k] !== undefined && raw[k] !== null
+        && (typeof raw[k] !== 'string' || !REASONING_EFFORTS.includes(raw[k]))) {
+      throw new Error(`run.config.json: '${k}' must be one of ${REASONING_EFFORTS.join(' | ')}`);
+    }
+  }
   if (!/^[A-Za-z0-9][A-Za-z0-9._/:@-]*$/.test(raw.image)) {
     throw new Error(`run.config.json: 'image' must be a safe Docker image reference`);
   }
@@ -188,6 +211,18 @@ function loadConfig(file) {
     }
   }
   const cfg = { ...DEFAULTS, ...raw, configPath: p };
+  // Provider and reasoning effort resolve as a CHAIN — stage field, else the run-wide
+  // field, else the constant — which is why they are settled here rather than in DEFAULTS:
+  // DEFAULTS is the frozen contracts/control-plane.json object itself, and a chain has no
+  // single default value to put in it. A config naming none of these fields comes out of
+  // here identical to a pre-provider config plus three 'claude' fields, so the legacy
+  // Claude behaviour is preserved byte for byte.
+  cfg.provider = cfg.provider || DEFAULT_PROVIDER;
+  cfg.testAuthorProvider = cfg.testAuthorProvider || cfg.provider;
+  cfg.testProbeProvider = cfg.testProbeProvider || cfg.provider;
+  cfg.reasoningEffort = cfg.reasoningEffort || DEFAULT_REASONING_EFFORT;
+  cfg.testAuthorReasoningEffort = cfg.testAuthorReasoningEffort || cfg.reasoningEffort;
+  cfg.testProbeReasoningEffort = cfg.testProbeReasoningEffort || cfg.reasoningEffort;
   // An explicit name always wins; derivation fills only what the config left out.
   const derived = deriveNames(p);
   if (!cfg.network) cfg.network = derived.network;
@@ -198,14 +233,19 @@ function loadConfig(file) {
   return cfg;
 }
 
-// The subscription token (§6): git-ignored .env.pipeline, or the ambient env.
-function loadToken(repoRoot) {
+// The selected provider's credential (§6): git-ignored .env.pipeline, or the ambient env.
+// The NAME depends on the provider (CLAUDE_CODE_OAUTH_TOKEN / CODEX_API_KEY); the value is
+// read here, held by the host, and passed to a container by name only (runner/container.js).
+// The provider argument is optional so every existing caller keeps the Claude behaviour.
+function loadToken(repoRoot, provider) {
+  const name = credentialEnvFor(provider);
   const f = path.join(repoRoot, '.env.pipeline');
   if (fs.existsSync(f)) {
-    const m = fs.readFileSync(f, 'utf8').match(/^\s*CLAUDE_CODE_OAUTH_TOKEN\s*=\s*(.+?)\s*$/m);
+    const m = fs.readFileSync(f, 'utf8')
+      .match(new RegExp(`^\\s*${name}\\s*=\\s*(.+?)\\s*$`, 'm'));
     if (m) return m[1].replace(/^["']|["']$/g, '');
   }
-  return process.env.CLAUDE_CODE_OAUTH_TOKEN || '';
+  return process.env[name] || '';
 }
 
 module.exports = { loadConfig, loadToken, deriveNames, DEFAULTS, MAX_CONCURRENCY };
