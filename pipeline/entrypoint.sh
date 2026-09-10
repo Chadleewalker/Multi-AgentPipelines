@@ -22,15 +22,51 @@ PIPE="${PIPELINE_DIR:-/pipeline}"
 # drift when the account default changes. An explicit PIPELINE_AGENT_CMD owns its flags.
 MODEL_ARG=""
 [ -n "${PIPELINE_MODEL:-}" ] && MODEL_ARG=" --model ${PIPELINE_MODEL}"
-AGENT_CMD="${PIPELINE_AGENT_CMD:-claude -p --dangerously-skip-permissions${MODEL_ARG}}"
+# Which backend's noninteractive command to build (§4.3). The runner passes this; an
+# absent value means the historical backend, so an older runner against a newer image
+# behaves exactly as it did. `set -u` is on, hence the `:-` on every read.
+PROVIDER="${PIPELINE_PROVIDER:-claude}"
 
-# When we own the invocation, ask for JSON so the RESOLVED model id can be recorded (a
-# `--model opus` alias hides which Opus actually ran) and so the docs phase hands back a
-# summary with no CLI chatter around it. The human-readable text is extracted back out
-# (envelope.js), so agent logs stay readable. A caller-supplied PIPELINE_AGENT_CMD
-# (stubs, overrides) owns its own flags and gets none of this; extraction copes either way.
+# When we own the invocation, ask for structured output so the RESOLVED model id can be
+# recorded (a `--model opus` alias hides which Opus actually ran) and so the docs phase
+# hands back a summary with no CLI chatter around it. The human-readable text is extracted
+# back out, so agent logs stay readable. A caller-supplied PIPELINE_AGENT_CMD (stubs,
+# overrides) owns its own flags and gets none of this; extraction copes either way.
 AGENT_FORMAT=""
-[ -z "${PIPELINE_AGENT_CMD:-}" ] && AGENT_FORMAT="--output-format json"
+if [ "$PROVIDER" = codex ]; then
+  # `codex exec` with the prompt on stdin — the trailing `-` in AGENT_FORMAT is what asks
+  # for stdin rather than an argv prompt, which keeps the whole brief out of `ps` output.
+  #
+  # The `-c` values MUST carry their inner double quotes as SINGLE-quoted words here: this
+  # assignment is itself double-quoted and the result is re-parsed by `sh -c` below, so a
+  # bare `-c model_reasoning_effort="high"` would lose the quotes on the way and Codex
+  # would reject the TOML under --strict-config. Single quotes survive both passes and
+  # yield the same argv the host adapter builds (runner/agent-provider.js).
+  #
+  # The two shell_environment_policy overrides are §6's credential rule: Codex's built-in
+  # secret-name excludes stay in force AND our own key is named explicitly, so the CLI can
+  # authenticate while nothing the MODEL spawns can read CODEX_API_KEY.
+  CODEX_EFFORT="${PIPELINE_REASONING_EFFORT:-medium}"
+  CODEX_CMD="codex exec${MODEL_ARG}"
+  CODEX_CMD="$CODEX_CMD -c 'model_reasoning_effort=\"${CODEX_EFFORT}\"'"
+  CODEX_CMD="$CODEX_CMD -c 'shell_environment_policy.ignore_default_excludes=false'"
+  CODEX_CMD="$CODEX_CMD -c 'shell_environment_policy.filters.CODEX_API_KEY=\"exclude\"'"
+  CODEX_CMD="$CODEX_CMD --approve-for-me --ephemeral --ignore-user-config --ignore-rules --strict-config"
+  AGENT_CMD="${PIPELINE_AGENT_CMD:-$CODEX_CMD}"
+  [ -z "${PIPELINE_AGENT_CMD:-}" ] && AGENT_FORMAT="--json -"
+else
+  AGENT_CMD="${PIPELINE_AGENT_CMD:-claude -p --dangerously-skip-permissions${MODEL_ARG}}"
+  [ -z "${PIPELINE_AGENT_CMD:-}" ] && AGENT_FORMAT="--output-format json"
+fi
+
+# The authoritative gate is REPOSITORY-CONTROLLED code: the target project's verify
+# command, its acceptance suite and its regression suite all run as themselves. None of
+# them needs the agent's credential, and §6 says the key reaches the agent CLI and
+# nothing else — so it is stripped for exactly these invocations rather than trusted not
+# to be read. `env -u` keeps this ONE command per call site, which matters: nothing may
+# come between the verifier and the `VRC=$?` that reads its status, or every outcome
+# below is decided on the wrong number.
+run_verifier() { env -u CODEX_API_KEY node "$PIPE/verify.js"; }
 # Attempt cap (§4.6): tunable per run via run.config.json maxAttempts, which the
 # runner forwards as PIPELINE_MAX_ATTEMPTS. Anything unset or non-numeric falls back
 # to 3 — the cap must always be a positive integer or the retry loop breaks.
@@ -163,6 +199,18 @@ while :; do
   } > "$RUN/prompt-$N.md"
   if ! sh -c "$AGENT_CMD $AGENT_FORMAT" < "$RUN/prompt-$N.md" > "$RUN/agent-$N.log" 2>&1; then
     # ---- rate-limit detection (§4.7, T10): a pause, never a failed attempt ----
+    # The other backend states this STRUCTURALLY, as an error code on a JSONL event with
+    # its own reset instant, so it is read that way rather than grepped for. A stream that
+    # merely mentions a rate limit in prose is not evidence and must not park a task.
+    # Non-fatal if the reader is absent: a throwaway /pipeline that carries only the
+    # status helper degrades to the text rule below rather than failing the task.
+    if [ "$PROVIDER" = codex ]; then
+      RESET=$(node "$PIPE/agent-output.js" ratelimit "$RUN/agent-$N.log" 2>/dev/null) || RESET=""
+      if [ -n "${RESET:-}" ]; then
+        node "$PIPE/status.js" set rateLimitResetAt "$RESET"
+        exit 20   # runner parks the task; attempts[] untouched — interrupted ≠ failed
+      fi
+    fi
     if grep -qiE 'usage limit|rate.?limit' "$RUN/agent-$N.log"; then
       EPOCH=$(grep -oiE 'usage limit reached\|[0-9]+' "$RUN/agent-$N.log" | grep -oE '[0-9]+$' | head -1)
       if [ -n "${EPOCH:-}" ]; then
@@ -186,7 +234,14 @@ while :; do
   # run leaves it unset; the empty string means "no alias" and is not an error. stderr is
   # NOT swallowed: an alias that matches nothing is a diagnostic a human must see in the
   # run log, and hiding it is how the wrong model went unnoticed in the first place.
-  MODEL=$(node "$PIPE/envelope.js" flatten "$RUN/agent-$N.log" "${PIPELINE_MODEL:-}") || MODEL=""
+  # Each backend has its own structured shape, so each has its own reader; both are
+  # fail-safe in the same way, and both are asked with the pinned alias so the model that
+  # actually ran is the one recorded.
+  if [ "$PROVIDER" = codex ]; then
+    MODEL=$(node "$PIPE/agent-output.js" flatten "$RUN/agent-$N.log" "${PIPELINE_MODEL:-}") || MODEL=""
+  else
+    MODEL=$(node "$PIPE/envelope.js" flatten "$RUN/agent-$N.log" "${PIPELINE_MODEL:-}") || MODEL=""
+  fi
   [ -n "$MODEL" ] && node "$PIPE/status.js" set model "$MODEL" 2>/dev/null
 
   # ---- verify phase: the authoritative gate (§4.4) ----
@@ -194,7 +249,7 @@ while :; do
   # invocation and the `VRC=$?` that captures its exit code — a command in between
   # clobbers `$?` and every outcome below it is decided on the wrong number.
   node "$PIPE/status.js" set phase verify 2>/dev/null
-  node "$PIPE/verify.js"
+  run_verifier
   VRC=$?
   case "$VRC" in
     0)
@@ -256,7 +311,7 @@ while :; do
         # The authoritative gate must judge the tree that can become the branch tip. Even
         # allowed Markdown can affect a project's generated artifacts or acceptance rules.
         node "$PIPE/status.js" set phase verify 2>/dev/null
-        node "$PIPE/verify.js"
+        run_verifier
         DOCS_VERIFY_RC=$?
         if [ "$DOCS_VERIFY_RC" -ne 0 ]; then
           restore_verified "$VERIFIED_HEAD" "$VERIFIED_RESULT_PRESENT" "$VERIFIED_RESULT"
@@ -266,7 +321,7 @@ while :; do
         fi
 
         node "$PIPE/status.js" set phase docs 2>/dev/null
-        node "$PIPE/status.js" summary "$RUN/docs-out.txt" || true
+        node "$PIPE/status.js" summary "$RUN/docs-out.txt" "$PROVIDER" || true
         # An agent-created commit is not trusted as a phase boundary. Collapse any such
         # commit back onto VERIFIED_HEAD and let deterministic scaffolding author one delta.
         if ! git reset --soft "$VERIFIED_HEAD" || ! git add -A; then

@@ -8,6 +8,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const CONTROL_PLANE = require('./control-plane');
+const { PROVIDERS, REASONING_EFFORTS, providerFor, reasoningEffortFor } = require('./agent-provider');
 
 // Defaults are part of the public run-config contract. Their rationale and validation
 // remain here; their values come from contracts/control-plane.json so operator guides,
@@ -187,7 +188,38 @@ function loadConfig(file) {
       throw new Error(`run.config.json: '${k}' must be a non-empty string when present`);
     }
   }
+  // Agent provider selection (§4.3): a CLOSED set, run-wide and per planning stage.
+  // Refused here, by field name, before anything is launched — a config that named
+  // 'openai' or 'gpt' and silently fell back to Claude would bill the wrong
+  // subscription and write the wrong provider into every piece of a run's evidence.
+  for (const k of ['provider', 'testAuthorProvider', 'testProbeProvider']) {
+    if (raw[k] !== undefined && raw[k] !== null
+        && !(typeof raw[k] === 'string' && PROVIDERS.includes(raw[k]))) {
+      throw new Error(`run.config.json: '${k}' must be one of ${PROVIDERS.join(' | ')}`);
+    }
+  }
+  // Reasoning effort is validated for both providers so a config stays valid when it is
+  // switched between them; only the Codex invocation carries it into argv.
+  for (const k of ['reasoningEffort', 'testAuthorReasoningEffort', 'testProbeReasoningEffort']) {
+    if (raw[k] !== undefined && raw[k] !== null
+        && !(typeof raw[k] === 'string' && REASONING_EFFORTS.includes(raw[k]))) {
+      throw new Error(`run.config.json: '${k}' must be one of ${REASONING_EFFORTS.join(' | ')}`
+        + ' (reasoning effort)');
+    }
+  }
   const cfg = { ...DEFAULTS, ...raw, configPath: p };
+  // Resolved AFTER the spread and deliberately not in DEFAULTS: each of these is a CHAIN
+  // (stage field, then the run-wide field, then the constant), so there is no single
+  // default value to put there — and `DEFAULTS` is asserted identical to
+  // contracts/control-plane.json's frozen configDefaults object, which cannot grow a key
+  // whose value depends on two others. Resolving here means every reader downstream sees
+  // one already-decided provider per stage instead of re-implementing the fallback.
+  cfg.provider = providerFor(raw, null);
+  cfg.testAuthorProvider = providerFor(raw, 'test-author');
+  cfg.testProbeProvider = providerFor(raw, 'test-probe');
+  cfg.reasoningEffort = reasoningEffortFor(raw, null);
+  cfg.testAuthorReasoningEffort = reasoningEffortFor(raw, 'test-author');
+  cfg.testProbeReasoningEffort = reasoningEffortFor(raw, 'test-probe');
   // An explicit name always wins; derivation fills only what the config left out.
   const derived = deriveNames(p);
   if (!cfg.network) cfg.network = derived.network;
@@ -208,4 +240,6 @@ function loadToken(repoRoot) {
   return process.env.CLAUDE_CODE_OAUTH_TOKEN || '';
 }
 
-module.exports = { loadConfig, loadToken, deriveNames, DEFAULTS, MAX_CONCURRENCY };
+module.exports = {
+  loadConfig, loadToken, deriveNames, DEFAULTS, MAX_CONCURRENCY, PROVIDERS, REASONING_EFFORTS,
+};

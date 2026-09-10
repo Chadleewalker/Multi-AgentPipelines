@@ -17,13 +17,25 @@
 # Task containers join with:
 #   --network "$PIPELINE_NET" -e HTTPS_PROXY=http://$PIPELINE_PROXY:$PIPELINE_PROXY_PORT \
 #   -e HTTP_PROXY=... -e NO_PROXY=localhost,127.0.0.1
+#
+# The allowlist PROFILE is per provider, selected by PIPELINE_PROVIDER (claude | codex).
+# Each profile is its own build context and its own image tag, and neither is ever
+# widened to cover both vendors: one shared profile would let every Anthropic task reach
+# OpenAI and the reverse. Unset means the historical Anthropic-only profile, which is
+# what every existing suite and every existing run config gets.
 set -u
 NET="${PIPELINE_NET:-pipeline-net}"
 PROXY="${PIPELINE_PROXY:-pipeline-proxy}"
 PROXY_PORT="${PIPELINE_PROXY_PORT:-3128}"
-# The IMAGE stays shared: identical content for every project, so per-projecting the tag
-# would rebuild the same squid image once per project for nothing.
-IMG=pipeline-proxy:local
+PROVIDER="${PIPELINE_PROVIDER:-claude}"
+# The IMAGE stays shared ACROSS PROJECTS: identical content for every project, so
+# per-projecting the tag would rebuild the same squid image once per project for nothing.
+# It is NOT shared across providers — that is the whole point of the two profiles.
+case "$PROVIDER" in
+  codex) PROFILE=proxy-codex; IMG=pipeline-proxy-codex:local ;;
+  claude) PROFILE=proxy; IMG=pipeline-proxy:local ;;
+  *) echo "pipeline-net.sh: unknown PIPELINE_PROVIDER '$PROVIDER' (expected claude or codex)" >&2; exit 2 ;;
+esac
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BASE_IMG="${BASE_IMG:-pipeline-base:local}"
 
@@ -31,7 +43,7 @@ up() {
   # The build is the one shared step: same tag, same context, so two projects coming up at
   # once either hit the cache or produce the same image. Nothing below touches a name this
   # run was not given.
-  docker build -q -t "$IMG" "$ROOT/docker/proxy" >/dev/null || { echo "proxy image build failed"; exit 1; }
+  docker build -q -t "$IMG" "$ROOT/docker/$PROFILE" >/dev/null || { echo "proxy image build failed ($PROFILE)"; exit 1; }
   docker network inspect "$NET" >/dev/null 2>&1 || docker network create --internal "$NET" >/dev/null
   docker rm -f "$PROXY" >/dev/null 2>&1 || true
   docker run -d --name "$PROXY" "$IMG" >/dev/null            # default bridge: egress side
@@ -41,7 +53,7 @@ up() {
   for i in $(seq 1 15); do
     if docker run --rm --network "$NET" "$BASE_IMG" \
          sh -c "curl -s -m 2 -o /dev/null http://$PROXY:$PROXY_PORT" 2>/dev/null; then
-      echo "$NET up (proxy $PROXY ready)"; return 0
+      echo "$NET up (proxy $PROXY ready, $PROVIDER profile docker/$PROFILE)"; return 0
     fi
     sleep 1
   done

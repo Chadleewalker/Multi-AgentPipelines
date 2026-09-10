@@ -16,6 +16,9 @@ const { resolveHostShell, commandFor } = require('./host-shell');
 const { runSync, failureText } = require('./process');
 const { verifyRepoIdentity } = require('./repo-identity');
 const { admitEntry } = require('./supervisor');
+const {
+  providerFor, preflightProvider, missingCodexCapabilities, CODEX_API_KEY_VAR,
+} = require('./agent-provider');
 
 // The historical shared pair, which is what a config with no project segment gets.
 // Asked for by name rather than spelled out again, so the two files cannot drift.
@@ -32,6 +35,32 @@ function imageExists(image, cfg) {
   return sh(cfg, 'docker', ['image', 'inspect', image], { label: 'Docker image inspection' });
 }
 
+// Does the task image carry a USABLE CLI for the selected provider? `imageExists` above
+// only proves the tag resolves; this proves the thing inside it can actually run a task.
+//
+// `--network none` and `--rm` because this is a capability question, not a run: the probe
+// must not touch the run's network, must not reach either vendor, and must leave nothing
+// behind. It happens BEFORE the network comes up, which is also why it cannot join it.
+//
+// Codex is asked for its exec capability roster and not for a version string. A version
+// pin is not the property that matters — an image can carry a pinned-but-incompatible
+// CLI, and Codex 0.58 advertises none of the flags this pipeline's contract needs. Claude
+// keeps its historical `--version` status check, unchanged.
+function imageSupportsProvider(cfg, provider, execute = sh) {
+  const image = (cfg && cfg.image) || '';
+  if (provider === 'codex') {
+    const r = execute(cfg, 'docker', [
+      'run', '--rm', '--network', 'none', '--entrypoint', 'codex', image, 'exec', '--help',
+    ], { label: 'codex exec capability probe' });
+    if (!r || r.status !== 0) return false;
+    return missingCodexCapabilities(`${r.stdout || ''}${r.stderr || ''}`).length === 0;
+  }
+  const r = execute(cfg, 'docker', [
+    'run', '--rm', '--network', 'none', '--entrypoint', 'claude', image, '--version',
+  ], { label: 'claude version probe' });
+  return !!r && r.status === 0;
+}
+
 // The network, the proxy sidecar and its port are per project (§4.8 — `config.js`
 // derives them when a config names none), and the two shell scripts read them from the
 // environment, each falling back to the historical name when unset. Every call that
@@ -46,6 +75,11 @@ function netEnv(cfg) {
     PIPELINE_NET: cfg.network,
     PIPELINE_PROXY: cfg.proxyName,
     PIPELINE_PROXY_PORT: String(cfg.proxyPort),
+    // Which allowlist profile to build and which endpoint the gate must find reachable.
+    // It travels with the network names for the same reason they do: `up`, the egress
+    // gate and `down` must all agree, and a gate that proved the OTHER vendor's profile
+    // has proved nothing about this run.
+    PIPELINE_PROVIDER: providerFor(cfg, null),
   };
 }
 
@@ -293,6 +327,30 @@ function startupGates(cfg, repoRoot, log, deps, t, owned) {
     }
     log.info(t, `image ${cfg.image} present`);
 
+    // ---- selected-provider readiness: still ahead of every mutation (§4.12) ----------
+    // Ahead of the network, the sidecar, stale-issue recovery, any Docker task and any
+    // agent attempt, because each of those is something an operator would then have to
+    // unwind. A run that discovers at 3am that the image has no usable Codex has already
+    // created plumbing and reset another run's issues; refusing here leaves nothing behind.
+    //
+    // Claude returns immediately and asks nothing new. That is not a shortcut: the Claude
+    // path's credential has always been resolved later and its image proven by
+    // `imageExists`, and adding gates to it here would change the behaviour of every
+    // existing run config, which criterion 1 forbids. Egress is NOT re-asked here either
+    // — the existing egress gate below is now provider-aware and is the one authority on it.
+    const provider = providerFor(cfg, null);
+    if (provider !== 'claude') {
+      const env = deps.env || process.env;
+      const readiness = (deps.preflightProvider || preflightProvider)(cfg, {
+        authenticated: () => !!String(env[CODEX_API_KEY_VAR] || '').trim(),
+        imageSupports: () => (deps.imageSupportsProvider || imageSupportsProvider)(cfg, provider),
+      });
+      if (!readiness.ok) {
+        return { ok: false, providerUnready: true, reason: `provider ${provider} is not ready: ${readiness.remedy}` };
+      }
+      log.info(t, `provider ${provider} ready (authenticated, image ${cfg.image} carries a usable CLI)`);
+    }
+
     // Set before invoking `up`: the script can create the network and then fail. Any
     // attempted startup therefore owns a compensating `down` on every non-success path.
     networkAttempted = true;
@@ -338,5 +396,5 @@ function startupGates(cfg, repoRoot, log, deps, t, owned) {
 
 module.exports = {
   preflight, networkUp, networkDown, egressCheck, imageExists, dockerAvailable,
-  recoverStaleIssues, metadataOf, ownedBy, verifyRepoIdentity,
+  imageSupportsProvider, recoverStaleIssues, metadataOf, ownedBy, verifyRepoIdentity,
 };

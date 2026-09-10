@@ -1111,17 +1111,22 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
    silently missing from `run.json` after an unattended overnight run is a hole in the
    record. Work is preserved and the operator decides, since a pipeline that cannot get
    a usage window has nothing useful left to try.
-8. **Closed network.** Container egress is allowlisted to **the Anthropic-operated
-   endpoints headless Claude Code requires to function** (API plus auth/token refresh),
-   enumerated explicitly in the proxy configuration — and nothing else: no git hosts, no
-   package registries, no third-party hosts. Mechanism: an internal no-egress Docker
-   network plus an HTTP CONNECT proxy sidecar with a domain allowlist (TLS passed through,
-   not intercepted), reached by the CLI via standard proxy environment variables. The
-   *mechanism* may be revisited at implementation; the *policy* — Anthropic endpoints
-   only, each one listed in config — may not. The starting allowlist is
-   `api.anthropic.com` plus whatever auth endpoints empirical testing of headless
-   `claude -p` shows are required; the enumeration is finalized (within the policy) by the
-   network task. **The network and the sidecar are per project, never per pipeline** — a
+8. **Closed network.** Container egress is allowlisted to **the endpoints the selected
+   provider's CLI requires to function, and nothing else** — no git hosts, no package
+   registries, no third-party hosts. Mechanism: an internal no-egress Docker network plus
+   an HTTP CONNECT proxy sidecar with a domain allowlist (TLS passed through, not
+   intercepted), reached by the CLI via standard proxy environment variables. The
+   *mechanism* may be revisited at implementation; the *policy* — one vendor's endpoints
+   only, each one listed in config — may not.
+   **There is one allowlist profile per provider and it is never widened to cover two.**
+   `docker/proxy` is the Anthropic profile (`api.anthropic.com` plus the auth/token-refresh
+   endpoints empirical testing of headless `claude -p` showed are required);
+   `docker/proxy-codex` is the OpenAI profile (`api.openai.com` and nothing else).
+   `scripts/pipeline-net.sh` builds whichever the run selected and `scripts/egress-check.sh`
+   proves that profile — the selected endpoint reachable, unrelated hosts and direct egress
+   still blocked. A single profile serving both would mean every task of either provider
+   could reach both vendors, which is the opposite of the policy; two profiles is the whole
+   reason the policy survives a second provider. **The network and the sidecar are per project, never per pipeline** — a
    run acts only on the plumbing it owns, so a second runner process against a different
    project can be in flight without either one creating, restarting or destroying the
    other's (4.12 says where the names come from). The proxy *image* stays shared: the
@@ -2325,25 +2330,35 @@ exist. Thread: `docs/threads/merge-order.md`.
   hard-require one, but nothing is built for one yet either.
 - **Host prerequisites:** Docker Desktop, Git Bash, Node, the `gh` CLI (authenticated to
   GitHub), `bd` (the runner is the sole Beads writer and runs it host-side — 4.12; until
-  it's installed, scripts fall back to running `bd` in the base image), and the Claude
-  Code CLI with `CLAUDE_CODE_OAUTH_TOKEN` available on the host — the host itself makes
-  the minimal rate-limit probe calls (4.7).
+  it's installed, scripts fall back to running `bd` in the base image), and **the selected
+  provider's CLI, authenticated on the host** — the host itself runs the test author, the
+  green probe and the minimal rate-limit probe calls (4.7). For Claude that means the
+  Claude Code CLI with `CLAUDE_CODE_OAUTH_TOKEN`; for Codex it means the Codex CLI, which
+  on a host may reuse a saved `codex login` rather than an API key. A missing CLI or login
+  is refused before a worktree, a Beads read, an agent or a container exists (6.5).
 - **Review happens as GitHub PRs.** Projects fed through the pipeline must have a GitHub
   remote. (An environment with no PR host — repos on a network share, say — would need a
   local-branch review mode. Out of scope for V1.)
 - **Docker runs from Git Bash on the reference host**, not WSL (known issue: that machine's
   WSL distro has no Docker Desktop integration). The runner must not assume WSL either way.
-- **Auth:** `CLAUDE_CODE_OAUTH_TOKEN` is passed to containers as an environment variable
-  at `docker run` — never baked into an image layer. Headless `claude -p` honors it;
-  interactive `claude` does not (known issue) — the pipeline is headless-only anyway.
+- **Auth:** the selected provider's credential — `CLAUDE_CODE_OAUTH_TOKEN` or
+  `CODEX_API_KEY`, one per container and never both — is passed to containers **by
+  environment-variable name only** at `docker run`, so the value crosses in the runner's
+  own environment and never appears in a Docker argument list, a log line or an image
+  layer. Headless `claude -p` honors its token; interactive `claude` does not (known
+  issue) — the pipeline is headless-only anyway. A container Codex always requires
+  `CODEX_API_KEY`: no host `auth.json` is ever mounted into a task container, because a
+  saved interactive login is a host artifact and a task container has no identity of its
+  own (6.5).
 - **Runner implementation: Node.js.** Decision, for cross-platform reasons: `node` is
   the same command on Windows and Linux (no `python` vs `python3` split), handles JSON
   natively for Beads/Claude output, and can enforce wall-clock timeouts with an independent
   worker clock + bounded `docker kill` without relying on a platform `timeout` command.
   Plain JavaScript, no framework.
 - **Image strategy: shared base + thin per-project layer.** The base image (Node, git,
-  the Claude Code CLI, `bd` — **no pipeline scaffolding**; the entrypoint and verifier
-  are mounted at runtime per 4.10) is maintained in this repo; each target project gets
+  **both agent CLIs — Claude Code and Codex** — and `bd`; **no pipeline scaffolding**, the
+  entrypoint and verifier are mounted at runtime per 4.10) is maintained in this repo;
+  each target project gets
   a thin hand-written Dockerfile (`FROM` the base, plus its `pipeline.config.json`
   dependencies — see 3.4 for the drift cross-check). Versions of the base OS, Node, and
   the CLI are pinned in the base Dockerfile.
@@ -2725,6 +2740,83 @@ protected `Bash` string-command write. Both must render as a denial rather than 
 exit without running the write, and the protected file's hash and `git status` must read
 unchanged afterward, and only because the attempt is confirmed to have actually run at all.
 
+### 6.5 The agent provider is a selection, not a hard-coded vendor
+
+The conveyor was built around one vendor's CLI, and its flags, its output envelope, its
+credential and its endpoints had each leaked into a different file. Selecting a GPT model
+therefore meant translating through Claude-specific arguments and Claude-specific output —
+which is not a configuration change but a rewrite of four unrelated places at once. This
+makes the provider a **closed selection** (change-log row `repo-45g`).
+
+**One adapter constructs every host launch.** `runner/agent-provider.js` owns the closed
+`claude | codex` vocabulary, the validated reasoning-effort vocabulary, the Codex exec
+capability roster, provider-aware output normalization, and provider readiness. The two
+host launchers — `scripts/author-tests.js` (test author) and `scripts/prove-tests.js`
+(green probe) — keep only what is genuinely theirs: which tree the stage runs in and which
+tools it may use. Before, they each spelled out an invocation and had already drifted on
+whether `hostEnv` reached the agent; one adapter is what makes a second provider a branch
+in one file instead of two files that disagree.
+
+**Selection is a chain, resolved once.** A stage field (`testAuthorProvider`,
+`testProbeProvider` and their reasoning-effort twins), then the run-wide field, then the
+constant. `runner/config.js` refuses anything outside the vocabulary **by field name before
+a run starts**, and resolves the chain onto the config so no reader downstream
+re-implements the fallback. Because every link answers `claude` when absent, a run config
+that names no provider is byte-for-byte the configuration it was before — which is the
+property the frozen guard half asserts, and the reason the Claude path needed no
+compatibility branch anywhere.
+
+Neither field can live in `contracts/control-plane.json`'s `configDefaults`: a chained
+field has no single default value, and that object is asserted *identical* to
+`runner/config.js`'s `DEFAULTS` by a frozen suite.
+
+**Codex's noninteractive contract.** `codex exec` with the prompt on **stdin** (the
+trailing `-`), an explicit `--model`, `model_reasoning_effort`, `--ephemeral` state,
+`--ignore-user-config` and `--ignore-rules` so neither the host operator's settings nor a
+project's rule files can alter a pipeline run, `--strict-config` so an unknown override
+fails loudly instead of being silently dropped, `--approve-for-me` for automatic review
+under its workspace-write sandbox, and `--json` for structured output. Prompts stay on
+stdin and secrets stay out of argv: nothing about a task is visible in `ps` output.
+
+**A version pin is not a capability check.** An image can carry a pinned-but-incompatible
+CLI — Codex 0.58 advertises none of the flags above — so the roster is named once and asked
+three times: the base image **build** fails without it, `runner/preflight.js`'s
+`imageSupportsProvider` re-probes the built image in an isolated `--network none`
+throwaway container, and `missingCodexCapabilities` names the gaps in a remedy.
+
+**Credential.** One name per container, never both, and never a value in Docker argv
+(6's Auth bullet). The substantive half is Codex's shell-environment policy: Codex hands
+an environment to every command the *model* spawns, so the invocation keeps Codex's default
+secret-name excludes in force **and** names `CODEX_API_KEY` explicitly rather than trusting
+a pattern to cover it. The authoritative gate is repository-controlled code, so the
+entrypoint strips that key for exactly the verifier invocations — the key reaches the agent
+CLI and nothing else. A container Codex always requires the key; only a host may reuse a
+saved `codex login`.
+
+**Output is read structurally, never as prose** (hard rules 4 and 6). `pipeline/agent-output.js`
+reads Codex's JSONL the way `pipeline/envelope.js` reads the Claude envelope — line-wise, so
+CLI chatter around the stream cannot silently defeat it — and yields provider, configured
+and resolved model, token usage when the stream carries it, the final agent text taken from
+the completed `agent_message` item, and rate-limit evidence quoted from the provider's own
+failing line. **A stream carrying no structured outcome answers null**, and that answer is
+the load-bearing one: it is what stops a model's own text from selecting an outcome or
+manufacturing a rate-limit reset. One parser, required by both the host adapter and the
+container's status helper, so the evidence the host records cannot disagree with the summary
+the task produced.
+
+**Readiness refuses before any mutation** (4.12's ordering). `preflightProvider` asks for
+executable, authentication, model availability, image support and egress in that order —
+cheapest and most local first — and each refusal **names the remedy** rather than the
+condition. A caller supplies only the prerequisites it can actually answer, and an
+unanswerable one counts as satisfied rather than as ready-unknown-therefore-blocked; a
+probe that *throws* counts as failed, because a check that could not complete has proved
+nothing. So the planning path asks executable and authentication before its worktree and
+before Beads is read, the implementation path asks authentication and image support after
+the image gate and still ahead of the network, the sidecar, stale-issue recovery, every
+container and every agent attempt, and egress stays the business of the one gate that
+actually probes it. A run that discovers a missing CLI after creating plumbing and
+resetting another run's in-progress issues has refused nothing useful.
+
 ## 7. Phasing
 
 **V1 — the implementation loop** (this project's first autonomous run):
@@ -2827,7 +2919,8 @@ Machine specifics stay in an untracked local note, never in the repo.
   or whether a result is good, and no model runs inside it. What is still out of scope is
   exactly what was out of scope before: intelligence in the coordinator.
 - Autonomous planning or autonomous spec changes during a run — ever.
-- Opening the container network beyond the enumerated Anthropic endpoints.
+- Opening the container network beyond the selected provider's enumerated endpoints, or
+  merging the two per-provider allowlist profiles into one.
 - Cost accounting. There is no spend ceiling by design (see 4.6–4.7); real cost tracking
   is a possible V2+ addition if the pipeline ever moves to metered API billing.
 - Any host environment other than the reference workstation, until V3.

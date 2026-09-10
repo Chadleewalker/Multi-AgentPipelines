@@ -10,6 +10,7 @@
 const fs = require('fs');
 const path = require('path');
 const { loadConfig } = require('../runner/config');
+const { launchAgent, providerFor, preflightProvider } = require('../runner/agent-provider');
 const { runSync, failureText } = require('../runner/process');
 const { acquire, release } = require('../runner/lock');
 const { buildBrief, verifyCommandError } = require('./spec-brief');
@@ -69,27 +70,67 @@ function ensureWorktree(built, run = runSync) {
   return { ok: true, created: true };
 }
 
+// Is the SELECTED provider usable on this host, before anything is created? (§4.12,
+// criterion 6.) The planning path's first mutation is a worktree, and its second is the
+// agent itself, so a missing CLI or a missing login has to be caught ahead of both —
+// otherwise an operator comes back to a half-created worktree on a new branch and an
+// agent failure whose real cause is that codex was never installed.
+//
+// Claude returns ready without asking anything, deliberately. Its executable has always
+// been resolved by spawn at launch time, where an ENOENT is reported as an agent failure
+// with the spawn error attached; turning that into a setup refusal here would change the
+// behaviour of every existing Claude configuration, which criterion 1 forbids.
+//
+// Authentication is satisfied by EITHER the API key or a saved CLI login: on a host,
+// `codex login` is a legitimate way to be authenticated (criterion 6), and only a
+// CONTAINER is required to carry the key — it has no saved login and no way to get one.
+function hostProviderReady(cfg, deps = {}) {
+  const provider = providerFor(cfg, 'test-author');
+  if (provider === 'claude') return { ok: true };
+  const env = deps.env || process.env;
+  const run = deps.runSync || runSync;
+  const homeDir = env.CODEX_HOME || (env.HOME || env.USERPROFILE
+    ? path.join(env.HOME || env.USERPROFILE, '.codex') : null);
+  return preflightProvider(cfg, {
+    executable: () => {
+      const probe = run(process.env.PIPELINE_TEST_AUTHOR_CMD || 'codex', ['--version'], {
+        cfg, kind: 'lifecycle', label: 'codex executable probe',
+      });
+      return !!probe && probe.status === 0;
+    },
+    authenticated: () => !!String(env.CODEX_API_KEY || '').trim()
+      || (!!homeDir && fs.existsSync(path.join(homeDir, 'auth.json'))),
+  });
+}
+
 function launchAuthor(built, model, run = runSync) {
   const unsafeVerifier = verifyCommandError(built && built.policy && built.policy.verifyCommand);
   if (unsafeVerifier) return { status: EXIT_SETUP, stdout: '', stderr: `unsafe verifyCommand: ${unsafeVerifier}` };
-  // -p reads the prompt from stdin when no prompt argv follows it. That avoids both a shell and
-  // Windows' command-line length limit. Permissions stay at the host user's normal policy.
+  // The prompt is always stdin, whichever provider runs: that avoids both a shell and
+  // Windows' command-line length limit. Which flags express "noninteractive, restricted,
+  // this model, this effort" is the adapter's business (runner/agent-provider.js) — this
+  // launcher owns only what is genuinely the test author's: its tree, its tool policy,
+  // and the one verifier command it may run.
   const timeoutMs = Math.max(1, Number(built.cfg.wallClockMinutes) || 240) * 60 * 1000;
   const suite = `tests/acceptance/${built.suiteId || built.id}/`;
   const verifier = `${built.policy.verifyCommand} ${suite}`;
   const allowed = `Read,Edit,Write,Glob,Grep,Bash(${verifier})`;
-  return run(process.env.PIPELINE_TEST_AUTHOR_CMD || 'claude', [
-    '-p', '--model', model,
-    '--restricted', '--permission-mode', 'acceptEdits',
-    '--tools', AUTHOR_TOOLS,
-    '--allowedTools', allowed,
-    '--disallowedTools', DENIED_TOOLS,
-    '--no-session-persistence',
-  ], {
+  return launchAgent(run, {
+    cfg: built.cfg,
+    stage: 'test-author',
+    model,
+    claude: { tools: AUTHOR_TOOLS, allowedTools: allowed, disallowedTools: DENIED_TOOLS },
+    commandOverride: process.env.PIPELINE_TEST_AUTHOR_CMD,
+    opts: {
       cfg: built.cfg, cwd: built.folder.dir, input: `${built.text}\n`, timeoutMs,
-      label: 'Claude test-author session', maxBuffer: MAX_BUFFER,
+      maxBuffer: MAX_BUFFER,
+      // hostEnv reaches the author because a headless verifier run may need a binary or a
+      // licence path that is not on the default PATH. It is also where a host operator puts
+      // CODEX_API_KEY, which is why the Codex invocation filters that name out of every
+      // command the model itself spawns rather than relying on it being absent.
       env: { ...process.env, ...(built.cfg.hostEnv || {}) },
-    });
+    },
+  });
 }
 
 function quote(value) {
@@ -245,6 +286,15 @@ function main(argv, io = {}, seams = {}) {
       err('author-tests: stale target ownership requires normal pipeline recovery; no Beads read, worktree change or author was started.');
       return EXIT_SETUP;
     }
+    // Ahead of buildBrief's Beads read and of every worktree, agent and publication
+    // step below: the cheapest possible refusal, and the only one that leaves the
+    // project exactly as it was found.
+    const ready = (seams.hostProviderReady || hostProviderReady)(lockCfg);
+    if (!ready.ok) {
+      err(`author-tests: ${ready.remedy}`);
+      err('No Beads read, worktree, author or probe was started.');
+      return EXIT_SETUP;
+    }
     const builder = seams.buildBrief || buildBrief;
     let built = builder(opts);
     if (!built.ok) {
@@ -303,6 +353,6 @@ if (require.main === module) process.exit(main(process.argv.slice(2)));
 
 module.exports = {
   main, parseArgs, ensureWorktree, launchAuthor, nextStep, failureStep, auditAuthorTree, statusPaths,
-  authorIssue,
+  authorIssue, hostProviderReady,
   AUTHOR_TOOLS, DENIED_TOOLS, EXIT_USAGE, EXIT_SETUP, EXIT_AGENT, EXIT_PROBE,
 };

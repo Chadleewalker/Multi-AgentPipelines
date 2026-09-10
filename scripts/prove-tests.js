@@ -15,6 +15,7 @@ const os = require('os');
 const path = require('path');
 
 const { loadConfig } = require('../runner/config');
+const { launchAgent } = require('../runner/agent-provider');
 const { runSync, failureText } = require('../runner/process');
 const { acquire, release } = require('../runner/lock');
 const { compareSuites } = require('./freeze-gate');
@@ -392,19 +393,22 @@ function probePrompt(built, previous = '') {
 
 function launchProbe(built, prepared, model, previous = '', run = runSync) {
   const timeoutMs = Math.max(1, Number(built.cfg.wallClockMinutes) || 240) * 60 * 1000;
-  return run(process.env.PIPELINE_TEST_PROBE_CMD || 'claude', [
-    '-p', '--model', model,
-    '--restricted', '--permission-mode', 'acceptEdits',
-    '--tools', PROBE_TOOLS,
-    '--allowedTools', PROBE_TOOLS,
-    '--disallowedTools', PROBE_DENIED,
-    '--no-session-persistence',
-  ], {
-    cfg: built.cfg, cwd: prepared.probe, input: `${probePrompt(built, previous)}\n`, timeoutMs,
-    label: 'Claude green-probe session', maxBuffer: MAX_BUFFER,
-    // hostEnv belongs only to the host verifier below. It must not alter Claude's executable,
-    // module loader, Git behavior, or permission configuration.
-    env: { ...process.env },
+  // Built by the one provider adapter (runner/agent-provider.js), so the probe cannot
+  // drift from the author on what "noninteractive" means for a given provider. What stays
+  // the probe's own is its isolated clone and its shell-free tool policy.
+  return launchAgent(run, {
+    cfg: built.cfg,
+    stage: 'test-probe',
+    model,
+    claude: { tools: PROBE_TOOLS, allowedTools: PROBE_TOOLS, disallowedTools: PROBE_DENIED },
+    commandOverride: process.env.PIPELINE_TEST_PROBE_CMD,
+    opts: {
+      cfg: built.cfg, cwd: prepared.probe, input: `${probePrompt(built, previous)}\n`, timeoutMs,
+      maxBuffer: MAX_BUFFER,
+      // hostEnv belongs only to the host verifier below. It must not alter the agent's
+      // executable, module loader, Git behavior, or permission configuration.
+      env: { ...process.env },
+    },
   });
 }
 

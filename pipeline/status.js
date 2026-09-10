@@ -13,9 +13,10 @@
 //   node status.js set <key> <value>       changeSummary | stuckState |
 //                                          rateLimitResetAt | docsPhaseError |
 //                                          model | phase (code|verify|docs)
-//   node status.js summary <file>          set changeSummary from a docs-phase log
-//                                          (envelope result if there is one, else the
-//                                          raw text; trimmed, tail 2000)
+//   node status.js summary <file> [provider]
+//                                          set changeSummary from a docs-phase log
+//                                          (the provider's structured result if there is
+//                                          one, else the raw text; trimmed, tail 2000)
 //   node status.js note <text>             propose one memory note (§3.6 out-channel;
 //                                          append-only, head 500, silently capped at 20)
 //   node status.js concern <text>          report that the frozen spec is itself wrong
@@ -61,13 +62,28 @@ switch (cmd) {
   }
   case 'summary': {
     // The PR body (§4.5) comes from here, so it must never carry CLI noise: prefer the
-    // agent's envelope result and fall back to the raw file only when there is no
-    // envelope (plain-text agents and stubs). Extraction is deterministic — no LLM.
+    // agent's own structured result and fall back to the raw file only when there is
+    // none (plain-text agents and stubs). Extraction is deterministic — no LLM.
+    //
+    // Each backend states its result in its own shape, so the reader is chosen by the
+    // provider the entrypoint ran (args[1]); an absent value means the original backend,
+    // exactly as before. The Codex reader is required LAZILY, inside its own branch and
+    // inside a try: frozen container fixtures build a throwaway /pipeline holding only
+    // this file and envelope.js, and a top-level require of a file that is not there
+    // would fail every task in one of those trees. Falling back to the raw text is the
+    // right degradation — the summary is non-fatal after a verified success.
     if (!fs.existsSync(FILE)) { console.error(`status.js: ${FILE} missing (init first)`); process.exit(2); }
     let raw = '';
     try { raw = fs.readFileSync(args[0] || '', 'utf8'); } catch { raw = ''; }
-    const env = require('./envelope.js').parse(raw);
-    const text = (env ? env.result : raw).trim().slice(-2000);
+    let extracted = null;
+    if (args[1] === 'codex') {
+      try { extracted = (require('./agent-output.js').parse(raw) || {}).finalText || null; }
+      catch { extracted = null; }
+    } else {
+      const env = require('./envelope.js').parse(raw);
+      extracted = env ? env.result : null;
+    }
+    const text = (extracted === null ? raw : extracted).trim().slice(-2000);
     // Nothing to say is not a failure: the docs phase is non-fatal after success.
     if (!text) break;
     const o = load();

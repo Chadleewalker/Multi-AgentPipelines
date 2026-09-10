@@ -1,0 +1,9 @@
+# Egress allowlist (DESIGN.md 4.8) for the Codex task profile: the OpenAI-operated
+# endpoints the Codex CLI requires - and nothing else. Concrete domains only, never a
+# wildcard, so reaching a new subdomain is a reviewed change rather than an accident.
+# Policy (frozen): OpenAI endpoints only. This is a SEPARATE profile from the one in
+# docker/proxy, and neither is ever widened to cover both vendors: a single shared
+# profile would let every task of either provider reach both of them.
+# Enumeration (delegated): api.openai.com is the model API and the only host a
+# noninteractive `codex exec` run needs; it carries responses, models and usage.
+api.openai.com

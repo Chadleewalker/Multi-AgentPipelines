@@ -11,12 +11,22 @@ const { spawn } = require('child_process');
 const { toMountPath } = require('./bd');
 const { createDeadlineWatchdog } = require('./deadline-watchdog');
 const { timeoutFor } = require('./process');
+const { providerFor, CODEX_API_KEY_VAR } = require('./agent-provider');
+
+// The credential variable each provider's container CLI authenticates with (§6). One
+// name per provider and never both: a Codex task must not be handed an Anthropic token
+// it has no use for, and vice versa. The value never appears here — only the name.
+const CLAUDE_TOKEN_VAR = 'CLAUDE_CODE_OAUTH_TOKEN';
+const CREDENTIAL_VAR = { claude: CLAUDE_TOKEN_VAR, codex: CODEX_API_KEY_VAR };
 
 // Windows/Git Bash: Docker needs C:/... mount sources, and MSYS must not rewrite
 // container-side paths like /workspace into C:\Program Files\Git\workspace.
 const DOCKER_ENV = { ...process.env, MSYS_NO_PATHCONV: '1' };
+// The watchdog only ever runs `docker kill`. It is given neither provider's credential,
+// so a kill that outlives the run cannot carry one — and BOTH names are stripped, because
+// this process inherits whichever the operator exported.
 const WATCHDOG_DOCKER_ENV = { ...DOCKER_ENV };
-delete WATCHDOG_DOCKER_ENV.CLAUDE_CODE_OAUTH_TOKEN;
+for (const name of Object.values(CREDENTIAL_VAR)) delete WATCHDOG_DOCKER_ENV[name];
 
 // The container's inputs are exactly these (§4.10) — nothing else crosses the boundary.
 function buildArgs(cfg, opts) {
@@ -35,13 +45,22 @@ function buildArgs(cfg, opts) {
     '-e', `HTTP_PROXY=${cfg.proxyUrl}`,
     '-e', 'NO_PROXY=localhost,127.0.0.1',
   ];
-  // Token by name only: the value comes from the runner's environment, so it never
-  // appears in an argument list, a log line, or an image layer (§6).
-  if (token) args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN');
+  // Credential by NAME only, and only the selected provider's: the value comes from the
+  // runner's environment, so it never appears in an argument list, a log line, or an
+  // image layer (§6). A Codex task therefore gets CODEX_API_KEY and no Anthropic token.
+  const provider = providerFor(cfg, null);
+  if (token) args.push('-e', CREDENTIAL_VAR[provider] || CLAUDE_TOKEN_VAR);
+  // Which noninteractive command the entrypoint builds. Passed even for claude so the
+  // container never has to infer a provider from which credential it happens to hold.
+  args.push('-e', `PIPELINE_PROVIDER=${provider}`);
   if (cfg.agentCommand) args.push('-e', `PIPELINE_AGENT_CMD=${cfg.agentCommand}`);
-  // The entrypoint appends --model to its default headless invocation; an explicit
-  // agentCommand (stubs, overrides) owns its own flags and ignores this.
+  // The entrypoint appends the model (and, for Codex, the reasoning effort) to its default
+  // headless invocation; an explicit agentCommand (stubs, overrides) owns its own flags
+  // and ignores both.
   if (cfg.model) args.push('-e', `PIPELINE_MODEL=${cfg.model}`);
+  if (provider === 'codex' && cfg.reasoningEffort) {
+    args.push('-e', `PIPELINE_REASONING_EFFORT=${cfg.reasoningEffort}`);
+  }
   if (cfg.maxAttempts) args.push('-e', `PIPELINE_MAX_ATTEMPTS=${cfg.maxAttempts}`);
   args.push(cfg.image, 'bash', '/pipeline/entrypoint.sh');
   return args;
@@ -60,9 +79,14 @@ function runTask(cfg, opts, log, traceId) {
       event: 'container.launched',
       data: { name: opts.containerName, budgetMinutes: Math.round(budgetMs / 60000) },
     });
-    const child = spawn('docker', args, {
-      env: { ...DOCKER_ENV, CLAUDE_CODE_OAUTH_TOKEN: opts.token || '' },
-    });
+    // The value crosses here and nowhere else: `docker run` reads it from this process's
+    // environment because buildArgs passed only the NAME. Exactly one provider's variable
+    // is set, so a Codex container cannot see an Anthropic token or the reverse.
+    const credentialVar = CREDENTIAL_VAR[providerFor(cfg, null)] || CLAUDE_TOKEN_VAR;
+    const childEnv = { ...DOCKER_ENV };
+    for (const name of Object.values(CREDENTIAL_VAR)) delete childEnv[name];
+    childEnv[credentialVar] = opts.token || '';
+    const child = spawn('docker', args, { env: childEnv });
     child.stdout.pipe(logStream);
     child.stderr.pipe(logStream);
 

@@ -13,6 +13,12 @@
 # the historical shared pair when unset (change-log row `repo-jur`). The gate has to probe
 # the SAME plumbing the run's tasks will use — passing against another project's network
 # proves nothing about this one.
+#
+# The ALLOWED endpoint is per provider, because the profile under test is per provider
+# (claude -> api.anthropic.com, codex -> api.openai.com). The blocked probes and the
+# direct-egress probe are deliberately IDENTICAL for both: what makes this gate mean
+# anything is that the selected endpoint is reachable AND everything else still is not,
+# so proving one without the other would pass a profile that had been widened.
 set -u
 BASE_IMG="${BASE_IMG:-pipeline-base:local}"
 BOUND=60
@@ -20,21 +26,29 @@ NET="${PIPELINE_NET:-pipeline-net}"
 PROXY_NAME="${PIPELINE_PROXY:-pipeline-proxy}"
 PROXY_PORT="${PIPELINE_PROXY_PORT:-3128}"
 PROXY="http://$PROXY_NAME:$PROXY_PORT"
+PROVIDER="${PIPELINE_PROVIDER:-claude}"
+case "$PROVIDER" in
+  codex) ALLOWED_URL=https://api.openai.com/ ;;
+  claude) ALLOWED_URL=https://api.anthropic.com/ ;;
+  *) echo "egress-check.sh: unknown PIPELINE_PROVIDER '$PROVIDER' (expected claude or codex)" >&2; exit 2 ;;
+esac
 
-PROBE_CMD='
-  code() { curl -s -m 10 -o /dev/null -w "%{http_code}" "$1" 2>/dev/null || true; }
-  A=$(code https://api.anthropic.com/)
-  B=$(code https://github.com/)
-  C=$(code https://registry.npmjs.org/)
-  D=$(env -u HTTPS_PROXY -u HTTP_PROXY sh -c \
-      "curl -s -m 8 -o /dev/null -w \"%{http_code}\" https://github.com/ 2>/dev/null" || true)
-  echo "allowed=${A:-000} blocked1=${B:-000} blocked2=${C:-000} direct=${D:-000}"
-  [ -n "$A" ] && [ "$A" != 000 ] || exit 1     # allowed endpoint must be reachable
-  [ -z "$B" ] || [ "$B" = 000 ] || exit 1      # github.com must be blocked
-  [ -z "$C" ] || [ "$C" = 000 ] || exit 1      # registry.npmjs.org must be blocked
-  [ -z "$D" ] || [ "$D" = 000 ] || exit 1      # no direct egress without the proxy
+# ALLOWED_URL is interpolated by the HOST shell (double quotes), so the probe carries one
+# concrete endpoint; every "$..." below stays single-quoted for the container's shell.
+PROBE_CMD="
+  code() { curl -s -m 10 -o /dev/null -w '%{http_code}' \"\$1\" 2>/dev/null || true; }
+  A=\$(code $ALLOWED_URL)
+  B=\$(code https://github.com/)
+  C=\$(code https://registry.npmjs.org/)
+  D=\$(env -u HTTPS_PROXY -u HTTP_PROXY sh -c \
+      'curl -s -m 8 -o /dev/null -w \"%{http_code}\" https://github.com/ 2>/dev/null' || true)
+  echo \"provider=$PROVIDER allowed=\${A:-000} blocked1=\${B:-000} blocked2=\${C:-000} direct=\${D:-000}\"
+  [ -n \"\$A\" ] && [ \"\$A\" != 000 ] || exit 1     # selected endpoint must be reachable
+  [ -z \"\$B\" ] || [ \"\$B\" = 000 ] || exit 1      # github.com must be blocked
+  [ -z \"\$C\" ] || [ \"\$C\" = 000 ] || exit 1      # registry.npmjs.org must be blocked
+  [ -z \"\$D\" ] || [ \"\$D\" = 000 ] || exit 1      # no direct egress without the proxy
   exit 0
-'
+"
 
 run_probes() {
   docker run --rm --network "$NET" \
