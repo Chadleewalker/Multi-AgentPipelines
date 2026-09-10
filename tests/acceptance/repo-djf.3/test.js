@@ -33,9 +33,18 @@ try {
   const invalidRefused = !invalid || (invalid.ok === false && typeof invalid.reason === 'string' && invalid.reason.length > 0);
   check('C1 run configuration explicitly accepts only chatgpt and api-key Codex authentication modes and explicitly refuses another mode', !!a && config && config.codexAuth === 'chatgpt' && api && api.codexAuth === 'api-key' && invalidRefused, String(invalid && invalid.reason));
   let example = null; try { example = JSON.parse(fs.readFileSync(path.join(REPO, 'run.config.example.json'), 'utf8')); } catch {}
-  check('C1 the checked-in Multi-AgentPipelines run-config template selects Codex ChatGPT authentication explicitly', !!example && example.provider === 'codex' && example.codexAuth === 'chatgpt');
+  check('C1 the checked-in run-config template declares ChatGPT auth without changing its canonical Claude defaults', !!example
+    && example.provider === 'claude' && example.testAuthorProvider === 'claude' && example.testProbeProvider === 'claude'
+    && example.model === 'opus' && example.testAuthorModel === 'opus' && example.testProbeModel === 'opus'
+    && example.codexAuth === 'chatgpt');
   const noFallback = a && a.validateConfig({ provider: 'codex', codexAuth: 'chatgpt', CODEX_API_KEY: secret });
   check('C1 ChatGPT mode does not select or expose an API key as a fallback', !!noFallback && noFallback.credentialName !== 'CODEX_API_KEY' && !JSON.stringify(noFallback).includes(secret));
+
+  let allowlist = []; try { allowlist = fs.readFileSync(path.join(REPO, 'docker', 'proxy-codex', 'allowlist.txt'), 'utf8').split(/\r?\n/).map(s => s.trim()).filter(s => s && !s.startsWith('#')); } catch {}
+  check('C5 the Codex proxy permits exactly the API and observed ChatGPT subscription hosts', JSON.stringify([...allowlist].sort()) === JSON.stringify(['ab.chatgpt.com', 'api.openai.com', 'chatgpt.com']));
+  let dockerfile = ''; try { dockerfile = fs.readFileSync(path.join(REPO, 'docker', 'base', 'Dockerfile'), 'utf8'); } catch {}
+  const traversal = dockerfile.search(/chmod\s+755\s+\/root/); const nonroot = dockerfile.search(/^USER\s+node\s*$/m);
+  check('C5 the task image grants cache-path traversal before retaining the non-root node user', traversal >= 0 && nonroot > traversal && !dockerfile.slice(nonroot).includes('USER root'));
 
   const root = tmp('preflight'); roots.push(root); const calls = [];
   const missing = a && a.preflight({ mode: 'chatgpt', codexHome: path.join(root, 'no-session'), cacheRoot: path.join(root, 'cache'),
