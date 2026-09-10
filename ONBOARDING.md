@@ -309,14 +309,24 @@ Copy this section in (adjust nothing but the project name):
       allowlist proxy are per project, and the runner derives both names from that
       `<project>` segment when the config gives none (change-log row `repo-jur`). Two
       projects whose configs are both called `run.config.json` share one network and one
-      sidecar, so starting the second run destroys the first run's route to Anthropic.
-      Set `network` / `proxyName` explicitly only if you want particular names.
+      sidecar, so starting the second run destroys the first run's route to its model
+      provider. Set `network` / `proxyName` explicitly only if you want particular names.
       **One config per target repo.** A run locks its target repo before any other gate,
       so a second config aimed at the same repo is refused by name rather than draining
       the same queue twice (change-log row `repo-os9`). The lock keys on the canonical
       path, so a trailing separator or forward-vs-back slashes do not buy you a second
       identity — and a lock left behind by a killed run is taken over by the next one,
       never cleared by hand.
+- [ ] Leave `provider` alone unless the user asks for a different model vendor. Absent, it
+      is `claude` at every stage and the launches are exactly what they have always been.
+      Setting it to `codex` — run-wide, or per stage with `testAuthorProvider` /
+      `testProbeProvider` — also changes which credential the run loads (`CODEX_API_KEY`,
+      with no fallback to the Claude token), which command the container entrypoint runs,
+      and which allowlist profile the sidecar is built from, so the host needs that key and
+      a base image carrying the pinned Codex CLI before the run starts. Set `model` to
+      something that provider understands while you are there; `reasoningEffort`
+      (`minimal | low | medium | high`, and its two stage twins) applies to Codex launches.
+      See `docs/control-plane.md` and `DESIGN.md` §6.5.
 - [ ] **Ask the user for one integer implementation concurrency**, and record the answer as
       `concurrency` in that same host-local run config. Ask it once, as a single question —
       *how many implementation tasks may run at the same time under one coordinated run?* —

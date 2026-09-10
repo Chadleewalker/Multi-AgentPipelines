@@ -23,8 +23,9 @@ Three phases joined by a task queue:
    rather than in someone's memory, and says how the live queue differs from it before
    anything starts.
 2. **Implementation** (autonomous) — a plain script on your PC works through the queue.
-   Each task gets a fresh container that can reach nothing except three Anthropic
-   endpoints, holds no git credentials, and cannot edit its own tests. It writes code,
+   Each task gets a fresh container that can reach nothing except the handful of
+   endpoints its own model provider needs, holds no git credentials, and cannot edit its
+   own tests. It writes code,
    the verifier runs the frozen tests, and it retries at most three times.
 3. **Review** (with you) — verified work arrives as a pull request carrying the spec, a
    change summary, and the verification evidence. Failed work arrives as a pushed branch
@@ -48,9 +49,11 @@ Setting up a machine that has never seen this before — tool by tool, with the 
 prove each step worked — is [`SETUP.md`](SETUP.md).
 
 ```bash
-# 1. put your Claude subscription token where the runner can find it
-#    (git-ignored; get one with `claude setup-token`)
+# 1. put your model credential where the runner can find it
+#    (git-ignored; get a Claude one with `claude setup-token`)
 echo 'CLAUDE_CODE_OAUTH_TOKEN=...' > .env.pipeline
+#    a run whose config selects "provider": "codex" reads CODEX_API_KEY from the same
+#    file instead — one credential per run, never both in a container
 
 # 2. prove the whole thing works, using scripted stubs — no model calls
 bash scripts/e2e.sh
