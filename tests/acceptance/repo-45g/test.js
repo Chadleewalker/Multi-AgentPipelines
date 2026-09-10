@@ -205,7 +205,7 @@ function runProviderContainerFixture(base, provider, credential) {
     "const credential = { name: process.env.C3_CREDENTIAL_NAME, value: process.env.C3_CREDENTIAL_VALUE };",
     "const log = { info(trace, text) { logs.push(String(text)); }, error(trace, text) { logs.push(String(text)); } };",
     "container.runTask({ network: 'fixture-net', proxyUrl: 'http://fixture-proxy:3128', image: 'fixture:image', wallClockMinutes: 1 },",
-    "  { containerName: 'fixture-' + process.env.C3_PROVIDER, workspaceDir: 'C:/fixture/workspace', pipelineDir: 'C:/fixture/pipeline',",
+    "  { containerName: 'fixture-' + process.env.C3_PROVIDER, workspaceDir: 'fixture-workspace', pipelineDir: 'fixture-pipeline',",
     "    issueId: 'repo-45g', taskDir: process.cwd(), credential, watchdogFactory: () => ({ fired: false, cancel: async () => {} }) }, log, 'fixture')",
     "  .then(() => console.log(JSON.stringify({ command: call && call.command, args: call && call.args, envKeys: Object.keys((call && call.env) || {}).sort(),",
     "    credentialHash: hash(call && call.env && call.env[credential.name]), logs })))",
