@@ -149,4 +149,14 @@ function main(argv, io = {}) {
 
 if (require.main === module) process.exit(main(process.argv.slice(2)));
 
-module.exports = { main, parseArgs, smokeArgs, DEFAULT_MODEL };
+module.exports = { main, parseArgs, smokeArgs, runChatgptContainerSmoke, DEFAULT_MODEL };
+
+function runChatgptContainerSmoke(opts = {}) {
+  const run = opts.run || runSync; const out = opts.out || console.log;
+  const clean = { ...(opts.env || process.env) }; delete clean.CODEX_API_KEY; delete clean.CODEX_HOME;
+  const cache = opts.authCache;
+  const argv = ['run', '--rm', '-v', cache.mount, opts.image, 'codex', ...smokeArgs({ model: opts.model || DEFAULT_MODEL, reasoningEffort: opts.reasoningEffort || 'low' })];
+  const result = run('docker', argv, { env: clean, input: PROMPT, timeoutMs: TIMEOUT_MS, label: 'ChatGPT container smoke' });
+  out('Authentication: ChatGPT managed session in the private task cache');
+  return result;
+}

@@ -16,6 +16,7 @@ const fs = require('fs');
 const path = require('path');
 const { loadConfig, loadProviderCredential, missingCredentialDiagnostic } = require('./config');
 const { credentialNameFor, providerFor } = require('./agent-provider');
+const codexAuth = require('./codex-auth');
 const { startRun } = require('./log');
 const { preflight, networkDown } = require('./preflight');
 const { release: releaseLock } = require('./lock');
