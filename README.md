@@ -108,7 +108,8 @@ on the shared base image, and `bd init` — [`PLANNING.md`](PLANNING.md) walks t
 - Specs and tests are frozen before a run; nothing during a run can change what "done"
   means.
 - A specialist agent may advise, never gate.
-- The container gets one credential and no route out beyond the Anthropic endpoints.
+- The container gets one credential — the selected provider's, never both — and no route
+  out beyond that provider's own allowlisted endpoints.
 - A checkout carrying `pipeline.config.json` is pipeline-first: an agent session reads
   freely and does not change product, configuration, control or frozen paths by hand. See
   `node scripts/write-protection.js status`.

@@ -14,7 +14,8 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const { loadConfig, loadToken } = require('./config');
+const { loadConfig, loadProviderCredential, missingCredentialDiagnostic } = require('./config');
+const { credentialNameFor, providerFor } = require('./agent-provider');
 const { startRun } = require('./log');
 const { preflight, networkDown } = require('./preflight');
 const { release: releaseLock } = require('./lock');
@@ -135,7 +136,9 @@ async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClo
     pipelineDir: path.join(REPO_ROOT, 'pipeline'),
     issueId: issue.id,
     taskDir,
-    token,
+    // Paired with its environment-variable NAME here, so the container layer never has to
+    // guess which provider a bare value belongs to.
+    credential: { name: credentialNameFor(providerFor(cfg)), value: token },
     wallClockMinutes: wallClockMinutes || cfg.wallClockMinutes,
   }, log, traceId);
 }
@@ -571,12 +574,18 @@ async function main() {
   log.info(t, `target: ${cfg.targetRepoPath} -> ${cfg.targetRepoRemote}`,
     { event: 'run.target', data: { url: cfg.targetRepoRemote } });
 
-  const token = loadToken(REPO_ROOT);
-  if (!token) {
-    log.error(t, 'no CLAUDE_CODE_OAUTH_TOKEN (.env.pipeline or environment) — tasks cannot authenticate');
+  // The SELECTED provider's credential, and only that one (§6). There is no cross-provider
+  // fallback: a Codex run with no CODEX_API_KEY is refused here, before a lock, a worktree,
+  // a Beads claim, a network or a container exists, rather than failing at the model
+  // endpoint once all of them do. With no provider selected this is exactly the historical
+  // Claude token load and the historical diagnostic.
+  const credential = loadProviderCredential(REPO_ROOT, cfg.provider);
+  if (!credential) {
+    log.error(t, missingCredentialDiagnostic(cfg.provider));
     process.exit(2);
   }
-  log.info(t, 'subscription token loaded');
+  const token = credential.value;
+  log.info(t, `subscription token loaded (${credential.name})`);
 
   // The write-protection backstop (change-log row `repo-324`). Ahead of preflight on purpose:
   // it holds no lock and creates no network, so a refusal here has nothing to compensate for.

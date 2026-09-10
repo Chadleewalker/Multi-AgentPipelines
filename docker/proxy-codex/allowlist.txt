@@ -1,0 +1,5 @@
+# Egress allowlist (DESIGN.md 4.8) for tasks whose selected provider is Codex: the
+# OpenAI-operated endpoint the pinned Codex CLI requires, and nothing else. Concrete
+# domains only; no wildcard entries. This roster is deliberately separate from the one
+# the other provider profile carries - neither file is ever widened to serve both.
+api.openai.com

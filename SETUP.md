@@ -220,8 +220,10 @@ docker build -t pipeline-base:local docker/base
 bash scripts/test-base-image.sh      # expect every line PASS
 ```
 
-Node, git, the Claude CLI and `bd` at pinned versions, with no credentials and no pipeline
-code. The network gatekeeper image builds itself on first run.
+Node, git, the Claude CLI, the Codex CLI and `bd` at pinned versions, with no credentials and
+no pipeline code. The Codex pin proves its own `codex exec` capabilities during the build, so
+a bad pin fails here rather than inside every task container. The network gatekeeper image
+builds itself on first run — one image per provider profile, whichever the run selects.
 
 ### B6. `cp .worktree-carry.example .worktree-carry`
 
@@ -407,8 +409,8 @@ in your way, that is a conversation, not a workaround:
   result to report, not a problem to fix mid-run.
 - **The thing that judges the work is a plain script, never an AI.** It reads the tests as
   frozen, not as they are now.
-- **The container gets one credential and no route out.** Bake dependencies into the image at
-  planning time instead.
+- **The container gets one credential — the selected provider's — and no route out.** Bake
+  dependencies into the image at planning time instead.
 - **The approval points are the design, not friction.** You approve intent before a run and
   results after. Never route around one.
 

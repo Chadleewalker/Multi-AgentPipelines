@@ -15,6 +15,7 @@ const os = require('os');
 const path = require('path');
 
 const { loadConfig } = require('../runner/config');
+const AGENT = require('../runner/agent-provider');
 const { runSync, failureText } = require('../runner/process');
 const { acquire, release } = require('../runner/lock');
 const { compareSuites } = require('./freeze-gate');
@@ -392,20 +393,30 @@ function probePrompt(built, previous = '') {
 
 function launchProbe(built, prepared, model, previous = '', run = runSync) {
   const timeoutMs = Math.max(1, Number(built.cfg.wallClockMinutes) || 240) * 60 * 1000;
-  return run(process.env.PIPELINE_TEST_PROBE_CMD || 'claude', [
-    '-p', '--model', model,
-    '--restricted', '--permission-mode', 'acceptEdits',
-    '--tools', PROBE_TOOLS,
-    '--allowedTools', PROBE_TOOLS,
-    '--disallowedTools', PROBE_DENIED,
-    '--no-session-persistence',
-  ], {
-    cfg: built.cfg, cwd: prepared.probe, input: `${probePrompt(built, previous)}\n`, timeoutMs,
-    label: 'Claude green-probe session', maxBuffer: MAX_BUFFER,
-    // hostEnv belongs only to the host verifier below. It must not alter Claude's executable,
-    // module loader, Git behavior, or permission configuration.
-    env: { ...process.env },
-  });
+  // One adapter builds this launch too. With no provider selected the Claude argv below is
+  // returned unchanged, so the historical shell-free probe is byte-for-byte what it was.
+  const provider = AGENT.providerFor(built.cfg, 'test-probe');
+  return AGENT.launch({
+    provider,
+    model,
+    reasoningEffort: AGENT.reasoningEffortFor(built.cfg, 'test-probe'),
+    command: process.env.PIPELINE_TEST_PROBE_CMD || null,
+    claudeArgs: [
+      '-p', '--model', model,
+      '--restricted', '--permission-mode', 'acceptEdits',
+      '--tools', PROBE_TOOLS,
+      '--allowedTools', PROBE_TOOLS,
+      '--disallowedTools', PROBE_DENIED,
+      '--no-session-persistence',
+    ],
+    runOptions: {
+      cfg: built.cfg, cwd: prepared.probe, input: `${probePrompt(built, previous)}\n`, timeoutMs,
+      label: `${provider} green-probe session`, maxBuffer: MAX_BUFFER,
+      // hostEnv belongs only to the host verifier below. It must not alter the agent's
+      // executable, module loader, Git behavior, or permission configuration.
+      env: { ...process.env },
+    },
+  }, run);
 }
 
 function runGate(built, prepared, run = runSync) {

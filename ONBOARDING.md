@@ -274,9 +274,9 @@ Copy this section in (adjust nothing but the project name):
 
 ```markdown
 ### Working inside the pipeline container (read this when you are the coding agent in a run)
-- This is a locked-down Docker container: the network reaches Anthropic endpoints only.
-  No package installs, no web lookups — everything you need is in this repo, the issue
-  file, or the memory file.
+- This is a locked-down Docker container: the network reaches the endpoints of the one
+  model provider this run selected, and nothing else. No package installs, no web lookups
+  — everything you need is in this repo, the issue file, or the memory file.
 - Your task is `/workspace/.run/issue.md`; project memory is `/workspace/.run/memory.md`.
   Both are read-only exports — use them, don't edit them.
 - NEVER touch `tests/acceptance/` or any path in `pipeline.config.json`'s `frozenPaths`.
