@@ -90,8 +90,9 @@ async function main() {
     const cacheMountedWritable = actual && actual.launch && actual.launch.argv.some(arg => /:\/root\/\.codex:rw$/.test(arg));
     const safeLaunch = actual && actual.launch && actual.launch.command === 'docker'
       && actual.launch.env.hasApiKey === false && actual.launch.env.codexHome === null
+      && actual.launch.argv.some((arg, i) => actual.launch.argv[i - 1] === '-e' && arg === 'CODEX_HOME=/root/.codex')
       && !actual.launch.argv.some(arg => arg === 'CODEX_API_KEY' || String(arg).startsWith('CODEX_API_KEY='));
-    check('C3 runner/container.js consumes the injected spawn seam and constructs the real task Docker argv/env with only the writable pipeline-owned cache, never the operator home or API key', !!actual && !!actual.launch && actual.result.exitCode === 0 && staged.hostPath.startsWith(privateRoot) && staged.hostPath !== sourceHome && cacheMountedWritable && safeLaunch, secretSafe(actual && actual.launch, secret));
+    check('C3 runner/container.js consumes the injected spawn seam and points Codex at only the writable pipeline-owned cache, never the operator home or API key', !!actual && !!actual.launch && actual.result.exitCode === 0 && staged.hostPath.startsWith(privateRoot) && staged.hostPath !== sourceHome && cacheMountedWritable && safeLaunch, secretSafe(actual && actual.launch, secret));
     check('C3 runner/run.js supplies that cache to runTask, so a disconnected helper or a fake launch object cannot satisfy the suite', /runTask\(cfg,\s*\{[\s\S]{0,1600}authCache/.test(fs.readFileSync(RUN_FILE, 'utf8')));
     const verifier = fs.readFileSync(path.join(REPO, 'pipeline', 'entrypoint.sh'), 'utf8');
     check('C3 the staged secret never reaches workspace, task artifacts, container log, or the repository-controlled verifier environment', !!actual && !readTree(actual.workspaceDir).includes(secret) && !readTree(actual.taskDir).includes(secret) && /env\s+-u\s+CODEX_API_KEY/.test(verifier));

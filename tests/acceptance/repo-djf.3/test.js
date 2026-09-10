@@ -7,6 +7,7 @@
 // stageTaskCache(opts), releaseTaskCache(handle), and withCacheLock(opts, fn). All accept dependency
 // seams named fs/spawn/log for Docker-free operation. stageTaskCache returns { hostPath, containerPath,
 // mount, cleanup }; preflight returns { ok, reason } and calls no mutation seam on refusal.
+// scripts/codex-live-smoke.js main(argv, io) accepts io.runSync and io.codexAuth seams.
 'use strict';
 const crypto = require('crypto'); const fs = require('fs'); const os = require('os'); const path = require('path');
 const { spawnSync } = require('child_process');
@@ -43,8 +44,8 @@ try {
   let allowlist = []; try { allowlist = fs.readFileSync(path.join(REPO, 'docker', 'proxy-codex', 'allowlist.txt'), 'utf8').split(/\r?\n/).map(s => s.trim()).filter(s => s && !s.startsWith('#')); } catch {}
   check('C5 the Codex proxy permits exactly the API and observed ChatGPT subscription hosts', JSON.stringify([...allowlist].sort()) === JSON.stringify(['ab.chatgpt.com', 'api.openai.com', 'chatgpt.com']));
   let dockerfile = ''; try { dockerfile = fs.readFileSync(path.join(REPO, 'docker', 'base', 'Dockerfile'), 'utf8'); } catch {}
-  const traversal = dockerfile.search(/chmod\s+755\s+\/root/); const nonroot = dockerfile.search(/^USER\s+node\s*$/m);
-  check('C5 the task image grants cache-path traversal before retaining the non-root node user', traversal >= 0 && nonroot > traversal && !dockerfile.slice(nonroot).includes('USER root'));
+  const traversal = dockerfile.search(/chmod\s+711\s+\/root/); const nonroot = dockerfile.search(/^USER\s+node\s*$/m);
+  check('C5 the task image grants traversal but not directory listing on /root before retaining the non-root node user', traversal >= 0 && nonroot > traversal && !dockerfile.slice(nonroot).includes('USER root'));
 
   const root = tmp('preflight'); roots.push(root); const calls = [];
   const missing = a && a.preflight({ mode: 'chatgpt', codexHome: path.join(root, 'no-session'), cacheRoot: path.join(root, 'cache'),
@@ -89,10 +90,11 @@ try {
   const dockerRun = smokeCalls.find(call => call.command === 'docker' && call.argv.includes('run'));
   const volumes = dockerRun ? dockerRun.argv.filter((arg, i) => dockerRun.argv[i - 1] === '-v') : [];
   const writableVolumes = volumes.filter(mount => !/:ro$/.test(mount));
+  const mountedHome = !!dockerRun && dockerRun.argv.some((arg, i) => dockerRun.argv[i - 1] === '-e' && arg === 'CODEX_HOME=/root/.codex');
   const apiKeyInjected = !!dockerRun && (dockerRun.argv.some(arg => arg === 'CODEX_API_KEY' || String(arg).startsWith('CODEX_API_KEY=')) || Object.prototype.hasOwnProperty.call(dockerRun.env, 'CODEX_API_KEY'));
   const reportsChatgpt = smokeOutput.some(line => /authentication.*chatgpt|chatgpt.*authentication/i.test(line));
   check('C5 allows the defensive CODEX_API_KEY child-shell filter, but rejects actual Docker/API-key injection', Array.isArray(smokeArgs) && smokeArgs.some(arg => String(arg).includes('shell_environment_policy.filters.CODEX_API_KEY')) && !apiKeyInjected, secretSafe(dockerRun && { argv: dockerRun.argv, hasApiKey: Object.prototype.hasOwnProperty.call(dockerRun.env, 'CODEX_API_KEY') }, secret));
-  check('C5 opt-in live smoke observably invokes the configured pinned task image through its injected run seam, mounts only the private ChatGPT cache writable at /root/.codex, and reports ChatGPT authentication', !!smoke && typeof smoke.runChatgptContainerSmoke === 'function' && !!dockerRun && dockerRun.argv.includes(taskImage) && writableVolumes.length === 1 && writableVolumes[0] === smokeCache.mount && reportsChatgpt, secretSafe(dockerRun && { command: dockerRun.command, argv: dockerRun.argv, writableVolumes, output: smokeOutput }, secret));
+  check('C5 opt-in live smoke invokes the pinned task image, points Codex at only the writable private cache, and reports ChatGPT authentication', !!smoke && typeof smoke.runChatgptContainerSmoke === 'function' && !!dockerRun && dockerRun.argv.includes(taskImage) && writableVolumes.length === 1 && writableVolumes[0] === smokeCache.mount && mountedHome && reportsChatgpt, secretSafe(dockerRun && { command: dockerRun.command, argv: dockerRun.argv, writableVolumes, output: smokeOutput }, secret));
   const suiteText = fs.readFileSync(__filename, 'utf8');
   check('C5 deterministic Docker-free suite explicitly covers both modes, refusal ordering, disclosure, refresh, interruption, concurrency, and live smoke', /api-key/.test(suiteText) && /refus/.test(suiteText) && /concurrent/.test(suiteText) && /live smoke/.test(suiteText));
 } catch (e) { check('C1-C5 deterministic fixture harness executes', false, e.stack || String(e)); }
