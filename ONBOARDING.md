@@ -320,11 +320,13 @@ Copy this section in (adjust nothing but the project name):
 - [ ] Leave `provider` alone unless the user asks for a different model vendor. Absent, it
       is `claude` at every stage and the launches are exactly what they have always been.
       Setting it to `codex` — run-wide, or per stage with `testAuthorProvider` /
-      `testProbeProvider` — also changes which credential the run loads (`CODEX_API_KEY`,
-      with no fallback to the Claude token), which command the container entrypoint runs,
-      and which allowlist profile the sidecar is built from, so the host needs that key and
-      a base image carrying the pinned Codex CLI before the run starts. Set `model` to
-      something that provider understands while you are there; `reasoningEffort`
+      `testProbeProvider` — also changes the credential mode (`codexAuth` is `chatgpt` by
+      default, or explicitly `api-key` with `CODEX_API_KEY`), the container entrypoint, and
+      the sidecar allowlist profile. ChatGPT mode requires a saved `codex login` or device
+      session; the runner stages only a private task cache and never falls back to an API key.
+      The host also needs a base image carrying the pinned Codex CLI. Switch the corresponding
+      stage model to a GPT model the account can use, such as `gpt-5.6-terra`; the example's
+      `opus` aliases remain Claude defaults. `reasoningEffort`
       (`minimal | low | medium | high`, and its two stage twins) applies to Codex launches.
       See `docs/control-plane.md` and `DESIGN.md` §6.5.
 - [ ] **Ask the user for one integer implementation concurrency**, and record the answer as

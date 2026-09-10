@@ -78,19 +78,23 @@ the example config's Claude aliases are not one.
 Selecting a provider selects three things together, and they are not independently
 configurable:
 
-- **The credential.** `CLAUDE_CODE_OAUTH_TOKEN` or `CODEX_API_KEY`, read from the
-  git-ignored `.env.pipeline` or the ambient environment, with no cross-provider fallback.
-  Containers receive it by environment-variable name only, and every other provider's
-  credential is removed from the docker client's environment first. On the host, Codex may
-  instead reuse a saved ChatGPT CLI session (`codex login`); inside a container it cannot,
-  and no `auth.json` is ever mounted.
+- **The credential.** Claude uses `CLAUDE_CODE_OAUTH_TOKEN`. Codex explicitly selects
+  `codexAuth: "chatgpt"` or `"api-key"`: ChatGPT mode validates a saved `codex login` (or
+  device-authenticated) session before admission and seeds a pipeline-private, durable
+  credential cache; API-key mode reads `CODEX_API_KEY` from the git-ignored `.env.pipeline`
+  or ambient environment. The modes never fall back to one another. A trusted ChatGPT Codex
+  worker receives only a writable, task-scoped copy of that cache at its Codex credential
+  location, so refreshes persist without mounting the user's Codex home; it receives no
+  `CODEX_API_KEY`. API-key workers receive the selected key by environment-variable name only.
+  Every unselected provider credential and `CODEX_HOME` is removed from the Docker client's
+  environment, and repository-controlled verifier processes inherit neither Codex credential.
 - **The container command.** The runner passes `PIPELINE_PROVIDER`, and
   `pipeline/entrypoint.sh` selects that provider's noninteractive invocation.
-- **The egress profile.** `docker/proxy` carries the Anthropic endpoints, `docker/proxy-codex`
-  the OpenAI ones, and `PIPELINE_PROXY_PROFILE` picks which sidecar `scripts/pipeline-net.sh`
-  builds and which endpoint `scripts/egress-check.sh` proves reachable. One profile per
-  provider: widening either to carry the other's endpoints is refused by design, not by a
-  check.
+- **The egress profile.** `docker/proxy` carries the Anthropic endpoints, while the separate
+  Codex profile permits only `api.openai.com`, `chatgpt.com`, and `ab.chatgpt.com`.
+  `PIPELINE_PROXY_PROFILE` picks which sidecar `scripts/pipeline-net.sh` builds and which
+  endpoint `scripts/egress-check.sh` proves reachable. One profile per provider: widening
+  either to carry the other's endpoints is refused by design, not by a check.
 
 A missing executable, credential, model, image capability or route fails before any
 mutation and names its remedy. For a non-default provider, preflight additionally proves
