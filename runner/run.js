@@ -131,17 +131,28 @@ async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClo
   }
   // Container names must be unique across relaunches (§4.7 resume).
   const attempt = (executeTask.counter = (executeTask.counter || 0) + 1);
-  return runTask(cfg, {
-    containerName: `task-${issue.id}-${log.runId}-${attempt}`.replace(/[^A-Za-z0-9_.-]/g, '-'),
-    workspaceDir: ws.dir,
-    pipelineDir: path.join(REPO_ROOT, 'pipeline'),
-    issueId: issue.id,
-    taskDir,
-    // Paired with its environment-variable NAME here, so the container layer never has to
-    // guess which provider a bare value belongs to.
-    credential: { name: credentialNameFor(providerFor(cfg)), value: token },
-    wallClockMinutes: wallClockMinutes || cfg.wallClockMinutes,
-  }, log, traceId);
+  const chatgpt = providerFor(cfg) === 'codex' && cfg.codexAuth === 'chatgpt';
+  const authCache = chatgpt ? codexAuth.stageTaskCache({
+    cacheRoot: cfg.codexAuthCacheRoot,
+    taskId: `${issue.id}-${attempt}`,
+    containerPath: '/root/.codex',
+  }) : null;
+  try {
+    return await runTask(cfg, {
+      containerName: `task-${issue.id}-${log.runId}-${attempt}`.replace(/[^A-Za-z0-9_.-]/g, '-'),
+      workspaceDir: ws.dir,
+      pipelineDir: path.join(REPO_ROOT, 'pipeline'),
+      issueId: issue.id,
+      taskDir,
+      authCache,
+      // Paired with its environment-variable NAME here, so the container layer never has to
+      // guess which provider a bare value belongs to.
+      credential: { name: credentialNameFor(providerFor(cfg)), value: token },
+      wallClockMinutes: wallClockMinutes || cfg.wallClockMinutes,
+    }, log, traceId);
+  } finally {
+    if (authCache) codexAuth.releaseTaskCache(authCache);
+  }
 }
 
 // ---- the bounded worker pool (§7, §4.12) ------------------------------------------
@@ -580,13 +591,14 @@ async function main() {
   // a Beads claim, a network or a container exists, rather than failing at the model
   // endpoint once all of them do. With no provider selected this is exactly the historical
   // Claude token load and the historical diagnostic.
-  const credential = loadProviderCredential(REPO_ROOT, cfg.provider);
-  if (!credential) {
+  const chatgptCodex = cfg.provider === 'codex' && cfg.codexAuth === 'chatgpt';
+  const credential = chatgptCodex ? null : loadProviderCredential(REPO_ROOT, cfg.provider);
+  if (!chatgptCodex && !credential) {
     log.error(t, missingCredentialDiagnostic(cfg.provider));
     process.exit(2);
   }
-  const token = credential.value;
-  log.info(t, `subscription token loaded (${credential.name})`);
+  const token = credential ? credential.value : '';
+  if (credential) log.info(t, `subscription token loaded (${credential.name})`);
 
   // The write-protection backstop (change-log row `repo-324`). Ahead of preflight on purpose:
   // it holds no lock and creates no network, so a refusal here has nothing to compensate for.

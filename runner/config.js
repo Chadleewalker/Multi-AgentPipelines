@@ -210,7 +210,10 @@ function loadConfig(file) {
       throw new Error(`run.config.json: '${k}' must be one of ${PROVIDERS.join(' | ')}`);
     }
   }
-  if (raw.codexAuth !== undefined && raw.codexAuth !== null) { const checked = codexAuth.validateConfig(raw); if (!checked.ok) throw new Error(`run.config.json: ''`); }
+  if (raw.codexAuth !== undefined && raw.codexAuth !== null) {
+    const checked = codexAuth.validateConfig(raw);
+    if (!checked.ok) throw new Error(`run.config.json: '${checked.reason}'`);
+  }
   for (const k of REASONING_EFFORT_FIELDS) {
     if (raw[k] !== undefined && raw[k] !== null && !validReasoningEffort(raw[k])) {
       throw new Error(`run.config.json: '${k}' must be one of ${REASONING_EFFORTS.join(' | ')}`

@@ -99,7 +99,11 @@ function runTask(cfg, opts, log, traceId) {
     const childEnv = { ...DOCKER_ENV };
     for (const name of CREDENTIAL_ENV_NAMES) delete childEnv[name];
     if (credential && !(providerFor(cfg) === 'codex' && cfg.codexAuth === 'chatgpt')) childEnv[credential.name] = credential.value;
-    const child = spawn('docker', args, { env: childEnv });
+    delete childEnv.CODEX_HOME;
+    // `opts.spawn` is the deterministic observation seam. Production intentionally uses the
+    // native spawn; a test cannot replace Docker through PATH and accidentally reach a daemon.
+    const launch = opts.spawn || spawn;
+    const child = launch('docker', args, { env: childEnv });
     child.stdout.pipe(logStream);
     child.stderr.pipe(logStream);
 
