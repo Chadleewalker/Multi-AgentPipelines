@@ -19,7 +19,10 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { spawnSync } = require('child_process');
 const REPO = path.resolve(__dirname, '..', '..', '..');
+const GIT_BASH = path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'bin', 'bash.exe');
+const BASH = process.platform === 'win32' && fs.existsSync(GIT_BASH) ? GIT_BASH : 'bash';
 const CONFIG = require(path.join(REPO, 'runner', 'config.js'));
 const AUTHOR = require(path.join(REPO, 'scripts', 'author-tests.js'));
 const PROBE = require(path.join(REPO, 'scripts', 'prove-tests.js'));
@@ -69,6 +72,7 @@ function helpExecute(helpText, status = 0) {
   };
 }
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'accept-45g-'));
+let c3FixtureBase = null;
 function config(raw, suffix) {
   const p = path.join(tmp, `run.config.${suffix}.json`);
   fs.writeFileSync(p, JSON.stringify({ targetRepoPath: 'C:/fixture', targetRepoRemote: 'https://example.invalid/x.git', image: 'fixture:codex', ...raw }));
@@ -79,6 +83,96 @@ function launchView(call) {
   return JSON.stringify({ command: call.command, args: call.args,
     cwd: call.opts && call.opts.cwd, timeoutMs: call.opts && call.opts.timeoutMs,
     inputLength: String((call.opts && call.opts.input) || '').length });
+}
+const fwd = (p) => p.split(path.sep).join('/');
+const bashKind = (() => {
+  const probe = spawnSync(BASH, ['-c', 'uname -s'], { encoding: 'utf8', timeout: 60000 });
+  return probe.status === 0 ? (probe.stdout || '').trim() : '';
+})();
+// A native Windows Node process can be paired with either Git Bash or WSL bash. Git
+// Bash accepts C:/ paths; WSL needs /mnt/c. Native Linux paths already need no change.
+const bashPath = (p) => {
+  const out = fwd(p);
+  const drive = /^([A-Za-z]):\/(.*)$/.exec(out);
+  return drive && bashKind === 'Linux' ? `/mnt/${drive[1].toLowerCase()}/${drive[2]}` : out;
+};
+const shellQuote = (p) => `"${bashPath(p).replace(/"/g, '\\"')}"`;
+const read = (p) => { try { return fs.readFileSync(p, 'utf8'); } catch { return null; } };
+const readJson = (p) => { try { return JSON.parse(read(p)); } catch { return null; } };
+function filesBelow(dir) {
+  const found = [];
+  const walk = (here) => {
+    for (const ent of fs.readdirSync(here, { withFileTypes: true })) {
+      const file = path.join(here, ent.name);
+      if (ent.isDirectory()) walk(file);
+      else if (ent.isFile()) found.push(file);
+    }
+  };
+  walk(dir);
+  return found;
+}
+function codexCredentialFixture(secret) {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'accept-45g-c3-'));
+  const ws = path.join(base, 'workspace');
+  const home = path.join(base, 'home');
+  const pipe = path.join(base, 'pipeline');
+  const codexCapture = path.join(base, 'codex-calls.json');
+  const verifierCapture = path.join(base, 'verifier-calls.json');
+  const codex = path.join(base, 'fake-codex.js');
+  fs.mkdirSync(path.join(ws, '.run'), { recursive: true });
+  fs.mkdirSync(home, { recursive: true });
+  fs.mkdirSync(pipe, { recursive: true });
+  for (const name of ['status.js', 'envelope.js']) {
+    fs.writeFileSync(path.join(pipe, name), fs.readFileSync(path.join(REPO, 'pipeline', name), 'utf8'));
+  }
+  // Store only a SHA-256 comparison value. The fixture proves the exact key reached
+  // Codex without itself persisting that key in an argv capture or an artifact.
+  fs.writeFileSync(codex, [
+    "'use strict';",
+    "const crypto = require('crypto'), fs = require('fs');",
+    "let stdin = ''; try { stdin = fs.readFileSync(0, 'utf8'); } catch { /* empty */ }",
+    "let calls = []; try { calls = JSON.parse(fs.readFileSync(process.env.C3_CODEX_CAPTURE, 'utf8')); } catch { /* first call */ }",
+    "calls.push({ argv: process.argv.slice(2), keyHash: crypto.createHash('sha256').update(process.env.CODEX_API_KEY || '').digest('hex'), docs: stdin.includes('change summary') });",
+    "fs.writeFileSync(process.env.C3_CODEX_CAPTURE, JSON.stringify(calls));",
+    "process.stdout.write('fixture Codex completed\\n');",
+    '',
+  ].join('\n'));
+  fs.writeFileSync(path.join(pipe, 'verify.js'), [
+    "'use strict';",
+    "const fs = require('fs');",
+    "let calls = []; try { calls = JSON.parse(fs.readFileSync(process.env.C3_VERIFIER_CAPTURE, 'utf8')); } catch { /* first call */ }",
+    "calls.push({ inheritedCodexKey: Object.prototype.hasOwnProperty.call(process.env, 'CODEX_API_KEY') });",
+    "fs.writeFileSync(process.env.C3_VERIFIER_CAPTURE, JSON.stringify(calls));",
+    'process.exit(0);',
+    '',
+  ].join('\n'));
+  fs.writeFileSync(path.join(ws, '.run', 'issue.md'), '# repo-45g C3 fixture\n');
+  const git = (args) => spawnSync('git', args, { cwd: ws, encoding: 'utf8', env: { ...process.env, HOME: fwd(home) } });
+  const initialized = git(['init', '-q']);
+  const committed = git(['-c', 'user.email=fixture@example.invalid', '-c', 'user.name=fixture', 'commit', '-q', '--allow-empty', '-m', 'seed']);
+  const run = (initialized.status === 0 && committed.status === 0)
+    ? spawnSync(BASH, [bashPath(path.join(REPO, 'pipeline', 'entrypoint.sh'))], {
+      encoding: 'utf8', timeout: 120000,
+      env: {
+        PATH: `${bashPath(path.dirname(process.execPath))}:${process.env.PATH || ''}`,
+        HOME: bashPath(home),
+        WORKSPACE: bashPath(ws),
+        PIPELINE_DIR: bashPath(pipe),
+        ISSUE_ID: 'repo-45g',
+        PIPELINE_PROVIDER: 'codex',
+        PIPELINE_AGENT_CMD: `${shellQuote(process.execPath)} ${shellQuote(codex)} exec --fixture-codex`,
+        PIPELINE_MAX_ATTEMPTS: '1',
+        CODEX_API_KEY: secret,
+        C3_CODEX_CAPTURE: bashPath(codexCapture),
+        C3_VERIFIER_CAPTURE: bashPath(verifierCapture),
+      },
+    })
+    : { status: null, stdout: '', stderr: `fixture git failed: init=${initialized.status}, commit=${committed.status}` };
+  const artifactTexts = filesBelow(base).map((file) => ({ file, text: read(file) || '' }));
+  return {
+    base, run, codexCalls: readJson(codexCapture) || [], verifierCalls: readJson(verifierCapture) || [], artifactTexts,
+    status: readJson(path.join(ws, '.run', 'status.json')),
+  };
 }
 try {
   // C1 — closed global/stage selections and reasoning validation.
@@ -138,6 +232,24 @@ try {
   check('C3 Codex Docker argv passes CODEX_API_KEY only by environment-variable name, never the value or Claude token',
     dockerArgs.includes('CODEX_API_KEY') && !dockerArgs.join('\n').includes(secret) && !dockerArgs.includes('CLAUDE_CODE_OAUTH_TOKEN'), JSON.stringify(dockerArgs));
   const entry = fs.readFileSync(path.join(REPO, 'pipeline', 'entrypoint.sh'), 'utf8');
+  const c3Fixture = codexCredentialFixture(secret);
+  c3FixtureBase = c3Fixture.base;
+  const secretHash = crypto.createHash('sha256').update(secret).digest('hex');
+  const c3RunText = `${c3Fixture.run.stdout || ''}${c3Fixture.run.stderr || ''}`;
+  const c3ArgvHasSecret = c3Fixture.codexCalls.some((call) => JSON.stringify(call.argv).includes(secret));
+  const c3ArtifactHasSecret = c3Fixture.artifactTexts.some(({ text }) => text.includes(secret));
+  check('C3 Codex credential-isolation fixture reaches verified success through the real entrypoint',
+    c3Fixture.run.status === 0 && c3Fixture.status && Array.isArray(c3Fixture.status.attempts)
+      && c3Fixture.status.attempts.length === 1 && c3Fixture.status.attempts[0].verifierResult === 'pass', c3Fixture.run.stderr);
+  check('C3 both code- and docs-phase fake Codex invocations receive the exact Docker key only for those CLI calls',
+    c3Fixture.codexCalls.some((call) => call.docs === false) && c3Fixture.codexCalls.some((call) => call.docs === true)
+      && c3Fixture.codexCalls.every((call) => call.keyHash === secretHash), JSON.stringify(c3Fixture.codexCalls));
+  check('C3 repository-controlled verifier invocations do not inherit CODEX_API_KEY',
+    c3Fixture.verifierCalls.length > 0 && c3Fixture.verifierCalls.every((call) => call.inheritedCodexKey === false),
+    JSON.stringify(c3Fixture.verifierCalls));
+  check('C3 planted Codex key is absent from fake CLI argv, entrypoint logs, and every captured fixture artifact',
+    !c3ArgvHasSecret && !c3RunText.includes(secret) && !c3ArtifactHasSecret,
+    JSON.stringify({ argv: c3ArgvHasSecret, log: c3RunText.includes(secret), artifact: c3ArtifactHasSecret }));
   check('C3 captured Codex launch keeps the authentication key in its process environment but not argv, with default and explicit secret-name filtering',
     author.call && author.call.opts.env.CODEX_API_KEY === codexSecret && !author.call.args.includes(codexSecret)
       && author.call.args.includes('shell_environment_policy.ignore_default_excludes=false')
@@ -262,5 +374,6 @@ try {
   console.log(`FAIL - HARNESS BROKEN: unexpected exception: ${e && e.stack ? e.stack : e}`);
 } finally {
   try { fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch { /* disposable */ }
+  try { if (c3FixtureBase) fs.rmSync(c3FixtureBase, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch { /* disposable */ }
 }
 process.exit(failed);
