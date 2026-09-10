@@ -58,6 +58,53 @@ To stop a fed run cleanly, create `runs/<run-id>/stop`; active workers finish be
 feed closes. Do not launch a run from an auxiliary worktree because `runs/` is host-local
 and its observer artifacts belong in the main checkout.
 
+## Agent provider selection
+
+The agent backend is a closed selection, not a hard-coded vendor (`runner/agent-provider.js`,
+`DESIGN.md` §6.5, change-log row `repo-45g`). `runner/agent-provider.js` owns the vocabularies
+and constructs every host launch; do not restate either list here or in an instruction file.
+
+Run-config fields, all optional: `provider` run-wide, `testAuthorProvider` and
+`testProbeProvider` per planning stage, each with `reasoningEffort`,
+`testAuthorReasoningEffort` and `testProbeReasoningEffort`. Selection resolves as a chain —
+stage field, then the run-wide field, then the constant — and `runner/config.js` refuses a
+value outside the vocabulary **by field name before a run starts**, then resolves the chain
+onto the config so no reader re-implements the fallback. A config naming none of them is the
+Claude configuration it was before, byte for byte; neither field can live in
+`contracts/control-plane.json`'s `configDefaults`, because a chained field has no single
+default value and that object is asserted identical to `runner/config.js`'s `DEFAULTS`.
+
+What follows the selection:
+
+- **Launch.** Codex author and probe stages run `codex exec` with the prompt on stdin, an
+  explicit model, reasoning effort, ephemeral state, ignored user config and rules, strict
+  config, automatic review under its workspace-write sandbox, and structured output. Claude
+  keeps its existing restricted tool arguments unchanged. Secrets stay out of argv.
+- **Credential.** One name per container and never both: `CLAUDE_CODE_OAUTH_TOKEN` or
+  `CODEX_API_KEY`, passed by environment-variable name only. A host stage may reuse a saved
+  `codex login`; a task container may not — no `auth.json` is mounted into one. Codex's shell
+  environment policy keeps its default secret-name excludes and names `CODEX_API_KEY`
+  explicitly, and the entrypoint strips that key for the repository-controlled verifier
+  invocations, so the key reaches the agent CLI and nothing else. The task still receives no
+  GitHub or Beads credential.
+- **Egress.** One allowlist profile per provider, never widened to cover both:
+  `docker/proxy` (Anthropic) and `docker/proxy-codex` (`api.openai.com` only).
+  `scripts/pipeline-net.sh` builds the profile the run selected and `scripts/egress-check.sh`
+  proves that one — selected endpoint reachable, unrelated hosts and direct egress blocked.
+- **Output.** `pipeline/agent-output.js` reads Codex JSONL line-wise as `pipeline/envelope.js`
+  reads the Claude envelope, yielding provider, configured and resolved model, token usage
+  when the stream carries it, the final agent text, and canonical rate-limit evidence. A
+  stream carrying no structured outcome answers null, so model prose never selects an outcome.
+- **Readiness.** Executable, authentication, model availability, image support and egress are
+  asked in that order, each refusal naming the remedy, and all of them ahead of worktree,
+  Beads, Git publication, Docker task and agent-attempt mutation. A pinned CLI is not a
+  capability check: the base image build fails without the required `codex exec` capabilities
+  and preflight re-probes the built image in an isolated `--network none` container.
+
+`CODEX_LIVE_SMOKE=1 node scripts/codex-live-smoke.js [--config run.config.<project>.json]` is
+the one live, read-only check of which GPT model an account actually serves. It is opt-in, in
+no suite roster, and read-only by CLI sandbox rather than by prompt.
+
 ## Supervised operation
 
 One live project supervisor may hold that same host-global canonical-target authority and

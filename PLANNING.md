@@ -241,7 +241,16 @@ the optional `testAuthorModel` in the run config when the test author should dif
 implementation `model`; otherwise the launcher uses `model`. `testProbeModel` may pin the
 separate green-probe agent and falls back through `testAuthorModel` to `model`; all aliases are
 explicit argv values, never a global CLI selection. `testProbeAttempts` bounds the host-feedback
-loop at three by default. `scripts/spec-brief.js` remains the read-only command for inspecting or
+loop at three by default.
+
+**Which backend those two stages open is a selection of its own** (§6.5): `provider`
+run-wide, or `testAuthorProvider` / `testProbeProvider` per stage, each with a matching
+`reasoningEffort`, `testAuthorReasoningEffort` or `testProbeReasoningEffort`. One adapter
+builds either launch, so a Codex stage is a `codex exec` session with the brief on stdin and
+a Claude stage is the restricted headless session it always was. A value outside the closed
+vocabularies is refused by field name before anything starts, an absent one means Claude, and
+a missing or unauthenticated CLI is refused before the issue's worktree is created and before
+Beads is read — with the remedy named, not just the condition. `scripts/spec-brief.js` remains the read-only command for inspecting or
 saving the brief without opening a session.
 
 It works out which of three states the issue is in first, because the instructions differ:
@@ -673,7 +682,8 @@ has everything it needs to know.
   the remedy in the run report, but it still costs that task its slot in the batch.
 - The per-project image exists; Docker Desktop is running.
 - Anything the task needs to *know* (API details, conventions) is in the repo or attached
-  to the issue — the container has no internet beyond the Anthropic endpoints (§4.8).
+  to the issue — the container has no internet beyond its selected provider's enumerated
+  endpoints (§4.8): the Anthropic ones, or `api.openai.com` for a Codex run, never both.
 - **Last act: write the batch marker** (§3.9) — one JSON object at
   `runs/batches/<project>-<YYYY-MM-DD>.json` **in this repo** (git-ignored; never in the
   target's tree, since it names a project and its issue ids). Required keys: `runConfig`

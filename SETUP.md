@@ -28,7 +28,8 @@ None of these can be self-served, and each fails late:
 
 1. **Your own Claude Pro or Max subscription** — not a shared login. Every task spends the
    allowance of whoever's token is in `.env.pipeline`; two people on one subscription starve
-   each other.
+   each other. (A project may instead select the Codex provider, which spends an OpenAI
+   account the same way — see A3.)
 2. **Which GitHub account to use**, and write access to the target repos.
 3. **The contents of `.sanitize-denylist`** — the private names that must never appear in
    this public repo. Git-ignored, so it cannot arrive with a clone. Without it the sanitize
@@ -68,6 +69,23 @@ npm install -g @anthropic-ai/claude-code
 
 Run `claude` in any folder and sign in with the A1 account.
 
+**The Codex CLI is optional and only for a project that selects it.** A run config may set
+`"provider": "codex"` globally or for the test-author / green-probe stages; nothing else
+changes, and a config that names no provider stays exactly as it was. If you are going to
+select it, install and authenticate it on this host too:
+
+```powershell
+npm install -g @openai/codex
+```
+
+```bash
+codex login          # a host stage may reuse this saved ChatGPT CLI login
+```
+
+A **task container** never reuses that login — no `auth.json` is mounted into one — and
+authenticates from `CODEX_API_KEY` instead. A missing CLI or login is refused before a
+worktree, a Beads read, a container or an agent attempt exists, with the remedy named.
+
 ### A4. Let Claude Code install the rest
 
 Start `claude` anywhere — you do not need the clone yet — and give it this:
@@ -102,7 +120,8 @@ session, so it can read the error with you.
 Three things it will not think to tell you:
 
 - **Docker Desktop must be left running.** It is what isolates each task: a throwaway
-  container that reaches three Anthropic addresses and nothing else. The runner checks it is
+  container that reaches only its provider's enumerated addresses — the three Anthropic
+  ones by default, `api.openai.com` for a Codex run — and nothing else. The runner checks it is
   up and stops if not. Its installer wants a reboot and may add its own WSL plumbing — both
   fine; rule 4 is about the terminal *you* type in.
 - **Every `.sh` script in this project runs from Git Bash.** PowerShell is fine for `git` and
@@ -186,8 +205,14 @@ Restart the session in the clone so it picks up this repo's `CLAUDE.md`.
 echo 'CLAUDE_CODE_OAUTH_TOKEN=<token from A7>' > .env.pipeline
 ```
 
-Git-ignored, and must stay that way. Passed to containers by name at launch, never baked into
-an image.
+Git-ignored, and must stay that way. Passed to containers **by environment-variable name**
+at launch — the value crosses in the runner's own environment, so it never appears in a
+Docker argument list, a log line or an image layer.
+
+A Codex container is handed `CODEX_API_KEY` by name in exactly the same way, and never an
+Anthropic token as well: one credential name per container. Export that key in the shell
+you launch from; `.env.pipeline` is read for `CLAUDE_CODE_OAUTH_TOKEN` only, so a run still
+expects that variable to be present.
 
 ### B3. Install the git hooks
 
@@ -220,8 +245,13 @@ docker build -t pipeline-base:local docker/base
 bash scripts/test-base-image.sh      # expect every line PASS
 ```
 
-Node, git, the Claude CLI and `bd` at pinned versions, with no credentials and no pipeline
-code. The network gatekeeper image builds itself on first run.
+Node, git, **both agent CLIs** (Claude Code and Codex) and `bd` at pinned versions, with no
+credentials and no pipeline code. The build itself fails if the pinned Codex cannot offer
+the exact `codex exec` capabilities the pipeline's noninteractive contract needs — a
+version pin alone would let a pinned-but-incompatible CLI fail once per task instead of
+once at build time — and preflight re-probes the built image before a run uses it. The
+network gatekeeper image builds itself on first run, from whichever allowlist profile the
+run's provider selects (`docker/proxy` for Anthropic, `docker/proxy-codex` for OpenAI).
 
 ### B6. `cp .worktree-carry.example .worktree-carry`
 
@@ -315,13 +345,29 @@ change the pipeline itself.
    so start at 1. A fourth if you ever hit it: `allowHalfProven: false` is the default and
    means the runner refuses a suite the freeze gate found red with no probe supplied — set it
    to `true` only if you accept dispatching suites whose green side has never been seen
-   (§4.12's third admission rule).
+   (§4.12's third admission rule). **`provider` is the fifth**, if this project is to run on
+   GPT models: `claude` (the default) or `codex`, optionally overridden per planning stage
+   with `testAuthorProvider` / `testProbeProvider`, each with a matching `reasoningEffort`,
+   `testAuthorReasoningEffort` or `testProbeReasoningEffort`. Anything outside those closed
+   vocabularies is refused by field name before the run starts. Leave every one of them out
+   and the run is byte-for-byte the Claude run it was before.
 3. **`cp .sanitize-denylist.example .sanitize-denylist`** if you touch private work, then list
    the names that must never appear here. This repo is public and is used on private work; it
    documents the machinery, never the work. Run `bash scripts/test-sanitize.sh` before you push.
 4. **Run it**: `node runner/run.js --config run.config.myproject.json`. One run per project at
    a time; a second is refused by name, and a lock left by a killed run is taken over
    automatically — never delete it by hand.
+5. **Only if you set `"provider": "codex"`**, confirm the account actually serves the model
+   your config names before trusting a batch to it. This is the one check in the repository
+   that talks to a live model, so it is opt-in twice, read-only by CLI sandbox rather than
+   by prompt, and in no suite roster:
+
+   ```bash
+   CODEX_LIVE_SMOKE=1 node scripts/codex-live-smoke.js --config run.config.myproject.json
+   ```
+
+   It prints the configured model, the model Codex reports resolving, and the turn's token
+   usage — read from structured output, not from the model's own prose.
 
 ---
 
@@ -372,7 +418,8 @@ Adding a feature later is a planning session, not a re-onboarding.
 4. **A fresh clone does not carry the issue database.** B3 and B4 are what fetch it.
 5. **Suites go stale silently.** Sweep after merging a batch of PRs, before an overnight run,
    and when picking up a cold branch. One suite nobody re-ran accumulated three bugs.
-6. **Anything a container needs must be in the repository.** No internet beyond Anthropic. If
+6. **Anything a container needs must be in the repository.** No internet beyond the one
+   vendor the run selected — Anthropic, or OpenAI for a Codex run, never both. If
    an agent keeps failing for want of an API reference, vendor the docs in — never open the
    network.
 7. **"Repository not found" usually means the wrong GitHub account is active**, not a typo.

@@ -275,7 +275,18 @@ lease and takes no lock of its own, so neither its exit handler nor its teardown
 releases a lease it never took. `scripts/prepare-batch.js` asks the identical question for the
 `preparation` scope in the identical position. The full order is therefore: write-protection
 admission, child admission, the project lock, repository identity, host shell, Docker, image,
-network, egress, stale-issue recovery.
+selected-provider readiness, network, egress, stale-issue recovery.
+
+Provider readiness sits between the image gate and the network for the same reason every
+other gate sits where it does (§6.5, change-log row `repo-45g`): it acquires nothing, so
+refusing there leaves no plumbing to unwind and no other run's issues reset. It asks whether
+this host is authenticated for the selected provider and whether the task image carries a CLI
+that can actually run a task — for Codex, an isolated `--network none` probe of the exact
+`codex exec` capabilities the contract needs, because a version pin does not prove them — and
+each refusal names its remedy rather than its condition. A run selecting Claude asks nothing
+new here: its credential has always resolved later and its image is proven by the image gate,
+and adding a gate would change the behaviour of every existing run config. Egress is not
+re-asked here either; the egress gate below is provider-aware and remains its one authority.
 
 Before the shell/Docker/network gates, preflight also proves the local checkout's fetch
 remote and `targetRepoRemote` reduce to the same repository identity. This binds the task
@@ -389,7 +400,7 @@ flowchart LR
   subgraph NET["Sandbox — no route out"]
     direction TB
     T["Task container — agent + verifier"]
-    PX["Allowlist proxy"]
+    PX["Allowlist proxy — one profile per provider"]
     REG["SLOT 3 registry, read-only"]
   end
   HS -->|"verified before Docker / network / Beads"| R
@@ -404,8 +415,8 @@ flowchart LR
   AC -->|"valid structured values"| R
   AC -.->|"invalid exit-0 claim → failed"| R
   T -->|"every request"| PX
-  PX -->|"allowed"| AN["The three anthropic.com endpoints"]
-  PX --x BL["Refused — github.com, npm, everything else"]
+  PX -->|"allowed"| AN["The selected vendor's endpoints only<br/>three anthropic.com, or api.openai.com"]
+  PX --x BL["Refused — the other vendor, github.com, npm, everything else"]
   REG -.-> T
   R --> RG
   RG -->|"pass, or evidence policy"| CS
@@ -429,8 +440,17 @@ The sandbox is **per project**. The network and the proxy take their names from 
 config — derived from the project segment of `run.config.<project>.json` when it names
 neither — so two runner processes against two projects draw two copies of this diagram
 side by side, and neither one's `up` or `down` touches the other's plumbing (change-log
-row `repo-jur`). The proxy *image* is shared; only the running container and the network
-are per project.
+row `repo-jur`). The proxy *image* is shared across projects; only the running container and
+the network are per project.
+
+It is **not** shared across providers. There is one allowlist profile per provider — the
+Anthropic `docker/proxy` and the OpenAI-only `docker/proxy-codex` — and neither is ever
+widened to cover both, because a single profile serving both vendors would let every task of
+either one reach both, inverting the closed-network policy the moment it gained a second
+provider (change-log row `repo-45g`). `scripts/pipeline-net.sh` builds and brings up whichever
+the run selected, and `scripts/egress-check.sh` proves that same profile: the selected
+endpoint reachable *and* unrelated hosts and unproxied direct egress still blocked, since
+proving either half alone would pass a profile that had been widened.
 
 The shell node is a Windows host-identity gate, not merely a check that some executable
 named `bash` exists (change-log row `verified-host-shell`). The runner proves the shell is
@@ -472,8 +492,12 @@ enters the ordinary failed/blocked row, never done/closed.
 A specialist that needs a different model or a different tool changes nothing structural:
 the coding agent is already swappable through `agentCommand` → `PIPELINE_AGENT_CMD`, and
 the contract is only "a shell command that reads a prompt on stdin and edits files." A
-non-Anthropic tool would additionally need its domain added to the allowlist — the one
-place the closed-network policy would have to be revisited deliberately.
+whole second *vendor* is a first-class selection rather than an override: `provider`
+(run-wide, or per test-author and test-probe stage) picks between Claude and Codex, one
+adapter builds the launch, and the container is handed only that provider's credential name
+(§6.5). What a third vendor would still need is its own deny-by-default allowlist profile
+beside `docker/proxy` and `docker/proxy-codex` — never an entry added to an existing one,
+which is the place the closed-network policy would have to be revisited deliberately.
 
 ## What each outcome does
 

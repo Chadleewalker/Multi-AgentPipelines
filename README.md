@@ -23,8 +23,10 @@ Three phases joined by a task queue:
    rather than in someone's memory, and says how the live queue differs from it before
    anything starts.
 2. **Implementation** (autonomous) — a plain script on your PC works through the queue.
-   Each task gets a fresh container that can reach nothing except three Anthropic
-   endpoints, holds no git credentials, and cannot edit its own tests. It writes code,
+   Each task gets a fresh container that can reach nothing except the enumerated endpoints
+   of the one model vendor its run selected (the three Anthropic endpoints by default,
+   `api.openai.com` when the config selects Codex — never both), holds no git credentials,
+   and cannot edit its own tests. It writes code,
    the verifier runs the frozen tests, and it retries at most three times.
 3. **Review** (with you) — verified work arrives as a pull request carrying the spec, a
    change summary, and the verification evidence. Failed work arrives as a pushed branch
@@ -50,6 +52,9 @@ prove each step worked — is [`SETUP.md`](SETUP.md).
 ```bash
 # 1. put your Claude subscription token where the runner can find it
 #    (git-ignored; get one with `claude setup-token`)
+#    A run config may instead select the Codex provider (`"provider": "codex"`,
+#    globally or per planning stage — see docs/control-plane.md); a host Codex may
+#    reuse a saved `codex login`, and a Codex task container requires CODEX_API_KEY.
 echo 'CLAUDE_CODE_OAUTH_TOKEN=...' > .env.pipeline
 
 # 2. prove the whole thing works, using scripted stubs — no model calls
@@ -95,7 +100,7 @@ on the shared base image, and `bd init` — [`PLANNING.md`](PLANNING.md) walks t
 | `runner/` | the host-side orchestrator — plain JavaScript, no dependencies, no LLM |
 | `pipeline/` | what runs *inside* a container: entrypoint, verifier, agent stubs |
 | `schemas/` | the frozen contracts between separately-built components — the status file, the verify result, the run manifest, and the event ledger a run appends beside its log |
-| `docker/` | the pinned base image and the allowlist proxy sidecar |
+| `docker/` | the pinned base image (both agent CLIs) and one allowlist proxy profile per provider — `proxy` is Anthropic-only, `proxy-codex` is OpenAI-only, and neither is ever widened to cover both |
 | `scripts/` | one test suite per build task, the end-to-end pass, and the host-side readers — `audit-runs.js` joins every past run into one report, `dashboard.js` serves the run in flight on localhost, `batch.js` says which frozen batches have never been launched and how the live queue differs from what was frozen; all change nothing |
 | `tests/` | `acceptance/` — per-task tests, frozen at approval; `unit/` — Docker-free suites |
 | `beads/` | the task-queue issue template |
@@ -108,7 +113,8 @@ on the shared base image, and `bd init` — [`PLANNING.md`](PLANNING.md) walks t
 - Specs and tests are frozen before a run; nothing during a run can change what "done"
   means.
 - A specialist agent may advise, never gate.
-- The container gets one credential and no route out beyond the Anthropic endpoints.
+- The container gets one credential — its selected provider's, never both — and no route
+  out beyond that provider's enumerated endpoints.
 - A checkout carrying `pipeline.config.json` is pipeline-first: an agent session reads
   freely and does not change product, configuration, control or frozen paths by hand. See
   `node scripts/write-protection.js status`.

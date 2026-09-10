@@ -274,9 +274,9 @@ Copy this section in (adjust nothing but the project name):
 
 ```markdown
 ### Working inside the pipeline container (read this when you are the coding agent in a run)
-- This is a locked-down Docker container: the network reaches Anthropic endpoints only.
-  No package installs, no web lookups — everything you need is in this repo, the issue
-  file, or the memory file.
+- This is a locked-down Docker container: the network reaches the run's own model-vendor
+  endpoints only. No package installs, no web lookups — everything you need is in this
+  repo, the issue file, or the memory file.
 - Your task is `/workspace/.run/issue.md`; project memory is `/workspace/.run/memory.md`.
   Both are read-only exports — use them, don't edit them.
 - NEVER touch `tests/acceptance/` or any path in `pipeline.config.json`'s `frozenPaths`.
@@ -309,8 +309,15 @@ Copy this section in (adjust nothing but the project name):
       allowlist proxy are per project, and the runner derives both names from that
       `<project>` segment when the config gives none (change-log row `repo-jur`). Two
       projects whose configs are both called `run.config.json` share one network and one
-      sidecar, so starting the second run destroys the first run's route to Anthropic.
-      Set `network` / `proxyName` explicitly only if you want particular names.
+      sidecar, so starting the second run destroys the first run's route to its model
+      vendor. Set `network` / `proxyName` explicitly only if you want particular names.
+      **Optional `provider`** selects this project's agent backend — `claude` (the default)
+      or `codex` — run-wide or per planning stage as `testAuthorProvider` /
+      `testProbeProvider`, each with a matching `reasoningEffort`,
+      `testAuthorReasoningEffort` or `testProbeReasoningEffort` (change-log row `repo-45g`).
+      It also decides which deny-by-default allowlist profile the sidecar runs, so a Codex
+      project reaches OpenAI and nothing else while an Anthropic project is untouched.
+      Omit them all and this project runs exactly as it did before the field existed.
       **One config per target repo.** A run locks its target repo before any other gate,
       so a second config aimed at the same repo is refused by name rather than draining
       the same queue twice (change-log row `repo-os9`). The lock keys on the canonical
