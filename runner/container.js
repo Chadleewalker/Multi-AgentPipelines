@@ -43,6 +43,17 @@ function providerOf(cfg, credential) {
   return credential ? providerForCredentialName(credential.name) : providerFor(cfg);
 }
 
+// Codex's workspace-write sandbox creates an unprivileged user/mount namespace with bwrap.
+// Docker's default seccomp policy blocks that namespace syscall before bwrap can apply its
+// tighter inner policy. Delegate the syscall decision only for Codex task containers; no
+// capability, privileged mode, host namespace or host path is added, and Claude keeps its
+// exact historical Docker argv.
+const CODEX_SANDBOX_SECURITY_ARGS = Object.freeze(['--security-opt', 'seccomp=unconfined']);
+
+function sandboxSecurityArgs(provider) {
+  return provider === 'codex' ? [...CODEX_SANDBOX_SECURITY_ARGS] : [];
+}
+
 // The container's inputs are exactly these (§4.10) — nothing else crosses the boundary.
 function buildArgs(cfg, opts) {
   const { containerName, workspaceDir, pipelineDir, issueId } = opts;
@@ -50,6 +61,7 @@ function buildArgs(cfg, opts) {
   const provider = providerOf(cfg, credential);
   const args = [
     'run', '--rm',
+    ...sandboxSecurityArgs(provider),
     '--name', containerName,
     '--network', cfg.network,
     '-v', `${toMountPath(workspaceDir)}:/workspace`,
@@ -156,4 +168,4 @@ function runTask(cfg, opts, log, traceId) {
   });
 }
 
-module.exports = { runTask, buildArgs };
+module.exports = { runTask, buildArgs, sandboxSecurityArgs, CODEX_SANDBOX_SECURITY_ARGS };

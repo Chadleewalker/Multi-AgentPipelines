@@ -128,7 +128,13 @@ login from a busy credential lane before target mutation. For a non-default prov
 preflight additionally proves
 the *task image* can run that provider's CLI with every required capability — presence in
 `docker image inspect` is not that proof — so rebuild the pinned base image during planning
-if it predates the Codex pin. The one live model call in the Codex surface is opt-in and
+if it predates the Codex pin. Codex keeps `--approve-for-me` and its inner Codex sandbox.
+Because that sandbox creates its own unprivileged namespace, Codex task containers alone add
+`seccomp=unconfined` to the outer Docker policy; they do not add privileged mode, a capability,
+a host namespace, the Docker socket, or another host path. Before network startup or target
+mutation, preflight runs `codex sandbox -- true` without credentials or network as the image's
+non-root `node` user under that exact option and refuses a host where the namespace cannot start.
+The one live model call in the Codex surface is opt-in and
 documentary:
 
 ```bash
