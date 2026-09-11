@@ -205,6 +205,14 @@ authority or resetting/pushing anything, it proves the host commands exist, conf
 fields and fixture roster are valid, the Docker daemon is reachable, and both required
 images exist. A missing prerequisite is a pre-mutation refusal, not a partially failed run.
 
+For the routine complete host pass, use `node scripts/fast-full-sweep.js --repo .`. It runs
+the authoritative mandatory profile once, proves the commit and tracked tree did not move,
+then asks both canonical scripts for their current plans and delegates only the remaining
+Docker/live suites to `test-all.sh`; e2e's invocation of `test-isolation.sh` supplies that
+leaf's single coverage. The summary separates aggregate mandatory, direct extra and nested
+coverage. For suite-by-suite diagnosis, use the canonical `bash scripts/test-all.sh`
+fallback; it remains the default full sweep and retains every per-suite log and timing.
+
 ## Agent path
 
 On the host, use Beads for durable work state and `bd prime` for the current workflow.
