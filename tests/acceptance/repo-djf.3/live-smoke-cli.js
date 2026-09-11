@@ -1,6 +1,7 @@
 // Frozen acceptance test — repo-djf.3 public pinned-image ChatGPT smoke path.
 'use strict';
 const path = require('path');
+const { spawnSync } = require('child_process');
 const SMOKE = require('../../../scripts/codex-live-smoke');
 
 let failed = 0;
@@ -44,6 +45,18 @@ function run(command, argv, options = {}) {
 
 async function main() {
 try {
+  const cliEnv = { ...process.env };
+  delete cliEnv.CODEX_LIVE_SMOKE;
+  delete cliEnv.CODEX_API_KEY;
+  delete cliEnv.OPENAI_API_KEY;
+  const cli = spawnSync(process.execPath, [require.resolve('../../../scripts/codex-live-smoke')], {
+    env: cliEnv, encoding: 'utf8', timeout: 5000,
+  });
+  check('C5 the actual public smoke CLI awaits its asynchronous main function and exits cleanly when the opt-in flag is absent',
+    cli.status === 0 && /SKIP.*live smoke/i.test(`${cli.stdout || ''}\n${cli.stderr || ''}`),
+    JSON.stringify({ status: cli.status, signal: cli.signal,
+      output: `${cli.stdout || ''}\n${cli.stderr || ''}`.slice(0, 500) }));
+
   const result = await SMOKE.main(
     ['--image', taskImage, '--model', 'gpt-5.6-terra', '--reasoning-effort', 'low'],
     {

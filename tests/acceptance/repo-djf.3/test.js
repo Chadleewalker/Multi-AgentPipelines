@@ -39,6 +39,9 @@ try {
     && example.provider === 'claude' && example.testAuthorProvider === 'claude' && example.testProbeProvider === 'claude'
     && example.model === 'opus' && example.testAuthorModel === 'opus' && example.testProbeModel === 'opus'
     && example.codexAuth === 'chatgpt');
+  const setup = fs.readFileSync(path.join(REPO, 'SETUP.md'), 'utf8');
+  check('C5 setup guidance does not contradict managed-session task containers after documenting ChatGPT mode',
+    !/Task containers never reuse a saved session/i.test(setup));
   const noFallback = a && a.validateConfig({ provider: 'codex', codexAuth: 'chatgpt', CODEX_API_KEY: secret });
   check('C1 ChatGPT mode selects no environment credential and does not expose an API key as a fallback', !!noFallback && noFallback.credentialName == null && !JSON.stringify(noFallback).includes(secret));
 

@@ -168,11 +168,13 @@ async function main() {
     const sourceHome = path.join(root, 'operator-codex'); const privateRoot = path.join(root, 'private-cache'); fs.mkdirSync(sourceHome, { recursive: true }); fs.writeFileSync(path.join(sourceHome, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: secret, refresh_token: secret } })); fs.writeFileSync(path.join(sourceHome, 'unrelated-token'), secret);
     const staged = AUTH && typeof AUTH.stageTaskCache === 'function' && await Promise.resolve(AUTH.stageTaskCache({ codexHome: sourceHome, cacheRoot: privateRoot, taskId: 'one', containerPath: '/root/.codex' }));
     const actual = staged && chatgpt.ok && await observeTaskLaunch(root, chatgpt.cfg, staged, sourceHome, secret);
-    const cacheMountedWritable = actual && actual.launch && actual.launch.argv.some(arg => /:\/root\/\.codex:rw$/.test(arg));
+    const cacheMountedWritable = actual && actual.launch && actual.launch.argv.some(arg => /:\/run\/pipeline-auth-host\/cache:rw$/.test(arg));
     const safeLaunch = actual && actual.launch && actual.launch.command === 'docker'
       && actual.launch.env.hasApiKey === false && actual.launch.env.hasOpenAiApiKey === false
       && actual.launch.env.codexHome === null
-      && actual.launch.argv.some((arg, i) => actual.launch.argv[i - 1] === '-e' && arg === 'CODEX_HOME=/root/.codex')
+      && actual.launch.argv.some((arg, i) => actual.launch.argv[i - 1] === '--user' && /^(?:root|0(?::0)?)$/.test(arg))
+      && actual.launch.argv.some((arg, i) => actual.launch.argv[i - 1] === '-e' && arg === 'PIPELINE_CHATGPT_AUTH=1')
+      && !actual.launch.argv.some((arg, i) => actual.launch.argv[i - 1] === '-e' && /^CODEX_HOME=/.test(arg))
       && !actual.launch.argv.some(arg => arg === 'CODEX_API_KEY' || String(arg).startsWith('CODEX_API_KEY='));
     check('C3 runner/container.js consumes the injected spawn seam and points Codex at only the writable pipeline-owned cache, never the operator home or either API-key spelling', !!actual && !!actual.launch && actual.result.exitCode === 0 && staged.hostPath.startsWith(privateRoot) && staged.hostPath !== sourceHome && cacheMountedWritable && safeLaunch, secretSafe(actual && actual.launch, secret));
     check('C3 runner/run.js awaits the credential-lane lease and supplies that cache to runTask, so a disconnected helper or fake launch cannot satisfy the suite', /await\s+(?:Promise\.resolve\()?\s*codexAuth\.stageTaskCache/.test(fs.readFileSync(RUN_FILE, 'utf8')) && /runTask\(cfg,\s*\{[\s\S]{0,1600}authCache/.test(fs.readFileSync(RUN_FILE, 'utf8')));
@@ -217,8 +219,14 @@ async function main() {
       /subscription token loaded \(\$\{credential\.name\}\)/.test(runSource)
         && /task resumed across \$\{pauses\}/.test(runSource));
     const verifier = fs.readFileSync(path.join(REPO, 'pipeline', 'entrypoint.sh'), 'utf8');
+    check('C3 repository-controlled verifier code runs under a different identity that cannot traverse either the internal node-only session or root-only host-cache handoff',
+      /runuser\s+-u\s+node[\s\S]{0,300}CODEX_HOME=\/root\/\.codex/.test(verifier)
+        && /runuser\s+-u\s+nobody[\s\S]{0,300}node\s+"\$PIPE\/verify\.js"/.test(verifier)
+        && /\/run\/pipeline-auth-host\/cache/.test(verifier)
+        && /chmod\s+700[\s\S]{0,180}\/run\/pipeline-auth-host/.test(verifier),
+      verifier.match(/runuser[^\n]*/g)?.join(' | ') || 'no identity split');
     check('C3 the staged secret never reaches workspace, task artifacts, container log, or the repository-controlled verifier environment', !!actual && !readTree(actual.workspaceDir).includes(secret) && !readTree(actual.taskDir).includes(secret)
-      && /env\s+-u\s+CODEX_API_KEY\s+-u\s+OPENAI_API_KEY/.test(verifier));
+      && /env\s+-u\s+CODEX_API_KEY\s+-u\s+OPENAI_API_KEY\s+-u\s+CODEX_HOME\s+node\s+"\$PIPE\/verify\.js"/.test(verifier));
     if (AUTH && staged) await Promise.resolve(AUTH.releaseTaskCache(staged));
   } catch (e) { check('C1-C3 integration harness executes', false, e.stack || String(e)); }
   finally { for (const root of roots) try { fs.rmSync(root, { recursive: true, force: true }); } catch {} }
