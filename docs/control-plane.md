@@ -78,12 +78,14 @@ the example config's Claude aliases are not one.
 Selecting a provider selects three things together, and they are not independently
 configurable:
 
-- **The credential.** `CLAUDE_CODE_OAUTH_TOKEN` or `CODEX_API_KEY`, read from the
-  git-ignored `.env.pipeline` or the ambient environment, with no cross-provider fallback.
-  Containers receive it by environment-variable name only, and every other provider's
-  credential is removed from the docker client's environment first. On the host, Codex may
-  instead reuse a saved ChatGPT CLI session (`codex login`); inside a container it cannot,
-  and no `auth.json` is ever mounted.
+- **The credential.** Claude uses `CLAUDE_CODE_OAUTH_TOKEN`. Codex chooses `codexAuth`
+  explicitly: `api-key` (also the legacy missing-field behavior) uses `CODEX_API_KEY`, while
+  `chatgpt` uses a saved `codex login` session. There is no fallback between modes or
+  providers. ChatGPT preflight accepts only a managed session with a refresh token, then
+  seeds a host-private durable cache once; later runs preserve its refreshed state.
+  A trusted task receives only a task-private writable copy as `CODEX_HOME=/root/.codex`,
+  never the operator Codex home or an API key. The verifier receives neither credential nor
+  `CODEX_HOME`.
 - **The container command.** The runner passes `PIPELINE_PROVIDER`, and
   `pipeline/entrypoint.sh` selects that provider's noninteractive invocation.
 - **The egress profile.** `docker/proxy` carries the Anthropic endpoints, `docker/proxy-codex`
@@ -102,6 +104,12 @@ documentary:
 ```bash
 CODEX_LIVE_SMOKE=1 node scripts/codex-live-smoke.js   # read-only; reports the model that answered
 ```
+
+One saved ChatGPT session is one exclusive credential lane, held from staging through Codex
+execution and refresh write-back. A second subscription worker waits rather than receiving a
+concurrent copy of that session; use independently authenticated lane caches for parallel
+subscription workers. The Codex proxy profile permits exactly `api.openai.com`, `chatgpt.com`,
+and `ab.chatgpt.com`.
 
 ## Supervised operation
 
