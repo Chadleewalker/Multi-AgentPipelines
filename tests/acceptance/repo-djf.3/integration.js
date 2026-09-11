@@ -226,6 +226,7 @@ async function main() {
     const runVerifier = verifier.slice(verifier.indexOf('run_verifier() {'), verifier.indexOf('restore_verified()'));
     const syncStart = Math.max(verifier.indexOf('sync_chatgpt_auth() {'), verifier.indexOf('persist_chatgpt_auth() {'));
     const authSync = syncStart >= 0 ? verifier.slice(syncStart, verifier.indexOf('run_agent() {')) : '';
+    const beforeModel = verifier.slice(0, verifier.indexOf('runuser -u node'));
     check('C3 repository-controlled verifier code runs under a different identity that cannot traverse either the internal node-only session or root-only host-cache handoff',
       /runuser\s+-u\s+node\s+--preserve-environment[\s\S]{0,180}CODEX_HOME=\/root\/\.codex/.test(runAgent)
         && /runuser\s+-u\s+nobody[\s\S]{0,300}node\s+"\$PIPE\/verify\.js"/.test(runVerifier)
@@ -233,6 +234,11 @@ async function main() {
         && /chmod\s+700[\s\S]{0,180}\/run\/pipeline-auth-host/.test(verifier)
         && /chown\s+(?:-R\s+)?node:node\s+\/root\/\.codex/.test(verifier)
         && /chmod\s+600\s+\/root\/\.codex\/auth\.json/.test(verifier)
+        && /mkdir\s+-p[\s\S]{0,120}\/root\/\.codex[\s\S]{0,100}\|\|\s*die30/.test(beforeModel)
+        && /chmod\s+700[\s\S]{0,160}\/root\/\.codex[\s\S]{0,100}\|\|\s*die30/.test(beforeModel)
+        && /cp\s+-f[\s\S]{0,180}\/root\/\.codex\/auth\.json[\s\S]{0,100}\|\|\s*die30/.test(beforeModel)
+        && /chown\s+(?:-R\s+)?node:node\s+\/root\/\.codex[\s\S]{0,100}\|\|\s*die30/.test(beforeModel)
+        && /chmod\s+600\s+\/root\/\.codex\/auth\.json[\s\S]{0,100}\|\|\s*die30/.test(beforeModel)
         && /chmod\s+-R\s+a\+rwX\s+"\$(?:WS|WORKSPACE)"[\s\S]{0,300}runuser\s+-u\s+nobody/.test(runVerifier),
       verifier.match(/runuser[^\n]*/g)?.join(' | ') || 'no identity split');
     check('C3 every managed Codex invocation persists refreshed auth before its exit status is returned, while non-ChatGPT verification retains the established node identity',

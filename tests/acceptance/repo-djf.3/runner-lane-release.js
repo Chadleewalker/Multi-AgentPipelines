@@ -115,6 +115,11 @@ async function main() {
       && calls.map(call => call[0]).join(',') === 'stage,release'
       && calls[1] && calls[1][1] === handle,
     JSON.stringify({ thrown: thrown && thrown.message, calls: calls.map(call => call[0]) }));
+  check('C3 the actual managed-session runner launch supplies only the private cache and never an empty API-key credential placeholder',
+    launches.length === 1 && launches[0].authCache === handle && !launches[0].credential,
+    JSON.stringify(launches.map(opts => ({ hasAuthCache: !!opts.authCache,
+      credentialName: opts.credential && opts.credential.name,
+      credentialValueLength: opts.credential && String(opts.credential.value || '').length }))));
 
   calls.length = 0;
   failurePoint = 'collect';
