@@ -242,3 +242,7 @@ bash scripts/test-ci.sh
 
 The control-plane contract and loader are frozen paths. A task implementation therefore
 cannot rewrite its own outcome or publication policy.
+
+### ChatGPT-managed Codex workers
+
+A Codex run may select `codexAuth: "chatgpt"` instead of the explicit `api-key` mode. The host seeds a private durable managed-auth cache once from `codex login`; each task receives only a writable private copy at `/root/.codex`. One saved ChatGPT login is one safe active Codex lane: tasks sharing it serialize from staging through refresh persistence. Use independently authenticated lane caches for parallel subscription workers.

@@ -23,5 +23,6 @@
   "model": "opus",
   "testAuthorModel": "opus",
   "testProbeModel": "opus",
+  "codexAuth": "chatgpt",
   "testProbeAttempts": 3
 }

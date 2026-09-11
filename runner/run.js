@@ -26,6 +26,7 @@ const {
 } = require('./queue');
 const { prepare, hasCommits, collectArtifacts, discard } = require('./workspace');
 const { runTask } = require('./container');
+const codexAuth = require('./codex-auth');
 const { createPauseGate } = require('./pause');
 const { createFeedSource, fixedSource, ENDINGS } = require('./feed');
 const { fileMemoryNotes, shouldFileMemory } = require('./memory');
@@ -94,7 +95,7 @@ function cleanupOwnedLifecycle(cfg, repoRoot, log, traceId, deps = {}) {
 // One task container (§4.10). PIPELINE_EXEC_STUB replaces the container with a local
 // script — used by the runner's own test suites to exercise outcome paths cheaply;
 // real runs always take the docker path.
-async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClockMinutes) {
+async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClockMinutes, authCache) {
   const stub = process.env.PIPELINE_EXEC_STUB;
   if (stub) {
     // Asynchronous on purpose (§7): spawnSync here would serialise every stubbed task and
@@ -139,6 +140,7 @@ async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClo
     // Paired with its environment-variable NAME here, so the container layer never has to
     // guess which provider a bare value belongs to.
     credential: { name: credentialNameFor(providerFor(cfg)), value: token },
+    authCache,
     wallClockMinutes: wallClockMinutes || cfg.wallClockMinutes,
   }, log, traceId);
 }
@@ -379,6 +381,11 @@ async function runOneTask(cfg, issue, log, token, gate, ownership) {
   // the manifest row reports. The wait-cycle count it used to carry alongside is a
   // different quantity and now lives on the run-level gate, once for the whole run (§7).
   let pauses = 0;
+  let authCache = null;
+  if (cfg.provider === 'codex' && cfg.codexAuth === 'chatgpt') {
+    authCache = await Promise.resolve(codexAuth.stageTaskCache({ cacheRoot: cfg.codexAuthCacheRoot, taskId: issue.id, wait: true }));
+  }
+  try {
   for (;;) {
     const remainingMinutes = cfg.wallClockMinutes - activeMs / 60000;
     if (remainingMinutes <= 0) {
@@ -387,7 +394,7 @@ async function runOneTask(cfg, issue, log, token, gate, ownership) {
       artifacts = collectArtifacts(ws.dir, taskDir, issue.id);
       break;
     }
-    exec = await executeTask(cfg, issue, taskDir, log, tr, ws, token, remainingMinutes);
+    exec = await executeTask(cfg, issue, taskDir, log, tr, ws, token, remainingMinutes, authCache);
     activeMs += exec.durationMs || 0;
     if (exec.durationMs !== undefined) {
       log.info(tr, `container ran ${Math.round(exec.durationMs / 1000)}s` +
@@ -421,7 +428,8 @@ async function runOneTask(cfg, issue, log, token, gate, ownership) {
     log.info(tr, 'relaunching in a fresh container against the same workspace (attempt counter carries over)',
       { event: 'task.relaunched', data: {} });
   }
-  if (pauses) log.info(tr, `task resumed across ${pauses} usage-window pause(s)`);
+  } finally { if (authCache) await Promise.resolve(codexAuth.releaseTaskCache(authCache)); }
+  if (pauses) log.info(tr, `task resumed across  usage-window pause(s)`);
 
   // ---- the two ledger-only facts (§4.12, §5; change-log row `repo-3xw`) ----------------
   // AFTER the relaunch loop, once, from the COLLECTED status file — never inside it. A parked
@@ -579,13 +587,13 @@ async function main() {
   // a Beads claim, a network or a container exists, rather than failing at the model
   // endpoint once all of them do. With no provider selected this is exactly the historical
   // Claude token load and the historical diagnostic.
-  const credential = loadProviderCredential(REPO_ROOT, cfg.provider);
-  if (!credential) {
+  const credential = (cfg.provider === 'codex' && cfg.codexAuth === 'chatgpt') ? null : loadProviderCredential(REPO_ROOT, cfg.provider);
+  if (!credential && !(cfg.provider === 'codex' && cfg.codexAuth === 'chatgpt')) {
     log.error(t, missingCredentialDiagnostic(cfg.provider));
     process.exit(2);
   }
-  const token = credential.value;
-  log.info(t, `subscription token loaded (${credential.name})`);
+  const token = credential ? credential.value : '';
+  log.info(t, credential ? `subscription token loaded ()` : 'ChatGPT managed authentication selected');
 
   // The write-protection backstop (change-log row `repo-324`). Ahead of preflight on purpose:
   // it holds no lock and creates no network, so a refusal here has nothing to compensate for.
@@ -604,8 +612,9 @@ async function main() {
   }
 
   const pre = preflight(cfg, REPO_ROOT, log);
-  if (!pre.ok) {
-    log.error(t, `PREFLIGHT FAILED — no tasks launched: ${pre.reason}`);
+  const resolved = await Promise.resolve(pre);
+  if (!resolved.ok) {
+    log.error(t, 'PREFLIGHT FAILED — no tasks launched: ' + resolved.reason);
     // preflight owns compensation for every unsuccessful path after acquiring the lock.
     // In particular, an `up` script may create half the plumbing and then fail; its own
     // finally attempts `down` before releasing. A lock refusal never owned either resource.
@@ -619,17 +628,17 @@ async function main() {
   // A supervisor child's implementation authority travels on the config, so every Beads write
   // and every publication below can name the section it must be alone inside. Null for a
   // standalone run, where the target lock already makes that true.
-  cfg.childAdmission = pre.childAdmission || null;
+  cfg.childAdmission = resolved.childAdmission || null;
   const releaseOnExit = () => {
     try { networkDown(REPO_ROOT, cfg); } catch { /* process exit: best effort only */ }
     finally {
-      if (pre.lockOwned !== false) {
-        try { releaseLock(REPO_ROOT, cfg.targetRepoPath, pre.ownership); } catch { /* never mask the real exit */ }
+      if (resolved.lockOwned !== false) {
+        try { releaseLock(REPO_ROOT, cfg.targetRepoPath, resolved.ownership); } catch { /* never mask the real exit */ }
       }
     }
   };
   process.on('exit', releaseOnExit);
-  log.info(t, `preflight passed${pre.recovered.length ? ` (recovered: ${pre.recovered.join(', ')})` : ''}`);
+  log.info(t, `preflight passed${resolved.recovered.length ? ` (recovered: ${resolved.recovered.join(', ')})` : ''}`);
 
   let completed = false;
   let cleanup = { ok: true };
@@ -703,7 +712,7 @@ async function main() {
 
   const drained = await drainQueue(
     source,
-    (issue) => runOneTask(cfg, issue, log, token, gate, pre.ownership),
+    (issue) => runOneTask(cfg, issue, log, token, gate, resolved.ownership),
     cfg.concurrency
   );
   const results = drained.filter(Boolean);
@@ -794,7 +803,7 @@ async function main() {
     })();
   } finally {
     cleanup = cleanupOwnedLifecycle(cfg, REPO_ROOT, log, t,
-      { ownership: pre.ownership, lockOwned: pre.lockOwned });
+      { ownership: resolved.ownership, lockOwned: resolved.lockOwned });
     process.removeListener('exit', releaseOnExit);
   }
   if (!cleanup.ok) {

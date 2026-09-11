@@ -36,6 +36,9 @@ RUN help="$(codex exec --help 2>&1)" \
        done \
     && echo "codex exec capabilities verified"
 
+# Let node traverse its task-private CODEX_HOME without exposing a listing of /root.
+RUN chmod 711 /root
+
 # Tasks run as the image's non-root "node" user; /workspace is the bind-mounted
 # per-task clone (§4.2) and the default working directory.
 USER node

@@ -46,7 +46,7 @@ function providerOf(cfg, credential) {
 // The container's inputs are exactly these (§4.10) — nothing else crosses the boundary.
 function buildArgs(cfg, opts) {
   const { containerName, workspaceDir, pipelineDir, issueId } = opts;
-  const credential = credentialFor(cfg, opts);
+  const credential = cfg.codexAuth === 'chatgpt' ? null : credentialFor(cfg, opts);
   const provider = providerOf(cfg, credential);
   const args = [
     'run', '--rm',
@@ -62,6 +62,7 @@ function buildArgs(cfg, opts) {
     '-e', `HTTP_PROXY=${cfg.proxyUrl}`,
     '-e', 'NO_PROXY=localhost,127.0.0.1',
   ];
+  if (opts.authCache) { args.push('-v', opts.authCache.mount, '-e', 'CODEX_HOME=' + opts.authCache.containerPath); }
   // Credential by NAME only: the value is placed in the docker client's own environment
   // below, so it never appears in an argument list, a log line, or an image layer (§6).
   if (credential) args.push('-e', credential.name);
@@ -94,11 +95,13 @@ function runTask(cfg, opts, log, traceId) {
     // Exactly one provider credential crosses this boundary. Every other one is removed
     // from the docker client's environment first, so a host that holds both cannot leak
     // the unselected provider's key into a task through `-e NAME` inheritance.
-    const credential = credentialFor(cfg, opts);
+    const credential = cfg.codexAuth === 'chatgpt' ? null : credentialFor(cfg, opts);
     const childEnv = { ...DOCKER_ENV };
     for (const name of CREDENTIAL_ENV_NAMES) delete childEnv[name];
+    delete childEnv.CODEX_HOME;
     if (credential) childEnv[credential.name] = credential.value;
-    const child = spawn('docker', args, { env: childEnv });
+    const launch = opts.spawn || spawn;
+    const child = launch('docker', args, { env: childEnv });
     child.stdout.pipe(logStream);
     child.stderr.pipe(logStream);
 
