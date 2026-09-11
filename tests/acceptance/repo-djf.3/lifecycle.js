@@ -222,6 +222,19 @@ async function main() {
         unique: secondHandle && secondHandle.hostPath !== firstHandle.hostPath }));
     if (secondHandle) await AUTH.releaseTaskCache(secondHandle);
 
+    const containmentRoot = path.join(root, 'task-containment');
+    fs.mkdirSync(containmentRoot, { recursive: true });
+    fs.writeFileSync(path.join(containmentRoot, 'auth.json'), JSON.stringify(managed('contained')));
+    const traversalHandle = await AUTH.stageTaskCache({
+      cacheRoot: containmentRoot, taskId: '../../escape-attempt', retryMs: 5, timeoutMs: 500,
+    });
+    const taskRoot = path.resolve(containmentRoot, 'tasks');
+    const taskPath = path.resolve(traversalHandle.hostPath);
+    check('C3 an issue id cannot place a task credential cache outside the private tasks directory later removed by cleanup',
+      taskPath.startsWith(`${taskRoot}${path.sep}`),
+      JSON.stringify({ taskRoot, taskPath }));
+    await AUTH.releaseTaskCache(traversalHandle);
+
     const seedRoot = path.join(root, 'seed-once');
     const sourceHome = path.join(seedRoot, 'source');
     const privateRoot = path.join(seedRoot, 'private');
@@ -234,16 +247,22 @@ async function main() {
       retryMs: 5, timeoutMs: 500,
     }));
     const keptRefresh = readRefresh(path.join(privateRoot, 'auth.json'));
+    const durableWithoutSeed = await Promise.resolve(AUTH.preflight({
+      mode: 'chatgpt', codexHome: path.join(seedRoot, 'missing-original-login'), cacheRoot: privateRoot,
+      retryMs: 5, timeoutMs: 500,
+    }));
+    const keptWithoutSeed = readRefresh(path.join(privateRoot, 'auth.json'));
     const freshRoot = path.join(seedRoot, 'fresh-private');
     const seeded = await Promise.resolve(AUTH.preflight({
       mode: 'chatgpt', codexHome: sourceHome, cacheRoot: freshRoot,
       retryMs: 5, timeoutMs: 500,
     }));
     check('C2 preflight seeds a missing private cache once and never overwrites its refreshed auth from the original host seed',
-      existing && existing.ok && seeded && seeded.ok
+      existing && existing.ok && durableWithoutSeed && durableWithoutSeed.ok && seeded && seeded.ok
         && keptRefresh === 'durable-refresh'
+        && keptWithoutSeed === 'durable-refresh'
         && readRefresh(path.join(freshRoot, 'auth.json')) === 'original-seed',
-      JSON.stringify({ existing, seeded, keptRefresh }));
+      JSON.stringify({ existing, durableWithoutSeed, seeded, keptRefresh, keptWithoutSeed }));
 
     const faultRoot = path.join(root, 'atomic-fault');
     fs.mkdirSync(faultRoot, { recursive: true });
