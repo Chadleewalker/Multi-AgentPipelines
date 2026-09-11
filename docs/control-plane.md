@@ -93,7 +93,9 @@ configurable:
   check.
 
 A missing executable, credential, model, image capability or route fails before any
-mutation and names its remedy. For a non-default provider, preflight additionally proves
+mutation and names its remedy.
+
+Codex authentication is explicit: `codexAuth: "api-key"` preserves the API-key path, while `codexAuth: "chatgpt"` uses one host-private managed session lane. One saved ChatGPT login permits one safe active Codex worker across staging, execution and refresh persistence; parallel subscription workers require independently authenticated lane caches. Containers receive only a task-private writable `CODEX_HOME=/root/.codex` cache, never the operator Codex home or an API key. For a non-default provider, preflight additionally proves
 the *task image* can run that provider's CLI with every required capability — presence in
 `docker image inspect` is not that proof — so rebuild the pinned base image during planning
 if it predates the Codex pin. The one live model call in the Codex surface is opt-in and

@@ -147,6 +147,29 @@ function main(argv, io = {}) {
   return result.status === 0 ? 0 : 1;
 }
 
-if (require.main === module) process.exit(main(process.argv.slice(2)));
+if (false && require.main === module) process.exit(main(process.argv.slice(2)));
 
 module.exports = { main, parseArgs, smokeArgs, DEFAULT_MODEL };
+
+function runChatgptContainerSmoke({ image, authCache, model, reasoningEffort, env = {}, run = runSync, out = console.log, err = console.error }) {
+  const clean = { ...env }; delete clean.CODEX_API_KEY; delete clean.OPENAI_API_KEY; delete clean.CODEX_HOME;
+  const network = env.PIPELINE_NET || 'pipeline-net';
+  const proxy = env.PIPELINE_PROXY_URL || env.HTTPS_PROXY || 'http://pipeline-proxy:3128';
+  const args = ['run', '--rm', '--network', network, '-v', authCache.mount,
+    '-e', 'CODEX_HOME=/root/.codex', '-e', 'HTTPS_PROXY=' + proxy, '-e', 'HTTP_PROXY=' + proxy,
+    '-e', 'NO_PROXY=localhost,127.0.0.1', image, 'codex', ...smokeArgs({model, reasoningEffort})];
+  out('Authentication: ChatGPT managed session');
+  return run('docker', args, { env: clean, input: PROMPT, label: 'ChatGPT pinned-image live smoke', timeoutMs: TIMEOUT_MS });
+}
+async function chatgptMain(argv, io = {}) {
+  const out=io.out||console.log, err=io.err||console.error, env=io.env||process.env, auth=io.codexAuth||require('../runner/codex-auth');
+  if (env.CODEX_LIVE_SMOKE !== '1') { out('SKIP codex live smoke  set CODEX_LIVE_SMOKE=1 to make one real, read-only call.'); return 0; }
+  let image=null, model=DEFAULT_MODEL, reasoningEffort='low';
+  for(let i=0;i<argv.length;i+=1){ if(argv[i]==='--image') image=argv[++i]; else if(argv[i]==='--model') model=argv[++i]; else if(argv[i]==='--reasoning-effort') reasoningEffort=argv[++i]; else { err('codex-live-smoke: unknown option "'+argv[i]+'"'); return 2; } }
+  if(!image) { err('codex-live-smoke: --image needs a pinned task image'); return 2; }
+  const pre=await Promise.resolve(auth.preflight({mode:'chatgpt',env,codexHome:env.CODEX_HOME,cacheRoot:env.PIPELINE_CODEX_CACHE}));
+  if(!pre.ok){err('codex-live-smoke: '+pre.reason);return 1}
+  let handle; try { handle=await Promise.resolve(auth.stageTaskCache({cacheRoot:pre.cacheRoot,taskId:'smoke',wait:true})); const result=runChatgptContainerSmoke({image,authCache:handle,model,reasoningEffort,env,run:io.runSync||runSync,out,err}); const raw=(result.stdout||'')+'\n'+(result.stderr||''); const normalized=normalizeOutput('codex',raw,model); if(!normalized || result.status!==0){err('codex-live-smoke: no structured Codex result (exit '+result.status+').');return 1} out('PASS codex live smoke');return 0; } finally { if(handle) await Promise.resolve(auth.releaseTaskCache(handle)); }
+}
+if (require.main === module) chatgptMain(process.argv.slice(2)).then(code=>process.exit(code));
+module.exports = { main: chatgptMain, parseArgs, smokeArgs, DEFAULT_MODEL, runChatgptContainerSmoke };

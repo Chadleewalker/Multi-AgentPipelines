@@ -18,7 +18,7 @@ const {
 // Every provider credential name this pipeline knows. The Claude one is also spelled out
 // literally because `scripts/test-runner-container.sh` greps THIS file for it.
 const CREDENTIAL_ENV_NAMES = [...new Set([
-  'CLAUDE_CODE_OAUTH_TOKEN', ...Object.values(CREDENTIAL_NAMES),
+  'CLAUDE_CODE_OAUTH_TOKEN', 'OPENAI_API_KEY', ...Object.values(CREDENTIAL_NAMES),
 ])];
 
 // Windows/Git Bash: Docker needs C:/... mount sources, and MSYS must not rewrite
@@ -65,6 +65,7 @@ function buildArgs(cfg, opts) {
   // Credential by NAME only: the value is placed in the docker client's own environment
   // below, so it never appears in an argument list, a log line, or an image layer (§6).
   if (credential) args.push('-e', credential.name);
+  if (opts.authCache) { args.push('-v', opts.authCache.mount, '-e', 'CODEX_HOME=/root/.codex'); }
   // The entrypoint selects its noninteractive command from this, so a Codex task cannot be
   // started by a Claude image invocation or the reverse.
   args.push('-e', `PIPELINE_PROVIDER=${provider}`);
@@ -97,8 +98,10 @@ function runTask(cfg, opts, log, traceId) {
     const credential = credentialFor(cfg, opts);
     const childEnv = { ...DOCKER_ENV };
     for (const name of CREDENTIAL_ENV_NAMES) delete childEnv[name];
+    delete childEnv.CODEX_HOME;
     if (credential) childEnv[credential.name] = credential.value;
-    const child = spawn('docker', args, { env: childEnv });
+    const launch = opts.spawn || spawn;
+    const child = launch('docker', args, { env: childEnv });
     child.stdout.pipe(logStream);
     child.stderr.pipe(logStream);
 

@@ -12,6 +12,7 @@ const {
   PROVIDERS, REASONING_EFFORTS, CREDENTIAL_NAMES,
   normalizeProvider, normalizeReasoningEffort, validProvider, validReasoningEffort,
 } = require('./agent-provider');
+const codexAuth = require('./codex-auth');
 
 // Defaults are part of the public run-config contract. Their rationale and validation
 // remain here; their values come from contracts/control-plane.json so operator guides,
@@ -216,6 +217,9 @@ function loadConfig(file) {
     }
   }
   const cfg = { ...DEFAULTS, ...raw, configPath: p };
+  const auth = codexAuth.validateConfig(raw);
+  if (!auth.ok) throw new Error(`run.config.json: `);
+  cfg.codexAuth = auth.codexAuth;
   // Resolved AFTER the spread and deliberately NOT in contracts/control-plane.json's
   // configDefaults: a stage field's default is the run-wide value, and the run-wide value's
   // default is the constant — a chain, not a single value a defaults table could carry.

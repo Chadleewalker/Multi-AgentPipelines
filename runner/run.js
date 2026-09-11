@@ -26,6 +26,7 @@ const {
 } = require('./queue');
 const { prepare, hasCommits, collectArtifacts, discard } = require('./workspace');
 const { runTask } = require('./container');
+const codexAuth = require('./codex-auth');
 const { createPauseGate } = require('./pause');
 const { createFeedSource, fixedSource, ENDINGS } = require('./feed');
 const { fileMemoryNotes, shouldFileMemory } = require('./memory');
@@ -130,7 +131,10 @@ async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClo
   }
   // Container names must be unique across relaunches (§4.7 resume).
   const attempt = (executeTask.counter = (executeTask.counter || 0) + 1);
-  return runTask(cfg, {
+  const authCache = cfg.codexAuth === 'chatgpt'
+    ? await codexAuth.stageTaskCache({ cacheRoot: cfg.codexAuthCacheRoot, taskId: issue.id, wait: true }) : null;
+  cfg._codexAuthCache = authCache;
+  try { return await runTask(cfg, {
     containerName: `task-${issue.id}-${log.runId}-${attempt}`.replace(/[^A-Za-z0-9_.-]/g, '-'),
     workspaceDir: ws.dir,
     pipelineDir: path.join(REPO_ROOT, 'pipeline'),
@@ -138,9 +142,13 @@ async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClo
     taskDir,
     // Paired with its environment-variable NAME here, so the container layer never has to
     // guess which provider a bare value belongs to.
-    credential: { name: credentialNameFor(providerFor(cfg)), value: token },
+    credential: cfg.codexAuth === 'chatgpt' ? null : { name: credentialNameFor(providerFor(cfg)), value: token },
+    authCache: cfg._codexAuthCache,
     wallClockMinutes: wallClockMinutes || cfg.wallClockMinutes,
-  }, log, traceId);
+  }, log, traceId); } finally {
+    delete cfg._codexAuthCache;
+    if (authCache) await codexAuth.releaseTaskCache(authCache);
+  }
 }
 
 // ---- the bounded worker pool (§7, §4.12) ------------------------------------------
@@ -604,8 +612,9 @@ async function main() {
   }
 
   const pre = preflight(cfg, REPO_ROOT, log);
-  if (!pre.ok) {
-    log.error(t, `PREFLIGHT FAILED — no tasks launched: ${pre.reason}`);
+  const resolvedPre = await Promise.resolve(pre);
+  if (!resolvedPre.ok) {
+    log.error(t, `PREFLIGHT FAILED — no tasks launched: ${resolvedPre.reason}`);
     // preflight owns compensation for every unsuccessful path after acquiring the lock.
     // In particular, an `up` script may create half the plumbing and then fail; its own
     // finally attempts `down` before releasing. A lock refusal never owned either resource.
@@ -619,17 +628,17 @@ async function main() {
   // A supervisor child's implementation authority travels on the config, so every Beads write
   // and every publication below can name the section it must be alone inside. Null for a
   // standalone run, where the target lock already makes that true.
-  cfg.childAdmission = pre.childAdmission || null;
+  cfg.childAdmission = resolvedPre.childAdmission || null;
   const releaseOnExit = () => {
     try { networkDown(REPO_ROOT, cfg); } catch { /* process exit: best effort only */ }
     finally {
-      if (pre.lockOwned !== false) {
-        try { releaseLock(REPO_ROOT, cfg.targetRepoPath, pre.ownership); } catch { /* never mask the real exit */ }
+      if (resolvedPre.lockOwned !== false) {
+        try { releaseLock(REPO_ROOT, cfg.targetRepoPath, resolvedPre.ownership); } catch { /* never mask the real exit */ }
       }
     }
   };
   process.on('exit', releaseOnExit);
-  log.info(t, `preflight passed${pre.recovered.length ? ` (recovered: ${pre.recovered.join(', ')})` : ''}`);
+  log.info(t, `preflight passed${resolvedPre.recovered.length ? ` (recovered: ${resolvedPre.recovered.join(', ')})` : ''}`);
 
   let completed = false;
   let cleanup = { ok: true };
@@ -703,7 +712,7 @@ async function main() {
 
   const drained = await drainQueue(
     source,
-    (issue) => runOneTask(cfg, issue, log, token, gate, pre.ownership),
+    (issue) => runOneTask(cfg, issue, log, token, gate, resolvedPre.ownership),
     cfg.concurrency
   );
   const results = drained.filter(Boolean);
@@ -794,7 +803,7 @@ async function main() {
     })();
   } finally {
     cleanup = cleanupOwnedLifecycle(cfg, REPO_ROOT, log, t,
-      { ownership: pre.ownership, lockOwned: pre.lockOwned });
+      { ownership: resolvedPre.ownership, lockOwned: resolvedPre.lockOwned });
     process.removeListener('exit', releaseOnExit);
   }
   if (!cleanup.ok) {
