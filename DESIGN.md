@@ -2336,12 +2336,16 @@ exist. Thread: `docs/threads/merge-order.md`.
   local-branch review mode. Out of scope for V1.)
 - **Docker runs from Git Bash on the reference host**, not WSL (known issue: that machine's
   WSL distro has no Docker Desktop integration). The runner must not assume WSL either way.
-- **Auth:** the SELECTED provider's credential — `CLAUDE_CODE_OAUTH_TOKEN` or
-  `CODEX_API_KEY`, never both — is passed to containers by environment-variable NAME at
-  `docker run` and never baked into an image layer (6.5). Headless `claude -p` honors its
-  token; interactive `claude` does not (known issue) — the pipeline is headless-only anyway.
-  Host Codex may instead reuse a saved ChatGPT CLI session (`codex login`); a container
-  cannot, and no `auth.json` is ever mounted into one.
+- **Auth:** the SELECTED provider's credential — `CLAUDE_CODE_OAUTH_TOKEN` or, in explicit
+  `codexAuth: "api-key"` mode, `CODEX_API_KEY`, never both — is passed to containers by
+  environment-variable NAME at `docker run` and never baked into an image layer (6.5).
+  Headless `claude -p` honors its token; interactive `claude` does not (known issue) — the
+  pipeline is headless-only anyway. Explicit `codexAuth: "chatgpt"` instead validates the
+  host's managed `codex login` state, seeds a private durable cache once, and mounts only a
+  task-private writable copy at `CODEX_HOME=/root/.codex`. The saved session is held as one
+  exclusive lane from staging through execution and atomic refresh write-back; parallel
+  subscription workers require independently authenticated lane caches. A missing
+  `codexAuth` field retains API-key behavior.
 - **Runner implementation: Node.js.** Decision, for cross-platform reasons: `node` is
   the same command on Windows and Linux (no `python` vs `python3` split), handles JSON
   natively for Beads/Claude output, and can enforce wall-clock timeouts with an independent
@@ -2762,19 +2766,14 @@ therefore a *proven* capability rather than an assumption: `missingCodexCapabili
 the task image itself with `docker run --network none --entrypoint codex … exec --help`. An
 `image inspect` proves an image is present, not that it can run this run's agent.
 
-**One credential per container, and never the other one.** `loadProviderCredential` selects
-exactly one of `CLAUDE_CODE_OAUTH_TOKEN` / `CODEX_API_KEY` from `.env.pipeline` or the ambient
-environment, with **no cross-provider fallback** — a Codex run with no `CODEX_API_KEY` is
-refused before anything mutates rather than started with a token that will fail at the model
-endpoint once a container, a network and a Beads claim exist. `runner/container.js` passes it
-to `docker run` by NAME only and deletes every *other* provider credential from the docker
-client's own environment first, so a host holding both cannot leak the unselected one into a
-task through `-e NAME` inheritance. Inside the container the key belongs to the CLI process
-alone: Codex's `shell_environment_policy` keeps its own default secret names excluded and adds
-this key explicitly, so nothing the *model* spawns inherits it, and the entrypoint runs the
-authoritative verifier — which executes the target repository's own code — under
-`env -u CODEX_API_KEY`. Host Codex may instead reuse a saved ChatGPT CLI session
-(`codex login`); a container never can, and no `auth.json` is ever mounted or baked in.
+**One credential boundary per container, and never the other provider's.** API-key mode selects
+exactly one of `CLAUDE_CODE_OAUTH_TOKEN` / `CODEX_API_KEY` with **no cross-provider fallback**.
+In explicit `codexAuth: "chatgpt"` mode, preflight accepts only the managed ChatGPT auth shape
+with a nonempty refresh token, initializes the durable host-private cache only if it is missing,
+and gives the trusted task a unique writable copy at `CODEX_HOME=/root/.codex`; no full host
+home, API key, or credential content reaches its environment or argv. The saved login is locked
+through staging, execution, and atomic refresh persistence, so it is one safe active lane. The
+entrypoint runs the authoritative verifier under `env -u CODEX_API_KEY`.
 
 **One egress profile per provider, never one widened to both.** `docker/proxy-codex/`
 is a separate deny-by-default sidecar image whose allowlist carries only the concrete OpenAI
