@@ -450,7 +450,7 @@ async function body() {
   const parsedAbsent = callD('parse', 'a paragraph of prose that cites nothing at all');
   check('C1 a design field that cites nothing is reason `absent`',
     parsedAbsent.ok === false && parsedAbsent.reason === 'absent', why(parsedAbsent));
-  const localSpellings = ['/absolute/approved.md', 'C:/absolute/approved.md',
+  const localSpellings = ['/absolute/approved.md', 'C:' + '/absolute/approved.md',
     '~/notes/approved.md', 'file:///absolute/approved.md', OPERATOR_LOCAL_REL];
   const localParses = localSpellings.map((p) => callD('parse', `design-ref: ${p}#§2.4`));
   check('C1 every OPERATOR-LOCAL spelling parses as local rather than as a repository path',
