@@ -2763,25 +2763,28 @@ therefore a *proven* capability rather than an assumption: `missingCodexCapabili
 the task image itself with `docker run --network none --entrypoint codex … exec --help`. An
 `image inspect` proves an image is present, not that it can run this run's agent.
 
-**One credential per container, and never the other one.** `loadProviderCredential` selects
-exactly one of `CLAUDE_CODE_OAUTH_TOKEN` / `CODEX_API_KEY` from `.env.pipeline` or the ambient
-environment, with **no cross-provider fallback** — a Codex run with no `CODEX_API_KEY` is
-refused before anything mutates rather than started with a token that will fail at the model
-endpoint once a container, a network and a Beads claim exist. `runner/container.js` passes it
+**One credential mode per container, and never the other one.** Claude and explicit Codex
+`api-key` mode select exactly one of `CLAUDE_CODE_OAUTH_TOKEN` / `CODEX_API_KEY` from
+`.env.pipeline` or the ambient environment, with **no cross-provider fallback**. Missing
+`codexAuth` retains `api-key` behavior; explicit `chatgpt` requires a managed saved session
+with a nonempty refresh token. A missing selected credential is refused before any mutation.
+`runner/container.js` passes API-key credentials
 to `docker run` by NAME only and deletes every *other* provider credential from the docker
 client's own environment first, so a host holding both cannot leak the unselected one into a
 task through `-e NAME` inheritance. Inside the container the key belongs to the CLI process
 alone: Codex's `shell_environment_policy` keeps its own default secret names excluded and adds
 this key explicitly, so nothing the *model* spawns inherits it, and the entrypoint runs the
 authoritative verifier — which executes the target repository's own code — under
-`env -u CODEX_API_KEY -u OPENAI_API_KEY`. Managed ChatGPT mode mounts only a task-private
-`auth.json` cache, never the operator home or an image layer, and its one saved session is
-serialized for the whole task and refresh write-back interval.
+`env -u CODEX_API_KEY -u OPENAI_API_KEY`. ChatGPT mode seeds its durable private cache once,
+then mounts only a task-private writable `CODEX_HOME` copy, never the operator home, an image
+layer, or an API key. Its one saved session is serialized from staging through execution and
+atomic refreshed write-back, so parallel subscription workers require independently
+authenticated lane caches.
 
 **One egress profile per provider, never one widened to both.** `docker/proxy-codex/`
-is a separate deny-by-default sidecar image whose allowlist carries only the concrete OpenAI
-endpoint Codex requires; `docker/proxy/`'s Anthropic-only roster is untouched. Adding the
-OpenAI endpoints to that file would have been one line and would have given every Claude task
+is a separate deny-by-default sidecar image whose allowlist is exactly `api.openai.com`,
+`chatgpt.com`, and `ab.chatgpt.com`; `docker/proxy/`'s Anthropic-only roster is untouched.
+Adding the OpenAI endpoints to that file would have been one line and would have given every Claude task
 reach it does not need, in both directions — the posture only means something while each
 profile carries exactly its own provider's roster. `scripts/pipeline-net.sh` builds from the
 profile the runner names, and `scripts/egress-check.sh` proves the *selected* endpoint

@@ -146,8 +146,9 @@ claude setup-token
 
 A long-lived token, separate from the A3 sign-in. Keep it to copy once at B2. Do not paste it
 into a session. One subscription per person: at your limit a run parks itself, waits for the
-window to reopen, and carries on. A Codex run parks the same way; its credential is the
-`CODEX_API_KEY` from A3, also copied once at B2.
+window to reopen, and carries on. A Codex run in explicit `"codexAuth": "api-key"` mode
+uses `CODEX_API_KEY` at B2; `"codexAuth": "chatgpt"` instead uses the saved `codex login`
+session from A3.
 
 ### A8. The harness plugin — optional, and not a clone
 
@@ -198,11 +199,13 @@ echo 'CLAUDE_CODE_OAUTH_TOKEN=<token from A7>' > .env.pipeline
 Git-ignored, and must stay that way. Passed to containers by name at launch, never baked into
 an image.
 
-The same file holds `CODEX_API_KEY=<key>` on its own line if you intend to run anything with
-`"provider": "codex"`. A run loads only the selected provider's credential and there is no
-fallback between them, so a Codex run with no key is refused before it locks the target,
-takes a worktree or starts a container — and a host holding both keys still hands a task
-exactly one.
+For Codex, choose the explicit API-key path or the managed ChatGPT path in the run config.
+`"codexAuth": "api-key"` (also the legacy missing-field behavior) reads
+`CODEX_API_KEY=<key>` from this file; `"codexAuth": "chatgpt"` requires the managed session
+created by `codex login` and does not pass an API key to the task. There is no provider or
+mode fallback: a missing selected credential is refused before the target is locked, a
+worktree is taken, or a container starts. A saved ChatGPT login is one serialized credential
+lane, so parallel subscription workers require independently authenticated lane caches.
 
 ### B3. Install the git hooks
 
