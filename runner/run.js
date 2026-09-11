@@ -26,6 +26,7 @@ const {
 } = require('./queue');
 const { prepare, hasCommits, collectArtifacts, discard } = require('./workspace');
 const { runTask } = require('./container');
+const codexAuth = require('./codex-auth');
 const { createPauseGate } = require('./pause');
 const { createFeedSource, fixedSource, ENDINGS } = require('./feed');
 const { fileMemoryNotes, shouldFileMemory } = require('./memory');
@@ -130,7 +131,11 @@ async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClo
   }
   // Container names must be unique across relaunches (§4.7 resume).
   const attempt = (executeTask.counter = (executeTask.counter || 0) + 1);
-  return runTask(cfg, {
+  let authCache = null;
+  if (providerFor(cfg) === 'codex' && cfg.codexAuth === 'chatgpt') {
+    authCache = await Promise.resolve(codexAuth.stageTaskCache({ cacheRoot: cfg.codexAuthCacheRoot, taskId: issue.id, wait: true }));
+  }
+  try { return await runTask(cfg, {
     containerName: `task-${issue.id}-${log.runId}-${attempt}`.replace(/[^A-Za-z0-9_.-]/g, '-'),
     workspaceDir: ws.dir,
     pipelineDir: path.join(REPO_ROOT, 'pipeline'),
@@ -138,9 +143,12 @@ async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClo
     taskDir,
     // Paired with its environment-variable NAME here, so the container layer never has to
     // guess which provider a bare value belongs to.
-    credential: { name: credentialNameFor(providerFor(cfg)), value: token },
+    ...(authCache ? {} : {
+      credential: { name: credentialNameFor(providerFor(cfg)), value: token },
+    }),
     wallClockMinutes: wallClockMinutes || cfg.wallClockMinutes,
-  }, log, traceId);
+    authCache,
+  }, log, traceId); } finally { if (authCache) await Promise.resolve(codexAuth.releaseTaskCache(authCache)); }
 }
 
 // ---- the bounded worker pool (§7, §4.12) ------------------------------------------
@@ -579,13 +587,14 @@ async function main() {
   // a Beads claim, a network or a container exists, rather than failing at the model
   // endpoint once all of them do. With no provider selected this is exactly the historical
   // Claude token load and the historical diagnostic.
-  const credential = loadProviderCredential(REPO_ROOT, cfg.provider);
-  if (!credential) {
+  const managedChatgpt = providerFor(cfg) === 'codex' && cfg.codexAuth === 'chatgpt';
+  const credential = managedChatgpt ? null : loadProviderCredential(REPO_ROOT, cfg.provider);
+  if (!credential && !managedChatgpt) {
     log.error(t, missingCredentialDiagnostic(cfg.provider));
     process.exit(2);
   }
-  const token = credential.value;
-  log.info(t, `subscription token loaded (${credential.name})`);
+  const token = credential ? credential.value : "";
+  if (credential) log.info(t, `subscription token loaded (${credential.name})`);
 
   // The write-protection backstop (change-log row `repo-324`). Ahead of preflight on purpose:
   // it holds no lock and creates no network, so a refusal here has nothing to compensate for.
@@ -604,8 +613,9 @@ async function main() {
   }
 
   const pre = preflight(cfg, REPO_ROOT, log);
-  if (!pre.ok) {
-    log.error(t, `PREFLIGHT FAILED — no tasks launched: ${pre.reason}`);
+  const resolvedPre = await Promise.resolve(pre);
+  if (!resolvedPre.ok) {
+    log.error(t, `PREFLIGHT FAILED — no tasks launched: ${resolvedPre.reason}`);
     // preflight owns compensation for every unsuccessful path after acquiring the lock.
     // In particular, an `up` script may create half the plumbing and then fail; its own
     // finally attempts `down` before releasing. A lock refusal never owned either resource.
@@ -619,17 +629,17 @@ async function main() {
   // A supervisor child's implementation authority travels on the config, so every Beads write
   // and every publication below can name the section it must be alone inside. Null for a
   // standalone run, where the target lock already makes that true.
-  cfg.childAdmission = pre.childAdmission || null;
+  cfg.childAdmission = resolvedPre.childAdmission || null;
   const releaseOnExit = () => {
     try { networkDown(REPO_ROOT, cfg); } catch { /* process exit: best effort only */ }
     finally {
-      if (pre.lockOwned !== false) {
-        try { releaseLock(REPO_ROOT, cfg.targetRepoPath, pre.ownership); } catch { /* never mask the real exit */ }
+      if (resolvedPre.lockOwned !== false) {
+        try { releaseLock(REPO_ROOT, cfg.targetRepoPath, resolvedPre.ownership); } catch { /* never mask the real exit */ }
       }
     }
   };
   process.on('exit', releaseOnExit);
-  log.info(t, `preflight passed${pre.recovered.length ? ` (recovered: ${pre.recovered.join(', ')})` : ''}`);
+  log.info(t, `preflight passed${resolvedPre.recovered.length ? ` (recovered: ${resolvedPre.recovered.join(', ')})` : ''}`);
 
   let completed = false;
   let cleanup = { ok: true };
@@ -703,7 +713,7 @@ async function main() {
 
   const drained = await drainQueue(
     source,
-    (issue) => runOneTask(cfg, issue, log, token, gate, pre.ownership),
+    (issue) => runOneTask(cfg, issue, log, token, gate, resolvedPre.ownership),
     cfg.concurrency
   );
   const results = drained.filter(Boolean);
@@ -794,7 +804,7 @@ async function main() {
     })();
   } finally {
     cleanup = cleanupOwnedLifecycle(cfg, REPO_ROOT, log, t,
-      { ownership: pre.ownership, lockOwned: pre.lockOwned });
+      { ownership: resolvedPre.ownership, lockOwned: resolvedPre.lockOwned });
     process.removeListener('exit', releaseOnExit);
   }
   if (!cleanup.ok) {
