@@ -68,6 +68,21 @@ async function main() {
     const chatgpt = config(root, { provider: 'codex', codexAuth: 'chatgpt' }); const api = config(root, { provider: 'codex', codexAuth: 'api-key' }); const invalid = config(root, { provider: 'codex', codexAuth: 'ambient' });
     check('C1 runner/config.js selects each allowed Codex auth mode and returns an explicit refusal for another mode', chatgpt.ok && chatgpt.cfg.codexAuth === 'chatgpt' && api.ok && api.cfg.codexAuth === 'api-key' && invalid.ok === false && typeof invalid.reason === 'string' && invalid.reason.length > 0, JSON.stringify(invalid));
 
+    // ChatGPT preparation may need to wait for its credential lane, but that must not turn the
+    // established preflight API into an unconditional Promise. Existing Claude/API-key callers
+    // and deterministic gate tests consume their immediate refusal synchronously.
+    fs.mkdirSync(api.cfg.targetRepoPath, { recursive: true });
+    const legacyPreflight = PREFLIGHT.preflight(api.cfg, root, { runId: 'accept-djf3-legacy', info() {}, error() {} }, {
+      env: { CODEX_API_KEY: 'present-but-never-rendered' }, admitEntry: () => ({ ok: true, mode: 'standalone' }),
+      verifyRepoIdentity: () => ({ ok: true, remoteName: 'fixture', identity: 'repo:fixture/project' }),
+      resolveHostShell: () => ({ ok: false, reason: 'legacy synchronous refusal' }),
+      dockerAvailable: () => { throw new Error('Docker must not run after the shell refusal'); },
+    });
+    check('C1-C2 ChatGPT waiting does not make legacy preflight asynchronous or reorder its existing refusal gates',
+      legacyPreflight && typeof legacyPreflight.then !== 'function' && legacyPreflight.ok === false
+        && legacyPreflight.shellUnavailable === true && legacyPreflight.reason === 'legacy synchronous refusal',
+      JSON.stringify(legacyPreflight));
+
     for (const kind of ['missing', 'api-key-only', 'malformed']) {
       const sessionHome = path.join(root, `${kind}-session`); fs.mkdirSync(sessionHome, { recursive: true });
       if (kind === 'api-key-only') fs.writeFileSync(path.join(sessionHome, 'auth.json'), JSON.stringify({ OPENAI_API_KEY: secret }));
