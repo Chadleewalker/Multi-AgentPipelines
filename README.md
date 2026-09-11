@@ -55,8 +55,8 @@ echo 'CLAUDE_CODE_OAUTH_TOKEN=...' > .env.pipeline
 #    a run whose config selects "provider": "codex" reads CODEX_API_KEY from the same
 #    file instead — one credential per run, never both in a container
 
-# 2. prove the whole thing works, using scripted stubs — no model calls
-bash scripts/e2e.sh
+# 2. run the routine complete host pass — no model calls
+node scripts/fast-full-sweep.js --repo .
 
 # 3. point a config at a project of your own, then run its queue
 #    (run.config.*.json is git-ignored — it names a local path and your remote;

@@ -41,6 +41,13 @@ cp -rf source dest
 Use `scp -o BatchMode=yes`, `ssh -o BatchMode=yes`, `apt-get -y`, and
 `HOMEBREW_NO_AUTO_UPDATE=1 brew` where relevant.
 
+## Validation Profiles
+
+Use `node scripts/fast-full-sweep.js --repo .` for the routine complete host pass. It
+derives current coverage from the canonical profiles; use `bash scripts/test-all.sh`
+directly when per-suite logs and timings are needed for diagnosis. Do not run
+Docker-backed suites concurrently.
+
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal -->
 ## Beads Issue Tracker
 
