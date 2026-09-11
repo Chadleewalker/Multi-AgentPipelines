@@ -98,35 +98,52 @@ container exists.
 
 `provider` selects only the vendor. The `model`, `testAuthorModel` and `testProbeModel`
 fields still name the model, and a Codex run needs a model id that provider understands —
-the example config's Claude aliases are not one.
+the example config's Claude aliases are not one. `codexAuth` explicitly selects `chatgpt`
+or `api-key` for Codex implementation workers. The checked-in template declares dormant
+`chatgpt` while keeping the canonical Claude/opus defaults; an older config with no field
+retains its API-key behavior.
 
 Selecting a provider selects three things together, and they are not independently
 configurable:
 
-- **The credential.** `CLAUDE_CODE_OAUTH_TOKEN` or `CODEX_API_KEY`, read from the
-  git-ignored `.env.pipeline` or the ambient environment, with no cross-provider fallback.
-  Containers receive it by environment-variable name only, and every other provider's
-  credential is removed from the docker client's environment first. On the host, Codex may
-  instead reuse a saved ChatGPT CLI session (`codex login`); inside a container it cannot,
-  and no `auth.json` is ever mounted.
+- **The credential.** Claude uses `CLAUDE_CODE_OAUTH_TOKEN`. Codex `api-key` mode uses
+  `CODEX_API_KEY`; both are read from the git-ignored `.env.pipeline` or ambient environment,
+  passed by environment-variable name only, and have no cross-provider fallback. Codex
+  `chatgpt` mode accepts only the managed `auth_mode: "chatgpt"` session created by
+  `codex login` with a nonempty refresh token. Preflight seeds a private durable cache only
+  when it is absent, then Codex refreshes that cache across tasks; the original host login
+  never overwrites refreshed state.
 - **The container command.** The runner passes `PIPELINE_PROVIDER`, and
   `pipeline/entrypoint.sh` selects that provider's noninteractive invocation.
-- **The egress profile.** `docker/proxy` carries the Anthropic endpoints, `docker/proxy-codex`
-  the OpenAI ones, and `PIPELINE_PROXY_PROFILE` picks which sidecar `scripts/pipeline-net.sh`
+- **The egress profile.** `docker/proxy` carries the Anthropic endpoints;
+  `docker/proxy-codex` allows exactly `api.openai.com`, `chatgpt.com`, and
+  `ab.chatgpt.com`. `PIPELINE_PROXY_PROFILE` picks which sidecar `scripts/pipeline-net.sh`
   builds and which endpoint `scripts/egress-check.sh` proves reachable. One profile per
   provider: widening either to carry the other's endpoints is refused by design, not by a
   check.
 
 A missing executable, credential, model, image capability or route fails before any
-mutation and names its remedy. For a non-default provider, preflight additionally proves
+mutation and names its remedy. ChatGPT preflight also distinguishes an invalid or missing
+login from a busy credential lane before target mutation. For a non-default provider,
+preflight additionally proves
 the *task image* can run that provider's CLI with every required capability — presence in
 `docker image inspect` is not that proof — so rebuild the pinned base image during planning
 if it predates the Codex pin. The one live model call in the Codex surface is opt-in and
 documentary:
 
 ```bash
-CODEX_LIVE_SMOKE=1 node scripts/codex-live-smoke.js   # read-only; reports the model that answered
+CODEX_LIVE_SMOKE=1 node scripts/codex-live-smoke.js --image <rebuilt-pinned-task-image>
 ```
+
+One saved ChatGPT session is one exclusive credential lane. The lane is held from task-cache
+staging through every Codex invocation and atomic refresh write-back, so a second worker waits
+and never receives a concurrent copy of the refresh token. Parallel subscription workers need
+independently authenticated lane caches. Each task gets only a unique writable handoff mounted
+at `/run/pipeline-auth-host/cache`; the root entrypoint copies it into an internal
+`CODEX_HOME=/root/.codex`, then runs Codex as the image's `node` user. Repository
+verification runs as `nobody` with `CODEX_API_KEY`, `OPENAI_API_KEY`, and `CODEX_HOME`
+unset. Successful cleanup removes only the task copy; failed refresh persistence keeps the
+prior durable cache and recoverable task copy.
 
 ## Supervised operation
 

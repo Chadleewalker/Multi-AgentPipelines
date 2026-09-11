@@ -437,6 +437,14 @@ row `repo-jur`). The proxy *image* is shared within a provider profile — `dock
 Claude, `docker/proxy-codex` for Codex, each carrying only its own vendor's endpoints; only
 the running container and the network are per project.
 
+Codex authentication is a separate serialization boundary. API-key mode passes only the
+named key, while ChatGPT mode holds one saved login as one exclusive lane across task-cache
+staging, Codex execution and atomic refresh write-back. A task sees only its private writable
+handoff; the entrypoint stages it into `/root/.codex`, runs Codex as `node`, and runs the
+repository verifier as `nobody` with every Codex credential variable unset. Consequently,
+raising the worker-pool concurrency does not make one subscription login concurrent;
+parallel ChatGPT workers require independently authenticated lane caches.
+
 The shell node is a Windows host-identity gate, not merely a check that some executable
 named `bash` exists (change-log row `verified-host-shell`). The runner proves the shell is
 Git Bash-compatible and can launch the exact host Node binary before it creates Docker or
