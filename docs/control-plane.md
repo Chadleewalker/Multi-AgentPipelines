@@ -78,12 +78,17 @@ the example config's Claude aliases are not one.
 Selecting a provider selects three things together, and they are not independently
 configurable:
 
-- **The credential.** `CLAUDE_CODE_OAUTH_TOKEN` or `CODEX_API_KEY`, read from the
-  git-ignored `.env.pipeline` or the ambient environment, with no cross-provider fallback.
-  Containers receive it by environment-variable name only, and every other provider's
-  credential is removed from the docker client's environment first. On the host, Codex may
-  instead reuse a saved ChatGPT CLI session (`codex login`); inside a container it cannot,
-  and no `auth.json` is ever mounted.
+- **The credential.** Claude uses `CLAUDE_CODE_OAUTH_TOKEN`. Codex selects `codexAuth`
+  explicitly: `api-key` uses `CODEX_API_KEY` (and remains the behavior when the field is
+  absent), while `chatgpt` uses a managed `codex login` session with a nonempty refresh token.
+  There is no provider or Codex-auth-mode fallback. API keys are passed by environment-variable
+  name only, after unrelated credentials are removed from the docker client's environment.
+  ChatGPT mode seeds a host-private durable cache once, then gives the trusted worker only a
+  unique task-private writable cache at `CODEX_HOME=/root/.codex`; it never mounts the full
+  Codex home or exposes credential contents to argv, environments, verifier processes, logs,
+  artifacts, workspaces, or Git. One saved session is one serialized credential lane spanning
+  staging, execution, and refreshed-cache persistence; parallel subscription workers require
+  independently authenticated lane caches.
 - **The container command.** The runner passes `PIPELINE_PROVIDER`, and
   `pipeline/entrypoint.sh` selects that provider's noninteractive invocation.
 - **The egress profile.** `docker/proxy` carries the Anthropic endpoints, `docker/proxy-codex`

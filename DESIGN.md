@@ -2336,12 +2336,13 @@ exist. Thread: `docs/threads/merge-order.md`.
   local-branch review mode. Out of scope for V1.)
 - **Docker runs from Git Bash on the reference host**, not WSL (known issue: that machine's
   WSL distro has no Docker Desktop integration). The runner must not assume WSL either way.
-- **Auth:** the SELECTED provider's credential — `CLAUDE_CODE_OAUTH_TOKEN` or
-  `CODEX_API_KEY`, never both — is passed to containers by environment-variable NAME at
-  `docker run` and never baked into an image layer (6.5). Headless `claude -p` honors its
-  token; interactive `claude` does not (known issue) — the pipeline is headless-only anyway.
-  Host Codex may instead reuse a saved ChatGPT CLI session (`codex login`); a container
-  cannot, and no `auth.json` is ever mounted into one.
+- **Auth:** the SELECTED provider's credential is isolated per 6.5. Claude uses
+  `CLAUDE_CODE_OAUTH_TOKEN`; Codex explicitly selects `api-key` (`CODEX_API_KEY`) or managed
+  `chatgpt` authentication. API keys pass to containers by environment-variable NAME and are
+  never baked into an image layer. ChatGPT workers receive only a task-private cache at
+  `CODEX_HOME=/root/.codex`, never the operator's Codex home; the verifier receives neither
+  cache nor credential. Headless `claude -p` honors its token; interactive `claude` does not
+  (known issue) — the pipeline is headless-only anyway.
 - **Runner implementation: Node.js.** Decision, for cross-platform reasons: `node` is
   the same command on Windows and Linux (no `python` vs `python3` split), handles JSON
   natively for Beads/Claude output, and can enforce wall-clock timeouts with an independent
@@ -2762,28 +2763,37 @@ therefore a *proven* capability rather than an assumption: `missingCodexCapabili
 the task image itself with `docker run --network none --entrypoint codex … exec --help`. An
 `image inspect` proves an image is present, not that it can run this run's agent.
 
-**One credential per container, and never the other one.** `loadProviderCredential` selects
-exactly one of `CLAUDE_CODE_OAUTH_TOKEN` / `CODEX_API_KEY` from `.env.pipeline` or the ambient
-environment, with **no cross-provider fallback** — a Codex run with no `CODEX_API_KEY` is
-refused before anything mutates rather than started with a token that will fail at the model
-endpoint once a container, a network and a Beads claim exist. `runner/container.js` passes it
-to `docker run` by NAME only and deletes every *other* provider credential from the docker
-client's own environment first, so a host holding both cannot leak the unselected one into a
-task through `-e NAME` inheritance. Inside the container the key belongs to the CLI process
-alone: Codex's `shell_environment_policy` keeps its own default secret names excluded and adds
-this key explicitly, so nothing the *model* spawns inherits it, and the entrypoint runs the
-authoritative verifier — which executes the target repository's own code — under
-`env -u CODEX_API_KEY`. Host Codex may instead reuse a saved ChatGPT CLI session
-(`codex login`); a container never can, and no `auth.json` is ever mounted or baked in.
+**One explicit Codex mode, one credential lane, and never the other one.** Claude continues
+to load `CLAUDE_CODE_OAUTH_TOKEN`. Codex's `codexAuth` is either `api-key` or `chatgpt`; an
+absent field preserves API-key behavior, and neither mode falls back to the other. API-key
+mode loads `CODEX_API_KEY` from `.env.pipeline` or the ambient environment, passes it to
+`docker run` by NAME only, removes every other provider credential from the docker client's
+environment, excludes it from model-spawned shell environments, and strips it from the
+repository verifier.
+
+ChatGPT mode accepts only managed `auth_mode: "chatgpt"` state with a nonempty refresh token.
+Before mutable target work, it takes a host-private credential-lane lock and atomically seeds a
+durable cache from the host's saved `codex login` state only when that cache is absent; a later
+preflight never overwrites a refreshed durable cache with its original seed. A distinct login
+failure or busy-lane diagnostic fails fast. The lane remains exclusive through task-private
+cache staging, Codex execution, and atomic refreshed-cache write-back. A live owner is never
+stolen because of age, dead ownership is recoverable, and an old owner cannot remove a
+successor lock. The trusted task receives only its unique writable copy at
+`CODEX_HOME=/root/.codex`, not the full operator home, auth contents in argv or environment,
+or any API key; the repository verifier has neither `CODEX_HOME` nor Codex/OpenAI keys. Task
+cleanup removes only that copy after successful persistence. Therefore **one saved ChatGPT
+login provides one safe active Codex lane**: concurrent subscription workers require
+independently authenticated durable caches.
 
 **One egress profile per provider, never one widened to both.** `docker/proxy-codex/`
-is a separate deny-by-default sidecar image whose allowlist carries only the concrete OpenAI
-endpoint Codex requires; `docker/proxy/`'s Anthropic-only roster is untouched. Adding the
-OpenAI endpoints to that file would have been one line and would have given every Claude task
-reach it does not need, in both directions — the posture only means something while each
-profile carries exactly its own provider's roster. `scripts/pipeline-net.sh` builds from the
-profile the runner names, and `scripts/egress-check.sh` proves the *selected* endpoint
-reachable; proving `api.anthropic.com` on a run that will talk to OpenAI proves nothing.
+is a separate deny-by-default sidecar image whose allowlist is exactly `api.openai.com`,
+`chatgpt.com`, and `ab.chatgpt.com`; `docker/proxy/`'s Anthropic-only roster is untouched.
+Adding the OpenAI endpoints to that file would have been one line and would have given every
+Claude task reach it does not need, in both directions — the posture only means something
+while each profile carries exactly its own provider's roster. `scripts/pipeline-net.sh` builds
+from the profile the runner names, and `scripts/egress-check.sh` proves the *selected*
+endpoint reachable; proving `api.anthropic.com` on a run that will talk to OpenAI proves
+nothing.
 
 **Outcomes still come from structure, never from prose.** `normalizeOutput` reads Codex's
 `--json` JSONL stream and Claude's existing envelope and records provider, configured and

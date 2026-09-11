@@ -320,13 +320,15 @@ Copy this section in (adjust nothing but the project name):
 - [ ] Leave `provider` alone unless the user asks for a different model vendor. Absent, it
       is `claude` at every stage and the launches are exactly what they have always been.
       Setting it to `codex` — run-wide, or per stage with `testAuthorProvider` /
-      `testProbeProvider` — also changes which credential the run loads (`CODEX_API_KEY`,
-      with no fallback to the Claude token), which command the container entrypoint runs,
-      and which allowlist profile the sidecar is built from, so the host needs that key and
-      a base image carrying the pinned Codex CLI before the run starts. Set `model` to
-      something that provider understands while you are there; `reasoningEffort`
-      (`minimal | low | medium | high`, and its two stage twins) applies to Codex launches.
-      See `docs/control-plane.md` and `DESIGN.md` §6.5.
+      `testProbeProvider` — also selects the explicit `codexAuth` mode: `chatgpt` uses a
+      validated saved `codex login` session, while `api-key` requires `CODEX_API_KEY`; there
+      is no fallback. A saved ChatGPT session is one serialized active worker lane, so request
+      independent authenticated caches before approving parallel subscription workers. This
+      also changes the container command and sidecar allowlist profile; the host needs the
+      pinned Codex CLI before the run starts. Set `model` to something that provider
+      understands while you are there; `reasoningEffort` (`minimal | low | medium | high`,
+      and its two stage twins) applies to Codex launches. See `docs/control-plane.md` and
+      `DESIGN.md` §6.5.
 - [ ] **Ask the user for one integer implementation concurrency**, and record the answer as
       `concurrency` in that same host-local run config. Ask it once, as a single question —
       *how many implementation tasks may run at the same time under one coordinated run?* —
