@@ -52,8 +52,9 @@ prove each step worked — is [`SETUP.md`](SETUP.md).
 # 1. put your model credential where the runner can find it
 #    (git-ignored; get a Claude one with `claude setup-token`)
 echo 'CLAUDE_CODE_OAUTH_TOKEN=...' > .env.pipeline
-#    a run whose config selects "provider": "codex" reads CODEX_API_KEY from the same
-#    file instead — one credential per run, never both in a container
+#    for Codex, set "codexAuth" to "chatgpt" to reuse `codex login`, or to
+#    "api-key" to read CODEX_API_KEY from this file. Missing codexAuth keeps the
+#    legacy api-key behavior; the checked-in example selects dormant ChatGPT auth.
 
 # 2. prove the whole thing works, using scripted stubs — no model calls
 bash scripts/e2e.sh
@@ -66,8 +67,9 @@ bash scripts/e2e.sh
 #     anything starts, and a lock left by a killed run is taken over. Within one
 #     project the runner works one task at a time; set `concurrency` (any whole
 #     number) to put that many containers in flight at once for a daytime batch —
-#     every container shares your one subscription window, so more is faster only
-#     while the batch fits in it. A usage
+#     API-key containers may use those slots concurrently. One saved ChatGPT login is
+#     one exclusive credential lane, so subscription tasks wait and run serially unless
+#     you provide independently authenticated lane caches. A usage
 #     limit parks the whole run, not each task: one shared wait, and no new task
 #     launches while the window is closed.)
 cp run.config.example.json run.config.myproject.json
