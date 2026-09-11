@@ -286,14 +286,15 @@ bash scripts/test-changelog.sh      # seconds, no Docker
 bash scripts/test-sanitize.sh
 bash scripts/test-lock.sh
 
-bash scripts/test-all.sh --skip e2e --timeout 300     # the full sweep
+# setup proof when no disposable e2e fixture has been configured
+bash scripts/test-all.sh --skip e2e --timeout 300
 ```
 
-A healthy sweep is green in roughly eight to twelve minutes and writes per-suite logs under
-`runs/sweeps/<timestamp>/`. There are 43 suites (`ls scripts/test-*.sh | wc -l` — the sweep
-finds them by glob, so the number grows on its own). A sweep taking an hour is suites
-*hanging* and being killed, not doing more work; `--timeout 300` caps that loss and
-`--skip e2e` drops the one suite needing a fixture repo.
+A healthy diagnostic sweep is green in roughly eight to twelve minutes and writes per-suite
+logs under `runs/sweeps/<timestamp>/`. Its `--list` output is the current roster; do not rely
+on a fixed suite count. A sweep taking an hour is suites *hanging* and being killed, not doing
+more work; `--timeout 300` caps that loss and `--skip e2e` drops the one suite needing a
+fixture repo.
 
 - **Never run the sweep while a real run is in flight.** It cleans up after each suite, and a
   live run's container looks exactly like something to clean up.
@@ -310,6 +311,17 @@ finds them by glob, so the number grows on its own). A sweep taking an hour is s
 stand-ins instead of a model. It needs a disposable private fixture repo
 (`bash scripts/test-fixture.sh` says whether yours qualifies). Skip it unless you are going to
 change the pipeline itself.
+
+Once that fixture is configured, the routine complete host pass is:
+
+```bash
+node scripts/fast-full-sweep.js --repo .
+```
+
+It requires a clean tracked checkout, runs the mandatory Docker-free profile once, and then
+runs only the remaining Docker/live suites. It reports mandatory, direct-extra, nested
+isolation, and unique coverage dynamically. Use `bash scripts/test-all.sh` instead when a
+failure needs suite-by-suite logs and timings.
 
 ---
 
