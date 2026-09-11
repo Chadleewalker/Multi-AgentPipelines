@@ -1462,6 +1462,17 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     RESULT column and the exit code still come from the suite's exit code and the `FAIL`
     grep, which already saw both vocabularies (change-log row `repo-0ay`).
 
+    **A routine full pass may aggregate coverage, but it may not remember coverage.**
+    `scripts/fast-full-sweep.js` runs the mandatory publication profile once and obtains
+    both rosters only from the canonical scripts' `--list` output. Before any Docker/live
+    extra it proves the original HEAD still names the checkout and the tracked tree is
+    still clean, proves the mandatory plan is contained in the full plan, and verifies the
+    executable e2e-to-isolation nesting. It then delegates to `test-all.sh --fail-fast`
+    with the exact already-covered leaves skipped. Unknown future leaves therefore flow
+    into the extra phase automatically; plan uncertainty, a moved tree, mandatory failure,
+    or a missing nesting witness fails closed. `test-all.sh` remains the diagnostic path
+    whose per-leaf cleanup, assertion counts, logs and timings are authoritative.
+
     **The host shell is an identity, not a PATH spelling.** On Windows, the first `bash`
     found by the operating system may be the WSL launcher, even though the runner's host
     tools and paths belong to Windows. Startup therefore accepts only a Git Bash-compatible

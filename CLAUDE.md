@@ -80,8 +80,11 @@ git-ignored `.env.pipeline` and is passed by name, never baked into an image.
 bash scripts/test-ci.sh
 bash scripts/test-ci.sh --list
 
-# sequential host sweep and stubbed end-to-end exercise
+# routine complete host pass; canonical per-suite diagnostic fallback
+node scripts/fast-full-sweep.js --repo .
 bash scripts/test-all.sh
+
+# standalone stubbed end-to-end exercise
 bash scripts/e2e.sh
 
 # run and observe
@@ -104,7 +107,9 @@ node scripts/install-session-guard.js --status
 
 Do not maintain an individual test list here. Select a focused wrapper from
 `bash scripts/test-ci.sh --list`, then run the complete mandatory profile. Docker-backed
-suites run sequentially through `scripts/test-all.sh`; do not run them concurrently.
+suites run sequentially through the fast full sweep's delegated `scripts/test-all.sh`
+phase; use `bash scripts/test-all.sh` directly when per-suite logs and timings are needed
+for diagnosis. Do not run Docker-backed suites concurrently.
 
 ## Code conventions
 

@@ -288,14 +288,14 @@ bash scripts/test-changelog.sh      # seconds, no Docker
 bash scripts/test-sanitize.sh
 bash scripts/test-lock.sh
 
-bash scripts/test-all.sh --skip e2e --timeout 300     # the full sweep
+# setup pass without the fixture-backed e2e suite
+bash scripts/test-all.sh --skip e2e --timeout 300
 ```
 
 A healthy sweep is green in roughly eight to twelve minutes and writes per-suite logs under
-`runs/sweeps/<timestamp>/`. There are 43 suites (`ls scripts/test-*.sh | wc -l` — the sweep
-finds them by glob, so the number grows on its own). A sweep taking an hour is suites
-*hanging* and being killed, not doing more work; `--timeout 300` caps that loss and
-`--skip e2e` drops the one suite needing a fixture repo.
+`runs/sweeps/<timestamp>/`. The sweep discovers its suite plan dynamically. A sweep taking
+an hour is suites *hanging* and being killed, not doing more work; `--timeout 300` caps that
+loss and `--skip e2e` drops the one suite needing a fixture repo.
 
 - **Never run the sweep while a real run is in flight.** It cleans up after each suite, and a
   live run's container looks exactly like something to clean up.
@@ -311,7 +311,10 @@ finds them by glob, so the number grows on its own). A sweep taking an hour is s
 `bash scripts/e2e.sh` drives three full scenarios through real containers with scripted
 stand-ins instead of a model. It needs a disposable private fixture repo
 (`bash scripts/test-fixture.sh` says whether yours qualifies). Skip it unless you are going to
-change the pipeline itself.
+change the pipeline itself. Once that fixture is configured, the routine complete host pass is
+`node scripts/fast-full-sweep.js --repo .`; it runs the mandatory profile once, then delegates
+only the remaining Docker/live suites to the canonical sweep. Use `bash scripts/test-all.sh`
+directly when you need its per-suite diagnostic logs and timings.
 
 ---
 

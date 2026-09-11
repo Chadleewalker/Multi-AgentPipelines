@@ -61,8 +61,8 @@ echo 'CLAUDE_CODE_OAUTH_TOKEN=...' > .env.pipeline
 #    "api-key" to read CODEX_API_KEY from this file. Missing codexAuth keeps the
 #    legacy api-key behavior; the checked-in example selects dormant ChatGPT auth.
 
-# 2. prove the whole thing works, using scripted stubs — no model calls
-bash scripts/e2e.sh
+# 2. run the routine complete host pass — no model calls
+node scripts/fast-full-sweep.js --repo .
 
 # 3. point a config at a project of your own, then run its queue
 #    (run.config.*.json is git-ignored — it names a local path and your remote;
