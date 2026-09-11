@@ -158,10 +158,16 @@ async function main() {
       cacheRoot: durable, taskId: 'first', retryMs: 5, timeoutMs: 1000,
     });
     let secondSettled = false;
+    let secondError = null;
     const secondHandlePromise = Promise.resolve(AUTH.stageTaskCache({
-      cacheRoot: durable, taskId: 'second', retryMs: 5, timeoutMs: 1000,
-    })).then(handle => { secondSettled = true; return handle; });
-    await delay(40);
+      cacheRoot: durable, taskId: 'second', retryMs: 5, timeoutMs: 20, wait: true,
+    })).then(handle => { secondSettled = true; return handle; }, error => {
+      secondSettled = true; secondError = error; return null;
+    });
+    // A task lane is deliberately longer-lived than the bounded preflight lock. Prove the
+    // queueing request survives beyond the supplied short diagnostic timeout and still sees
+    // the first worker's refresh after release.
+    await delay(60);
     const secondWaitedForWholeRun = !secondSettled;
     fs.writeFileSync(path.join(firstHandle.hostPath, 'auth.json'), JSON.stringify(managed('refreshed-one')));
     await AUTH.releaseTaskCache(firstHandle);
@@ -172,10 +178,10 @@ async function main() {
     const secondSawRefresh = secondHandle
       && readRefresh(path.join(secondHandle.hostPath, 'auth.json')) === 'refreshed-one';
     check('C3 one saved session is one serialized lane spanning stage, Codex use, and refresh persistence',
-      secondWaitedForWholeRun && !!secondHandle && secondSawRefresh
+      secondWaitedForWholeRun && !secondError && !!secondHandle && secondSawRefresh
         && secondHandle.hostPath !== firstHandle.hostPath
         && !fs.existsSync(firstHandle.hostPath),
-      JSON.stringify({ secondWaitedForWholeRun, secondSawRefresh,
+      JSON.stringify({ secondWaitedForWholeRun, secondError: secondError && secondError.message, secondSawRefresh,
         unique: secondHandle && secondHandle.hostPath !== firstHandle.hostPath }));
     if (secondHandle) await AUTH.releaseTaskCache(secondHandle);
 
@@ -225,6 +231,67 @@ async function main() {
         && fs.existsSync(path.join(faultHandle.hostPath, 'auth.json')),
       JSON.stringify({ faultError: faultError && faultError.message,
         durable: readRefresh(durableAuth), taskExists: fs.existsSync(faultHandle.hostPath) }));
+
+    const invalidRoot = path.join(root, 'invalid-task-auth');
+    fs.mkdirSync(invalidRoot, { recursive: true });
+    fs.writeFileSync(path.join(invalidRoot, 'auth.json'), JSON.stringify(managed('invalid-prior')));
+    const invalidHandle = await AUTH.stageTaskCache({
+      cacheRoot: invalidRoot, taskId: 'invalid-first', retryMs: 5, timeoutMs: 250,
+    });
+    fs.writeFileSync(path.join(invalidHandle.hostPath, 'auth.json'), '{ invalid');
+    let invalidError = null;
+    try { await AUTH.releaseTaskCache(invalidHandle); } catch (error) { invalidError = error; }
+    const afterInvalid = await Promise.race([
+      Promise.resolve(AUTH.stageTaskCache({
+        cacheRoot: invalidRoot, taskId: 'invalid-second', retryMs: 5, timeoutMs: 180,
+      })).catch(() => null),
+      delay(350).then(() => null),
+    ]);
+    check('C3 malformed task auth is preserved for recovery but still releases its lane for the next queued worker',
+      !!invalidError && fs.existsSync(path.join(invalidHandle.hostPath, 'auth.json'))
+        && !!afterInvalid && afterInvalid.hostPath !== invalidHandle.hostPath,
+      JSON.stringify({ invalidError: invalidError && invalidError.message,
+        preserved: fs.existsSync(invalidHandle.hostPath), nextStarted: !!afterInvalid }));
+    if (afterInvalid) await AUTH.releaseTaskCache(afterInvalid);
+
+    const secureHome = path.join(root, 'mode-source');
+    const secureRoot = path.join(root, 'private-modes');
+    fs.mkdirSync(secureHome, { recursive: true });
+    fs.writeFileSync(path.join(secureHome, 'auth.json'), JSON.stringify(managed('mode-seed')));
+    const modeCalls = [];
+    const secureFs = Object.create(fs);
+    secureFs.mkdirSync = (file, options) => {
+      modeCalls.push(['mkdir', path.resolve(file), options && options.mode]);
+      return fs.mkdirSync(file, options);
+    };
+    secureFs.chmodSync = (file, mode) => {
+      modeCalls.push(['chmod', path.resolve(file), mode]);
+      return fs.chmodSync(file, mode);
+    };
+    secureFs.openSync = (file, flags, mode) => {
+      modeCalls.push(['open', path.resolve(file), mode]);
+      return fs.openSync(file, flags, mode);
+    };
+    const securePreflight = await Promise.resolve(AUTH.preflight({
+      mode: 'chatgpt', codexHome: secureHome, cacheRoot: secureRoot,
+      fs: secureFs, retryMs: 5, timeoutMs: 250,
+    }));
+    const secureHandle = securePreflight && securePreflight.ok
+      ? await AUTH.stageTaskCache({
+        cacheRoot: secureRoot, taskId: 'mode-task', fs: secureFs,
+        retryMs: 5, timeoutMs: 250,
+      }) : null;
+    if (secureHandle) await AUTH.releaseTaskCache({ ...secureHandle, fs: secureFs });
+    const saw = (operation, file, mode) => modeCalls.some(call =>
+      call[0] === operation && call[1] === path.resolve(file) && call[2] === mode);
+    check('C2-C3 every durable/task cache directory is forced to 0700 and every credential or lock file to 0600',
+      !!secureHandle
+        && saw('chmod', secureRoot, 0o700)
+        && saw('chmod', path.join(secureRoot, 'auth.json'), 0o600)
+        && saw('chmod', secureHandle.hostPath, 0o700)
+        && saw('chmod', path.join(secureHandle.hostPath, 'auth.json'), 0o600)
+        && modeCalls.some(call => call[0] === 'open' && /\.lock$/.test(call[1]) && call[2] === 0o600),
+      JSON.stringify(modeCalls));
   } finally {
     try { fs.rmSync(root, { recursive: true, force: true }); } catch {}
   }

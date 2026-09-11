@@ -98,6 +98,40 @@ async function main() {
       check(`C2 runner/preflight refuses ${kind} ChatGPT state with a login/device remedy before lock or mutable runner seams`, !!pre && pre.ok === false && /codex login|device/i.test(pre.reason || '') && touched.length === 0 && !logLines.some(line => /project lock held/i.test(line)), JSON.stringify({ pre, touched, logLines }));
     }
 
+    const resolvedConfig = config(root, { provider: 'codex', codexAuth: 'chatgpt', hostShell: null });
+    const resolvedHome = path.join(root, 'resolved-session');
+    const resolvedCache = path.join(root, 'resolved-cache');
+    fs.mkdirSync(resolvedHome, { recursive: true });
+    fs.mkdirSync(resolvedCache, { recursive: true });
+    fs.writeFileSync(path.join(resolvedHome, 'auth.json'), JSON.stringify({
+      auth_mode: 'chatgpt', tokens: { access_token: secret, refresh_token: secret },
+    }));
+    fs.writeFileSync(path.join(resolvedCache, 'auth.json'), JSON.stringify({
+      auth_mode: 'chatgpt', tokens: { access_token: secret, refresh_token: secret },
+    }));
+    if (resolvedConfig.ok) resolvedConfig.cfg.codexAuthCacheRoot = resolvedCache;
+    const resolvedPreflight = resolvedConfig.ok && await Promise.resolve(PREFLIGHT.preflight(
+      resolvedConfig.cfg, REPO,
+      { runId: 'accept-djf3-resolved', info() {}, error() {} },
+      {
+        env: { CODEX_HOME: resolvedHome, PIPELINE_CODEX_CACHE: resolvedCache },
+        admitEntry: () => ({ ok: true, mode: 'supervisor-child', admission: {
+          parent: { id: 'fixture-supervisor', pid: process.pid }, nonce: 'fixture-nonce', issueId: 'repo-djf.3',
+        } }),
+        verifyRepoIdentity: () => ({ ok: true, remoteName: 'fixture', identity: 'repo:fixture/project' }),
+        resolveHostShell: () => ({ ok: true, command: 'fixture-resolved-shell', kind: 'fixture' }),
+        dockerAvailable: () => ({ status: 0 }), imageExists: () => ({ status: 0 }),
+        imageSupportsProvider: () => true, networkUp: () => ({ ok: true }),
+        egressCheck: () => ({ ok: true }), recoverStaleIssues: () => ({ recovered: [] }),
+      },
+    ));
+    check('C2 awaiting ChatGPT auth preserves startup-gate mutations on the original config object',
+      resolvedPreflight && resolvedPreflight.ok === true
+        && resolvedConfig.cfg.hostShell === 'fixture-resolved-shell'
+        && resolvedConfig.cfg.codexAuth === 'chatgpt',
+      JSON.stringify({ resolvedPreflight, hostShell: resolvedConfig.cfg.hostShell,
+        codexAuth: resolvedConfig.cfg.codexAuth }));
+
     let AUTH = null; try { AUTH = require(AUTH_FILE); } catch {}
     const sourceHome = path.join(root, 'operator-codex'); const privateRoot = path.join(root, 'private-cache'); fs.mkdirSync(sourceHome, { recursive: true }); fs.writeFileSync(path.join(sourceHome, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: secret, refresh_token: secret } })); fs.writeFileSync(path.join(sourceHome, 'unrelated-token'), secret);
     const staged = AUTH && typeof AUTH.stageTaskCache === 'function' && await Promise.resolve(AUTH.stageTaskCache({ codexHome: sourceHome, cacheRoot: privateRoot, taskId: 'one', containerPath: '/root/.codex' }));
@@ -109,6 +143,8 @@ async function main() {
       && !actual.launch.argv.some(arg => arg === 'CODEX_API_KEY' || String(arg).startsWith('CODEX_API_KEY='));
     check('C3 runner/container.js consumes the injected spawn seam and points Codex at only the writable pipeline-owned cache, never the operator home or API key', !!actual && !!actual.launch && actual.result.exitCode === 0 && staged.hostPath.startsWith(privateRoot) && staged.hostPath !== sourceHome && cacheMountedWritable && safeLaunch, secretSafe(actual && actual.launch, secret));
     check('C3 runner/run.js awaits the credential-lane lease and supplies that cache to runTask, so a disconnected helper or fake launch cannot satisfy the suite', /await\s+(?:Promise\.resolve\()?\s*codexAuth\.stageTaskCache/.test(fs.readFileSync(RUN_FILE, 'utf8')) && /runTask\(cfg,\s*\{[\s\S]{0,1600}authCache/.test(fs.readFileSync(RUN_FILE, 'utf8')));
+    check('C3 runner requests an unbounded wait for the serialized task credential lane instead of failing queued ideas after the short preflight timeout',
+      /stageTaskCache\(\{[\s\S]{0,500}wait:\s*true/.test(fs.readFileSync(RUN_FILE, 'utf8')));
     const runSource = fs.readFileSync(RUN_FILE, 'utf8');
     check('C2 runner/run.js preserves the established preflight ordering and awaits a possibly asynchronous ChatGPT result before reading it',
       /const\s+pre\s*=\s*preflight\s*\(/.test(runSource)

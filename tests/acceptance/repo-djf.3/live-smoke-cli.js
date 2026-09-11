@@ -13,6 +13,8 @@ const secret = 'must-not-reach-docker';
 const sourceHome = path.resolve('operator-codex-home');
 const taskImage = 'fixture:codex-task-image-pinned';
 const privateCache = path.resolve('pipeline-private-codex-cache');
+const taskNetwork = 'fixture-codex-internal-net';
+const proxyUrl = 'http://fixture-codex-proxy:4312';
 const handle = {
   hostPath: path.join(privateCache, 'tasks', 'smoke'),
   containerPath: '/root/.codex',
@@ -44,7 +46,10 @@ try {
   const result = await SMOKE.main(
     ['--image', taskImage, '--model', 'gpt-5.6-terra', '--reasoning-effort', 'low'],
     {
-      env: { CODEX_LIVE_SMOKE: '1', CODEX_API_KEY: secret, CODEX_HOME: sourceHome },
+      env: {
+        CODEX_LIVE_SMOKE: '1', CODEX_API_KEY: secret, CODEX_HOME: sourceHome,
+        PIPELINE_NET: taskNetwork, PIPELINE_PROXY_URL: proxyUrl,
+      },
       runSync: run,
       codexAuth: fakeAuth,
       out: line => output.push(String(line)),
@@ -54,13 +59,20 @@ try {
   const docker = launches.find(call => call.command === 'docker' && call.argv[0] === 'run');
   const writable = docker ? docker.argv.filter((arg, index) => docker.argv[index - 1] === '-v' && !/:ro$/.test(arg)) : [];
   const mountedHome = docker && docker.argv.some((arg, index) => docker.argv[index - 1] === '-e' && arg === 'CODEX_HOME=/root/.codex');
+  const proxied = docker && docker.argv.some((arg, index) => docker.argv[index - 1] === '--network' && arg === taskNetwork)
+    && docker.argv.some((arg, index) => docker.argv[index - 1] === '-e' && arg === `HTTPS_PROXY=${proxyUrl}`)
+    && docker.argv.some((arg, index) => docker.argv[index - 1] === '-e' && arg === `HTTP_PROXY=${proxyUrl}`)
+    && docker.argv.some((arg, index) => docker.argv[index - 1] === '-e' && arg === 'NO_PROXY=localhost,127.0.0.1');
   const clean = docker && !Object.prototype.hasOwnProperty.call(docker.env, 'CODEX_API_KEY')
     && !Object.prototype.hasOwnProperty.call(docker.env, 'CODEX_HOME')
     && !docker.argv.some(arg => arg === 'CODEX_API_KEY' || String(arg).includes(secret) || String(arg).includes(sourceHome));
   check('C5 the public opt-in smoke command stages and releases a private ChatGPT cache around one pinned-image Docker launch',
     result === 0 && authCalls.map(call => call[0]).join(',') === 'preflight,stage,release'
-      && docker && docker.argv.includes(taskImage) && writable.length === 1 && writable[0] === handle.mount && mountedHome,
+      && docker && docker.argv.includes(taskImage) && writable.length === 1 && writable[0] === handle.mount
+      && mountedHome && proxied,
     JSON.stringify({ result, authCalls: authCalls.map(call => call[0]), docker: docker && docker.argv, writable }));
+  check('C5 the public live smoke uses the closed task network and deny-by-default Codex proxy rather than Docker default egress',
+    proxied, JSON.stringify(docker && docker.argv));
   check('C5 the public pinned-image smoke strips API-key and operator-home state and observably reports ChatGPT authentication and PASS',
     clean && output.some(line => /authentication.*chatgpt|chatgpt.*authentication/i.test(line))
       && output.some(line => /PASS.*live smoke/i.test(line)),
