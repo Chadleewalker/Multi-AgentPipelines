@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 'use strict';
 
-// Read-only live Codex smoke test — DESIGN.md §6.8.
+// Read-only live Codex smoke test — DESIGN.md §6.5.
 //
 // Everything else that covers the Codex provider is deterministic and offline: fake
 // executables, planted `codex exec --help` text, planted JSONL. That proves the pipeline's
@@ -20,14 +20,14 @@
 //   --strict-config       an unknown -c key is an error, not a silent no-op
 // so it can be pointed at a real repository checkout without changing a byte of it.
 //
-//   CODEX_LIVE_SMOKE=1 node scripts/codex-live-smoke.js [--model <alias>]
+//   CODEX_LIVE_SMOKE=1 node scripts/codex-live-smoke.js [--image <pinned-image>] [--model <alias>]
 //
-// Authentication: on the HOST, Codex may reuse a saved ChatGPT CLI session (`codex login`)
-// and no key is needed. Inside a task container there is no saved session, so CODEX_API_KEY
-// is required there — this helper accepts either and says which one it used.
+// Authentication: image mode stages the managed ChatGPT session into a private,
+// task-scoped CODEX_HOME and never passes an API key or the operator's CODEX_HOME to Docker.
 
 const path = require('path');
 const { runSync } = require('../runner/process');
+const codexAuthDefault = require('../runner/codex-auth');
 const {
   CODEX_REQUIRED_EXEC_FLAGS, CREDENTIAL_NAMES, REASONING_EFFORTS,
   normalizeReasoningEffort, missingCodexCapabilities, normalizeOutput,
@@ -54,6 +54,10 @@ function parseArgs(argv) {
         return { error: `--reasoning-effort must be one of ${REASONING_EFFORTS.join(' | ')}` };
       }
       opts.reasoningEffort = value;
+    } else if (arg === '--image') {
+      const value = argv[++i];
+      if (!value || value.startsWith('--')) return { error: '--image needs a pinned task image' };
+      opts.image = value;
     } else if (arg === '-h' || arg === '--help') {
       opts.help = true;
     } else {
@@ -61,6 +65,41 @@ function parseArgs(argv) {
     }
   }
   return opts;
+}
+
+
+function dockerEnv(env) {
+  const clean = { ...env };
+  // Values on Docker's own environment can be inherited by `-e NAME`, so remove
+  // both public spellings and the operator home even though this invocation names none.
+  delete clean.CODEX_API_KEY;
+  delete clean.OPENAI_API_KEY;
+  delete clean.CODEX_HOME;
+  return clean;
+}
+
+// This diagnostic probe has neither workspace nor pipeline mounts. It retains the task
+// network/proxy boundary and mounts precisely one writable credential directory.
+function runChatgptContainerSmoke(spec = {}) {
+  const env = spec.env || process.env;
+  const run = spec.run || runSync;
+  const cache = spec.authCache;
+  const proxy = env.PIPELINE_PROXY_URL || `http://${env.PIPELINE_PROXY || 'pipeline-proxy'}:${env.PIPELINE_PROXY_PORT || '3128'}`;
+  const args = [
+    'run', '--rm',
+    '--network', env.PIPELINE_NET || 'pipeline-net',
+    '-v', cache.mount,
+    '-e', `CODEX_HOME=${cache.containerPath}`,
+    '-e', `HTTPS_PROXY=${proxy}`,
+    '-e', `HTTP_PROXY=${proxy}`,
+    '-e', 'NO_PROXY=localhost,127.0.0.1',
+    spec.image,
+    'codex', ...smokeArgs(spec),
+  ];
+  (spec.out || console.log)('Authentication: ChatGPT managed session (private task cache)');
+  return run('docker', args, {
+    input: `${PROMPT}\\n`, timeoutMs: TIMEOUT_MS, label: 'codex live smoke', env: dockerEnv(env),
+  });
 }
 
 // The read-only argv. It shares the pipeline's required capability roster so a future
@@ -80,7 +119,7 @@ function smokeArgs(opts) {
   ];
 }
 
-function main(argv, io = {}) {
+async function main(argv, io = {}) {
   const out = io.out || console.log;
   const err = io.err || console.error;
   const env = io.env || process.env;
@@ -88,7 +127,7 @@ function main(argv, io = {}) {
   const opts = parseArgs(argv);
   if (opts.error) { err(`codex-live-smoke: ${opts.error}`); return 2; }
   if (opts.help) {
-    out('usage: CODEX_LIVE_SMOKE=1 node scripts/codex-live-smoke.js [--model <alias>]'
+    out('usage: CODEX_LIVE_SMOKE=1 node scripts/codex-live-smoke.js [--image <pinned-image>] [--model <alias>]'
       + ' [--reasoning-effort minimal|low|medium|high]');
     return 0;
   }
@@ -96,6 +135,28 @@ function main(argv, io = {}) {
     out('SKIP codex live smoke — set CODEX_LIVE_SMOKE=1 to make one real, read-only call.');
     out(`     it would ask ${opts.model} to name itself; nothing else in the suite calls a model.`);
     return 0;
+  }
+
+
+  if (opts.image) {
+    const auth = io.codexAuth || codexAuthDefault;
+    const preflight = await auth.preflight({
+      mode: 'chatgpt', codexHome: env.CODEX_HOME, cacheRoot: env.PIPELINE_CODEX_CACHE, env,
+    });
+    if (!preflight || !preflight.ok) {
+      err(`codex-live-smoke: ${(preflight && preflight.reason) || 'managed ChatGPT authentication is unavailable'}`);
+      return 1;
+    }
+    let cache;
+    try {
+      cache = await auth.stageTaskCache({
+        cacheRoot: preflight.cacheRoot, taskId: 'smoke', containerPath: '/root/.codex', wait: true,
+      });
+      const result = runChatgptContainerSmoke({ ...opts, authCache: cache, env, run, out });
+      return reportResult(result, opts, out, err);
+    } finally {
+      if (cache) await auth.releaseTaskCache(cache);
+    }
   }
 
   const capabilities = run('codex', ['exec', '--help'], {
@@ -126,6 +187,10 @@ function main(argv, io = {}) {
     label: 'codex live smoke',
     env: { ...env },
   });
+  return reportResult(result, opts, out, err);
+}
+
+function reportResult(result, opts, out, err) {
   const raw = `${result.stdout || ''}\n${result.stderr || ''}`;
   const normalized = normalizeOutput('codex', raw, opts.model);
   if (!normalized) {
@@ -147,6 +212,6 @@ function main(argv, io = {}) {
   return result.status === 0 ? 0 : 1;
 }
 
-if (require.main === module) process.exit(main(process.argv.slice(2)));
+if (require.main === module) main(process.argv.slice(2)).then(code => { process.exitCode = code; });
 
-module.exports = { main, parseArgs, smokeArgs, DEFAULT_MODEL };
+module.exports = { main, parseArgs, smokeArgs, runChatgptContainerSmoke, DEFAULT_MODEL };

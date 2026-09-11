@@ -98,6 +98,7 @@ function runTask(cfg, opts, log, traceId) {
     const credential = credentialFor(cfg, opts);
     const childEnv = { ...DOCKER_ENV };
     for (const name of CREDENTIAL_ENV_NAMES) delete childEnv[name];
+    delete childEnv.CODEX_HOME;
     if (credential) childEnv[credential.name] = credential.value;
     const child = (opts.spawn || spawn)('docker', args, { env: childEnv });
     child.stdout.pipe(logStream);

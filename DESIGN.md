@@ -2340,8 +2340,9 @@ exist. Thread: `docs/threads/merge-order.md`.
   `CODEX_API_KEY`, never both — is passed to containers by environment-variable NAME at
   `docker run` and never baked into an image layer (6.5). Headless `claude -p` honors its
   token; interactive `claude` does not (known issue) — the pipeline is headless-only anyway.
-  Host Codex may instead reuse a saved ChatGPT CLI session (`codex login`); a container
-  cannot, and no `auth.json` is ever mounted into one.
+  Codex `chatgpt` mode instead stages one managed saved ChatGPT session into a task-private
+  `CODEX_HOME` cache, never the operator home; that cache is held as one exclusive lane through
+  staging, execution and refreshed write-back. Explicit `api-key` mode remains available.
 - **Runner implementation: Node.js.** Decision, for cross-platform reasons: `node` is
   the same command on Windows and Linux (no `python` vs `python3` split), handles JSON
   natively for Beads/Claude output, and can enforce wall-clock timeouts with an independent
@@ -2773,8 +2774,9 @@ task through `-e NAME` inheritance. Inside the container the key belongs to the 
 alone: Codex's `shell_environment_policy` keeps its own default secret names excluded and adds
 this key explicitly, so nothing the *model* spawns inherits it, and the entrypoint runs the
 authoritative verifier — which executes the target repository's own code — under
-`env -u CODEX_API_KEY`. Host Codex may instead reuse a saved ChatGPT CLI session
-(`codex login`); a container never can, and no `auth.json` is ever mounted or baked in.
+`env -u CODEX_API_KEY -u OPENAI_API_KEY`. Managed ChatGPT mode mounts only a task-private
+`auth.json` cache, never the operator home or an image layer, and its one saved session is
+serialized for the whole task and refresh write-back interval.
 
 **One egress profile per provider, never one widened to both.** `docker/proxy-codex/`
 is a separate deny-by-default sidecar image whose allowlist carries only the concrete OpenAI

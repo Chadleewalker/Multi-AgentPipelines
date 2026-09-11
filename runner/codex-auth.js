@@ -20,7 +20,7 @@ async function withCacheLock(opts, fn) {
   const fs = opts.fs || fs0; const root = path.resolve(opts.cacheRoot || defaultCacheRoot());
   const file = lockPath(root); const retryMs = opts.retryMs || 25; const timeoutMs = opts.timeoutMs == null ? 1000 : opts.timeoutMs;
   const staleMs = opts.staleMs == null ? 30000 : opts.staleMs; const wait = opts.wait === true;
-  ensureDir(fs, path.dirname(root)); const started = Date.now(); const owner = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  fs.mkdirSync(path.dirname(root), { recursive: true, mode: 0o700 }); const started = Date.now(); const owner = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   for (;;) {
     try {
       const fd = fs.openSync(file, 'wx', 0o600);
@@ -84,15 +84,22 @@ async function stageTaskCache(opts = {}) {
     // The task handle owns a separate exclusive lease; this short lock only serializes setup.
   });
   // Reacquire as a long lane. `wait:true` is deliberately unbounded for queued workers.
-  const lease = { release: null };
-  const promise = new Promise((resolve, reject) => { lease.resolve = resolve; lease.reject = reject; });
   // A simple durable task lock is held through releaseTaskCache; the lock filename is distinct
   // from bootstrap locking so preflight can provide bounded busy diagnostics.
   const lane = `${root}.lane`;
   const acquireLane = async () => {
-    const start = Date.now(); for (;;) { try { const fd = fs.openSync(lane, 'wx', 0o600); fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, hostPath: held.hostPath }), 'utf8'); fs.closeSync(fd); break; } catch (e) { if (e.code !== 'EEXIST') throw e; if (opts.wait !== true && Date.now() - start >= (opts.timeoutMs || 1000)) throw e; await sleep(opts.retryMs || 25); } }
+    const start = Date.now(); for (;;) { try { const fd = fs.openSync(lane, 'wx', 0o600); fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, hostPath: held.hostPath }), 'utf8'); fs.closeSync(fd); chmod(fs, lane, 0o600); break; } catch (e) { if (e.code !== 'EEXIST') throw e; if (opts.wait !== true && Date.now() - start >= (opts.timeoutMs || 1000)) throw e; await sleep(opts.retryMs || 25); } }
   };
-  try { await acquireLane(); held.lane = lane; return held; } catch (e) { try { fs.rmSync(held.hostPath, { recursive: true, force: true }); } catch {} throw e; }
+  try {
+    await acquireLane();
+    // A queued worker must copy after it owns the lane: an earlier worker may have
+    // refreshed the durable session while this one waited.
+    const refreshed = readAuth(path.join(root, 'auth.json'), fs);
+    if (!refreshed) throw new Error('managed ChatGPT durable auth is missing or invalid');
+    fs.writeFileSync(path.join(held.hostPath, 'auth.json'), JSON.stringify(refreshed), { mode: 0o600 });
+    chmod(fs, path.join(held.hostPath, 'auth.json'), 0o600);
+    held.lane = lane; return held;
+  } catch (e) { try { fs.rmSync(held.hostPath, { recursive: true, force: true }); } catch {} throw e; }
 }
 async function releaseTaskCache(handle) {
   const fs = handle.fs || fs0; const durable = path.join(handle.cacheRoot, 'auth.json'); const taskAuth = path.join(handle.hostPath, 'auth.json');

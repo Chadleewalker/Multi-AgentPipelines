@@ -636,7 +636,7 @@ async function main() {
     }
   };
   process.on('exit', releaseOnExit);
-  log.info(t, `preflight passed${resolvedPre.recovered.length ? ` (recovered: ${pre.recovered.join(', ')})` : ''}`);
+  log.info(t, `preflight passed${resolvedPre.recovered.length ? ` (recovered: ${resolvedPre.recovered.join(', ')})` : ''}`);
 
   let completed = false;
   let cleanup = { ok: true };
@@ -710,7 +710,7 @@ async function main() {
 
   const drained = await drainQueue(
     source,
-    (issue) => runOneTask(cfg, issue, log, token, gate, pre.ownership),
+    (issue) => runOneTask(cfg, issue, log, token, gate, resolvedPre.ownership),
     cfg.concurrency
   );
   const results = drained.filter(Boolean);
@@ -801,7 +801,7 @@ async function main() {
     })();
   } finally {
     cleanup = cleanupOwnedLifecycle(cfg, REPO_ROOT, log, t,
-      { ownership: pre.ownership, lockOwned: pre.lockOwned });
+      { ownership: resolvedPre.ownership, lockOwned: resolvedPre.lockOwned });
     process.removeListener('exit', releaseOnExit);
   }
   if (!cleanup.ok) {

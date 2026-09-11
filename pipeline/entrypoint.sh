@@ -64,7 +64,7 @@ die30() { echo "entrypoint: $1" >&2; exit 30; }
 # it is stripped here rather than trusted not to be read (§6). One command per call site:
 # nothing may sit between the verifier and the `VRC=$?` that reads its exit code.
 run_verifier() {
-  env -u CODEX_API_KEY node "$PIPE/verify.js"
+  env -u CODEX_API_KEY -u OPENAI_API_KEY node "$PIPE/verify.js"
 }
 
 # A successful implementation commit is the recovery point for the non-fatal docs phase.
