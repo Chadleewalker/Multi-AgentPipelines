@@ -149,6 +149,21 @@ async function main() {
     check('C2 runner/run.js preserves the established preflight ordering and awaits a possibly asynchronous ChatGPT result before reading it',
       /const\s+pre\s*=\s*preflight\s*\(/.test(runSource)
         && /await\s+Promise\.resolve\(pre\)/.test(runSource));
+    const executableRunSource = runSource
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/[^\n]*/g, '');
+    const resolvedMatch = /const\s+([A-Za-z_$][\w$]*)\s*=\s*await\s+Promise\.resolve\(pre\)/
+      .exec(executableRunSource);
+    const preflightAwait = resolvedMatch ? resolvedMatch.index : -1;
+    const resolvedName = resolvedMatch && resolvedMatch[1];
+    const afterPreflightAwait = !resolvedMatch ? ''
+      : executableRunSource.slice(resolvedMatch.index + resolvedMatch[0].length);
+    check('C2 after awaiting ChatGPT preflight, runner/main reads only the resolved result and cannot dereference the Promise',
+      preflightAwait >= 0
+        && new RegExp(`\\b${resolvedName}\\s*\\.\\s*recovered\\b`).test(afterPreflightAwait)
+        && !/\bpre\s*\./.test(afterPreflightAwait),
+      JSON.stringify({ preflightAwait, resolvedName,
+        unsafeReads: afterPreflightAwait.match(/\bpre\s*\.\s*[A-Za-z_$][\w$]*/g) || [] }));
     const verifier = fs.readFileSync(path.join(REPO, 'pipeline', 'entrypoint.sh'), 'utf8');
     check('C3 the staged secret never reaches workspace, task artifacts, container log, or the repository-controlled verifier environment', !!actual && !readTree(actual.workspaceDir).includes(secret) && !readTree(actual.taskDir).includes(secret) && /env\s+-u\s+CODEX_API_KEY/.test(verifier));
     if (AUTH && staged) await Promise.resolve(AUTH.releaseTaskCache(staged));

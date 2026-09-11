@@ -124,6 +124,43 @@ async function main() {
       stolen === null && !!busy && liveDuringAttempt,
       JSON.stringify({ stolen, busy: busy && busy.message, liveDuringAttempt }));
 
+    const initializingRoot = path.join(root, 'initializing-owner');
+    let initializingLock = null;
+    const observingFs = Object.create(fs);
+    observingFs.openSync = (file, flags, mode) => {
+      if (String(flags).includes('x') && /\.lock$/.test(String(file))) initializingLock = file;
+      return fs.openSync(file, flags, mode);
+    };
+    await AUTH.withCacheLock(
+      { cacheRoot: initializingRoot, fs: observingFs, retryMs: 5, timeoutMs: 250 },
+      () => undefined,
+    );
+    if (!initializingLock) throw new Error('credential helper did not expose an exclusive lock file');
+    fs.writeFileSync(initializingLock, '{');
+    let enteredFreshMalformed = false;
+    let freshMalformedError = null;
+    try {
+      await AUTH.withCacheLock(
+        { cacheRoot: initializingRoot, retryMs: 5, timeoutMs: 70, staleMs: 500 },
+        () => { enteredFreshMalformed = true; },
+      );
+    } catch (error) { freshMalformedError = error; }
+    check('C3 a freshly created incomplete owner record is treated as initialization in progress, never stolen',
+      !enteredFreshMalformed && !!freshMalformedError && fs.existsSync(initializingLock),
+      JSON.stringify({ enteredFreshMalformed, error: freshMalformedError && freshMalformedError.message,
+        lockExists: fs.existsSync(initializingLock) }));
+    // Keep the recovery half observable even when the first half exposes an implementation
+    // that wrongly removed the record.
+    if (!fs.existsSync(initializingLock)) fs.writeFileSync(initializingLock, '{');
+    const old = new Date(Date.now() - 5000);
+    fs.utimesSync(initializingLock, old, old);
+    const recoveredMalformed = await AUTH.withCacheLock(
+      { cacheRoot: initializingRoot, retryMs: 5, timeoutMs: 500, staleMs: 50 },
+      () => 'recovered-malformed',
+    );
+    check('C3 an incomplete owner record becomes recoverable after its initialization grace expires',
+      recoveredMalformed === 'recovered-malformed', JSON.stringify({ recoveredMalformed }));
+
     const staleRoot = path.join(root, 'dead-owner');
     const deadCode = [
       "const auth=require(process.argv[1]);",
@@ -290,7 +327,9 @@ async function main() {
         && saw('chmod', path.join(secureRoot, 'auth.json'), 0o600)
         && saw('chmod', secureHandle.hostPath, 0o700)
         && saw('chmod', path.join(secureHandle.hostPath, 'auth.json'), 0o600)
-        && modeCalls.some(call => call[0] === 'open' && /\.lock$/.test(call[1]) && call[2] === 0o600),
+        && modeCalls.some(call => call[0] === 'open' && /\.lock$/.test(call[1]) && call[2] === 0o600)
+        && !modeCalls.some(call => call[0] === 'chmod'
+          && call[1] === path.resolve(path.dirname(secureRoot))),
       JSON.stringify(modeCalls));
   } finally {
     try { fs.rmSync(root, { recursive: true, force: true }); } catch {}
