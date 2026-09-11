@@ -7,6 +7,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const CONTROL_PLANE = require('./control-plane');
 const {
   PROVIDERS, REASONING_EFFORTS, CREDENTIAL_NAMES,
@@ -215,6 +216,9 @@ function loadConfig(file) {
         + ' (reasoning effort)');
     }
   }
+  if (raw.codexAuth !== undefined && !["chatgpt", "api-key"].includes(raw.codexAuth)) {
+    throw new Error("run.config.json: 'codexAuth' must be one of chatgpt | api-key");
+  }
   const cfg = { ...DEFAULTS, ...raw, configPath: p };
   // Resolved AFTER the spread and deliberately NOT in contracts/control-plane.json's
   // configDefaults: a stage field's default is the run-wide value, and the run-wide value's
@@ -222,6 +226,7 @@ function loadConfig(file) {
   // With every field absent this resolves to Claude at every stage, which is what makes an
   // untouched run config byte-for-byte the pre-Codex pipeline.
   cfg.provider = normalizeProvider(raw.provider);
+  cfg.codexAuth = raw.codexAuth === undefined ? "api-key" : raw.codexAuth;
   cfg.testAuthorProvider = normalizeProvider(raw.testAuthorProvider || cfg.provider);
   cfg.testProbeProvider = normalizeProvider(raw.testProbeProvider || cfg.provider);
   cfg.reasoningEffort = normalizeReasoningEffort(raw.reasoningEffort);
@@ -234,6 +239,7 @@ function loadConfig(file) {
   // Built from whichever name won. Deriving the name but building the URL from anything
   // else would leave every task container proxying to a host that is not there.
   cfg.proxyUrl = `http://${cfg.proxyName}:${cfg.proxyPort}`;
+  if (cfg.provider === "codex" && cfg.codexAuth === "chatgpt") cfg.codexAuthCacheRoot = process.env.PIPELINE_CODEX_CACHE || path.join(os.homedir(), ".pipeline-codex-chatgpt");
   return cfg;
 }
 

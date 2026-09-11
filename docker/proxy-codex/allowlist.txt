@@ -3,3 +3,6 @@
 # domains only; no wildcard entries. This roster is deliberately separate from the one
 # the other provider profile carries - neither file is ever widened to serve both.
 api.openai.com
+
+chatgpt.com
+ab.chatgpt.com

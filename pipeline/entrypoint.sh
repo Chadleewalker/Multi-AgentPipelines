@@ -39,6 +39,7 @@ else
   AGENT_DEFAULT="claude -p --dangerously-skip-permissions${MODEL_ARG}"
 fi
 AGENT_CMD="${PIPELINE_AGENT_CMD:-$AGENT_DEFAULT}"
+if [ "${PIPELINE_CHATGPT_AUTH:-}" = "1" ]; then export CODEX_HOME=/root/.codex; fi
 
 # When we own the invocation, ask for JSON so the RESOLVED model id can be recorded (a
 # `--model opus` alias hides which Opus actually ran) and so the docs phase hands back a
@@ -64,7 +65,7 @@ die30() { echo "entrypoint: $1" >&2; exit 30; }
 # it is stripped here rather than trusted not to be read (§6). One command per call site:
 # nothing may sit between the verifier and the `VRC=$?` that reads its exit code.
 run_verifier() {
-  env -u CODEX_API_KEY node "$PIPE/verify.js"
+  env -u CODEX_API_KEY -u OPENAI_API_KEY -u CODEX_HOME runuser -u nobody -- node "$PIPE/verify.js"
 }
 
 # A successful implementation commit is the recovery point for the non-fatal docs phase.

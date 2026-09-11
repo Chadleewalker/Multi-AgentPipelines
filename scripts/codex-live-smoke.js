@@ -27,6 +27,7 @@
 // is required there — this helper accepts either and says which one it used.
 
 const path = require('path');
+const codexAuthDefault = require('../runner/codex-auth');
 const { runSync } = require('../runner/process');
 const {
   CODEX_REQUIRED_EXEC_FLAGS, CREDENTIAL_NAMES, REASONING_EFFORTS,
@@ -44,7 +45,7 @@ function parseArgs(argv) {
   const opts = { model: DEFAULT_MODEL, reasoningEffort: 'low' };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
-    if (arg === '--model') {
+    if (arg === '--image') { const value = argv[++i]; if (!value || value.startsWith('--')) return { error: '--image needs a value' }; opts.image = value; } else if (arg === '--model') {
       const value = argv[++i];
       if (!value || value.startsWith('--')) return { error: '--model needs a value' };
       opts.model = value;
@@ -80,7 +81,7 @@ function smokeArgs(opts) {
   ];
 }
 
-function main(argv, io = {}) {
+async function main(argv, io = {}) {
   const out = io.out || console.log;
   const err = io.err || console.error;
   const env = io.env || process.env;
@@ -97,6 +98,8 @@ function main(argv, io = {}) {
     out(`     it would ask ${opts.model} to name itself; nothing else in the suite calls a model.`);
     return 0;
   }
+
+  if (opts.image) return runChatgptContainerSmoke({ image: opts.image, model: opts.model, reasoningEffort: opts.reasoningEffort, env, run, out, err, codexAuth: io.codexAuth || codexAuthDefault });
 
   const capabilities = run('codex', ['exec', '--help'], {
     label: 'codex exec capability probe', timeoutMs: TIMEOUT_MS,
@@ -147,6 +150,23 @@ function main(argv, io = {}) {
   return result.status === 0 ? 0 : 1;
 }
 
-if (require.main === module) process.exit(main(process.argv.slice(2)));
+if (require.main === module) main(process.argv.slice(2)).then(code => { process.exitCode = code; });
 
-module.exports = { main, parseArgs, smokeArgs, DEFAULT_MODEL };
+async function runChatgptContainerSmoke(opts) {
+  const out = opts.out || console.log; const err = opts.err || console.error; const env = opts.env || process.env; const run = opts.run || runSync; const auth = opts.codexAuth || codexAuthDefault;
+  const pre = opts.authCache ? { ok: true, cacheRoot: opts.authCache.cacheRoot } : await Promise.resolve(auth.preflight({ mode: "chatgpt", codexHome: env.CODEX_HOME }));
+  if (!pre.ok) { err(pre.reason); return 1; }
+  const cache = opts.authCache || await Promise.resolve(auth.stageTaskCache({ cacheRoot: pre.cacheRoot, taskId: "live-smoke", wait: true }));
+  const ownsCache = !opts.authCache;
+  try {
+    const childEnv = { ...env }; delete childEnv.CODEX_API_KEY; delete childEnv.OPENAI_API_KEY; delete childEnv.CODEX_HOME;
+    const network = env.PIPELINE_NET || 'pipeline-net'; const proxy = env.PIPELINE_PROXY_URL || env.HTTPS_PROXY || 'http://pipeline-proxy:3128';
+    const args = ['run','--rm','--network',network,'-v',cache.mount,'-e','CODEX_HOME=/root/.codex','-e','HTTPS_PROXY='+proxy,'-e','HTTP_PROXY='+proxy,'-e','NO_PROXY=localhost,127.0.0.1',opts.image,'codex',...smokeArgs(opts)];
+    out('Authentication: ChatGPT managed session');
+    const result = run("docker", args, { env: childEnv, input: PROMPT + "\n", timeoutMs: TIMEOUT_MS });
+    const normalized = normalizeOutput("codex", String(result.stdout || "") + "\n" + String(result.stderr || ""), opts.model);
+    if (!normalized || result.status !== 0) { err("codex-live-smoke: no structured Codex result (exit " + result.status + ")."); return 1; }
+    out("Model that answered: " + normalized.model); out("PASS codex live smoke"); return 0;
+  } finally { if (ownsCache) await Promise.resolve(auth.releaseTaskCache(cache)); }
+}
+module.exports = { main, parseArgs, smokeArgs, runChatgptContainerSmoke, DEFAULT_MODEL };

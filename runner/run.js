@@ -15,6 +15,7 @@
 const fs = require('fs');
 const path = require('path');
 const { loadConfig, loadProviderCredential, missingCredentialDiagnostic } = require('./config');
+const codexAuth = require('./codex-auth');
 const { credentialNameFor, providerFor } = require('./agent-provider');
 const { startRun } = require('./log');
 const { preflight, networkDown } = require('./preflight');
@@ -94,7 +95,7 @@ function cleanupOwnedLifecycle(cfg, repoRoot, log, traceId, deps = {}) {
 // One task container (§4.10). PIPELINE_EXEC_STUB replaces the container with a local
 // script — used by the runner's own test suites to exercise outcome paths cheaply;
 // real runs always take the docker path.
-async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClockMinutes) {
+async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClockMinutes, authCache) {
   const stub = process.env.PIPELINE_EXEC_STUB;
   if (stub) {
     // Asynchronous on purpose (§7): spawnSync here would serialise every stubbed task and
@@ -136,9 +137,10 @@ async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClo
     pipelineDir: path.join(REPO_ROOT, 'pipeline'),
     issueId: issue.id,
     taskDir,
+    authCache,
     // Paired with its environment-variable NAME here, so the container layer never has to
     // guess which provider a bare value belongs to.
-    credential: { name: credentialNameFor(providerFor(cfg)), value: token },
+    ...(authCache ? {} : { credential: { name: credentialNameFor(providerFor(cfg)), value: token } }),
     wallClockMinutes: wallClockMinutes || cfg.wallClockMinutes,
   }, log, traceId);
 }
@@ -387,7 +389,15 @@ async function runOneTask(cfg, issue, log, token, gate, ownership) {
       artifacts = collectArtifacts(ws.dir, taskDir, issue.id);
       break;
     }
-    exec = await executeTask(cfg, issue, taskDir, log, tr, ws, token, remainingMinutes);
+    let authCache;
+    try {
+      if (providerFor(cfg) === "codex" && cfg.codexAuth === "chatgpt") {
+        authCache = await codexAuth.stageTaskCache({ cacheRoot: cfg.codexAuthCacheRoot, taskId: issue.id, wait: true });
+      }
+      exec = await executeTask(cfg, issue, taskDir, log, tr, ws, token, remainingMinutes, authCache);
+    } finally {
+      if (authCache) await codexAuth.releaseTaskCache(authCache);
+    }
     activeMs += exec.durationMs || 0;
     if (exec.durationMs !== undefined) {
       log.info(tr, `container ran ${Math.round(exec.durationMs / 1000)}s` +
@@ -579,13 +589,14 @@ async function main() {
   // a Beads claim, a network or a container exists, rather than failing at the model
   // endpoint once all of them do. With no provider selected this is exactly the historical
   // Claude token load and the historical diagnostic.
-  const credential = loadProviderCredential(REPO_ROOT, cfg.provider);
-  if (!credential) {
+  const credential = providerFor(cfg) === "codex" && cfg.codexAuth === "chatgpt"
+    ? null : loadProviderCredential(REPO_ROOT, cfg.provider);
+  if (!credential && !(providerFor(cfg) === "codex" && cfg.codexAuth === "chatgpt")) {
     log.error(t, missingCredentialDiagnostic(cfg.provider));
     process.exit(2);
   }
-  const token = credential.value;
-  log.info(t, `subscription token loaded (${credential.name})`);
+  const token = credential ? credential.value : "";
+  if (credential) log.info(t, `subscription token loaded (${credential.name})`);
 
   // The write-protection backstop (change-log row `repo-324`). Ahead of preflight on purpose:
   // it holds no lock and creates no network, so a refusal here has nothing to compensate for.
@@ -604,8 +615,9 @@ async function main() {
   }
 
   const pre = preflight(cfg, REPO_ROOT, log);
-  if (!pre.ok) {
-    log.error(t, `PREFLIGHT FAILED — no tasks launched: ${pre.reason}`);
+  const resolvedPre = await Promise.resolve(pre);
+  if (!resolvedPre.ok) {
+    log.error(t, `PREFLIGHT FAILED — no tasks launched: ${resolvedPre.reason}`);
     // preflight owns compensation for every unsuccessful path after acquiring the lock.
     // In particular, an `up` script may create half the plumbing and then fail; its own
     // finally attempts `down` before releasing. A lock refusal never owned either resource.
@@ -619,17 +631,17 @@ async function main() {
   // A supervisor child's implementation authority travels on the config, so every Beads write
   // and every publication below can name the section it must be alone inside. Null for a
   // standalone run, where the target lock already makes that true.
-  cfg.childAdmission = pre.childAdmission || null;
+  cfg.childAdmission = resolvedPre.childAdmission || null;
   const releaseOnExit = () => {
     try { networkDown(REPO_ROOT, cfg); } catch { /* process exit: best effort only */ }
     finally {
-      if (pre.lockOwned !== false) {
-        try { releaseLock(REPO_ROOT, cfg.targetRepoPath, pre.ownership); } catch { /* never mask the real exit */ }
+      if (resolvedPre.lockOwned !== false) {
+        try { releaseLock(REPO_ROOT, cfg.targetRepoPath, resolvedPre.ownership); } catch { /* never mask the real exit */ }
       }
     }
   };
   process.on('exit', releaseOnExit);
-  log.info(t, `preflight passed${pre.recovered.length ? ` (recovered: ${pre.recovered.join(', ')})` : ''}`);
+  log.info(t, `preflight passed${resolvedPre.recovered.length ? ` (recovered: ${resolvedPre.recovered.join(', ')})` : ''}`);
 
   let completed = false;
   let cleanup = { ok: true };
@@ -703,7 +715,7 @@ async function main() {
 
   const drained = await drainQueue(
     source,
-    (issue) => runOneTask(cfg, issue, log, token, gate, pre.ownership),
+    (issue) => runOneTask(cfg, issue, log, token, gate, resolvedPre.ownership),
     cfg.concurrency
   );
   const results = drained.filter(Boolean);
@@ -794,7 +806,7 @@ async function main() {
     })();
   } finally {
     cleanup = cleanupOwnedLifecycle(cfg, REPO_ROOT, log, t,
-      { ownership: pre.ownership, lockOwned: pre.lockOwned });
+      { ownership: resolvedPre.ownership, lockOwned: resolvedPre.lockOwned });
     process.removeListener('exit', releaseOnExit);
   }
   if (!cleanup.ok) {

@@ -54,6 +54,7 @@ function buildArgs(cfg, opts) {
     '--network', cfg.network,
     '-v', `${toMountPath(workspaceDir)}:/workspace`,
     '-v', `${toMountPath(pipelineDir)}:/pipeline:ro`,   // scaffolding, read-only
+    ...(opts.authCache ? ['-v', opts.authCache.mount, '-e', 'CODEX_HOME=/root/.codex', '-e', 'PIPELINE_CHATGPT_AUTH=1'] : []),
     '-w', '/workspace',
     '-e', `ISSUE_ID=${issueId}`,
     '-e', 'WORKSPACE=/workspace',
@@ -96,7 +97,11 @@ function runTask(cfg, opts, log, traceId) {
     // the unselected provider's key into a task through `-e NAME` inheritance.
     const credential = credentialFor(cfg, opts);
     const childEnv = { ...DOCKER_ENV };
+    delete childEnv.CODEX_HOME;
+    delete childEnv.OPENAI_API_KEY;
     for (const name of CREDENTIAL_ENV_NAMES) delete childEnv[name];
+    delete childEnv.OPENAI_API_KEY;
+    delete childEnv.CODEX_HOME;
     if (credential) childEnv[credential.name] = credential.value;
     const child = spawn('docker', args, { env: childEnv });
     child.stdout.pipe(logStream);

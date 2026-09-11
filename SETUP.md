@@ -72,7 +72,7 @@ Claude is the default provider and the only one this setup needs. A run or plann
 that selects `"provider": "codex"` also needs the Codex CLI on the host — install it the
 same way (`npm install -g @openai/codex`, matching the pin in `docker/base/Dockerfile`) and
 either run `codex login` to reuse a saved ChatGPT session or supply `CODEX_API_KEY` at B2.
-Task containers never reuse a saved session; that is what the key is for.
+Task containers use a task-private managed session cache; that is what the key is for.
 
 ### A4. Let Claude Code install the rest
 
