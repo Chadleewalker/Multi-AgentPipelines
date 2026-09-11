@@ -343,8 +343,9 @@ Copy this section in (adjust nothing but the project name):
       runner uses when the config says nothing about it;
       **higher values increase this host's CPU, RAM and container demand**, since every
       task running at once is another live container on this machine;
-      and **higher values may consume model-subscription capacity faster**, because those
-      containers spend one shared subscription in parallel rather than one after another.
+      and **higher values may consume model capacity faster when the selected authentication
+      permits parallel calls**. Claude subscription and Codex API-key tasks can occupy those
+      slots together; one managed ChatGPT login remains serialized on its exclusive lane.
       There is no ceiling beyond what the host can carry (change-log row
       `concurrency-uncapped`); `runner/config.js` refuses anything else by name —
       `'concurrency' must be a whole number of 1 or more`.
