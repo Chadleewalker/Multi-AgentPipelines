@@ -15,6 +15,7 @@
   "agentCommand": null,
   "hostShell": null,
   "provider": "claude",
+  "codexAuth": "chatgpt",
   "reasoningEffort": "medium",
   "testAuthorProvider": "claude",
   "testAuthorReasoningEffort": "medium",

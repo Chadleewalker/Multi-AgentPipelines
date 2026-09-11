@@ -63,8 +63,23 @@ die30() { echo "entrypoint: $1" >&2; exit 30; }
 # pipeline did not write. The model credential is for the agent CLI and nothing else, so
 # it is stripped here rather than trusted not to be read (§6). One command per call site:
 # nothing may sit between the verifier and the `VRC=$?` that reads its exit code.
+persist_chatgpt_auth() { [ "${PIPELINE_CHATGPT_AUTH:-}" = "1" ] || return 0; cp /root/.codex/auth.json /run/pipeline-auth-host/cache/auth.json.tmp && mv /run/pipeline-auth-host/cache/auth.json.tmp /run/pipeline-auth-host/cache/auth.json; }
+run_agent() {
+  if [ "${PIPELINE_CHATGPT_AUTH:-}" = "1" ]; then
+    mkdir -p /root/.codex; chmod 700 /run/pipeline-auth-host /root/.codex; cp /run/pipeline-auth-host/cache/auth.json /root/.codex/auth.json; chmod 600 /root/.codex/auth.json;
+    runuser -u node --preserve-environment -- env CODEX_HOME=/root/.codex sh -c "$AGENT_CMD $AGENT_FORMAT"; R=$?; persist_chatgpt_auth; return $R;
+  fi
+  sh -c "$AGENT_CMD $AGENT_FORMAT"
+}
 run_verifier() {
-  env -u CODEX_API_KEY node "$PIPE/verify.js"
+  if [ "${PIPELINE_CHATGPT_AUTH:-}" = "1" ]; then
+    chmod -R a+rwX "$WS"
+    runuser -u nobody -- env -u CODEX_API_KEY -u OPENAI_API_KEY -u CODEX_HOME node "$PIPE/verify.js"
+  else
+    env -u CODEX_API_KEY -u OPENAI_API_KEY -u CODEX_HOME node "$PIPE/verify.js"
+  fi
+  return
+
 }
 
 # A successful implementation commit is the recovery point for the non-fatal docs phase.
@@ -187,7 +202,7 @@ while :; do
       cat "$RUN/feedback.txt"
     fi
   } > "$RUN/prompt-$N.md"
-  if ! sh -c "$AGENT_CMD $AGENT_FORMAT" < "$RUN/prompt-$N.md" > "$RUN/agent-$N.log" 2>&1; then
+  if ! run_agent < "$RUN/prompt-$N.md" > "$RUN/agent-$N.log" 2>&1; then
     # ---- rate-limit detection (§4.7, T10): a pause, never a failed attempt ----
     if grep -qiE 'usage limit|rate.?limit' "$RUN/agent-$N.log"; then
       EPOCH=$(grep -oiE 'usage limit reached\|[0-9]+' "$RUN/agent-$N.log" | grep -oE '[0-9]+$' | head -1)
@@ -263,7 +278,7 @@ while :; do
       # stderr goes to its own file, never into docs-out.txt: this output becomes the PR
       # body (§4.5), and CLI warnings on stderr used to lead every one of them. The file
       # is kept for debugging and, like everything under .run/, is never committed.
-      if sh -c "$AGENT_CMD $AGENT_FORMAT" < "$RUN/prompt-docs.md" > "$RUN/docs-out.txt" 2> "$RUN/docs-err.txt"; then
+      if run_agent < "$RUN/prompt-docs.md" > "$RUN/docs-out.txt" 2> "$RUN/docs-err.txt"; then
         docs_paths_allowed "$VERIFIED_HEAD" > "$RUN/docs-boundary.txt"
         DOCS_BOUNDARY_RC=$?
         if [ "$DOCS_BOUNDARY_RC" -ne 0 ]; then
