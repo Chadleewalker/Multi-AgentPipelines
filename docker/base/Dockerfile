@@ -23,6 +23,9 @@ RUN npm install -g --no-fund --no-audit \
     @openai/codex@0.154.0 \
     @beads/bd@1.1.0
 
+# The task-private CODEX_HOME is mounted beneath this traversal-only root.
+RUN chmod 711 /root
+
 # Build-time capability proof for the Codex pin. `codex exec --help` must advertise every
 # flag the pipeline's noninteractive contract depends on; an image that silently lacks one
 # would run tasks under a different approval, state or configuration posture. Failing here

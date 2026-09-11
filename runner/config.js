@@ -12,6 +12,7 @@ const {
   PROVIDERS, REASONING_EFFORTS, CREDENTIAL_NAMES,
   normalizeProvider, normalizeReasoningEffort, validProvider, validReasoningEffort,
 } = require('./agent-provider');
+const codexAuth = require('./codex-auth');
 
 // Defaults are part of the public run-config contract. Their rationale and validation
 // remain here; their values come from contracts/control-plane.json so operator guides,
@@ -215,6 +216,8 @@ function loadConfig(file) {
         + ' (reasoning effort)');
     }
   }
+  const authChecked = codexAuth.validateConfig({ provider: raw.provider || 'claude', codexAuth: raw.codexAuth });
+  if (authChecked && authChecked.ok === false) throw new Error(`run.config.json: ${authChecked.reason}`);
   const cfg = { ...DEFAULTS, ...raw, configPath: p };
   // Resolved AFTER the spread and deliberately NOT in contracts/control-plane.json's
   // configDefaults: a stage field's default is the run-wide value, and the run-wide value's
@@ -225,6 +228,7 @@ function loadConfig(file) {
   cfg.testAuthorProvider = normalizeProvider(raw.testAuthorProvider || cfg.provider);
   cfg.testProbeProvider = normalizeProvider(raw.testProbeProvider || cfg.provider);
   cfg.reasoningEffort = normalizeReasoningEffort(raw.reasoningEffort);
+  cfg.codexAuth = cfg.provider === 'codex' ? authChecked.codexAuth : (raw.codexAuth || 'api-key');
   cfg.testAuthorReasoningEffort = normalizeReasoningEffort(raw.testAuthorReasoningEffort || cfg.reasoningEffort);
   cfg.testProbeReasoningEffort = normalizeReasoningEffort(raw.testProbeReasoningEffort || cfg.reasoningEffort);
   // An explicit name always wins; derivation fills only what the config left out.
