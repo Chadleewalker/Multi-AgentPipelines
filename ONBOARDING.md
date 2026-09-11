@@ -320,12 +320,17 @@ Copy this section in (adjust nothing but the project name):
 - [ ] Leave `provider` alone unless the user asks for a different model vendor. Absent, it
       is `claude` at every stage and the launches are exactly what they have always been.
       Setting it to `codex` — run-wide, or per stage with `testAuthorProvider` /
-      `testProbeProvider` — also changes which credential the run loads (`CODEX_API_KEY`,
-      with no fallback to the Claude token), which command the container entrypoint runs,
-      and which allowlist profile the sidecar is built from, so the host needs that key and
-      a base image carrying the pinned Codex CLI before the run starts. Set `model` to
-      something that provider understands while you are there; `reasoningEffort`
-      (`minimal | low | medium | high`, and its two stage twins) applies to Codex launches.
+      `testProbeProvider` — also requires an explicit `codexAuth` choice: `chatgpt` uses a
+      managed session created by `codex login`, while `api-key` loads `CODEX_API_KEY` with
+      no fallback to the Claude token. A missing field preserves legacy API-key behavior;
+      the checked-in template declares dormant `chatgpt` while retaining Claude defaults.
+      The selection also controls which command the container entrypoint runs and which
+      provider-only allowlist the sidecar builds, so the host needs a base image carrying
+      the pinned Codex CLI before the run starts. One saved ChatGPT session is one exclusive
+      implementation lane even when `concurrency` is higher; parallel subscription workers
+      need independently authenticated lane caches. Set `model` to something that provider
+      understands while you are there; `reasoningEffort` (`minimal | low | medium | high`,
+      and its two stage twins) applies to Codex launches.
       See `docs/control-plane.md` and `DESIGN.md` §6.5.
 - [ ] **Ask the user for one integer implementation concurrency**, and record the answer as
       `concurrency` in that same host-local run config. Ask it once, as a single question —
