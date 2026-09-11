@@ -48,6 +48,11 @@ Requires Docker Desktop running, Git Bash (not WSL), Node, and `gh` authenticate
 Setting up a machine that has never seen this before — tool by tool, with the checks that
 prove each step worked — is [`SETUP.md`](SETUP.md).
 
+Launch-capable `prepare-batch` commands check the Docker daemon, configured image, host
+shell, and author/probe provider authentication before creating batch state or consuming an
+attempt. If one is unavailable, follow the named remedy and retry the same batch; `status`
+and `acknowledge-interrupted` remain available while prerequisites are down.
+
 ```bash
 # 1. put your model credential where the runner can find it
 #    (git-ignored; get a Claude one with `claude setup-token`)
