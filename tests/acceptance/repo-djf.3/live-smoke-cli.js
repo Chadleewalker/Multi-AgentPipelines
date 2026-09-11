@@ -39,8 +39,9 @@ function run(command, argv, options = {}) {
   };
 }
 
+async function main() {
 try {
-  const result = SMOKE.main(
+  const result = await SMOKE.main(
     ['--image', taskImage, '--model', 'gpt-5.6-terra', '--reasoning-effort', 'low'],
     {
       env: { CODEX_LIVE_SMOKE: '1', CODEX_API_KEY: secret, CODEX_HOME: sourceHome },
@@ -66,7 +67,7 @@ try {
     JSON.stringify({ clean, output }));
 
   const emptyOutput = [];
-  const emptyResult = SMOKE.main(
+  const emptyResult = await SMOKE.main(
     ['--image', taskImage, '--model', 'gpt-5.6-terra', '--reasoning-effort', 'low'],
     {
       env: { CODEX_LIVE_SMOKE: '1', CODEX_HOME: sourceHome },
@@ -83,4 +84,8 @@ try {
   check('C5 public pinned-image smoke harness completes', false,
     error && (error.stack || error.message) || String(error));
 }
-process.exit(failed);
+}
+main().catch(error => {
+  check('C5 public pinned-image smoke async harness completes', false,
+    error && (error.stack || error.message) || String(error));
+}).finally(() => { process.exitCode = failed; });

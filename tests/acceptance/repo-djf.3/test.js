@@ -39,7 +39,7 @@ try {
     && example.model === 'opus' && example.testAuthorModel === 'opus' && example.testProbeModel === 'opus'
     && example.codexAuth === 'chatgpt');
   const noFallback = a && a.validateConfig({ provider: 'codex', codexAuth: 'chatgpt', CODEX_API_KEY: secret });
-  check('C1 ChatGPT mode does not select or expose an API key as a fallback', !!noFallback && noFallback.credentialName !== 'CODEX_API_KEY' && !JSON.stringify(noFallback).includes(secret));
+  check('C1 ChatGPT mode selects no environment credential and does not expose an API key as a fallback', !!noFallback && noFallback.credentialName == null && !JSON.stringify(noFallback).includes(secret));
 
   let allowlist = []; try { allowlist = fs.readFileSync(path.join(REPO, 'docker', 'proxy-codex', 'allowlist.txt'), 'utf8').split(/\r?\n/).map(s => s.trim()).filter(s => s && !s.startsWith('#')); } catch {}
   check('C5 the Codex proxy permits exactly the API and observed ChatGPT subscription hosts', JSON.stringify([...allowlist].sort()) === JSON.stringify(['ab.chatgpt.com', 'api.openai.com', 'chatgpt.com']));
