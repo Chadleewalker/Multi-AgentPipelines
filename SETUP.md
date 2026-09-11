@@ -70,9 +70,10 @@ Run `claude` in any folder and sign in with the A1 account.
 
 Claude is the default provider and the only one this setup needs. A run or planning stage
 that selects `"provider": "codex"` also needs the Codex CLI on the host — install it the
-same way (`npm install -g @openai/codex`, matching the pin in `docker/base/Dockerfile`) and
-either run `codex login` to reuse a saved ChatGPT session or supply `CODEX_API_KEY` at B2.
-Task containers never reuse a saved session; that is what the key is for.
+same way (`npm install -g @openai/codex`, matching the pin in `docker/base/Dockerfile`). Set
+`"codexAuth": "chatgpt"` to use a saved `codex login` session, or `"codexAuth": "api-key"`
+and supply `CODEX_API_KEY` at B2. ChatGPT mode seeds host-private durable state once; task
+containers receive only a task-private cache copy, never the operator’s Codex home.
 
 ### A4. Let Claude Code install the rest
 
@@ -144,8 +145,9 @@ claude setup-token
 
 A long-lived token, separate from the A3 sign-in. Keep it to copy once at B2. Do not paste it
 into a session. One subscription per person: at your limit a run parks itself, waits for the
-window to reopen, and carries on. A Codex run parks the same way; its credential is the
-`CODEX_API_KEY` from A3, also copied once at B2.
+window to reopen, and carries on. A Codex API-key run uses `CODEX_API_KEY` from B2. A Codex
+ChatGPT run uses the saved `codex login` session instead; one saved login is one serialized
+credential lane, so parallel subscription workers need independently authenticated lanes.
 
 ### A8. The harness plugin — optional, and not a clone
 
@@ -196,11 +198,12 @@ echo 'CLAUDE_CODE_OAUTH_TOKEN=<token from A7>' > .env.pipeline
 Git-ignored, and must stay that way. Passed to containers by name at launch, never baked into
 an image.
 
-The same file holds `CODEX_API_KEY=<key>` on its own line if you intend to run anything with
-`"provider": "codex"`. A run loads only the selected provider's credential and there is no
-fallback between them, so a Codex run with no key is refused before it locks the target,
-takes a worktree or starts a container — and a host holding both keys still hands a task
-exactly one.
+For Codex API-key mode, add `CODEX_API_KEY=<key>` on its own line and set
+`"codexAuth": "api-key"` in the run config. For ChatGPT mode, set
+`"codexAuth": "chatgpt"`; preflight requires a valid saved `codex login` session with a
+refresh token and refuses before it locks the target, takes a worktree, or starts a
+container when it is unavailable. The modes have no fallback: a task receives either its
+API key or its private ChatGPT cache, never both or the operator’s full Codex home.
 
 ### B3. Install the git hooks
 
