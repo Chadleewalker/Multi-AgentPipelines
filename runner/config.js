@@ -12,6 +12,7 @@ const {
   PROVIDERS, REASONING_EFFORTS, CREDENTIAL_NAMES,
   normalizeProvider, normalizeReasoningEffort, validProvider, validReasoningEffort,
 } = require('./agent-provider');
+const { AUTH_MODES } = require('./codex-auth');
 
 // Defaults are part of the public run-config contract. Their rationale and validation
 // remain here; their values come from contracts/control-plane.json so operator guides,
@@ -215,6 +216,7 @@ function loadConfig(file) {
         + ' (reasoning effort)');
     }
   }
+  if (raw.codexAuth !== undefined && raw.codexAuth !== null && (typeof raw.codexAuth !== 'string' || !AUTH_MODES.includes(raw.codexAuth.toLowerCase()))) throw new Error(`run.config.json: 'codexAuth' must be one of `);
   const cfg = { ...DEFAULTS, ...raw, configPath: p };
   // Resolved AFTER the spread and deliberately NOT in contracts/control-plane.json's
   // configDefaults: a stage field's default is the run-wide value, and the run-wide value's
@@ -227,6 +229,7 @@ function loadConfig(file) {
   cfg.reasoningEffort = normalizeReasoningEffort(raw.reasoningEffort);
   cfg.testAuthorReasoningEffort = normalizeReasoningEffort(raw.testAuthorReasoningEffort || cfg.reasoningEffort);
   cfg.testProbeReasoningEffort = normalizeReasoningEffort(raw.testProbeReasoningEffort || cfg.reasoningEffort);
+  cfg.codexAuth = raw.codexAuth == null ? 'api-key' : raw.codexAuth.toLowerCase();
   // An explicit name always wins; derivation fills only what the config left out.
   const derived = deriveNames(p);
   if (!cfg.network) cfg.network = derived.network;

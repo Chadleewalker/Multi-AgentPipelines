@@ -19,6 +19,7 @@ const { admitEntry } = require('./supervisor');
 const {
   normalizeProvider, providerFor, missingCodexCapabilities,
 } = require('./agent-provider');
+const codexAuth = require("./codex-auth");
 
 // The historical shared pair, which is what a config with no project segment gets.
 // Asked for by name rather than spelled out again, so the two files cannot drift.
@@ -193,6 +194,7 @@ function recoverStaleIssues(cfg, log, traceId, ownership, io = {}) {
 // Every gate after the lock can leave something behind, so each of them releases it on
 // the way out: an abort at preflight must leave the project free (§4.12).
 function preflight(cfg, repoRoot, log, deps = {}) {
+  if (providerFor(cfg) === "codex" && cfg.codexAuth === "chatgpt") { const env = deps.env || process.env; const state = codexAuth.preflight({ mode: "chatgpt", env, codexHome: env.CODEX_HOME, cacheRoot: cfg.codexAuthCacheRoot }); if (!state || !state.ok) return { ok: false, reason: (state && state.reason) || "codex login/device authentication is required" }; cfg.codexAuthCacheRoot = state.cacheRoot; }
   const t = `${log.runId}/preflight`;
 
   // ---- child admission: ahead of the project lock itself (§3.10) ----

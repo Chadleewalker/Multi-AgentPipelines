@@ -15,6 +15,7 @@
 const fs = require('fs');
 const path = require('path');
 const { loadConfig, loadProviderCredential, missingCredentialDiagnostic } = require('./config');
+const codexAuth = require('./codex-auth');
 const { credentialNameFor, providerFor } = require('./agent-provider');
 const { startRun } = require('./log');
 const { preflight, networkDown } = require('./preflight');
@@ -130,6 +131,9 @@ async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClo
   }
   // Container names must be unique across relaunches (§4.7 resume).
   const attempt = (executeTask.counter = (executeTask.counter || 0) + 1);
+  let authCache = null;
+  if (providerFor(cfg) === "codex" && cfg.codexAuth === "chatgpt") authCache = codexAuth.stageTaskCache({ cacheRoot: cfg.codexAuthCacheRoot, taskId: issue.id });
+  try {
   return runTask(cfg, {
     containerName: `task-${issue.id}-${log.runId}-${attempt}`.replace(/[^A-Za-z0-9_.-]/g, '-'),
     workspaceDir: ws.dir,
@@ -138,9 +142,10 @@ async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClo
     taskDir,
     // Paired with its environment-variable NAME here, so the container layer never has to
     // guess which provider a bare value belongs to.
-    credential: { name: credentialNameFor(providerFor(cfg)), value: token },
+    ...(authCache ? { authCache } : { credential: { name: credentialNameFor(providerFor(cfg)), value: token } }),
     wallClockMinutes: wallClockMinutes || cfg.wallClockMinutes,
-  }, log, traceId);
+  }, log, traceId); } finally { if (authCache) await codexAuth.releaseTaskCache(authCache); }
+
 }
 
 // ---- the bounded worker pool (§7, §4.12) ------------------------------------------
@@ -579,8 +584,8 @@ async function main() {
   // a Beads claim, a network or a container exists, rather than failing at the model
   // endpoint once all of them do. With no provider selected this is exactly the historical
   // Claude token load and the historical diagnostic.
-  const credential = loadProviderCredential(REPO_ROOT, cfg.provider);
-  if (!credential) {
+  const credential = cfg.provider === 'codex' && cfg.codexAuth === 'chatgpt' ? null : loadProviderCredential(REPO_ROOT, cfg.provider);
+  if (!credential && !(cfg.provider === 'codex' && cfg.codexAuth === 'chatgpt')) {
     log.error(t, missingCredentialDiagnostic(cfg.provider));
     process.exit(2);
   }
