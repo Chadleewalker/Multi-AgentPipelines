@@ -264,6 +264,21 @@ async function main() {
         && readRefresh(path.join(freshRoot, 'auth.json')) === 'original-seed',
       JSON.stringify({ existing, durableWithoutSeed, seeded, keptRefresh, keptWithoutSeed }));
 
+    const malformedPrivate = path.join(seedRoot, 'malformed-private');
+    fs.mkdirSync(malformedPrivate, { recursive: true });
+    const malformedDurable = path.join(malformedPrivate, 'auth.json');
+    fs.writeFileSync(malformedDurable, '{ malformed durable cache');
+    const malformedBefore = fs.readFileSync(malformedDurable, 'utf8');
+    const malformedExisting = await Promise.resolve(AUTH.preflight({
+      mode: 'chatgpt', codexHome: sourceHome, cacheRoot: malformedPrivate,
+      retryMs: 5, timeoutMs: 500,
+    }));
+    check('C2 an existing malformed durable cache is refused and preserved rather than overwritten from the operator seed',
+      malformedExisting && malformedExisting.ok === false
+        && fs.readFileSync(malformedDurable, 'utf8') === malformedBefore,
+      JSON.stringify({ malformedExisting,
+        preserved: fs.readFileSync(malformedDurable, 'utf8') === malformedBefore }));
+
     const faultRoot = path.join(root, 'atomic-fault');
     fs.mkdirSync(faultRoot, { recursive: true });
     fs.writeFileSync(path.join(faultRoot, 'auth.json'), JSON.stringify(managed('recoverable-prior')));

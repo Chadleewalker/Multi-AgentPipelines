@@ -122,7 +122,6 @@ async function main() {
     fs.writeFileSync(path.join(resolvedCache, 'auth.json'), JSON.stringify({
       auth_mode: 'chatgpt', tokens: { access_token: secret, refresh_token: secret },
     }));
-    if (resolvedConfig.ok) resolvedConfig.cfg.codexAuthCacheRoot = resolvedCache;
     const resolvedPreflight = resolvedConfig.ok && await Promise.resolve(PREFLIGHT.preflight(
       resolvedConfig.cfg, REPO,
       { runId: 'accept-djf3-resolved', info() {}, error() {} },
@@ -141,9 +140,12 @@ async function main() {
     check('C2 awaiting ChatGPT auth preserves startup-gate mutations on the original config object',
       resolvedPreflight && resolvedPreflight.ok === true
         && resolvedConfig.cfg.hostShell === 'fixture-resolved-shell'
-        && resolvedConfig.cfg.codexAuth === 'chatgpt',
+        && resolvedConfig.cfg.codexAuth === 'chatgpt'
+        && typeof resolvedConfig.cfg.codexAuthCacheRoot === 'string'
+        && path.resolve(resolvedConfig.cfg.codexAuthCacheRoot) === path.resolve(resolvedCache),
       JSON.stringify({ resolvedPreflight, hostShell: resolvedConfig.cfg.hostShell,
-        codexAuth: resolvedConfig.cfg.codexAuth }));
+        codexAuth: resolvedConfig.cfg.codexAuth,
+        codexAuthCacheRoot: resolvedConfig.cfg.codexAuthCacheRoot }));
 
     let AUTH = null; try { AUTH = require(AUTH_FILE); } catch {}
     const sourceHome = path.join(root, 'operator-codex'); const privateRoot = path.join(root, 'private-cache'); fs.mkdirSync(sourceHome, { recursive: true }); fs.writeFileSync(path.join(sourceHome, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: secret, refresh_token: secret } })); fs.writeFileSync(path.join(sourceHome, 'unrelated-token'), secret);
@@ -169,6 +171,9 @@ async function main() {
     check('C3 runner requests an unbounded wait for the serialized task credential lane instead of failing queued ideas after the short preflight timeout',
       /stageTaskCache\(\{[\s\S]{0,500}wait:\s*true/.test(fs.readFileSync(RUN_FILE, 'utf8'))
         && !/0x7fffffff|2147483647/.test(fs.readFileSync(AUTH_FILE, 'utf8')));
+    const authSource = fs.readFileSync(AUTH_FILE, 'utf8');
+    check('C2 the default durable credential cache is host-private and never derived from the runner working directory or repository checkout',
+      !/process\s*\.\s*cwd\s*\(/.test(authSource) && /homedir\s*\(/.test(authSource));
     const runSource = fs.readFileSync(RUN_FILE, 'utf8');
     check('C2 runner/run.js preserves the established preflight ordering and awaits a possibly asynchronous ChatGPT result before reading it',
       /const\s+pre\s*=\s*preflight\s*\(/.test(runSource)

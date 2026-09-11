@@ -34,6 +34,7 @@ async function main() {
     mount: `${path.join(root, 'private', 'tasks', 'fixture')}:/root/.codex:rw`,
   };
   const calls = [];
+  let failurePoint = 'launch';
   const fakeAuth = {
     stageTaskCache(options) { calls.push(['stage', options]); return Promise.resolve(handle); },
     releaseTaskCache(value) { calls.push(['release', value]); return Promise.resolve(); },
@@ -66,6 +67,7 @@ async function main() {
         return { ok: true, dir: workspaceDir, forkPoint: 'fixture-base', branch: 'fixture-branch', memoryCount: 0 };
       },
       collectArtifacts() {
+        if (failurePoint === 'collect') throw new Error('injected artifact-collection failure');
         return { status: { issueId: 'lane-throw', attempts: [], rateLimitResetAt: '2026-01-01T00:00:00.000Z' }, verify: null, contracts: {} };
       },
       hasCommits() { return false; },
@@ -76,7 +78,10 @@ async function main() {
   require.cache[containerFile] = {
     id: containerFile, filename: containerFile, loaded: true,
     exports: {
-      runTask() { throw new Error('injected container-launch failure'); },
+      runTask() {
+        if (failurePoint === 'launch') throw new Error('injected container-launch failure');
+        return Promise.resolve({ exitCode: 0, durationMs: 1 });
+      },
     },
   };
 
@@ -104,6 +109,33 @@ async function main() {
   check('C3 runner releases its ChatGPT credential lane when task execution throws',
     !!thrown
       && /injected container-launch failure/.test(thrown.message || String(thrown))
+      && calls.map(call => call[0]).join(',') === 'stage,release'
+      && calls[1] && calls[1][1] === handle,
+    JSON.stringify({ thrown: thrown && thrown.message, calls: calls.map(call => call[0]) }));
+
+  calls.length = 0;
+  failurePoint = 'collect';
+  thrown = null;
+  try {
+    const { runOneTask } = require(RUN_FILE);
+    const log = {
+      runId: 'accept-djf3-release-collect', dir: root,
+      trace(id) { return `accept-djf3-release-collect/${id}`; },
+      taskDir() { return taskDir; },
+      info() {}, error() {}, event() {},
+    };
+    const gate = { admit: async () => true, reportLimit: async () => ({ resumed: false }) };
+    await runOneTask({
+      provider: 'codex', codexAuth: 'chatgpt', codexAuthCacheRoot: handle.cacheRoot,
+      hostShell: 'bash', targetRepoPath: root, targetRepoRemote: root,
+      wallClockMinutes: 1, lifecycleTimeoutMs: 2000, maxAttempts: 1,
+    }, { id: 'lane-collect-throw', title: 'lane cleanup after collection failure', priority: 1 },
+    log, '', gate);
+  } catch (error) { thrown = error; }
+
+  check('C3 runner releases its ChatGPT credential lane when post-container artifact collection throws',
+    !!thrown
+      && /injected artifact-collection failure/.test(thrown.message || String(thrown))
       && calls.map(call => call[0]).join(',') === 'stage,release'
       && calls[1] && calls[1][1] === handle,
     JSON.stringify({ thrown: thrown && thrown.message, calls: calls.map(call => call[0]) }));
