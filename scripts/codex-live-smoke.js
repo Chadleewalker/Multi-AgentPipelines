@@ -20,17 +20,17 @@
 //   --strict-config       an unknown -c key is an error, not a silent no-op
 // so it can be pointed at a real repository checkout without changing a byte of it.
 //
-//   CODEX_LIVE_SMOKE=1 node scripts/codex-live-smoke.js [--model <alias>]
+//   CODEX_LIVE_SMOKE=1 node scripts/codex-live-smoke.js --image <pinned-image> [--model <alias>]
 //
-// Authentication: on the HOST, Codex may reuse a saved ChatGPT CLI session (`codex login`)
-// and no key is needed. Inside a task container there is no saved session, so CODEX_API_KEY
-// is required there — this helper accepts either and says which one it used.
+// Authentication is ChatGPT-managed only: a saved host session is copied to a pipeline-owned
+// cache, then that cache alone is mounted into the trusted task image. The operator's home
+// and API-key environment never reach Docker.
 
-const path = require('path');
 const { runSync } = require('../runner/process');
+const codexAuth0 = require('../runner/codex-auth');
 const {
   CODEX_REQUIRED_EXEC_FLAGS, CREDENTIAL_NAMES, REASONING_EFFORTS,
-  normalizeReasoningEffort, missingCodexCapabilities, normalizeOutput,
+  normalizeReasoningEffort, normalizeOutput,
 } = require('../runner/agent-provider');
 
 // The model this pipeline is configured to reach when a run selects Codex. Written down
@@ -54,6 +54,10 @@ function parseArgs(argv) {
         return { error: `--reasoning-effort must be one of ${REASONING_EFFORTS.join(' | ')}` };
       }
       opts.reasoningEffort = value;
+    } else if (arg === '--image') {
+      const value = argv[++i];
+      if (!value || value.startsWith('--')) return { error: '--image needs a value' };
+      opts.image = value;
     } else if (arg === '-h' || arg === '--help') {
       opts.help = true;
     } else {
@@ -61,6 +65,22 @@ function parseArgs(argv) {
     }
   }
   return opts;
+}
+
+function dockerEnv(env) {
+  const clean = { ...env, MSYS_NO_PATHCONV: '1' };
+  delete clean.CODEX_API_KEY; delete clean.CODEX_HOME; delete clean.CLAUDE_CODE_OAUTH_TOKEN;
+  return clean;
+}
+
+function runChatgptContainerSmoke(options = {}) {
+  const out = options.out || console.log; const run = options.run || runSync; const cache = options.authCache;
+  if (!cache || !cache.mount || !cache.containerPath) throw new Error('missing private ChatGPT credential cache');
+  const opts = { model: options.model || DEFAULT_MODEL, reasoningEffort: options.reasoningEffort || 'low' };
+  out('Authentication: ChatGPT-managed Codex session in a private pipeline cache.');
+  return run('docker', ['run', '--rm', '-v', cache.mount, '-e', 'CODEX_HOME=' + cache.containerPath, '-w', '/workspace', options.image, 'codex', ...smokeArgs(opts)], {
+    input: PROMPT + '\n', timeoutMs: TIMEOUT_MS, label: 'codex live smoke', env: dockerEnv(options.env || process.env),
+  });
 }
 
 // The read-only argv. It shares the pipeline's required capability roster so a future
@@ -80,7 +100,7 @@ function smokeArgs(opts) {
   ];
 }
 
-function main(argv, io = {}) {
+async function main(argv, io = {}) {
   const out = io.out || console.log;
   const err = io.err || console.error;
   const env = io.env || process.env;
@@ -88,7 +108,7 @@ function main(argv, io = {}) {
   const opts = parseArgs(argv);
   if (opts.error) { err(`codex-live-smoke: ${opts.error}`); return 2; }
   if (opts.help) {
-    out('usage: CODEX_LIVE_SMOKE=1 node scripts/codex-live-smoke.js [--model <alias>]'
+    out('usage: CODEX_LIVE_SMOKE=1 node scripts/codex-live-smoke.js --image <pinned-image> [--model <alias>]'
       + ' [--reasoning-effort minimal|low|medium|high]');
     return 0;
   }
@@ -98,34 +118,20 @@ function main(argv, io = {}) {
     return 0;
   }
 
-  const capabilities = run('codex', ['exec', '--help'], {
-    label: 'codex exec capability probe', timeoutMs: TIMEOUT_MS,
-  });
-  if (capabilities.status !== 0) {
-    err('codex-live-smoke: no usable codex executable — install the pinned Codex CLI and put'
-      + ' codex on this host\'s PATH.');
-    return 1;
+  if (!opts.image) { err('codex-live-smoke: --image must name the pinned task image'); return 2; }
+  const codexAuth = io.codexAuth || codexAuth0;
+  const preflight = codexAuth.preflight({ mode: 'chatgpt', env, codexHome: env.CODEX_HOME });
+  if (!preflight || !preflight.ok) {
+    err('codex-live-smoke: ' + ((preflight && preflight.reason) || 'codex login/device authentication is required')); return 1;
   }
-  const missing = missingCodexCapabilities(`${capabilities.stdout || ''}${capabilities.stderr || ''}`);
-  if (missing.length) {
-    err(`codex-live-smoke: the codex on PATH is missing ${missing.join(', ')} — upgrade to the pinned CLI.`);
-    return 1;
-  }
-
-  const authenticated = typeof env[CREDENTIAL_NAMES.codex] === 'string'
-    && env[CREDENTIAL_NAMES.codex].trim() !== '';
-  out(`Authentication: ${authenticated
-    ? `${CREDENTIAL_NAMES.codex} from the environment`
-    : `no ${CREDENTIAL_NAMES.codex} — relying on a saved ChatGPT CLI session (codex login)`}`);
-  out(`Configured model: ${opts.model} (reasoning effort ${opts.reasoningEffort}, sandbox read-only)`);
-
-  const result = run('codex', smokeArgs(opts), {
-    cwd: path.resolve(__dirname, '..'),
-    input: `${PROMPT}\n`,
-    timeoutMs: TIMEOUT_MS,
-    label: 'codex live smoke',
-    env: { ...env },
-  });
+  out('Configured model: ' + opts.model + ' (reasoning effort ' + opts.reasoningEffort + ', sandbox read-only)');
+  let cache; let result;
+  try {
+    cache = codexAuth.stageTaskCache({ cacheRoot: preflight.cacheRoot, taskId: 'smoke' });
+    result = runChatgptContainerSmoke({ image: opts.image, authCache: cache, model: opts.model, reasoningEffort: opts.reasoningEffort, env, run, out, err });
+  } catch (error) {
+    err('codex-live-smoke: ' + (error && error.message ? error.message : error)); return 1;
+  } finally { if (cache) await codexAuth.releaseTaskCache(cache); }
   const raw = `${result.stdout || ''}\n${result.stderr || ''}`;
   const normalized = normalizeOutput('codex', raw, opts.model);
   if (!normalized) {
@@ -147,6 +153,6 @@ function main(argv, io = {}) {
   return result.status === 0 ? 0 : 1;
 }
 
-if (require.main === module) process.exit(main(process.argv.slice(2)));
+if (require.main === module) main(process.argv.slice(2)).then(process.exit);
 
-module.exports = { main, parseArgs, smokeArgs, DEFAULT_MODEL };
+module.exports = { main, parseArgs, smokeArgs, runChatgptContainerSmoke, DEFAULT_MODEL };
