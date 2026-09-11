@@ -70,7 +70,10 @@ async function main() {
   try {
     const root = tmp('integration'); roots.push(root);
     const chatgpt = config(root, { provider: 'codex', codexAuth: 'chatgpt' }); const api = config(root, { provider: 'codex', codexAuth: 'api-key' }); const invalid = config(root, { provider: 'codex', codexAuth: 'ambient' });
-    check('C1 runner/config.js selects each allowed Codex auth mode and returns an explicit refusal for another mode', chatgpt.ok && chatgpt.cfg.codexAuth === 'chatgpt' && api.ok && api.cfg.codexAuth === 'api-key' && invalid.ok === false && typeof invalid.reason === 'string' && invalid.reason.length > 0, JSON.stringify(invalid));
+    check('C1 runner/config.js selects each allowed Codex auth mode and returns an actionable refusal for another mode', chatgpt.ok && chatgpt.cfg.codexAuth === 'chatgpt' && api.ok && api.cfg.codexAuth === 'api-key' && invalid.ok === false
+      && /codexAuth/i.test(invalid.reason || '')
+      && /chatgpt/i.test(invalid.reason || '') && /api-key/i.test(invalid.reason || ''),
+    JSON.stringify(invalid));
     const dormant = config(root, { provider: 'claude', codexAuth: 'chatgpt' });
     const dormantArgs = dormant.ok && require(CONTAINER_FILE).buildArgs(dormant.cfg, {
       containerName: 'accept-djf3-claude', workspaceDir: 'work', pipelineDir: 'pipe',
@@ -80,6 +83,20 @@ async function main() {
       dormant.ok && dormant.cfg.provider === 'claude' && dormantArgs.includes('CLAUDE_CODE_OAUTH_TOKEN')
         && !dormantArgs.join('\n').includes(secret),
       secretSafe({ dormant, dormantArgs }, secret));
+
+    fs.mkdirSync(dormant.cfg.targetRepoPath, { recursive: true });
+    const dormantPreflight = PREFLIGHT.preflight(dormant.cfg, root,
+      { runId: 'accept-djf3-dormant', info() {}, error() {} }, {
+        env: {}, admitEntry: () => ({ ok: true, mode: 'standalone' }),
+        verifyRepoIdentity: () => ({ ok: true, remoteName: 'fixture', identity: 'repo:fixture/project' }),
+        resolveHostShell: () => ({ ok: false, reason: 'dormant synchronous refusal' }),
+        dockerAvailable: () => { throw new Error('Docker must not run after the shell refusal'); },
+      });
+    check('C1 dormant ChatGPT configuration does not authenticate Codex or make Claude preflight asynchronous',
+      dormantPreflight && typeof dormantPreflight.then !== 'function'
+        && dormantPreflight.ok === false && dormantPreflight.shellUnavailable === true
+        && dormantPreflight.reason === 'dormant synchronous refusal',
+      JSON.stringify(dormantPreflight));
 
     // ChatGPT preparation may need to wait for its credential lane, but that must not turn the
     // established preflight API into an unconditional Promise. Existing Claude/API-key callers
@@ -175,6 +192,9 @@ async function main() {
     check('C2 the default durable credential cache is host-private and never derived from the runner working directory or repository checkout',
       !/process\s*\.\s*cwd\s*\(/.test(authSource) && /homedir\s*\(/.test(authSource));
     const runSource = fs.readFileSync(RUN_FILE, 'utf8');
+    check('C1-C3 a managed ChatGPT Codex run bypasses API-key loading without dereferencing the absent credential, while other providers keep their credential path',
+      /(?:providerFor\(cfg\)|cfg\s*\.\s*provider)[\s\S]{0,160}codex[\s\S]{0,160}codexAuth[\s\S]{0,160}chatgpt[\s\S]{0,160}loadProviderCredential/.test(runSource)
+        && !/const\s+token\s*=\s*credential\s*\.\s*value\s*;/.test(runSource));
     check('C2 runner/run.js preserves the established preflight ordering and awaits a possibly asynchronous ChatGPT result before reading it',
       /const\s+pre\s*=\s*preflight\s*\(/.test(runSource)
         && /await\s+Promise\.resolve\(pre\)/.test(runSource));

@@ -34,6 +34,7 @@ async function main() {
     mount: `${path.join(root, 'private', 'tasks', 'fixture')}:/root/.codex:rw`,
   };
   const calls = [];
+  const launches = [];
   let failurePoint = 'launch';
   const fakeAuth = {
     stageTaskCache(options) { calls.push(['stage', options]); return Promise.resolve(handle); },
@@ -78,7 +79,8 @@ async function main() {
   require.cache[containerFile] = {
     id: containerFile, filename: containerFile, loaded: true,
     exports: {
-      runTask() {
+      runTask(_cfg, opts) {
+        launches.push(opts);
         if (failurePoint === 'launch') throw new Error('injected container-launch failure');
         return Promise.resolve({ exitCode: 0, durationMs: 1 });
       },
@@ -139,6 +141,36 @@ async function main() {
       && calls.map(call => call[0]).join(',') === 'stage,release'
       && calls[1] && calls[1][1] === handle,
     JSON.stringify({ thrown: thrown && thrown.message, calls: calls.map(call => call[0]) }));
+
+  calls.length = 0;
+  launches.length = 0;
+  failurePoint = 'launch';
+  thrown = null;
+  try {
+    const { runOneTask } = require(RUN_FILE);
+    const log = {
+      runId: 'accept-djf3-dormant-claude', dir: root,
+      trace(id) { return `accept-djf3-dormant-claude/${id}`; },
+      taskDir() { return taskDir; },
+      info() {}, error() {}, event() {},
+    };
+    const gate = { admit: async () => true, reportLimit: async () => ({ resumed: false }) };
+    await runOneTask({
+      provider: 'claude', codexAuth: 'chatgpt', hostShell: 'bash',
+      targetRepoPath: root, targetRepoRemote: root,
+      wallClockMinutes: 1, lifecycleTimeoutMs: 2000, maxAttempts: 1,
+    }, { id: 'dormant-claude', title: 'dormant Codex auth must not alter Claude', priority: 1 },
+    log, 'fixture-claude-token', gate);
+  } catch (error) { thrown = error; }
+
+  check('C1 dormant ChatGPT configuration never stages a Codex cache or suppresses the selected Claude credential in the task runner',
+    !!thrown && /injected container-launch failure/.test(thrown.message || String(thrown))
+      && calls.length === 0 && launches.length === 1
+      && launches[0].credential && launches[0].credential.name === 'CLAUDE_CODE_OAUTH_TOKEN'
+      && launches[0].credential.value === 'fixture-claude-token' && !launches[0].authCache,
+    JSON.stringify({ thrown: thrown && thrown.message, authCalls: calls.map(call => call[0]),
+      launches: launches.map(opts => ({ credentialName: opts.credential && opts.credential.name,
+        hasAuthCache: !!opts.authCache })) }));
 
   try { fs.rmSync(root, { recursive: true, force: true }); } catch {}
 }

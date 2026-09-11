@@ -279,6 +279,27 @@ async function main() {
       JSON.stringify({ malformedExisting,
         preserved: fs.readFileSync(malformedDurable, 'utf8') === malformedBefore }));
 
+    const failedStageRoot = path.join(root, 'failed-stage-releases-lane');
+    fs.mkdirSync(failedStageRoot, { recursive: true });
+    let failedStageError = null;
+    try {
+      await AUTH.stageTaskCache({
+        cacheRoot: failedStageRoot, taskId: 'missing-auth', retryMs: 5, timeoutMs: 80,
+      });
+    } catch (error) { failedStageError = error; }
+    fs.writeFileSync(path.join(failedStageRoot, 'auth.json'), JSON.stringify(managed('repaired')));
+    const afterFailedStage = await Promise.race([
+      Promise.resolve(AUTH.stageTaskCache({
+        cacheRoot: failedStageRoot, taskId: 'after-failure', retryMs: 5, timeoutMs: 100,
+      })).catch(() => null),
+      delay(250).then(() => null),
+    ]);
+    check('C3 a staging failure releases its credential lane so repairing the durable session unblocks the next queued idea',
+      !!failedStageError && !!afterFailedStage,
+      JSON.stringify({ failedStageError: failedStageError && failedStageError.message,
+        nextStarted: !!afterFailedStage }));
+    if (afterFailedStage) await AUTH.releaseTaskCache(afterFailedStage);
+
     const faultRoot = path.join(root, 'atomic-fault');
     fs.mkdirSync(faultRoot, { recursive: true });
     fs.writeFileSync(path.join(faultRoot, 'auth.json'), JSON.stringify(managed('recoverable-prior')));
