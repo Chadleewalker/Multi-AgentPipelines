@@ -323,6 +323,31 @@ async function main() {
         && readRefresh(path.join(freshRoot, 'auth.json')) === 'original-seed',
       JSON.stringify({ existing, durableWithoutSeed, seeded, keptRefresh, keptWithoutSeed }));
 
+    const defaultHome = path.join(seedRoot, 'default-host-home');
+    const defaultCodexHome = path.join(defaultHome, '.codex');
+    const defaultPrivate = path.join(seedRoot, 'default-private');
+    fs.mkdirSync(defaultCodexHome, { recursive: true });
+    fs.writeFileSync(path.join(defaultCodexHome, 'auth.json'), JSON.stringify(managed('default-login')));
+    const savedCodexHome = process.env.CODEX_HOME;
+    const savedHomedir = os.homedir;
+    let defaultSeed;
+    try {
+      delete process.env.CODEX_HOME;
+      os.homedir = () => defaultHome;
+      defaultSeed = await Promise.resolve(AUTH.preflight({
+        mode: 'chatgpt', cacheRoot: defaultPrivate, env: {},
+        retryMs: 5, timeoutMs: 500,
+      }));
+    } finally {
+      os.homedir = savedHomedir;
+      if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = savedCodexHome;
+    }
+    check('C2 a normal host codex login in ~/.codex seeds the first durable cache when CODEX_HOME is unset',
+      defaultSeed && defaultSeed.ok
+        && readRefresh(path.join(defaultPrivate, 'auth.json')) === 'default-login',
+      JSON.stringify({ defaultSeed }));
+
     const malformedPrivate = path.join(seedRoot, 'malformed-private');
     fs.mkdirSync(malformedPrivate, { recursive: true });
     const malformedDurable = path.join(malformedPrivate, 'auth.json');

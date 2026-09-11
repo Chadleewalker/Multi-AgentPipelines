@@ -49,6 +49,12 @@ try {
   const launch = fixture({extraLaunchError:true}); roots.push(launch.root); const lr = invoke(launch);
   check('C4 child launch-error outcome propagates without hiding earlier child output', lr.status === 127 && /mandatory-output/.test(lr.stdout) && /extra-output/.test(lr.stdout), `${lr.status}:${lr.stdout}${lr.stderr}`);
   check('C4 summary distinguishes mandatory, direct extras, nested isolation, elapsed time, and dynamic unique full coverage', /mandatory/i.test(r.stdout) && /extra/i.test(r.stdout) && /isolation/i.test(r.stdout) && /elapsed|time/i.test(r.stdout) && /unique|coverage/i.test(r.stdout) && !/\b42\b/.test(r.stdout), r.stdout);
+  const coordinatorSource = fs.existsSync(COORDINATOR) ? fs.readFileSync(COORDINATOR, 'utf8') : '';
+  check('C2 the host coordinator resolves the established host-shell authority and never launches a PATH-ambiguous literal bash',
+    /require\(['"]\.\.\/runner\/host-shell['"]\)/.test(coordinatorSource)
+      && /resolveHostShell\s*\(/.test(coordinatorSource)
+      && !/spawnSync\s*\(\s*['"]bash['"]/.test(coordinatorSource),
+    coordinatorSource.slice(0, 1000));
   check('C5 canonical test-ci.sh and test-all.sh retain their fork-point bytes and docs name fast routine plus canonical diagnostic fallback', sha(path.join(REPO,'scripts','test-ci.sh')) === '41784747fe3f71b053bc10f5752c45f3eb956372a2cd3f3d18c8efc2629c0448' && sha(path.join(REPO,'scripts','test-all.sh')) === '1df1b42f958e1d02b3c7d4ba19b5e552f7833f62e294983c460314fb5bfa95b4' && /fast-full-sweep|fast full sweep/i.test(fs.readFileSync(path.join(REPO,'docs','control-plane.md'),'utf8')) && /test-all\.sh/.test(fs.readFileSync(path.join(REPO,'docs','control-plane.md'),'utf8')));
 } catch (e) { check('C1-C5 harness executes', false, e.stack || String(e)); }
 finally { for (const root of roots) rmrf(root); }

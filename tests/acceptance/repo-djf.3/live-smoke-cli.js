@@ -74,6 +74,9 @@ try {
   const docker = launches.find(call => call.command === 'docker' && call.argv[0] === 'run');
   const writable = docker ? docker.argv.filter((arg, index) => docker.argv[index - 1] === '-v' && !/:ro$/.test(arg)) : [];
   const mountedHome = docker && docker.argv.some((arg, index) => docker.argv[index - 1] === '-e' && arg === 'CODEX_HOME=/root/.codex');
+  const stdinAttached = docker && docker.argv.includes('-i')
+    && typeof docker.input === 'string' && docker.input.trim().length > 0;
+  const emptyWorkspaceAccepted = docker && docker.argv.includes('--skip-git-repo-check');
   const proxied = docker && docker.argv.some((arg, index) => docker.argv[index - 1] === '--network' && arg === taskNetwork)
     && docker.argv.some((arg, index) => docker.argv[index - 1] === '-e' && arg === `HTTPS_PROXY=${proxyUrl}`)
     && docker.argv.some((arg, index) => docker.argv[index - 1] === '-e' && arg === `HTTP_PROXY=${proxyUrl}`)
@@ -90,6 +93,9 @@ try {
     JSON.stringify({ result, authCalls: authCalls.map(call => call[0]), docker: docker && docker.argv, writable }));
   check('C5 the public live smoke uses the closed task network and deny-by-default Codex proxy rather than Docker default egress',
     proxied, JSON.stringify(docker && docker.argv));
+  check('C5 the public live smoke attaches its prompt to Docker stdin and explicitly permits its purpose-built empty read-only workspace',
+    stdinAttached && emptyWorkspaceAccepted,
+    JSON.stringify({ argv: docker && docker.argv, input: docker && docker.input }));
   check('C5 the public pinned-image smoke strips both API-key spellings and operator-home state and observably reports ChatGPT authentication and PASS',
     clean && output.some(line => /authentication.*chatgpt|chatgpt.*authentication/i.test(line))
       && output.some(line => /PASS.*live smoke/i.test(line)),
