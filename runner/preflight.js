@@ -19,6 +19,7 @@ const { admitEntry } = require('./supervisor');
 const {
   normalizeProvider, providerFor, missingCodexCapabilities,
 } = require('./agent-provider');
+const codexAuth = require('./codex-auth');
 
 // The historical shared pair, which is what a config with no project segment gets.
 // Asked for by name rather than spelled out again, so the two files cannot drift.
@@ -194,6 +195,15 @@ function recoverStaleIssues(cfg, log, traceId, ownership, io = {}) {
 // the way out: an abort at preflight must leave the project free (§4.12).
 function preflight(cfg, repoRoot, log, deps = {}) {
   const t = `${log.runId}/preflight`;
+
+  if (providerFor(cfg) === 'codex' && cfg.codexAuth === 'chatgpt' && !deps.codexAuthChecked) {
+    const auth = deps.codexAuth || codexAuth;
+    return Promise.resolve(auth.preflight({ mode: 'chatgpt', codexHome: (deps.env || process.env).CODEX_HOME, cacheRoot: cfg.codexAuthCacheRoot || (deps.env || process.env).PIPELINE_CODEX_CACHE || ((deps.env || process.env).CODEX_HOME ? path.join(path.dirname((deps.env || process.env).CODEX_HOME), '.pipeline-codex-auth') : undefined), fs: deps.fs, retryMs: deps.retryMs, timeoutMs: deps.timeoutMs })).then((result) => {
+      if (!result.ok) return result;
+      cfg.codexAuthCacheRoot = result.cacheRoot;
+      return preflight(cfg, repoRoot, log, { ...deps, codexAuthChecked: true });
+    });
+  }
 
   // ---- child admission: ahead of the project lock itself (§3.10) ----
   // Ahead of the lock because it decides WHICH exclusion applies. With no supervisor on this

@@ -83,7 +83,7 @@ configurable:
   Containers receive it by environment-variable name only, and every other provider's
   credential is removed from the docker client's environment first. On the host, Codex may
   instead reuse a saved ChatGPT CLI session (`codex login`); inside a container it cannot,
-  and no `auth.json` is ever mounted.
+  and no `auth.json` is ever mounted. A run config may instead set `codexAuth: "chatgpt"`: the host seeds a private durable managed cache once, each trusted task receives only a private writable copy at `CODEX_HOME=/root/.codex`, and the refreshed cache is persisted before release. One saved login is one safe active Codex lane; parallel subscription workers require independently authenticated lane caches.
 - **The container command.** The runner passes `PIPELINE_PROVIDER`, and
   `pipeline/entrypoint.sh` selects that provider's noninteractive invocation.
 - **The egress profile.** `docker/proxy` carries the Anthropic endpoints, `docker/proxy-codex`

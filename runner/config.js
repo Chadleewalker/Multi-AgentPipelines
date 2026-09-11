@@ -30,6 +30,7 @@ const PROVIDER_FIELDS = ['provider', 'testAuthorProvider', 'testProbeProvider'];
 const REASONING_EFFORT_FIELDS = [
   'reasoningEffort', 'testAuthorReasoningEffort', 'testProbeReasoningEffort',
 ];
+const CODEX_AUTH_MODES = ['chatgpt', 'api-key'];
 
 // ---- per-project network + proxy names (§4.8, §4.12) -------------------------------
 // The task network and the proxy sidecar are per project, not per pipeline: two runner
@@ -209,6 +210,9 @@ function loadConfig(file) {
       throw new Error(`run.config.json: '${k}' must be one of ${PROVIDERS.join(' | ')}`);
     }
   }
+  if (raw.codexAuth !== undefined && !CODEX_AUTH_MODES.includes(raw.codexAuth)) {
+    throw new Error(`run.config.json: 'codexAuth' must be one of ${CODEX_AUTH_MODES.join(' | ')}`);
+  }
   for (const k of REASONING_EFFORT_FIELDS) {
     if (raw[k] !== undefined && raw[k] !== null && !validReasoningEffort(raw[k])) {
       throw new Error(`run.config.json: '${k}' must be one of ${REASONING_EFFORTS.join(' | ')}`
@@ -222,6 +226,7 @@ function loadConfig(file) {
   // With every field absent this resolves to Claude at every stage, which is what makes an
   // untouched run config byte-for-byte the pre-Codex pipeline.
   cfg.provider = normalizeProvider(raw.provider);
+  cfg.codexAuth = raw.codexAuth === undefined ? 'api-key' : raw.codexAuth;
   cfg.testAuthorProvider = normalizeProvider(raw.testAuthorProvider || cfg.provider);
   cfg.testProbeProvider = normalizeProvider(raw.testProbeProvider || cfg.provider);
   cfg.reasoningEffort = normalizeReasoningEffort(raw.reasoningEffort);

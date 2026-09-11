@@ -45,7 +45,7 @@ function providerOf(cfg, credential) {
 
 // The container's inputs are exactly these (§4.10) — nothing else crosses the boundary.
 function buildArgs(cfg, opts) {
-  const { containerName, workspaceDir, pipelineDir, issueId } = opts;
+  const { containerName, workspaceDir, pipelineDir, issueId, authCache } = opts;
   const credential = credentialFor(cfg, opts);
   const provider = providerOf(cfg, credential);
   const args = [
@@ -65,6 +65,7 @@ function buildArgs(cfg, opts) {
   // Credential by NAME only: the value is placed in the docker client's own environment
   // below, so it never appears in an argument list, a log line, or an image layer (§6).
   if (credential) args.push('-e', credential.name);
+  if (authCache) args.push('-v', authCache.mount, '-e', `CODEX_HOME=${authCache.containerPath}`);
   // The entrypoint selects its noninteractive command from this, so a Codex task cannot be
   // started by a Claude image invocation or the reverse.
   args.push('-e', `PIPELINE_PROVIDER=${provider}`);
@@ -96,9 +97,9 @@ function runTask(cfg, opts, log, traceId) {
     // the unselected provider's key into a task through `-e NAME` inheritance.
     const credential = credentialFor(cfg, opts);
     const childEnv = { ...DOCKER_ENV };
-    for (const name of CREDENTIAL_ENV_NAMES) delete childEnv[name];
+    for (const name of [...CREDENTIAL_ENV_NAMES, 'OPENAI_API_KEY', 'CODEX_HOME']) delete childEnv[name];
     if (credential) childEnv[credential.name] = credential.value;
-    const child = spawn('docker', args, { env: childEnv });
+    const child = (opts.spawn || spawn)("docker", args, { env: childEnv });
     child.stdout.pipe(logStream);
     child.stderr.pipe(logStream);
 

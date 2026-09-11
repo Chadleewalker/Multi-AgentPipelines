@@ -28,6 +28,7 @@
 
 const path = require('path');
 const { runSync } = require('../runner/process');
+const codexAuthDefault = require('../runner/codex-auth');
 const {
   CODEX_REQUIRED_EXEC_FLAGS, CREDENTIAL_NAMES, REASONING_EFFORTS,
   normalizeReasoningEffort, missingCodexCapabilities, normalizeOutput,
@@ -41,10 +42,12 @@ const PROMPT = 'Reply with exactly one short line naming the model answering thi
 const TIMEOUT_MS = 120000;
 
 function parseArgs(argv) {
-  const opts = { model: DEFAULT_MODEL, reasoningEffort: 'low' };
+  const opts = { model: DEFAULT_MODEL, reasoningEffort: 'low', image: null };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
-    if (arg === '--model') {
+    if (arg === '--image') {
+      const value = argv[++i]; if (!value || value.startsWith('--')) return { error: '--image needs a value' }; opts.image = value;
+    } else if (arg === '--model') {
       const value = argv[++i];
       if (!value || value.startsWith('--')) return { error: '--model needs a value' };
       opts.model = value;
@@ -80,73 +83,38 @@ function smokeArgs(opts) {
   ];
 }
 
-function main(argv, io = {}) {
-  const out = io.out || console.log;
-  const err = io.err || console.error;
-  const env = io.env || process.env;
-  const run = io.runSync || runSync;
-  const opts = parseArgs(argv);
-  if (opts.error) { err(`codex-live-smoke: ${opts.error}`); return 2; }
-  if (opts.help) {
-    out('usage: CODEX_LIVE_SMOKE=1 node scripts/codex-live-smoke.js [--model <alias>]'
-      + ' [--reasoning-effort minimal|low|medium|high]');
-    return 0;
-  }
-  if (env.CODEX_LIVE_SMOKE !== '1') {
-    out('SKIP codex live smoke — set CODEX_LIVE_SMOKE=1 to make one real, read-only call.');
-    out(`     it would ask ${opts.model} to name itself; nothing else in the suite calls a model.`);
-    return 0;
-  }
-
-  const capabilities = run('codex', ['exec', '--help'], {
-    label: 'codex exec capability probe', timeoutMs: TIMEOUT_MS,
-  });
-  if (capabilities.status !== 0) {
-    err('codex-live-smoke: no usable codex executable — install the pinned Codex CLI and put'
-      + ' codex on this host\'s PATH.');
-    return 1;
-  }
-  const missing = missingCodexCapabilities(`${capabilities.stdout || ''}${capabilities.stderr || ''}`);
-  if (missing.length) {
-    err(`codex-live-smoke: the codex on PATH is missing ${missing.join(', ')} — upgrade to the pinned CLI.`);
-    return 1;
-  }
-
-  const authenticated = typeof env[CREDENTIAL_NAMES.codex] === 'string'
-    && env[CREDENTIAL_NAMES.codex].trim() !== '';
-  out(`Authentication: ${authenticated
-    ? `${CREDENTIAL_NAMES.codex} from the environment`
-    : `no ${CREDENTIAL_NAMES.codex} — relying on a saved ChatGPT CLI session (codex login)`}`);
-  out(`Configured model: ${opts.model} (reasoning effort ${opts.reasoningEffort}, sandbox read-only)`);
-
-  const result = run('codex', smokeArgs(opts), {
-    cwd: path.resolve(__dirname, '..'),
-    input: `${PROMPT}\n`,
-    timeoutMs: TIMEOUT_MS,
-    label: 'codex live smoke',
-    env: { ...env },
-  });
-  const raw = `${result.stdout || ''}\n${result.stderr || ''}`;
-  const normalized = normalizeOutput('codex', raw, opts.model);
-  if (!normalized) {
-    err(`codex-live-smoke: no structured Codex result (exit ${result.status}).`);
-    if (result.stderr) err(String(result.stderr).trimEnd());
-    return 1;
-  }
-  if (normalized.rateLimit) {
-    err(`codex-live-smoke: rate limited${normalized.rateLimit.resetAt
-      ? ` until ${normalized.rateLimit.resetAt}` : ''} — ${normalized.rateLimit.evidence}`);
-    return 1;
-  }
-  out(`Model that answered: ${normalized.model}`);
-  if (normalized.tokenUsage) {
-    out(`Token usage: input ${normalized.tokenUsage.input}, output ${normalized.tokenUsage.output}`);
-  }
-  out(`Final agent text: ${String(normalized.finalText || '').trim()}`);
-  out(result.status === 0 ? 'PASS codex live smoke' : `FAIL codex live smoke (exit ${result.status})`);
-  return result.status === 0 ? 0 : 1;
+function runChatgptContainerSmoke(opts) {
+  const run = opts.run || runSync; const env = { ...(opts.env || {}) };
+  delete env.CODEX_API_KEY; delete env.OPENAI_API_KEY; delete env.CODEX_HOME;
+  const args = ['run', '--rm', '--network', env.PIPELINE_NET, '-v', opts.authCache.mount,
+    '-w', '/workspace', '-e', 'CODEX_HOME=/root/.codex', '-e', 'HTTPS_PROXY=' + env.PIPELINE_PROXY_URL,
+    '-e', 'HTTP_PROXY=' + env.PIPELINE_PROXY_URL, '-e', 'NO_PROXY=localhost,127.0.0.1', opts.image,
+    'codex', ...smokeArgs({ model: opts.model, reasoningEffort: opts.reasoningEffort })];
+  if (opts.out) opts.out("Authentication: ChatGPT managed session");
+  const result = run('docker', args, { env, input: PROMPT + '\n', timeoutMs: TIMEOUT_MS, label: 'ChatGPT pinned-image live smoke' });
+  const normalized = normalizeOutput('codex', String(result.stdout || '') + '\n' + String(result.stderr || ''), opts.model);
+  if (!normalized || result.status !== 0) return { ok: false, result, normalized };
+  return { ok: true, result, normalized };
+}
+async function main(argv, io = {}) {
+  const out = io.out || console.log; const err = io.err || console.error; const env = io.env || process.env;
+  const opts = parseArgs(argv); if (opts.error) { err('codex-live-smoke: ' + opts.error); return 2; }
+  if (opts.help) { out('usage: CODEX_LIVE_SMOKE=1 node scripts/codex-live-smoke.js --image <pinned-image> [--model <alias>]'); return 0; }
+  if (env.CODEX_LIVE_SMOKE !== '1') { out('SKIP codex live smoke — set CODEX_LIVE_SMOKE=1 to make one real, read-only call.'); return 0; }
+  if (!opts.image) { err('codex-live-smoke: --image is required for the pinned task image'); return 2; }
+  const auth = io.codexAuth || codexAuthDefault;
+  const pre = await Promise.resolve(auth.preflight({ mode: 'chatgpt', codexHome: env.CODEX_HOME, cacheRoot: env.PIPELINE_CODEX_CACHE }));
+  if (!pre.ok) { err('codex-live-smoke: ' + pre.reason); return 1; }
+  let handle;
+  try {
+    handle = await Promise.resolve(auth.stageTaskCache({ cacheRoot: pre.cacheRoot, taskId: 'smoke', wait: true }));
+    out('Authentication: ChatGPT managed session (private serialized cache)');
+    const smoke = runChatgptContainerSmoke({ image: opts.image, authCache: handle, model: opts.model, reasoningEffort: opts.reasoningEffort, env, run: io.runSync || runSync });
+    if (!smoke.ok) { err('codex-live-smoke: no structured Codex result (exit ' + smoke.result.status + ').'); return 1; }
+    out('Model that answered: ' + smoke.normalized.model); out('PASS codex live smoke'); return 0;
+  } finally { if (handle) await Promise.resolve(auth.releaseTaskCache(handle)); }
 }
 
 if (require.main === module) process.exit(main(process.argv.slice(2)));
 
-module.exports = { main, parseArgs, smokeArgs, DEFAULT_MODEL };
+module.exports = { main, parseArgs, smokeArgs, runChatgptContainerSmoke, DEFAULT_MODEL };
