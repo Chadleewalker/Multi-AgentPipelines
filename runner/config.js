@@ -215,6 +215,9 @@ function loadConfig(file) {
         + ' (reasoning effort)');
     }
   }
+  if (raw.codexAuth !== undefined && raw.codexAuth !== null && !['chatgpt', 'api-key'].includes(raw.codexAuth)) {
+    throw new Error("run.config.json: 'codexAuth' must be one of chatgpt | api-key");
+  }
   const cfg = { ...DEFAULTS, ...raw, configPath: p };
   // Resolved AFTER the spread and deliberately NOT in contracts/control-plane.json's
   // configDefaults: a stage field's default is the run-wide value, and the run-wide value's
@@ -227,6 +230,7 @@ function loadConfig(file) {
   cfg.reasoningEffort = normalizeReasoningEffort(raw.reasoningEffort);
   cfg.testAuthorReasoningEffort = normalizeReasoningEffort(raw.testAuthorReasoningEffort || cfg.reasoningEffort);
   cfg.testProbeReasoningEffort = normalizeReasoningEffort(raw.testProbeReasoningEffort || cfg.reasoningEffort);
+  cfg.codexAuth = raw.codexAuth || 'api-key';
   // An explicit name always wins; derivation fills only what the config left out.
   const derived = deriveNames(p);
   if (!cfg.network) cfg.network = derived.network;

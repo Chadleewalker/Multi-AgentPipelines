@@ -2340,8 +2340,7 @@ exist. Thread: `docs/threads/merge-order.md`.
   `CODEX_API_KEY`, never both — is passed to containers by environment-variable NAME at
   `docker run` and never baked into an image layer (6.5). Headless `claude -p` honors its
   token; interactive `claude` does not (known issue) — the pipeline is headless-only anyway.
-  Host Codex may instead reuse a saved ChatGPT CLI session (`codex login`); a container
-  cannot, and no `auth.json` is ever mounted into one.
+  A `codexAuth: "chatgpt"` run stages only a task-private `/root/.codex` cache from a host-private durable session; it never mounts the operator home. One saved login is a serialized lane spanning stage, execution, and atomic refresh persistence; parallel workers require independently authenticated lanes.
 - **Runner implementation: Node.js.** Decision, for cross-platform reasons: `node` is
   the same command on Windows and Linux (no `python` vs `python3` split), handles JSON
   natively for Beads/Claude output, and can enforce wall-clock timeouts with an independent
@@ -2773,8 +2772,7 @@ task through `-e NAME` inheritance. Inside the container the key belongs to the 
 alone: Codex's `shell_environment_policy` keeps its own default secret names excluded and adds
 this key explicitly, so nothing the *model* spawns inherits it, and the entrypoint runs the
 authoritative verifier — which executes the target repository's own code — under
-`env -u CODEX_API_KEY`. Host Codex may instead reuse a saved ChatGPT CLI session
-(`codex login`); a container never can, and no `auth.json` is ever mounted or baked in.
+`env -u CODEX_API_KEY`. With `codexAuth: "chatgpt"`, the host seeds a private durable refresh cache once from `codex login`; a task receives only a unique `/root/.codex` copy and persists its refresh atomically. A saved session is one exclusive lane for staging through execution and write-back, so parallel subscription workers require independently authenticated lanes; the operator home is never mounted or baked in.
 
 **One egress profile per provider, never one widened to both.** `docker/proxy-codex/`
 is a separate deny-by-default sidecar image whose allowlist carries only the concrete OpenAI

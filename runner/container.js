@@ -33,6 +33,7 @@ for (const name of CREDENTIAL_ENV_NAMES) delete WATCHDOG_DOCKER_ENV[name];
 // older caller behaves exactly as before. A task NEVER gets both, and never gets the one
 // belonging to the provider it was not launched for.
 function credentialFor(cfg, opts) {
+  if (providerFor(cfg) === 'codex' && cfg.codexAuth === 'chatgpt') return null;
   const chosen = opts && opts.credential;
   if (chosen && chosen.name) return { name: chosen.name, value: chosen.value || '' };
   if (opts && opts.token) return { name: credentialNameFor(providerFor(cfg)), value: opts.token };
@@ -62,6 +63,9 @@ function buildArgs(cfg, opts) {
     '-e', `HTTP_PROXY=${cfg.proxyUrl}`,
     '-e', 'NO_PROXY=localhost,127.0.0.1',
   ];
+  if (provider === 'codex' && cfg.codexAuth === 'chatgpt' && opts.authCache) {
+    args.push('-v', opts.authCache.mount, '-e', 'CODEX_HOME=' + opts.authCache.containerPath);
+  }
   // Credential by NAME only: the value is placed in the docker client's own environment
   // below, so it never appears in an argument list, a log line, or an image layer (§6).
   if (credential) args.push('-e', credential.name);
@@ -97,8 +101,9 @@ function runTask(cfg, opts, log, traceId) {
     const credential = credentialFor(cfg, opts);
     const childEnv = { ...DOCKER_ENV };
     for (const name of CREDENTIAL_ENV_NAMES) delete childEnv[name];
+    delete childEnv.CODEX_HOME;
     if (credential) childEnv[credential.name] = credential.value;
-    const child = spawn('docker', args, { env: childEnv });
+    const child = (opts.spawn || spawn)('docker', args, { env: childEnv });
     child.stdout.pipe(logStream);
     child.stderr.pipe(logStream);
 
