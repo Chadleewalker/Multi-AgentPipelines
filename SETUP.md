@@ -72,7 +72,10 @@ Claude is the default provider and the only one this setup needs. A run or plann
 that selects `"provider": "codex"` also needs the Codex CLI on the host — install it the
 same way (`npm install -g @openai/codex`, matching the pin in `docker/base/Dockerfile`) and
 either run `codex login` to reuse a saved ChatGPT session or supply `CODEX_API_KEY` at B2.
-Task containers never reuse a saved session; that is what the key is for.
+Choose the matching explicit `codexAuth` setting in the run config: `"chatgpt"` safely
+uses one serialized, host-private managed-session lane, while `"api-key"` uses the key.
+Workers receive only a task-private cache, never the operator's Codex home or a saved-session
+file; parallel ChatGPT workers need independently authenticated lanes.
 
 ### A4. Let Claude Code install the rest
 
@@ -145,7 +148,8 @@ claude setup-token
 A long-lived token, separate from the A3 sign-in. Keep it to copy once at B2. Do not paste it
 into a session. One subscription per person: at your limit a run parks itself, waits for the
 window to reopen, and carries on. A Codex run parks the same way; its credential is the
-`CODEX_API_KEY` from A3, also copied once at B2.
+`CODEX_API_KEY` from A3 in explicit `api-key` mode. Explicit `chatgpt` mode uses the saved
+`codex login` session through one safe active worker lane.
 
 ### A8. The harness plugin — optional, and not a clone
 
