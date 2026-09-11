@@ -39,7 +39,29 @@ else
   AGENT_DEFAULT="claude -p --dangerously-skip-permissions${MODEL_ARG}"
 fi
 AGENT_CMD="${PIPELINE_AGENT_CMD:-$AGENT_DEFAULT}"
-if [ "${PIPELINE_CHATGPT_AUTH:-}" = "1" ]; then export CODEX_HOME=/root/.codex; fi
+if [ "${PIPELINE_CHATGPT_AUTH:-}" = "1" ]; then
+  # The host bind-mount is only a root-owned handoff. Copy it into the unique
+  # task-private CODEX_HOME, then let the non-root model user own that cache.
+  mkdir -p /root/.codex
+  chmod 700 /run/pipeline-auth-host /run/pipeline-auth-host/cache /root/.codex
+  cp -a /run/pipeline-auth-host/cache/. /root/.codex/
+  chown -R node:node /root/.codex
+  persist_chatgpt_auth() {
+    if [ -f /root/.codex/auth.json ]; then
+      tmp="/run/pipeline-auth-host/cache/.auth.json.$$.tmp"
+      cp /root/.codex/auth.json "$tmp" && chmod 600 "$tmp" && mv -f "$tmp" /run/pipeline-auth-host/cache/auth.json
+    fi
+  }
+  trap persist_chatgpt_auth EXIT
+fi
+
+run_agent() {
+  if [ "${PIPELINE_CHATGPT_AUTH:-}" = "1" ]; then
+    runuser -u node -- env CODEX_HOME=/root/.codex sh -c "$AGENT_CMD $AGENT_FORMAT"
+  else
+    sh -c "$AGENT_CMD $AGENT_FORMAT"
+  fi
+}
 
 # When we own the invocation, ask for JSON so the RESOLVED model id can be recorded (a
 # `--model opus` alias hides which Opus actually ran) and so the docs phase hands back a
@@ -65,7 +87,7 @@ die30() { echo "entrypoint: $1" >&2; exit 30; }
 # it is stripped here rather than trusted not to be read (§6). One command per call site:
 # nothing may sit between the verifier and the `VRC=$?` that reads its exit code.
 run_verifier() {
-  env -u CODEX_API_KEY -u OPENAI_API_KEY -u CODEX_HOME runuser -u nobody -- node "$PIPE/verify.js"
+  runuser -u nobody -- env -u CODEX_API_KEY -u OPENAI_API_KEY -u CODEX_HOME node "$PIPE/verify.js"
 }
 
 # A successful implementation commit is the recovery point for the non-fatal docs phase.
@@ -188,7 +210,7 @@ while :; do
       cat "$RUN/feedback.txt"
     fi
   } > "$RUN/prompt-$N.md"
-  if ! sh -c "$AGENT_CMD $AGENT_FORMAT" < "$RUN/prompt-$N.md" > "$RUN/agent-$N.log" 2>&1; then
+  if ! run_agent < "$RUN/prompt-$N.md" > "$RUN/agent-$N.log" 2>&1; then
     # ---- rate-limit detection (§4.7, T10): a pause, never a failed attempt ----
     if grep -qiE 'usage limit|rate.?limit' "$RUN/agent-$N.log"; then
       EPOCH=$(grep -oiE 'usage limit reached\|[0-9]+' "$RUN/agent-$N.log" | grep -oE '[0-9]+$' | head -1)
@@ -264,7 +286,7 @@ while :; do
       # stderr goes to its own file, never into docs-out.txt: this output becomes the PR
       # body (§4.5), and CLI warnings on stderr used to lead every one of them. The file
       # is kept for debugging and, like everything under .run/, is never committed.
-      if sh -c "$AGENT_CMD $AGENT_FORMAT" < "$RUN/prompt-docs.md" > "$RUN/docs-out.txt" 2> "$RUN/docs-err.txt"; then
+      if run_agent < "$RUN/prompt-docs.md" > "$RUN/docs-out.txt" 2> "$RUN/docs-err.txt"; then
         docs_paths_allowed "$VERIFIED_HEAD" > "$RUN/docs-boundary.txt"
         DOCS_BOUNDARY_RC=$?
         if [ "$DOCS_BOUNDARY_RC" -ne 0 ]; then

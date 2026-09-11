@@ -52,9 +52,13 @@ function buildArgs(cfg, opts) {
     'run', '--rm',
     '--name', containerName,
     '--network', cfg.network,
+    // Managed ChatGPT auth needs root only to hand the mounted task copy into the
+    // node-owned internal cache. entrypoint.sh immediately drops to node before Codex
+    // (or any model command) runs.
+    ...(opts.authCache ? ['--user', 'root'] : []),
     '-v', `${toMountPath(workspaceDir)}:/workspace`,
     '-v', `${toMountPath(pipelineDir)}:/pipeline:ro`,   // scaffolding, read-only
-    ...(opts.authCache ? ['-v', opts.authCache.mount, '-e', 'CODEX_HOME=/root/.codex', '-e', 'PIPELINE_CHATGPT_AUTH=1'] : []),
+    ...(opts.authCache ? ['-v', opts.authCache.mount, '-e', 'PIPELINE_CHATGPT_AUTH=1'] : []),
     '-w', '/workspace',
     '-e', `ISSUE_ID=${issueId}`,
     '-e', 'WORKSPACE=/workspace',
@@ -103,7 +107,8 @@ function runTask(cfg, opts, log, traceId) {
     delete childEnv.OPENAI_API_KEY;
     delete childEnv.CODEX_HOME;
     if (credential) childEnv[credential.name] = credential.value;
-    const child = spawn('docker', args, { env: childEnv });
+    const launch = opts.spawn || spawn;
+    const child = launch('docker', args, { env: childEnv });
     child.stdout.pipe(logStream);
     child.stderr.pipe(logStream);
 
