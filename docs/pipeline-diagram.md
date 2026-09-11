@@ -430,7 +430,8 @@ config — derived from the project segment of `run.config.<project>.json` when 
 neither — so two runner processes against two projects draw two copies of this diagram
 side by side, and neither one's `up` or `down` touches the other's plumbing (change-log
 row `repo-jur`). The proxy *image* is shared within a provider profile — `docker/proxy` for
-Claude, `docker/proxy-codex` for Codex, each carrying only its own vendor's endpoints; only
+Claude, `docker/proxy-codex` for Codex (allowing only `api.openai.com`, `chatgpt.com`, and
+`ab.chatgpt.com`), each carrying only its own vendor's endpoints; only
 the running container and the network are per project.
 
 The shell node is a Windows host-identity gate, not merely a check that some executable

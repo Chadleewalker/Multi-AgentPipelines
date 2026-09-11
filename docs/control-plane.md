@@ -72,22 +72,27 @@ value is refused by its own field name before a worktree, a Beads read, a networ
 container exists.
 
 `provider` selects only the vendor. The `model`, `testAuthorModel` and `testProbeModel`
-fields still name the model, and a Codex run needs a model id that provider understands —
-the example config's Claude aliases are not one.
+fields still name the model, and every stage switched to Codex needs a GPT model it
+understands (for example `gpt-5.6-terra`); the example config's Claude aliases are not
+Codex models.
 
 Selecting a provider selects three things together, and they are not independently
 configurable:
 
-- **The credential.** `CLAUDE_CODE_OAUTH_TOKEN` or `CODEX_API_KEY`, read from the
-  git-ignored `.env.pipeline` or the ambient environment, with no cross-provider fallback.
-  Containers receive it by environment-variable name only, and every other provider's
-  credential is removed from the docker client's environment first. On the host, Codex may
-  instead reuse a saved ChatGPT CLI session (`codex login`); inside a container it cannot,
-  and no `auth.json` is ever mounted.
+- **The credential.** `codexAuth` explicitly selects Codex's `chatgpt` or `api-key` mode;
+  the committed example deliberately sets dormant `chatgpt`, while API-key mode retains
+  `CODEX_API_KEY` from the git-ignored `.env.pipeline` or ambient environment. There is no
+  cross-mode or cross-provider fallback. ChatGPT mode confirms a saved `codex login`
+  device-authentication session before the target lock or any launch, copies it into a
+  host-private pipeline cache, and mounts only a task-scoped writable copy at the Codex
+  credential location for the trusted worker. Refreshes are saved back atomically and the
+  task copy is removed afterward. No API key, full Codex home, or unrelated provider
+  credential enters that container, its verifier, logs, artifacts, workspace, Git, or PR.
 - **The container command.** The runner passes `PIPELINE_PROVIDER`, and
   `pipeline/entrypoint.sh` selects that provider's noninteractive invocation.
-- **The egress profile.** `docker/proxy` carries the Anthropic endpoints, `docker/proxy-codex`
-  the OpenAI ones, and `PIPELINE_PROXY_PROFILE` picks which sidecar `scripts/pipeline-net.sh`
+- **The egress profile.** `docker/proxy` carries the Anthropic endpoints; the separate
+  `docker/proxy-codex` allowlist carries only `api.openai.com`, `chatgpt.com`, and
+  `ab.chatgpt.com`. `PIPELINE_PROXY_PROFILE` picks which sidecar `scripts/pipeline-net.sh`
   builds and which endpoint `scripts/egress-check.sh` proves reachable. One profile per
   provider: widening either to carry the other's endpoints is refused by design, not by a
   check.
@@ -100,7 +105,7 @@ if it predates the Codex pin. The one live model call in the Codex surface is op
 documentary:
 
 ```bash
-CODEX_LIVE_SMOKE=1 node scripts/codex-live-smoke.js   # read-only; reports the model that answered
+CODEX_LIVE_SMOKE=1 node scripts/codex-live-smoke.js   # ChatGPT auth only; read-only and reports the model that answered
 ```
 
 ## Supervised operation
