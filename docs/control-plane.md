@@ -138,6 +138,14 @@ preparation marker and without declaring its child complete. There is no supervi
 `runner/supervisor.js` is a host-side library, and a supervising process takes the lease and
 issues grants through it.
 
+Launch-capable `prepare-batch` modes check the Docker daemon, configured image, configured
+host shell, and authentication for the author/probe providers before write-protection admission,
+locking, manifests, Beads, worktrees, attempts or workers. Each probe is bounded and the first
+failure names its remedy; because refusal writes no preparation history, the same batch name can
+be started or retried immediately after repair. Codex planning stages accept a provider-specific
+key or a healthy saved ChatGPT login reported by `codex login status`. `status` and
+`acknowledge-interrupted` stay available when those prerequisites are down.
+
 ## Write protection
 
 A checkout whose selected integration fork point carries `pipeline.config.json` is

@@ -1319,9 +1319,15 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     valid authority, the run proceeds under its parent's lease and takes no lock of its own,
     which is why `lockOwned` is false for it and why neither its exit handler nor its teardown
     boundary releases a lease it never took. `scripts/prepare-batch.js` asks the identical
-    question for the `preparation` scope in the identical position. The gate order is
-    therefore: write-protection admission, child admission, the project lock, repository
-    identity, host shell, Docker, image, network, egress, stale-issue recovery.
+    question for the `preparation` scope before any prerequisite or mutation. Its launch-capable
+    modes then check Docker daemon reachability, configured image presence, configured host
+    shell, and authentication for every provider selected by the author and probe stages. A
+    refusal names the remedy and allocates no manifest, attempt, uncertainty marker, worktree or
+    suite classification; `status` and `acknowledge-interrupted` are deliberately ungated.
+    The runner's order remains write-protection admission, child admission, project lock,
+    repository identity, host shell, Docker, image, network, egress, stale-issue recovery;
+    preparation's order is child admission, prerequisites, write-protection admission, then its
+    target lock or delegated supervisor ownership.
 
     **The Beads checkout and publication remote are one project, proven before either is
     touched.** `targetRepoPath` is the database side of the runner while
@@ -1811,7 +1817,14 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     (change-log row `batch-test-preparation`). `scripts/prepare-batch.js` names an immutable
     issue roster and records each issue's Beads dependencies, criteria fingerprint, integration
     HEAD, redacted configuration and exact full-id worktree before it launches anything. Beads
-    access and worktree allocation remain serialized in the parent; a default and hard maximum
+    access is preceded by a deterministic host-prerequisite gate (change-log row `repo-hw6`):
+    Docker daemon, configured image, configured host shell, and authentication for both selected
+    planning-stage providers, in that fail-fast order. Each external probe has a short
+    implementation-owned ceiling which configuration may only lower. Codex accepts either its
+    provider-specific key or a successful bounded `codex login status` for the host's saved
+    ChatGPT session; Claude retains its own token check, with no cross-provider fallback. Failure
+    writes no preparation state, so repairing the named prerequisite is the entire retry
+    procedure. Worktree allocation remains serialized in the parent; a default and hard maximum
     of ten child processes receive complete snapshots on stdin and call only the structured author/proof
     cores. The coordinator and the standalone commands share the runner's target-global lock,
     so no preparation worker can overlap a pipeline run or be rediscovered through an ambiguous

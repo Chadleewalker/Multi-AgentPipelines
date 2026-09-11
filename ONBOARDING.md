@@ -440,6 +440,13 @@ test-authoring workers that single coordinator runs at a time. The coordinator o
 target lock for the whole batch, reads Beads serially, hands each worker a complete brief
 in its own registered worktree, and keeps a resumable record you can query or resume later.
 
+At the start of every launch-capable batch command, the coordinator checks the Docker daemon,
+the configured image, the configured host shell, and authentication for both planning-stage
+providers. A failure names the exact remedy before it creates a manifest, worktree or attempt,
+so start Docker Desktop, build the named image, correct `hostShell`, or restore the named
+provider login as instructed and rerun the same batch name. Read-only status and interrupted
+worker acknowledgement do not depend on these prerequisites.
+
 **Never launch independent `author-tests.js` sessions to get parallel preparation** — not
 two by hand, not one per issue, not in separate terminals. `author-tests.js` is the
 single-suite path and takes the same target ownership for itself, so extra sessions refuse

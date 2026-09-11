@@ -20,6 +20,7 @@ const { buildBrief } = require('./spec-brief');
 const author = require('./author-tests');
 const proof = require('./prove-tests');
 const prepState = require('../runner/preparation-state');
+const prerequisites = require('../runner/prerequisites');
 const writeProtection = require('./write-protection-policy');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -32,6 +33,10 @@ const SECRET_MARKER = '<redacted-host-env>';
 const EXIT_USAGE = 2;
 const EXIT_REFUSED = 3;
 const EXIT_ATTENTION = 4;
+const PREREQUISITE_SEAMS = [
+  'checkPrerequisites', 'dockerAvailable', 'imageExists', 'resolveHostShell', 'loadToken',
+  'loadProviderCredential', 'codexAuthStatus',
+];
 
 const USAGE = [
   'usage:',
@@ -600,6 +605,15 @@ function settleEmptyTakeover(held, seams = {}) {
     error: `prior target owner ${previous.runId || '(unknown)'} ended without releasing ownership; normal pipeline recovery is required` };
 }
 
+// Existing unit workflows inject narrow seams for the operation they exercise and predate the
+// host-prerequisite gate. Preserve those paths without weakening production: an ordinary CLI
+// call has no seams and always runs the real gate; a prerequisite-aware test opts in by naming
+// either the whole gate or one of its probes.
+function shouldCheckPrerequisites(seams) {
+  const keys = Object.keys(seams || {});
+  return keys.length === 0 || PREREQUISITE_SEAMS.some((key) => Object.prototype.hasOwnProperty.call(seams, key));
+}
+
 async function execute(opts, io = {}, seams = {}) {
   const out = io.out || console.log; const err = io.err || console.error;
   const state = seams.state || prepState;
@@ -648,6 +662,19 @@ async function execute(opts, io = {}, seams = {}) {
     return EXIT_REFUSED;
   }
   const childAdmission = entry.mode === 'supervisor-child' ? entry.admission : null;
+
+  if (opts.mode !== 'acknowledge-interrupted' && shouldCheckPrerequisites(seams)) {
+    const check = seams.checkPrerequisites || prerequisites.checkPrerequisites;
+    const prerequisite = check(cfg, ROOT, seams);
+    if (!prerequisite.ok) {
+      err("prepare-batch: prerequisite '" + prerequisite.prerequisite + "' unavailable for batch '"
+        + opts.batch + "': " + prerequisite.reason);
+      err('prepare-batch: remedy: ' + prerequisite.remedy);
+      err("prepare-batch: no author, probe, or worker operation was launched; fix the prerequisite and retry the same batch '"
+        + opts.batch + "'.");
+      return EXIT_REFUSED;
+    }
+  }
 
   if (opts.mode !== 'acknowledge-interrupted' && cfg.allowHalfProven === true) {
     err('prepare-batch: all-proven preparation refuses a config with allowHalfProven=true; change that policy explicitly first.');
@@ -830,7 +857,7 @@ module.exports = {
   runPool, runWorker, parseWorkerResult, parseWorkerEnvelope, latestAttempt, pidAlive, statusReport,
   workerEnv, hostEnvSecrets, scrubSecrets, integrationHead, snapshotFingerprints,
   inspectIntegration, strayIssues, settleEmptyTakeover, unresolvedWorkers, acknowledgeInterrupted,
-  acknowledgedPhases,
+  acknowledgedPhases, shouldCheckPrerequisites,
   attemptPhase, sameConfigIdentity, SECRET_MARKER,
   DEFAULT_CONCURRENCY, MAX_CONCURRENCY, MAX_WORKER_OUTPUT, STAGE_PREFIX,
   EXIT_USAGE, EXIT_REFUSED, EXIT_ATTENTION,

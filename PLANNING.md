@@ -311,6 +311,12 @@ lock, and any worker, worktree or Beads read, so a preparation presenting no gra
 forged, replayed, expired, wrong-target, wrong-parent or released one — is refused by name with
 nothing launched. With no supervisor present the paragraph above is exactly what happens.
 
+Before allocating the named batch, the coordinator checks Docker daemon reachability, the
+configured image, the configured host shell, and authentication for every provider selected by
+the author and probe stages. The first failure names the exact repair and launches no worker or
+attempt; fix it and rerun the same command with the same batch name. `status` and
+`acknowledge-interrupted` remain usable while those prerequisites are unavailable.
+
 State is durable under `runs/preparations/<batch>/`. `resume <batch>` reports or continues work
 whose ownership is unambiguous; a worker that may still be alive is never duplicated, and a
 crash with no matching result becomes `interrupted-unknown` and blocks new preparation. Stop the
