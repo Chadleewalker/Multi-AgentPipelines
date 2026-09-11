@@ -52,8 +52,9 @@ prove each step worked — is [`SETUP.md`](SETUP.md).
 # 1. put your model credential where the runner can find it
 #    (git-ignored; get a Claude one with `claude setup-token`)
 echo 'CLAUDE_CODE_OAUTH_TOKEN=...' > .env.pipeline
-#    a run whose config selects "provider": "codex" reads CODEX_API_KEY from the same
-#    file instead — one credential per run, never both in a container
+#    Codex explicitly selects "codexAuth": "api-key" to read CODEX_API_KEY from the same
+#    file, or "codexAuth": "chatgpt" to use a prior `codex login` session. ChatGPT mode
+#    gives each task a private cache and serializes one saved login into one active lane.
 
 # 2. prove the whole thing works, using scripted stubs — no model calls
 bash scripts/e2e.sh

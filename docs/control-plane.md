@@ -78,12 +78,13 @@ the example config's Claude aliases are not one.
 Selecting a provider selects three things together, and they are not independently
 configurable:
 
-- **The credential.** `CLAUDE_CODE_OAUTH_TOKEN` or `CODEX_API_KEY`, read from the
-  git-ignored `.env.pipeline` or the ambient environment, with no cross-provider fallback.
-  Containers receive it by environment-variable name only, and every other provider's
-  credential is removed from the docker client's environment first. On the host, Codex may
-  instead reuse a saved ChatGPT CLI session (`codex login`); inside a container it cannot,
-  and no `auth.json` is ever mounted.
+- **The credential.** Claude uses `CLAUDE_CODE_OAUTH_TOKEN`. Codex selects `codexAuth`:
+  the explicit `api-key` mode (also the legacy default when the field is absent) uses
+  `CODEX_API_KEY`, while `chatgpt` uses a managed `codex login` session. There is no
+  cross-provider fallback. API-key containers receive only the selected key by
+  environment-variable name, with other provider credentials removed from the Docker
+  client's environment. ChatGPT containers receive no API key or host Codex home; they
+  receive only a unique writable task cache at `CODEX_HOME=/root/.codex`.
 - **The container command.** The runner passes `PIPELINE_PROVIDER`, and
   `pipeline/entrypoint.sh` selects that provider's noninteractive invocation.
 - **The egress profile.** `docker/proxy` carries the Anthropic endpoints, `docker/proxy-codex`
@@ -245,4 +246,12 @@ cannot rewrite its own outcome or publication policy.
 
 ### ChatGPT-managed Codex workers
 
-A Codex run may select `codexAuth: "chatgpt"` instead of the explicit `api-key` mode. The host seeds a private durable managed-auth cache once from `codex login`; each task receives only a writable private copy at `/root/.codex`. One saved ChatGPT login is one safe active Codex lane: tasks sharing it serialize from staging through refresh persistence. Use independently authenticated lane caches for parallel subscription workers.
+A Codex run may select `codexAuth: "chatgpt"` instead of the explicit `api-key` mode;
+when absent, legacy Codex configuration remains API-key mode. ChatGPT preflight accepts only
+a managed `auth_mode: "chatgpt"` session with a refresh token, seeds a private durable cache
+once from `codex login`, and thereafter preserves refreshed durable state. Each task receives
+only a unique writable cache at `CODEX_HOME=/root/.codex`, never the host Codex home, an API
+key, or credential contents through its command, environment, logs, artifacts, workspace, or
+verifier. One saved ChatGPT login is one safe active Codex lane: tasks sharing it serialize
+from cache staging through Codex execution and atomic refresh persistence. The Codex egress
+profile permits only `api.openai.com`, `chatgpt.com`, and `ab.chatgpt.com`; use independently
