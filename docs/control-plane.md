@@ -58,6 +58,31 @@ To stop a fed run cleanly, create `runs/<run-id>/stop`; active workers finish be
 feed closes. Do not launch a run from an auxiliary worktree because `runs/` is host-local
 and its observer artifacts belong in the main checkout.
 
+## Kickoff intake
+
+`scripts/kickoff.js` records a kickoff packet against a project and returns; it creates no
+Beads issue and starts no child process, so it does not touch Docker, Git, the network or the
+target lock.
+
+```bash
+node scripts/kickoff.js submit --config run.config.<project>.json --packet idea.json
+node scripts/kickoff.js list   --config run.config.<project>.json [--json]
+node scripts/kickoff.js show   --config run.config.<project>.json --id kp-… [--json]
+```
+
+The `kickoff-intake/1` state is durable user intent: its default root is
+`~/.multi-agent-pipelines/`, never the OS-temporary target-lock root. Under that root the
+tool partitions records by `runner/lock.js`'s canonical target identity and stores complete
+records in `proposals/<id>.json`; equivalent target spellings and separate pipeline checkouts
+therefore read one intake. `PIPELINE_STATE_DIR` is the only test seam that re-aims this root.
+`PIPELINE_GLOBAL_LOCK_DIR` continues to re-aim locks only and moves no proposal state.
+
+Proposal ids are `kp-` plus 16 lowercase hexadecimal characters. Each record has immutable
+canonical `intent` bytes and a `sha256:` hash of those bytes. The packet is a closed JSON
+object with `version`, `title`, `description`, `constraints`, `examples`, `nonGoals`,
+`priority`, `relations` and `origin`; see `node scripts/kickoff.js --help` for the input bound
+and refusal vocabulary.
+
 ## Model provider selection
 
 A run selects one model provider from a closed vocabulary — `claude` or `codex`
