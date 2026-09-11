@@ -38,5 +38,6 @@ RUN help="$(codex exec --help 2>&1)" \
 
 # Tasks run as the image's non-root "node" user; /workspace is the bind-mounted
 # per-task clone (§4.2) and the default working directory.
+RUN chmod 711 /root
 USER node
 WORKDIR /workspace
