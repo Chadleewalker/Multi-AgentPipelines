@@ -320,13 +320,16 @@ Copy this section in (adjust nothing but the project name):
 - [ ] Leave `provider` alone unless the user asks for a different model vendor. Absent, it
       is `claude` at every stage and the launches are exactly what they have always been.
       Setting it to `codex` — run-wide, or per stage with `testAuthorProvider` /
-      `testProbeProvider` — also changes which credential the run loads (`CODEX_API_KEY`,
-      with no fallback to the Claude token), which command the container entrypoint runs,
-      and which allowlist profile the sidecar is built from, so the host needs that key and
-      a base image carrying the pinned Codex CLI before the run starts. Set `model` to
-      something that provider understands while you are there; `reasoningEffort`
-      (`minimal | low | medium | high`, and its two stage twins) applies to Codex launches.
-      See `docs/control-plane.md` and `DESIGN.md` §6.5.
+      `testProbeProvider` — also changes which command the container entrypoint runs and
+      which allowlist profile the sidecar is built from. For implementation workers set
+      `codexAuth` explicitly to `chatgpt` (a valid `codex login` session) or `api-key`
+      (`CODEX_API_KEY`, with no fallback to the Claude token); omission retains legacy
+      API-key behavior. The host also needs a base image carrying the pinned Codex CLI
+      before the run starts. Set `model` to something that provider understands while you
+      are there; `reasoningEffort` (`minimal | low | medium | high`, and its two stage
+      twins) applies to Codex launches. One saved ChatGPT login supplies one serialized
+      worker lane; independently authenticated caches are required for parallel subscription
+      workers. See `docs/control-plane.md` and `DESIGN.md` §6.5.
 - [ ] **Ask the user for one integer implementation concurrency**, and record the answer as
       `concurrency` in that same host-local run config. Ask it once, as a single question —
       *how many implementation tasks may run at the same time under one coordinated run?* —

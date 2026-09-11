@@ -71,7 +71,8 @@ Run `claude` in any folder and sign in with the A1 account.
 Claude is the default provider and the only one this setup needs. A run or planning stage
 that selects `"provider": "codex"` also needs the Codex CLI on the host — install it the
 same way (`npm install -g @openai/codex`, matching the pin in `docker/base/Dockerfile`) and
-either run `codex login` to reuse a saved ChatGPT session or supply `CODEX_API_KEY` at B2.
+either run `codex login` for managed subscription authentication or supply `CODEX_API_KEY`
+at B2.
 
 ### A4. Let Claude Code install the rest
 
@@ -144,7 +145,8 @@ claude setup-token
 A long-lived token, separate from the A3 sign-in. Keep it to copy once at B2. Do not paste it
 into a session. One subscription per person: at your limit a run parks itself, waits for the
 window to reopen, and carries on. A Codex run parks the same way; its credential is the
-`CODEX_API_KEY` from A3, also copied once at B2.
+managed ChatGPT login from A3 or the `CODEX_API_KEY` copied once at B2, as selected by
+`codexAuth` in the run config.
 
 ### A8. The harness plugin — optional, and not a clone
 
@@ -195,11 +197,13 @@ echo 'CLAUDE_CODE_OAUTH_TOKEN=<token from A7>' > .env.pipeline
 Git-ignored, and must stay that way. Passed to containers by name at launch, never baked into
 an image.
 
-The same file holds `CODEX_API_KEY=<key>` on its own line if you intend to run anything with
-`"provider": "codex"`. A run loads only the selected provider's credential and there is no
-fallback between them, so a Codex run with no key is refused before it locks the target,
-takes a worktree or starts a container — and a host holding both keys still hands a task
-exactly one.
+For Codex implementation workers, set `codexAuth` explicitly to `chatgpt` or `api-key` in
+the run config. `chatgpt` requires a valid `codex login` session with a refresh token; the
+runner seeds a private durable cache once and serializes the complete task and refresh
+write-back interval. One saved login therefore provides one active worker lane, regardless
+of `concurrency`; parallel subscription workers require independently authenticated caches.
+`api-key` reads `CODEX_API_KEY=<key>` from this file, never falls back to the Claude token,
+and remains the behavior when the field is absent for legacy configs.
 
 ### B3. Install the git hooks
 
@@ -428,5 +432,3 @@ in your way, that is a conversation, not a workaround:
   results after. Never route around one.
 
 `CLAUDE.md` states these as hard rules with full reasoning; `DESIGN.md` is the authority.
-
-Managed Codex ChatGPT authentication uses one saved login as one serialized active worker lane; use independently authenticated caches for parallel subscription workers. API-key mode remains explicit.
