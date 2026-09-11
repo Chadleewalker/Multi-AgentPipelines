@@ -71,8 +71,8 @@ Run `claude` in any folder and sign in with the A1 account.
 Claude is the default provider and the only one this setup needs. A run or planning stage
 that selects `"provider": "codex"` also needs the Codex CLI on the host — install it the
 same way (`npm install -g @openai/codex`, matching the pin in `docker/base/Dockerfile`) and
-either run `codex login` to reuse a saved ChatGPT session or supply `CODEX_API_KEY` at B2.
-Task containers never reuse a saved session; that is what the key is for.
+either run `codex login` for managed subscription authentication or supply `CODEX_API_KEY`
+at B2 for explicit API-key authentication.
 
 ### A4. Let Claude Code install the rest
 
@@ -144,8 +144,9 @@ claude setup-token
 
 A long-lived token, separate from the A3 sign-in. Keep it to copy once at B2. Do not paste it
 into a session. One subscription per person: at your limit a run parks itself, waits for the
-window to reopen, and carries on. A Codex run parks the same way; its credential is the
-`CODEX_API_KEY` from A3, also copied once at B2.
+window to reopen, and carries on. A Codex run parks the same way. In `chatgpt` mode it uses
+the saved session from `codex login`; in `api-key` mode its credential is the
+`CODEX_API_KEY` copied once at B2.
 
 ### A8. The harness plugin — optional, and not a clone
 
@@ -196,11 +197,12 @@ echo 'CLAUDE_CODE_OAUTH_TOKEN=<token from A7>' > .env.pipeline
 Git-ignored, and must stay that way. Passed to containers by name at launch, never baked into
 an image.
 
-The same file holds `CODEX_API_KEY=<key>` on its own line if you intend to run anything with
-`"provider": "codex"`. A run loads only the selected provider's credential and there is no
-fallback between them, so a Codex run with no key is refused before it locks the target,
-takes a worktree or starts a container — and a host holding both keys still hands a task
-exactly one.
+The same file holds `CODEX_API_KEY=<key>` on its own line only when a Codex run selects
+`"codexAuth": "api-key"`. For `"codexAuth": "chatgpt"`, run `codex login` instead; preflight
+accepts only a managed ChatGPT session with a refresh token and seeds a private durable
+cache from it once. It never replaces that durable cache with the original login after
+Codex has refreshed it. A missing `codexAuth` retains legacy `api-key` behavior, and there
+is no fallback between modes or providers.
 
 ### B3. Install the git hooks
 
@@ -286,14 +288,14 @@ bash scripts/test-changelog.sh      # seconds, no Docker
 bash scripts/test-sanitize.sh
 bash scripts/test-lock.sh
 
-bash scripts/test-all.sh --skip e2e --timeout 300     # the full sweep
+# setup pass without the fixture-backed e2e suite
+bash scripts/test-all.sh --skip e2e --timeout 300
 ```
 
 A healthy sweep is green in roughly eight to twelve minutes and writes per-suite logs under
-`runs/sweeps/<timestamp>/`. There are 43 suites (`ls scripts/test-*.sh | wc -l` — the sweep
-finds them by glob, so the number grows on its own). A sweep taking an hour is suites
-*hanging* and being killed, not doing more work; `--timeout 300` caps that loss and
-`--skip e2e` drops the one suite needing a fixture repo.
+`runs/sweeps/<timestamp>/`. The sweep discovers its suite plan dynamically. A sweep taking
+an hour is suites *hanging* and being killed, not doing more work; `--timeout 300` caps that
+loss and `--skip e2e` drops the one suite needing a fixture repo.
 
 - **Never run the sweep while a real run is in flight.** It cleans up after each suite, and a
   live run's container looks exactly like something to clean up.
@@ -309,7 +311,10 @@ finds them by glob, so the number grows on its own). A sweep taking an hour is s
 `bash scripts/e2e.sh` drives three full scenarios through real containers with scripted
 stand-ins instead of a model. It needs a disposable private fixture repo
 (`bash scripts/test-fixture.sh` says whether yours qualifies). Skip it unless you are going to
-change the pipeline itself.
+change the pipeline itself. Once that fixture is configured, the routine complete host pass is
+`node scripts/fast-full-sweep.js --repo .`; it runs the mandatory profile once, then delegates
+only the remaining Docker/live suites to the canonical sweep. Use `bash scripts/test-all.sh`
+directly when you need its per-suite diagnostic logs and timings.
 
 ---
 
@@ -327,8 +332,13 @@ change the pipeline itself.
    Three fields worth knowing: **`proxyPort` is not tunable** (the gatekeeper hard-codes 3128
    and nothing validates your file against it — changing it kills preflight with no hint);
    `feedIdleGraceMinutes: 0` means the live queue feed is off; `concurrency` has no ceiling,
-   so start at 1. A fourth if you ever hit it: `allowHalfProven: false` is the default and
-   means the runner refuses a suite the freeze gate found red with no probe supplied — set it
+   so start at 1. For Codex, choose `codexAuth: "chatgpt"` to use the saved login or
+   `codexAuth: "api-key"` to use `.env.pipeline`; the example declares dormant ChatGPT
+   auth while retaining the canonical Claude/opus defaults. One saved login is one exclusive
+   worker lane regardless of `concurrency`; parallel subscription workers require separate,
+   independently authenticated lane caches. A fifth if you ever hit it:
+   `allowHalfProven: false` is the default and means the runner refuses a suite the freeze
+   gate found red with no probe supplied — set it
    to `true` only if you accept dispatching suites whose green side has never been seen
    (§4.12's third admission rule).
 3. **`cp .sanitize-denylist.example .sanitize-denylist`** if you touch private work, then list

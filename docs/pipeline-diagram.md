@@ -273,9 +273,13 @@ exactly as drawn. With a supervisor live and no authority, the run is refused by
 supervisor's name having acquired nothing. With valid authority it proceeds under its parent's
 lease and takes no lock of its own, so neither its exit handler nor its teardown boundary
 releases a lease it never took. `scripts/prepare-batch.js` asks the identical question for the
-`preparation` scope in the identical position. The full order is therefore: write-protection
-admission, child admission, the project lock, repository identity, host shell, Docker, image,
-network, egress, stale-issue recovery.
+`preparation` scope before its own gates. Preparation then checks, in bounded fail-fast
+order, Docker daemon reachability, configured image presence, configured host shell and
+author/probe-provider authentication; only then does it reach write-protection admission and
+the project lock or delegated supervisor ownership. A refusal writes no batch or attempt state.
+The implementation runner's full order remains: write-protection admission, child admission,
+the project lock, repository identity, host shell, Docker, image, network, egress,
+stale-issue recovery.
 
 Before the shell/Docker/network gates, preflight also proves the local checkout's fetch
 remote and `targetRepoRemote` reduce to the same repository identity. This binds the task
@@ -432,6 +436,14 @@ side by side, and neither one's `up` or `down` touches the other's plumbing (cha
 row `repo-jur`). The proxy *image* is shared within a provider profile — `docker/proxy` for
 Claude, `docker/proxy-codex` for Codex, each carrying only its own vendor's endpoints; only
 the running container and the network are per project.
+
+Codex authentication is a separate serialization boundary. API-key mode passes only the
+named key, while ChatGPT mode holds one saved login as one exclusive lane across task-cache
+staging, Codex execution and atomic refresh write-back. A task sees only its private writable
+handoff; the entrypoint stages it into `/root/.codex`, runs Codex as `node`, and runs the
+repository verifier as `nobody` with every Codex credential variable unset. Consequently,
+raising the worker-pool concurrency does not make one subscription login concurrent;
+parallel ChatGPT workers require independently authenticated lane caches.
 
 The shell node is a Windows host-identity gate, not merely a check that some executable
 named `bash` exists (change-log row `verified-host-shell`). The runner proves the shell is

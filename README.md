@@ -48,15 +48,21 @@ Requires Docker Desktop running, Git Bash (not WSL), Node, and `gh` authenticate
 Setting up a machine that has never seen this before — tool by tool, with the checks that
 prove each step worked — is [`SETUP.md`](SETUP.md).
 
+Launch-capable `prepare-batch` commands check the Docker daemon, configured image, host
+shell, and author/probe provider authentication before creating batch state or consuming an
+attempt. If one is unavailable, follow the named remedy and retry the same batch; `status`
+and `acknowledge-interrupted` remain available while prerequisites are down.
+
 ```bash
 # 1. put your model credential where the runner can find it
 #    (git-ignored; get a Claude one with `claude setup-token`)
 echo 'CLAUDE_CODE_OAUTH_TOKEN=...' > .env.pipeline
-#    a run whose config selects "provider": "codex" reads CODEX_API_KEY from the same
-#    file instead — one credential per run, never both in a container
+#    for Codex, set "codexAuth" to "chatgpt" to reuse `codex login`, or to
+#    "api-key" to read CODEX_API_KEY from this file. Missing codexAuth keeps the
+#    legacy api-key behavior; the checked-in example selects dormant ChatGPT auth.
 
-# 2. prove the whole thing works, using scripted stubs — no model calls
-bash scripts/e2e.sh
+# 2. run the routine complete host pass — no model calls
+node scripts/fast-full-sweep.js --repo .
 
 # 3. point a config at a project of your own, then run its queue
 #    (run.config.*.json is git-ignored — it names a local path and your remote;
@@ -66,8 +72,9 @@ bash scripts/e2e.sh
 #     anything starts, and a lock left by a killed run is taken over. Within one
 #     project the runner works one task at a time; set `concurrency` (any whole
 #     number) to put that many containers in flight at once for a daytime batch —
-#     every container shares your one subscription window, so more is faster only
-#     while the batch fits in it. A usage
+#     API-key containers may use those slots concurrently. One saved ChatGPT login is
+#     one exclusive credential lane, so subscription tasks wait and run serially unless
+#     you provide independently authenticated lane caches. A usage
 #     limit parks the whole run, not each task: one shared wait, and no new task
 #     launches while the window is closed.)
 cp run.config.example.json run.config.myproject.json

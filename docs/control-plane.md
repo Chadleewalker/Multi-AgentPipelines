@@ -98,35 +98,52 @@ container exists.
 
 `provider` selects only the vendor. The `model`, `testAuthorModel` and `testProbeModel`
 fields still name the model, and a Codex run needs a model id that provider understands —
-the example config's Claude aliases are not one.
+the example config's Claude aliases are not one. `codexAuth` explicitly selects `chatgpt`
+or `api-key` for Codex implementation workers. The checked-in template declares dormant
+`chatgpt` while keeping the canonical Claude/opus defaults; an older config with no field
+retains its API-key behavior.
 
 Selecting a provider selects three things together, and they are not independently
 configurable:
 
-- **The credential.** `CLAUDE_CODE_OAUTH_TOKEN` or `CODEX_API_KEY`, read from the
-  git-ignored `.env.pipeline` or the ambient environment, with no cross-provider fallback.
-  Containers receive it by environment-variable name only, and every other provider's
-  credential is removed from the docker client's environment first. On the host, Codex may
-  instead reuse a saved ChatGPT CLI session (`codex login`); inside a container it cannot,
-  and no `auth.json` is ever mounted.
+- **The credential.** Claude uses `CLAUDE_CODE_OAUTH_TOKEN`. Codex `api-key` mode uses
+  `CODEX_API_KEY`; both are read from the git-ignored `.env.pipeline` or ambient environment,
+  passed by environment-variable name only, and have no cross-provider fallback. Codex
+  `chatgpt` mode accepts only the managed `auth_mode: "chatgpt"` session created by
+  `codex login` with a nonempty refresh token. Preflight seeds a private durable cache only
+  when it is absent, then Codex refreshes that cache across tasks; the original host login
+  never overwrites refreshed state.
 - **The container command.** The runner passes `PIPELINE_PROVIDER`, and
   `pipeline/entrypoint.sh` selects that provider's noninteractive invocation.
-- **The egress profile.** `docker/proxy` carries the Anthropic endpoints, `docker/proxy-codex`
-  the OpenAI ones, and `PIPELINE_PROXY_PROFILE` picks which sidecar `scripts/pipeline-net.sh`
+- **The egress profile.** `docker/proxy` carries the Anthropic endpoints;
+  `docker/proxy-codex` allows exactly `api.openai.com`, `chatgpt.com`, and
+  `ab.chatgpt.com`. `PIPELINE_PROXY_PROFILE` picks which sidecar `scripts/pipeline-net.sh`
   builds and which endpoint `scripts/egress-check.sh` proves reachable. One profile per
   provider: widening either to carry the other's endpoints is refused by design, not by a
   check.
 
 A missing executable, credential, model, image capability or route fails before any
-mutation and names its remedy. For a non-default provider, preflight additionally proves
+mutation and names its remedy. ChatGPT preflight also distinguishes an invalid or missing
+login from a busy credential lane before target mutation. For a non-default provider,
+preflight additionally proves
 the *task image* can run that provider's CLI with every required capability — presence in
 `docker image inspect` is not that proof — so rebuild the pinned base image during planning
 if it predates the Codex pin. The one live model call in the Codex surface is opt-in and
 documentary:
 
 ```bash
-CODEX_LIVE_SMOKE=1 node scripts/codex-live-smoke.js   # read-only; reports the model that answered
+CODEX_LIVE_SMOKE=1 node scripts/codex-live-smoke.js --image <rebuilt-pinned-task-image>
 ```
+
+One saved ChatGPT session is one exclusive credential lane. The lane is held from task-cache
+staging through every Codex invocation and atomic refresh write-back, so a second worker waits
+and never receives a concurrent copy of the refresh token. Parallel subscription workers need
+independently authenticated lane caches. Each task gets only a unique writable handoff mounted
+at `/run/pipeline-auth-host/cache`; the root entrypoint copies it into an internal
+`CODEX_HOME=/root/.codex`, then runs Codex as the image's `node` user. Repository
+verification runs as `nobody` with `CODEX_API_KEY`, `OPENAI_API_KEY`, and `CODEX_HOME`
+unset. Successful cleanup removes only the task copy; failed refresh persistence keeps the
+prior durable cache and recoverable task copy.
 
 ## Supervised operation
 
@@ -162,6 +179,14 @@ dead one is reclaimed only when a person asks explicitly, without deleting an un
 preparation marker and without declaring its child complete. There is no supervisor CLI:
 `runner/supervisor.js` is a host-side library, and a supervising process takes the lease and
 issues grants through it.
+
+Launch-capable `prepare-batch` modes check the Docker daemon, configured image, configured
+host shell, and authentication for the author/probe providers before write-protection admission,
+locking, manifests, Beads, worktrees, attempts or workers. Each probe is bounded and the first
+failure names its remedy; because refusal writes no preparation history, the same batch name can
+be started or retried immediately after repair. Codex planning stages accept a provider-specific
+key or a healthy saved ChatGPT login reported by `codex login status`. `status` and
+`acknowledge-interrupted` stay available when those prerequisites are down.
 
 ## Write protection
 
@@ -229,6 +254,14 @@ IDs; a repository-wide `task/*` glob is never proof of ownership. Before reading
 authority or resetting/pushing anything, it proves the host commands exist, configuration
 fields and fixture roster are valid, the Docker daemon is reachable, and both required
 images exist. A missing prerequisite is a pre-mutation refusal, not a partially failed run.
+
+For the routine complete host pass, use `node scripts/fast-full-sweep.js --repo .`. It runs
+the authoritative mandatory profile once, proves the commit and tracked tree did not move,
+then asks both canonical scripts for their current plans and delegates only the remaining
+Docker/live suites to `test-all.sh`; e2e's invocation of `test-isolation.sh` supplies that
+leaf's single coverage. The summary separates aggregate mandatory, direct extra and nested
+coverage. For suite-by-suite diagnosis, use the canonical `bash scripts/test-all.sh`
+fallback; it remains the default full sweep and retains every per-suite log and timing.
 
 ## Agent path
 

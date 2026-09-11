@@ -1319,9 +1319,15 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     valid authority, the run proceeds under its parent's lease and takes no lock of its own,
     which is why `lockOwned` is false for it and why neither its exit handler nor its teardown
     boundary releases a lease it never took. `scripts/prepare-batch.js` asks the identical
-    question for the `preparation` scope in the identical position. The gate order is
-    therefore: write-protection admission, child admission, the project lock, repository
-    identity, host shell, Docker, image, network, egress, stale-issue recovery.
+    question for the `preparation` scope before any prerequisite or mutation. Its launch-capable
+    modes then check Docker daemon reachability, configured image presence, configured host
+    shell, and authentication for every provider selected by the author and probe stages. A
+    refusal names the remedy and allocates no manifest, attempt, uncertainty marker, worktree or
+    suite classification; `status` and `acknowledge-interrupted` are deliberately ungated.
+    The runner's order remains write-protection admission, child admission, project lock,
+    repository identity, host shell, Docker, image, network, egress, stale-issue recovery;
+    preparation's order is child admission, prerequisites, write-protection admission, then its
+    target lock or delegated supervisor ownership.
 
     **The Beads checkout and publication remote are one project, proven before either is
     touched.** `targetRepoPath` is the database side of the runner while
@@ -1455,6 +1461,17 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     every assertion failed are different facts. None of this touches a verdict — the
     RESULT column and the exit code still come from the suite's exit code and the `FAIL`
     grep, which already saw both vocabularies (change-log row `repo-0ay`).
+
+    **A routine full pass may aggregate coverage, but it may not remember coverage.**
+    `scripts/fast-full-sweep.js` runs the mandatory publication profile once and obtains
+    both rosters only from the canonical scripts' `--list` output. Before any Docker/live
+    extra it proves the original HEAD still names the checkout and the tracked tree is
+    still clean, proves the mandatory plan is contained in the full plan, and verifies the
+    executable e2e-to-isolation nesting. It then delegates to `test-all.sh --fail-fast`
+    with the exact already-covered leaves skipped. Unknown future leaves therefore flow
+    into the extra phase automatically; plan uncertainty, a moved tree, mandatory failure,
+    or a missing nesting witness fails closed. `test-all.sh` remains the diagnostic path
+    whose per-leaf cleanup, assertion counts, logs and timings are authoritative.
 
     **The host shell is an identity, not a PATH spelling.** On Windows, the first `bash`
     found by the operating system may be the WSL launcher, even though the runner's host
@@ -1811,7 +1828,14 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     (change-log row `batch-test-preparation`). `scripts/prepare-batch.js` names an immutable
     issue roster and records each issue's Beads dependencies, criteria fingerprint, integration
     HEAD, redacted configuration and exact full-id worktree before it launches anything. Beads
-    access and worktree allocation remain serialized in the parent; a default and hard maximum
+    access is preceded by a deterministic host-prerequisite gate (change-log row `repo-hw6`):
+    Docker daemon, configured image, configured host shell, and authentication for both selected
+    planning-stage providers, in that fail-fast order. Each external probe has a short
+    implementation-owned ceiling which configuration may only lower. Codex accepts either its
+    provider-specific key or a successful bounded `codex login status` for the host's saved
+    ChatGPT session; Claude retains its own token check, with no cross-provider fallback. Failure
+    writes no preparation state, so repairing the named prerequisite is the entire retry
+    procedure. Worktree allocation remains serialized in the parent; a default and hard maximum
     of ten child processes receive complete snapshots on stdin and call only the structured author/proof
     cores. The coordinator and the standalone commands share the runner's target-global lock,
     so no preparation worker can overlap a pipeline run or be rediscovered through an ambiguous
@@ -2337,11 +2361,12 @@ exist. Thread: `docs/threads/merge-order.md`.
 - **Docker runs from Git Bash on the reference host**, not WSL (known issue: that machine's
   WSL distro has no Docker Desktop integration). The runner must not assume WSL either way.
 - **Auth:** the SELECTED provider's credential — `CLAUDE_CODE_OAUTH_TOKEN` or
-  `CODEX_API_KEY`, never both — is passed to containers by environment-variable NAME at
-  `docker run` and never baked into an image layer (6.5). Headless `claude -p` honors its
-  token; interactive `claude` does not (known issue) — the pipeline is headless-only anyway.
-  Host Codex may instead reuse a saved ChatGPT CLI session (`codex login`); a container
-  cannot, and no `auth.json` is ever mounted into one.
+  explicit Codex `CODEX_API_KEY`, never both — is passed to containers by
+  environment-variable NAME at `docker run` and never baked into an image layer (6.5).
+  Headless `claude -p` honors its token; interactive `claude` does not (known issue) — the
+  pipeline is headless-only anyway. Codex may instead use a managed ChatGPT session from
+  `codex login`; only a task-private handoff reaches the trusted container, never the full
+  operator Codex home.
 - **Runner implementation: Node.js.** Decision, for cross-platform reasons: `node` is
   the same command on Windows and Linux (no `python` vs `python3` split), handles JSON
   natively for Beads/Claude output, and can enforce wall-clock timeouts with an independent
@@ -2749,6 +2774,9 @@ name before a worktree, a Beads read, a network or a container exists. Resolutio
 the defaults spread rather than added to `contracts/control-plane.json`'s `configDefaults`: a
 stage field's default is *the run-wide value*, not a fixed one. **With every field absent the
 resolution is Claude at every stage and the launches are byte-for-byte what they were.**
+For Codex implementation workers, `codexAuth` is independently closed to
+`chatgpt | api-key`. The checked-in template declares dormant `chatgpt` without changing
+its canonical Claude/opus launch defaults; absence retains the legacy API-key contract.
 
 **One adapter constructs every host launch.** `runner/agent-provider.js` owns the provider
 vocabulary, the credential names, the required `codex exec` capability roster and the launch
@@ -2762,23 +2790,39 @@ therefore a *proven* capability rather than an assumption: `missingCodexCapabili
 the task image itself with `docker run --network none --entrypoint codex … exec --help`. An
 `image inspect` proves an image is present, not that it can run this run's agent.
 
-**One credential per container, and never the other one.** `loadProviderCredential` selects
-exactly one of `CLAUDE_CODE_OAUTH_TOKEN` / `CODEX_API_KEY` from `.env.pipeline` or the ambient
-environment, with **no cross-provider fallback** — a Codex run with no `CODEX_API_KEY` is
-refused before anything mutates rather than started with a token that will fail at the model
-endpoint once a container, a network and a Beads claim exist. `runner/container.js` passes it
-to `docker run` by NAME only and deletes every *other* provider credential from the docker
-client's own environment first, so a host holding both cannot leak the unselected one into a
-task through `-e NAME` inheritance. Inside the container the key belongs to the CLI process
-alone: Codex's `shell_environment_policy` keeps its own default secret names excluded and adds
-this key explicitly, so nothing the *model* spawns inherits it, and the entrypoint runs the
-authoritative verifier — which executes the target repository's own code — under
-`env -u CODEX_API_KEY`. Host Codex may instead reuse a saved ChatGPT CLI session
-(`codex login`); a container never can, and no `auth.json` is ever mounted or baked in.
+**One credential mode per container, and never the other one.** API-key mode keeps the
+original contract: `loadProviderCredential` selects exactly one of
+`CLAUDE_CODE_OAUTH_TOKEN` / `CODEX_API_KEY` from `.env.pipeline` or the ambient environment,
+with **no cross-provider fallback**. `runner/container.js` passes the selected key to
+`docker run` by NAME only and deletes every other provider credential from the docker
+client's environment. Codex's `shell_environment_policy` excludes the key from model-spawned
+processes, and repository verification runs with `CODEX_API_KEY`, `OPENAI_API_KEY`, and
+`CODEX_HOME` unset.
+
+ChatGPT mode accepts only managed `auth_mode: "chatgpt"` state containing a nonempty refresh
+token. Before the target lock or any mutable gate, preflight takes the credential lane and
+atomically seeds its private durable cache from `codex login` only if no durable `auth.json`
+exists; thereafter the durable copy is authoritative and the original host seed never
+overwrites refreshed state. Missing or malformed login state and a busy lane have distinct,
+bounded refusals. A dead owner can be recovered, but age alone never steals a live owner's
+lock and nonce ownership prevents an old owner from deleting its successor.
+
+**One saved ChatGPT session is one exclusive lane.** The owner holds it continuously from
+task-cache staging through every implementation and docs Codex invocation through atomic
+refresh write-back. A second worker waits instead of receiving a concurrent copy of the same
+refresh token, so configured task concurrency does not create parallel use of one login;
+that requires independently authenticated lane caches. Each task receives only a unique,
+writable, host-private handoff at `/run/pipeline-auth-host/cache`. The entrypoint starts as
+root solely to fail closed while copying and protecting an internal `/root/.codex`, then runs
+Codex as the retained image `node` user with `CODEX_HOME=/root/.codex`; only traversal is
+granted on `/root`. The repository-controlled verifier runs as `nobody` with a writable
+workspace and all Codex credential variables unset. Refresh persistence replaces the durable
+file atomically with mode `0600`; on failure the prior durable file and recoverable task copy
+remain, while successful cleanup removes only that task copy.
 
 **One egress profile per provider, never one widened to both.** `docker/proxy-codex/`
-is a separate deny-by-default sidecar image whose allowlist carries only the concrete OpenAI
-endpoint Codex requires; `docker/proxy/`'s Anthropic-only roster is untouched. Adding the
+is a separate deny-by-default sidecar image whose allowlist is exactly `api.openai.com`,
+`chatgpt.com`, and `ab.chatgpt.com`; `docker/proxy/`'s Anthropic-only roster is untouched. Adding the
 OpenAI endpoints to that file would have been one line and would have given every Claude task
 reach it does not need, in both directions — the posture only means something while each
 profile carries exactly its own provider's roster. `scripts/pipeline-net.sh` builds from the
@@ -2793,8 +2837,9 @@ result nor a limit record is present, so a model that writes "rate limit lifted;
 success" selects nothing — the `repo-52m` rule applied to a stream rather than one envelope.
 
 The single live call anywhere in the Codex surface is `scripts/codex-live-smoke.js`, which is
-opt-in behind `CODEX_LIVE_SMOKE=1`, runs `--sandbox read-only`, and exists to *document* which
-GPT model actually answered. It gates nothing.
+opt-in behind `CODEX_LIVE_SMOKE=1`, requires the rebuilt pinned task image, stages the same
+managed ChatGPT lane, runs `--sandbox read-only`, awaits atomic refresh persistence and cleanup,
+and exists to *document* which GPT model actually answered. It gates nothing.
 
 ## 7. Phasing
 

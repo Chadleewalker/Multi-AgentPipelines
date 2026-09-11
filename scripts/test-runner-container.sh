@@ -74,11 +74,11 @@ mkcfg() { # mkcfg <file> <agentCommand-json-string> [wallClockMinutes]
 CFG_OK="$TMP/ok.json";    mkcfg "$CFG_OK"   '"sh -c \"cat >/dev/null; echo done > out.txt\""'
 CFG_FAIL="$TMP/fail.json"; mkcfg "$CFG_FAIL" '"sh -c \"cat >/dev/null; echo nope >> notes.txt\""'
 CFG_HANG="$TMP/hang.json"; mkcfg "$CFG_HANG" '"sh -c \"cat >/dev/null; sleep 600\""' 0.15
+FIXTURE_TOKEN="runner-container-fixture-token-never-used"
 
-# tee to stderr so the run streams to the terminal live while stdout is still captured
-# for the assertions ($( ) takes stdout only). Without it these suites look hung for
-# minutes. pipefail keeps the runner's exit code from being masked by tee's.
-run() { ( set -o pipefail; RUN_ID="$1" node runner/run.js --config "$2" 2>&1 | tee /dev/stderr ); }
+# Capture the runner directly so its exit code remains authoritative on Git Bash hosts
+# where /dev/stderr is not a usable tee target.
+run() { CLAUDE_CODE_OAUTH_TOKEN="$FIXTURE_TOKEN" RUN_ID="$1" node runner/run.js --config "$2" 2>&1; }
 
 # 1. Real container, real entrypoint, verified success.
 bdq update "$BAIL_ID" --status blocked >/dev/null   # isolate the success task

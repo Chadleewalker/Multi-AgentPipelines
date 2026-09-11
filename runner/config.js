@@ -30,6 +30,7 @@ const PROVIDER_FIELDS = ['provider', 'testAuthorProvider', 'testProbeProvider'];
 const REASONING_EFFORT_FIELDS = [
   'reasoningEffort', 'testAuthorReasoningEffort', 'testProbeReasoningEffort',
 ];
+const CODEX_AUTH_MODES = ['chatgpt', 'api-key'];
 
 // ---- per-project network + proxy names (§4.8, §4.12) -------------------------------
 // The task network and the proxy sidecar are per project, not per pipeline: two runner
@@ -92,6 +93,9 @@ function loadConfig(file) {
   }
   for (const k of REQUIRED) {
     if (!raw[k] || typeof raw[k] !== 'string') throw new Error(`run.config.json: missing required field '${k}'`);
+  }
+  if (raw.codexAuth !== undefined && !CODEX_AUTH_MODES.includes(raw.codexAuth)) {
+    throw new Error("run.config.json: 'codexAuth' must be 'chatgpt' or 'api-key'");
   }
   for (const k of ['wallClockMinutes', 'probeIntervalMinutes', 'proxyPort']) {
     if (raw[k] !== undefined && (typeof raw[k] !== 'number' || raw[k] <= 0)) {
@@ -216,6 +220,7 @@ function loadConfig(file) {
     }
   }
   const cfg = { ...DEFAULTS, ...raw, configPath: p };
+  cfg.codexAuth = raw.codexAuth === undefined ? 'api-key' : raw.codexAuth;
   // Resolved AFTER the spread and deliberately NOT in contracts/control-plane.json's
   // configDefaults: a stage field's default is the run-wide value, and the run-wide value's
   // default is the constant — a chain, not a single value a defaults table could carry.

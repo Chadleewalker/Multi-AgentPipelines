@@ -55,6 +55,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const workspace = require(path.resolve(__dirname, '..', '..', 'runner', 'workspace.js'));
 
 const ROOT = path.resolve(__dirname, '..', '..');
 let failed = 0;
@@ -935,6 +936,36 @@ async function completionFailureFixture(kind) {
         runmod.logAttempts(l2, l2.trace('a-9'), 'a-9', null, null);
         return events(l2.dir).length === 0;
       })());
+  }
+  {
+    // This is the real file boundary that the earlier direct-object fixture skipped. A
+    // successful final attempt normally has no feedback of its own, so its named checks
+    // must come from a valid verify.json collected out of the workspace.
+    const root = fs.mkdtempSync(path.join(TMP, 'repo-9a8-valid-verifier-'));
+    const work = path.join(root, 'workspace');
+    const task = path.join(root, 'task');
+    fs.mkdirSync(path.join(work, '.run'), { recursive: true });
+    fs.mkdirSync(task, { recursive: true });
+    const verifierFile = path.join(work, '.run', 'verify.json');
+    fs.writeFileSync(verifierFile, JSON.stringify({
+      issueId: 'repo-9a8',
+      timestamp: '2026-09-11T00:00:00.000Z',
+      acceptance: 'pass',
+      regressions: 'pass',
+      acceptanceOutput: 'ok - preceding check\nFAIL - repo-9a8 named failing check\n',
+    }));
+    const parsedVerifier = JSON.parse(fs.readFileSync(verifierFile, 'utf8'));
+    const contracts = workspace.collectArtifacts(work, task, 'repo-9a8');
+    const log = logmod.startRun(path.join(root, 'ledger'), 'unit-events-repo-9a8');
+    runmod.logAttempts(log, log.trace('repo-9a8'), 'repo-9a8', {
+      attempts: [{ number: 1, verifierResult: 'pass' }],
+    }, contracts.verify);
+    const at = events(log.dir).filter((e) => e.event === 'attempt.finished');
+    check('A repo-9a8 a valid collected verifier names its failing check for a successful final attempt',
+      parsedVerifier.acceptanceOutput === contracts.verify.acceptanceOutput
+      && at.length === 1
+      && JSON.stringify(at[0].data.failingChecks)
+        === JSON.stringify(['repo-9a8 named failing check']), JSON.stringify(at[0] && at[0].data));
   }
 
   // ---- C: the spec-concern channel (§3.7) ----------------------------------------------
