@@ -78,12 +78,17 @@ the example config's Claude aliases are not one.
 Selecting a provider selects three things together, and they are not independently
 configurable:
 
-- **The credential.** `CLAUDE_CODE_OAUTH_TOKEN` or `CODEX_API_KEY`, read from the
-  git-ignored `.env.pipeline` or the ambient environment, with no cross-provider fallback.
-  Containers receive it by environment-variable name only, and every other provider's
-  credential is removed from the docker client's environment first. On the host, Codex may
-  instead reuse a saved ChatGPT CLI session (`codex login`); inside a container it cannot,
-  and no `auth.json` is ever mounted. A run config may instead set `codexAuth: "chatgpt"`: the host seeds a private durable managed cache once, each trusted task receives only a private writable copy at `CODEX_HOME=/root/.codex`, and the refreshed cache is persisted before release. One saved login is one safe active Codex lane; parallel subscription workers require independently authenticated lane caches.
+- **The credential.** Claude uses `CLAUDE_CODE_OAUTH_TOKEN`; Codex explicitly selects
+  `codexAuth: "api-key"` or `codexAuth: "chatgpt"` (a missing legacy field means API-key
+  mode). API-key mode reads `CODEX_API_KEY` from git-ignored `.env.pipeline` or the ambient
+  environment, with no cross-provider fallback. Containers receive an API key by
+  environment-variable name only, and every other provider credential is removed from the
+  docker client's environment first. ChatGPT mode accepts only a managed saved login with a
+  refresh token, seeds a host-private durable cache only once, and gives each trusted task only
+  a unique writable cache at `CODEX_HOME=/root/.codex`; the refreshed cache is atomically
+  persisted before release. It never mounts the full operator Codex home, exposes credentials
+  to the verifier, or passes an API key. One saved login is one safe active Codex lane; parallel
+  subscription workers require independently authenticated lane caches.
 - **The container command.** The runner passes `PIPELINE_PROVIDER`, and
   `pipeline/entrypoint.sh` selects that provider's noninteractive invocation.
 - **The egress profile.** `docker/proxy` carries the Anthropic endpoints, `docker/proxy-codex`
