@@ -20,6 +20,7 @@ const {
   normalizeProvider, providerFor, missingCodexCapabilities,
 } = require('./agent-provider');
 const codexAuth = require('./codex-auth');
+const { sandboxSecurityArgs } = require('./container');
 
 // The historical shared pair, which is what a config with no project segment gets.
 // Asked for by name rather than spelled out again, so the two files cannot drift.
@@ -55,6 +56,21 @@ function imageSupportsProvider(cfg, provider, execute = sh) {
   const probe = execute(cfg, 'docker',
     ['run', '--rm', '--network', 'none', '--entrypoint', 'claude', image, '--version'],
     { label: 'Claude CLI capability probe' });
+  return !!probe && probe.status === 0;
+}
+
+// `codex exec --help` proves the CLI contract, but not that the host kernel and Docker policy
+// let the pinned CLI create the workspace-write sandbox it will use for model commands. This
+// credential-free command probe uses a stricter outer boundary than a task: read-only root, no
+// capabilities, no-new-privileges, non-root uid, no network, and bounded resources.
+function codexSandboxAvailable(cfg, execute = sh) {
+  const probe = execute(cfg, 'docker', [
+    'run', '--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL',
+    '--security-opt', 'no-new-privileges', ...sandboxSecurityArgs('codex'),
+    '--pids-limit', '64', '--memory', '256m', '--memory-swap', '256m', '--cpus', '1',
+    '--tmpfs', '/tmp:rw,nosuid,nodev,size=32m', '-e', 'HOME=/tmp/home',
+    '--user', 'node', '--entrypoint', 'codex', cfg.image, 'sandbox', '--', 'true',
+  ], { label: 'Codex workspace sandbox capability probe' });
   return !!probe && probe.status === 0;
 }
 
@@ -335,6 +351,21 @@ function startupGates(cfg, repoRoot, log, deps, t, owned) {
         };
       }
       log.info(t, `image ${cfg.image} runs the selected ${provider} CLI`);
+      // Existing deterministic fixtures replace imageSupportsProvider as the complete provider
+      // seam. Production, and a fixture explicitly supplying the new seam, additionally proves
+      // the real sandbox command before network startup or any Beads mutation.
+      if ((!deps.imageSupportsProvider || deps.codexSandboxAvailable)
+          && !(deps.codexSandboxAvailable || codexSandboxAvailable)(cfg)) {
+        return {
+          ok: false,
+          reason: `image '${cfg.image}' cannot start the Codex workspace sandbox as its non-root`
+            + ' task user — the Docker runtime must permit the provider-specific unprivileged'
+            + ' namespace policy; no task was started',
+        };
+      }
+      if (!deps.imageSupportsProvider || deps.codexSandboxAvailable) {
+        log.info(t, `image ${cfg.image} starts the Codex workspace sandbox as node`);
+      }
     }
 
     // Set before invoking `up`: the script can create the network and then fail. Any
@@ -395,5 +426,5 @@ function preflight(cfg, repoRoot, log, deps = {}) {
 
 module.exports = {
   preflight, networkUp, networkDown, egressCheck, imageExists, imageSupportsProvider,
-  dockerAvailable, recoverStaleIssues, metadataOf, ownedBy, verifyRepoIdentity,
+  codexSandboxAvailable, dockerAvailable, recoverStaleIssues, metadataOf, ownedBy, verifyRepoIdentity,
 };
