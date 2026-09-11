@@ -22,6 +22,7 @@ function secretSafe(value, secret) { const rendered = JSON.stringify(value); ret
 function textBelow(root) { const out = []; const walk = p => { for (const e of fs.readdirSync(p, { withFileTypes:true })) { const q=path.join(p,e.name); e.isDirectory() ? walk(q) : out.push(fs.readFileSync(q, 'utf8')); } }; walk(root); return out.join('\n'); }
 function auth() { return AUTH && ['validateConfig','preflight','stageTaskCache','releaseTaskCache','withCacheLock'].every(k => typeof AUTH[k] === 'function') ? AUTH : null; }
 const secret = `chatgpt-refresh-${crypto.randomBytes(18).toString('hex')}`;
+async function main() {
 const roots = [];
 try {
   const a = auth();
@@ -48,28 +49,34 @@ try {
   check('C5 the task image grants traversal but not directory listing on /root before retaining the non-root node user', traversal >= 0 && nonroot > traversal && !dockerfile.slice(nonroot).includes('USER root'));
 
   const root = tmp('preflight'); roots.push(root); const calls = [];
-  const missing = a && a.preflight({ mode: 'chatgpt', codexHome: path.join(root, 'no-session'), cacheRoot: path.join(root, 'cache'),
-    mutate: n => calls.push(n), env: { CODEX_API_KEY: secret } });
+  const missing = a && await Promise.resolve(a.preflight({ mode: 'chatgpt', codexHome: path.join(root, 'no-session'), cacheRoot: path.join(root, 'cache'),
+    mutate: n => calls.push(n), env: { CODEX_API_KEY: secret } }));
   check('C2 missing or API-key-only ChatGPT login refuses before lock, Beads, network, workspace, or container mutation', !!missing && !missing.ok && /codex login|device/i.test(missing.reason || '') && calls.length === 0, JSON.stringify({ missing, calls }));
   fs.mkdirSync(path.join(root, 'home'), { recursive:true }); fs.writeFileSync(path.join(root, 'home', 'auth.json'), '{ malformed');
-  const malformed = a && a.preflight({ mode: 'chatgpt', codexHome: path.join(root, 'home'), cacheRoot: path.join(root, 'cache'), mutate: n => calls.push(n) });
+  const malformed = a && await Promise.resolve(a.preflight({ mode: 'chatgpt', codexHome: path.join(root, 'home'), cacheRoot: path.join(root, 'cache'), mutate: n => calls.push(n) }));
   check('C2 malformed or unreadable saved auth gives the same bounded login/device remedy and launches nothing', !!malformed && !malformed.ok && /codex login|device/i.test(malformed.reason || '') && calls.length === 0);
+  fs.writeFileSync(path.join(root, 'home', 'auth.json'), JSON.stringify({ tokens: { refresh_token: secret } }));
+  const wrongMode = a && await Promise.resolve(a.preflight({ mode: 'chatgpt', codexHome: path.join(root, 'home'), cacheRoot: path.join(root, 'cache'), mutate: n => calls.push(n) }));
+  check('C2 a token-shaped file without auth_mode chatgpt is not accepted as a managed ChatGPT session',
+    !!wrongMode && !wrongMode.ok && /codex login|device/i.test(wrongMode.reason || '') && calls.length === 0,
+    JSON.stringify(wrongMode));
 
-  const croot = tmp('container'); roots.push(croot); const userHome = path.join(croot, 'user-home'); const privateRoot = path.join(croot, 'private'); fs.mkdirSync(userHome, { recursive:true }); fs.writeFileSync(path.join(userHome, 'auth.json'), JSON.stringify({ tokens:{ access_token:secret } })); fs.writeFileSync(path.join(userHome, 'unrelated-provider-token'), secret);
-  const staged = a && a.stageTaskCache({ codexHome:userHome, cacheRoot:privateRoot, taskId:'one', containerPath:'/root/.codex' });
+  const croot = tmp('container'); roots.push(croot); const userHome = path.join(croot, 'user-home'); const privateRoot = path.join(croot, 'private'); fs.mkdirSync(userHome, { recursive:true }); fs.writeFileSync(path.join(userHome, 'auth.json'), JSON.stringify({ auth_mode:'chatgpt', tokens:{ access_token:secret, refresh_token:secret } })); fs.writeFileSync(path.join(userHome, 'unrelated-provider-token'), secret);
+  const staged = a && await Promise.resolve(a.stageTaskCache({ codexHome:userHome, cacheRoot:privateRoot, taskId:'one', containerPath:'/root/.codex' }));
   check('C3 helper staging makes a writable task-private cache rather than returning the operator Codex home', !!staged && staged.containerPath === '/root/.codex' && staged.hostPath.startsWith(privateRoot) && staged.hostPath !== userHome);
   // The launch, verifier, artifact, and log boundaries are observed through the real runner in
   // integration.js. Deliberately do not scan the source fixture: its auth.json is supposed to
   // contain this test's token.
 
-  const lroot = tmp('lifecycle'); roots.push(lroot); const durable = path.join(lroot, 'durable'); fs.mkdirSync(durable, { recursive:true }); fs.writeFileSync(path.join(durable, 'auth.json'), JSON.stringify({ token:'before' }));
-  const first = a && a.withCacheLock({ cacheRoot:durable }, () => { fs.writeFileSync(path.join(durable, 'auth.json'), JSON.stringify({ token:'after' })); return a.stageTaskCache({ cacheRoot:durable, taskId:'first' }); });
-  const second = a && a.withCacheLock({ cacheRoot:durable }, () => a.stageTaskCache({ cacheRoot:durable, taskId:'second' }));
+  const lroot = tmp('lifecycle'); roots.push(lroot); const durable = path.join(lroot, 'durable'); fs.mkdirSync(durable, { recursive:true }); fs.writeFileSync(path.join(durable, 'auth.json'), JSON.stringify({ auth_mode:'chatgpt', tokens:{ refresh_token:'before' } }));
+  const first = a && await Promise.resolve(a.stageTaskCache({ cacheRoot:durable, taskId:'first' }));
+  fs.writeFileSync(path.join(first.hostPath, 'auth.json'), JSON.stringify({ auth_mode:'chatgpt', tokens:{ refresh_token:'after' } }));
+  if (a && first) await Promise.resolve(a.releaseTaskCache(first));
+  const second = a && await Promise.resolve(a.stageTaskCache({ cacheRoot:durable, taskId:'second' }));
   const refreshed = fs.readFileSync(path.join(durable, 'auth.json'), 'utf8');
   check('C4 successful refresh persists to the host-private cache across sequential task launches', !!first && !!second && /after/.test(refreshed));
-  const concurrent = a && Promise.all([1,2].map(n => a.withCacheLock({ cacheRoot:durable }, () => a.stageTaskCache({ cacheRoot:durable, taskId:`parallel-${n}` }))));
-  check('C4 concurrent workers use the cache lifecycle lock and produce separate recoverable task copies', !!concurrent && typeof concurrent.then === 'function');
-  const handle = staged; if (a && handle) a.releaseTaskCache(handle);
+  if (a && second) await Promise.resolve(a.releaseTaskCache(second));
+  const handle = staged; if (a && handle) await Promise.resolve(a.releaseTaskCache(handle));
   check('C4 interruption/cleanup removes only a task copy and leaves the durable refreshed cache recoverable', !!a && fs.existsSync(path.join(durable,'auth.json')) && (!handle || !fs.existsSync(handle.hostPath)));
 
   let smoke = null; try { smoke = require(SMOKE_FILE); } catch {}
@@ -99,4 +106,10 @@ try {
   check('C5 deterministic Docker-free suite explicitly covers both modes, refusal ordering, disclosure, refresh, interruption, concurrency, and live smoke', /api-key/.test(suiteText) && /refus/.test(suiteText) && /concurrent/.test(suiteText) && /live smoke/.test(suiteText));
 } catch (e) { check('C1-C5 deterministic fixture harness executes', false, e.stack || String(e)); }
 finally { for (const root of roots) try { fs.rmSync(root, { recursive:true, force:true }); } catch {} }
-process.exit(failed);
+process.exitCode = failed;
+}
+main().catch(error => {
+  check('C1-C5 deterministic fixture harness completes', false,
+    error && (error.stack || error.message) || String(error));
+  process.exitCode = failed;
+});

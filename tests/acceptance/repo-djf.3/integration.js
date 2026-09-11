@@ -75,17 +75,17 @@ async function main() {
       const logLines = []; const touched = []; const previousHome = process.env.CODEX_HOME; process.env.CODEX_HOME = sessionHome;
       let pre;
       try {
-        pre = chatgpt.ok && PREFLIGHT.preflight(chatgpt.cfg, REPO, { runId: 'accept-djf3', info: (_t, line) => logLines.push(String(line)), error() {} }, {
+        pre = chatgpt.ok && await Promise.resolve(PREFLIGHT.preflight(chatgpt.cfg, REPO, { runId: 'accept-djf3', info: (_t, line) => logLines.push(String(line)), error() {} }, {
           env: { ...process.env, CODEX_HOME: sessionHome, CODEX_API_KEY: secret }, admitEntry: () => ({ ok: true, mode: 'standalone' }),
           verifyRepoIdentity: () => { touched.push('identity'); return { ok: false, reason: 'must not run' }; }, dockerAvailable: () => { touched.push('docker'); return { status: 1 }; }, networkUp: () => { touched.push('network'); return { ok: true }; }, recoverStaleIssues: () => { touched.push('beads'); return { recovered: [] }; },
-        });
+        }));
       } finally { if (previousHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previousHome; }
       check(`C2 runner/preflight refuses ${kind} ChatGPT state with a login/device remedy before lock or mutable runner seams`, !!pre && pre.ok === false && /codex login|device/i.test(pre.reason || '') && touched.length === 0 && !logLines.some(line => /project lock held/i.test(line)), JSON.stringify({ pre, touched, logLines }));
     }
 
     let AUTH = null; try { AUTH = require(AUTH_FILE); } catch {}
-    const sourceHome = path.join(root, 'operator-codex'); const privateRoot = path.join(root, 'private-cache'); fs.mkdirSync(sourceHome, { recursive: true }); fs.writeFileSync(path.join(sourceHome, 'auth.json'), JSON.stringify({ tokens: { access_token: secret } })); fs.writeFileSync(path.join(sourceHome, 'unrelated-token'), secret);
-    const staged = AUTH && typeof AUTH.stageTaskCache === 'function' && AUTH.stageTaskCache({ codexHome: sourceHome, cacheRoot: privateRoot, taskId: 'one', containerPath: '/root/.codex' });
+    const sourceHome = path.join(root, 'operator-codex'); const privateRoot = path.join(root, 'private-cache'); fs.mkdirSync(sourceHome, { recursive: true }); fs.writeFileSync(path.join(sourceHome, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: secret, refresh_token: secret } })); fs.writeFileSync(path.join(sourceHome, 'unrelated-token'), secret);
+    const staged = AUTH && typeof AUTH.stageTaskCache === 'function' && await Promise.resolve(AUTH.stageTaskCache({ codexHome: sourceHome, cacheRoot: privateRoot, taskId: 'one', containerPath: '/root/.codex' }));
     const actual = staged && chatgpt.ok && await observeTaskLaunch(root, chatgpt.cfg, staged, sourceHome, secret);
     const cacheMountedWritable = actual && actual.launch && actual.launch.argv.some(arg => /:\/root\/\.codex:rw$/.test(arg));
     const safeLaunch = actual && actual.launch && actual.launch.command === 'docker'
@@ -93,9 +93,14 @@ async function main() {
       && actual.launch.argv.some((arg, i) => actual.launch.argv[i - 1] === '-e' && arg === 'CODEX_HOME=/root/.codex')
       && !actual.launch.argv.some(arg => arg === 'CODEX_API_KEY' || String(arg).startsWith('CODEX_API_KEY='));
     check('C3 runner/container.js consumes the injected spawn seam and points Codex at only the writable pipeline-owned cache, never the operator home or API key', !!actual && !!actual.launch && actual.result.exitCode === 0 && staged.hostPath.startsWith(privateRoot) && staged.hostPath !== sourceHome && cacheMountedWritable && safeLaunch, secretSafe(actual && actual.launch, secret));
-    check('C3 runner/run.js supplies that cache to runTask, so a disconnected helper or a fake launch object cannot satisfy the suite', /runTask\(cfg,\s*\{[\s\S]{0,1600}authCache/.test(fs.readFileSync(RUN_FILE, 'utf8')));
+    check('C3 runner/run.js awaits the credential-lane lease and supplies that cache to runTask, so a disconnected helper or fake launch cannot satisfy the suite', /await\s+(?:Promise\.resolve\()?\s*codexAuth\.stageTaskCache/.test(fs.readFileSync(RUN_FILE, 'utf8')) && /runTask\(cfg,\s*\{[\s\S]{0,1600}authCache/.test(fs.readFileSync(RUN_FILE, 'utf8')));
+    const runSource = fs.readFileSync(RUN_FILE, 'utf8');
+    check('C2 runner/run.js preserves the established preflight ordering and awaits a possibly asynchronous ChatGPT result before reading it',
+      /const\s+pre\s*=\s*preflight\s*\(/.test(runSource)
+        && /await\s+Promise\.resolve\(pre\)/.test(runSource));
     const verifier = fs.readFileSync(path.join(REPO, 'pipeline', 'entrypoint.sh'), 'utf8');
     check('C3 the staged secret never reaches workspace, task artifacts, container log, or the repository-controlled verifier environment', !!actual && !readTree(actual.workspaceDir).includes(secret) && !readTree(actual.taskDir).includes(secret) && /env\s+-u\s+CODEX_API_KEY/.test(verifier));
+    if (AUTH && staged) await Promise.resolve(AUTH.releaseTaskCache(staged));
   } catch (e) { check('C1-C3 integration harness executes', false, e.stack || String(e)); }
   finally { for (const root of roots) try { fs.rmSync(root, { recursive: true, force: true }); } catch {} }
   process.exitCode = failed;

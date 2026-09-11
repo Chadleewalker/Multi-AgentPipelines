@@ -1,6 +1,6 @@
-// Frozen acceptance test — repo-djf.3 concurrent credential-cache lifecycle.
-// This file creates real overlapping asynchronous callbacks. Merely returning two task
-// handles from synchronous Promise.all inputs is not evidence that the lock excludes work.
+// Frozen acceptance test — repo-djf.3 serialized ChatGPT credential-lane lifecycle.
+// OpenAI's managed-auth contract permits one auth.json per serialized workflow stream.
+// The lane lease therefore spans staging, the whole Codex run, and refreshed write-back.
 'use strict';
 const fs = require('fs');
 const os = require('os');
@@ -15,153 +15,129 @@ function check(name, yes, detail = '') {
   if (!yes) failed = 1;
 }
 function delay(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
-function waitForLock(child) {
+function managed(refresh) {
+  return { auth_mode: 'chatgpt', tokens: { access_token: `access-${refresh}`, refresh_token: refresh } };
+}
+function readRefresh(file) {
+  return JSON.parse(fs.readFileSync(file, 'utf8')).tokens.refresh_token;
+}
+function waitForText(child, wanted, timeoutMs = 1500) {
   return new Promise((resolve, reject) => {
     let text = '';
-    const timeout = setTimeout(() => reject(new Error('child did not acquire the lifecycle lock')), 1500);
+    const timeout = setTimeout(() => reject(new Error(`child did not print ${wanted}`)), timeoutMs);
     child.stdout.on('data', chunk => {
       text += String(chunk);
-      if (text.includes('LOCKED')) { clearTimeout(timeout); resolve(); }
+      if (text.includes(wanted)) { clearTimeout(timeout); resolve(text); }
     });
     child.once('error', error => { clearTimeout(timeout); reject(error); });
     child.once('exit', code => {
-      if (!text.includes('LOCKED')) { clearTimeout(timeout); reject(new Error(`lock child exited ${code}`)); }
+      if (!text.includes(wanted)) { clearTimeout(timeout); reject(new Error(`lock child exited ${code}`)); }
     });
   });
 }
 function waitForExit(child) {
+  if (child.exitCode !== null) return Promise.resolve(child.exitCode);
   return new Promise(resolve => child.once('exit', resolve));
 }
 
 async function main() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'accept-djf3-lock-'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'accept-djf3-lifecycle-'));
   try {
-    const durable = path.join(root, 'durable');
-    fs.mkdirSync(durable, { recursive: true });
-    fs.writeFileSync(path.join(durable, 'auth.json'), JSON.stringify({ tokens: { refresh_token: 'initial' } }));
-
+    const shortRoot = path.join(root, 'short-lock');
     let active = 0;
     let maximum = 0;
     const order = [];
     let releaseFirst;
     const firstGate = new Promise(resolve => { releaseFirst = resolve; });
-    const first = Promise.resolve().then(() => AUTH.withCacheLock(
-      { cacheRoot: durable, retryMs: 5, timeoutMs: 1000 },
+    const first = Promise.resolve(AUTH.withCacheLock(
+      { cacheRoot: shortRoot, retryMs: 5, timeoutMs: 1000 },
       async () => {
         active += 1; maximum = Math.max(maximum, active); order.push('first-start');
         await firstGate;
         order.push('first-end'); active -= 1;
-        return 'first';
       },
     ));
     while (!order.includes('first-start')) await delay(2);
-    const second = Promise.resolve().then(() => AUTH.withCacheLock(
-      { cacheRoot: durable, retryMs: 5, timeoutMs: 1000 },
+    const second = Promise.resolve(AUTH.withCacheLock(
+      { cacheRoot: shortRoot, retryMs: 5, timeoutMs: 1000 },
       async () => {
         active += 1; maximum = Math.max(maximum, active); order.push('second-start');
         await delay(5);
         order.push('second-end'); active -= 1;
-        return 'second';
       },
     ));
     await delay(25);
     const waited = !order.includes('second-start');
     releaseFirst();
-    const settled = await Promise.race([
-      Promise.allSettled([first, second]),
-      delay(1500).then(() => 'timeout'),
-    ]);
-    check('C4 overlapping asynchronous cache users wait and execute one at a time instead of throwing or overlapping',
-      settled !== 'timeout' && settled.every(result => result.status === 'fulfilled')
-        && waited && maximum === 1
+    await Promise.all([first, second]);
+    check('C3 overlapping short cache operations wait and execute one at a time',
+      waited && maximum === 1
         && order.join(',') === 'first-start,first-end,second-start,second-end',
-      JSON.stringify({ settled, waited, maximum, order }));
+      JSON.stringify({ waited, maximum, order }));
 
-    const task = path.join(durable, 'tasks', 'release-proof');
-    fs.mkdirSync(task, { recursive: true });
-    fs.writeFileSync(path.join(task, 'auth.json'), JSON.stringify({ tokens: { refresh_token: 'refreshed' } }));
-    let refreshCopiedWhileLocked = false;
-    let observedLockDepth = 0;
-    const observedFs = Object.create(fs);
-    observedFs.openSync = (target, flags, ...rest) => {
-      const fd = fs.openSync(target, flags, ...rest);
-      if (flags === 'wx' && /lock/i.test(String(target))) observedLockDepth += 1;
-      return fd;
-    };
-    observedFs.mkdirSync = (target, options) => {
-      const value = fs.mkdirSync(target, options);
-      if (/lock/i.test(String(target))) observedLockDepth += 1;
-      return value;
-    };
-    observedFs.unlinkSync = target => {
-      const value = fs.unlinkSync(target);
-      if (/lock/i.test(String(target))) observedLockDepth = Math.max(0, observedLockDepth - 1);
-      return value;
-    };
-    observedFs.rmSync = (target, options) => {
-      const value = fs.rmSync(target, options);
-      if (/lock/i.test(String(target))) observedLockDepth = Math.max(0, observedLockDepth - 1);
-      return value;
-    };
-    observedFs.copyFileSync = (source, destination) => {
-      if (path.resolve(destination).startsWith(path.resolve(durable))
-          && observedLockDepth > 0) refreshCopiedWhileLocked = true;
-      return fs.copyFileSync(source, destination);
-    };
-    await AUTH.releaseTaskCache({
-      hostPath: task, cacheRoot: durable, fs: observedFs, retryMs: 5, timeoutMs: 1000,
-    });
-    const persisted = JSON.parse(fs.readFileSync(path.join(durable, 'auth.json'), 'utf8'));
-    check('C4 release persists a refreshed task credential while holding the lifecycle lock, then removes only the task copy',
-      refreshCopiedWhileLocked && persisted.tokens.refresh_token === 'refreshed'
-        && !fs.existsSync(task) && fs.existsSync(path.join(durable, 'auth.json')),
-      JSON.stringify({ refreshCopiedWhileLocked, persisted, taskExists: fs.existsSync(task) }));
+    const busySource = path.join(root, 'busy-source');
+    const busyRoot = path.join(root, 'busy-cache');
+    fs.mkdirSync(busySource, { recursive: true });
+    fs.writeFileSync(path.join(busySource, 'auth.json'), JSON.stringify(managed('busy-seed')));
+    let releaseBusy;
+    let busyEntered = false;
+    const busyGate = new Promise(resolve => { releaseBusy = resolve; });
+    const holder = Promise.resolve(AUTH.withCacheLock(
+      { cacheRoot: busyRoot, retryMs: 5, timeoutMs: 1000 },
+      async () => { busyEntered = true; await busyGate; },
+    ));
+    while (!busyEntered) await delay(2);
+    const busyPreflight = await Promise.resolve(AUTH.preflight({
+      mode: 'chatgpt', codexHome: busySource, cacheRoot: busyRoot,
+      retryMs: 5, timeoutMs: 70,
+    }));
+    releaseBusy();
+    await holder;
+    check('C2 live cache contention reports a bounded busy-lane remedy, never a false login failure',
+      busyPreflight && busyPreflight.ok === false
+        && /busy|lock|lane|in use/i.test(busyPreflight.reason || '')
+        && !/codex login|device authentication/i.test(busyPreflight.reason || ''),
+      JSON.stringify(busyPreflight));
 
-    const faultRoot = path.join(root, 'fault-durable');
-    const faultTask = path.join(faultRoot, 'tasks', 'fault-task');
-    fs.mkdirSync(faultTask, { recursive: true });
-    const durableAuth = path.join(faultRoot, 'auth.json');
-    const priorBytes = JSON.stringify({ tokens: { refresh_token: 'recoverable-prior' } });
-    fs.writeFileSync(durableAuth, priorBytes);
-    fs.writeFileSync(path.join(faultTask, 'auth.json'), JSON.stringify({ tokens: { refresh_token: 'new-refresh' } }));
-    let directOverwriteAttempted = false;
-    const faultFs = Object.create(fs);
-    faultFs.copyFileSync = (source, destination) => {
-      if (path.resolve(destination) === path.resolve(durableAuth)) {
-        directOverwriteAttempted = true;
-        fs.writeFileSync(destination, '{ injected torn write');
-        throw new Error('injected direct-overwrite failure');
-      }
-      return fs.copyFileSync(source, destination);
-    };
-    let faultError = null;
-    try {
-      await AUTH.releaseTaskCache({
-        hostPath: faultTask, cacheRoot: faultRoot, fs: faultFs, retryMs: 5, timeoutMs: 1000,
-      });
-    } catch (error) { faultError = error; }
-    const afterFault = fs.readFileSync(durableAuth, 'utf8');
-    const atomicSuccess = !directOverwriteAttempted
-      && JSON.parse(afterFault).tokens.refresh_token === 'new-refresh' && !fs.existsSync(faultTask);
-    const recoverableFailure = directOverwriteAttempted && !!faultError
-      && afterFault === priorBytes && fs.existsSync(path.join(faultTask, 'auth.json'));
-    check('C4 refresh persistence is atomic: a failed direct overwrite cannot corrupt the durable cache or delete the recoverable task copy',
-      atomicSuccess || recoverableFailure,
-      JSON.stringify({ directOverwriteAttempted, faultError: faultError && faultError.message,
-        afterFault, taskExists: fs.existsSync(faultTask) }));
-
-    const staleRoot = path.join(root, 'stale-durable');
-    const childCode = [
+    const liveRoot = path.join(root, 'live-owner');
+    const liveCode = [
       "const auth=require(process.argv[1]);",
       "const root=process.argv[2];",
-      "Promise.resolve(auth.withCacheLock({cacheRoot:root},async()=>{process.stdout.write('LOCKED\\n');await new Promise(()=>{});})).catch(()=>process.exit(2));",
+      "Promise.resolve(auth.withCacheLock({cacheRoot:root,staleMs:0},async()=>{",
+      "process.stdout.write('LOCKED\\n');await new Promise(r=>setTimeout(r,350));",
+      "})).then(()=>process.exit(0),()=>process.exit(2));",
     ].join('');
-    const child = spawn(process.execPath, ['-e', childCode, AUTH_PATH, staleRoot],
+    const live = spawn(process.execPath, ['-e', liveCode, AUTH_PATH, liveRoot],
+      { stdio: ['ignore', 'pipe', 'pipe'] });
+    await waitForText(live, 'LOCKED');
+    let stolen = null;
+    let busy = null;
+    try {
+      stolen = await AUTH.withCacheLock(
+        { cacheRoot: liveRoot, retryMs: 5, timeoutMs: 90, staleMs: 0 },
+        () => 'stolen',
+      );
+    } catch (error) { busy = error; }
+    const liveDuringAttempt = live.exitCode === null;
+    await waitForExit(live);
+    check('C3 lock age alone never steals a live owner even when staleMs is zero',
+      stolen === null && !!busy && liveDuringAttempt,
+      JSON.stringify({ stolen, busy: busy && busy.message, liveDuringAttempt }));
+
+    const staleRoot = path.join(root, 'dead-owner');
+    const deadCode = [
+      "const auth=require(process.argv[1]);",
+      "const root=process.argv[2];",
+      "Promise.resolve(auth.withCacheLock({cacheRoot:root},async()=>{",
+      "process.stdout.write('LOCKED\\n');await new Promise(()=>{});",
+      "})).catch(()=>process.exit(2));",
+    ].join('');
+    const dead = spawn(process.execPath, ['-e', deadCode, AUTH_PATH, staleRoot],
       { stdio: ['ignore', 'pipe', 'pipe'] });
     try {
-      await waitForLock(child);
-      child.kill('SIGKILL');
-      await waitForExit(child);
+      await waitForText(dead, 'LOCKED');
+      dead.kill('SIGKILL');
+      await waitForExit(dead);
       const recovered = await Promise.race([
         Promise.resolve(AUTH.withCacheLock(
           { cacheRoot: staleRoot, retryMs: 5, timeoutMs: 750, staleMs: 0 },
@@ -169,16 +145,92 @@ async function main() {
         )),
         delay(1200).then(() => 'timeout'),
       ]);
-      check('C4 a dead lock owner is recoverable, so an interrupted process cannot permanently brick ChatGPT workers',
+      check('C3 a dead lock owner is recoverable, so interruption cannot brick the credential lane',
         recovered === 'recovered', JSON.stringify({ recovered }));
     } finally {
-      if (child.exitCode === null) child.kill('SIGKILL');
+      if (dead.exitCode === null) dead.kill('SIGKILL');
     }
+
+    const durable = path.join(root, 'serialized-lane');
+    fs.mkdirSync(durable, { recursive: true });
+    fs.writeFileSync(path.join(durable, 'auth.json'), JSON.stringify(managed('initial')));
+    const firstHandle = await AUTH.stageTaskCache({
+      cacheRoot: durable, taskId: 'first', retryMs: 5, timeoutMs: 1000,
+    });
+    let secondSettled = false;
+    const secondHandlePromise = Promise.resolve(AUTH.stageTaskCache({
+      cacheRoot: durable, taskId: 'second', retryMs: 5, timeoutMs: 1000,
+    })).then(handle => { secondSettled = true; return handle; });
+    await delay(40);
+    const secondWaitedForWholeRun = !secondSettled;
+    fs.writeFileSync(path.join(firstHandle.hostPath, 'auth.json'), JSON.stringify(managed('refreshed-one')));
+    await AUTH.releaseTaskCache(firstHandle);
+    const secondHandle = await Promise.race([
+      secondHandlePromise,
+      delay(1300).then(() => null),
+    ]);
+    const secondSawRefresh = secondHandle
+      && readRefresh(path.join(secondHandle.hostPath, 'auth.json')) === 'refreshed-one';
+    check('C3 one saved session is one serialized lane spanning stage, Codex use, and refresh persistence',
+      secondWaitedForWholeRun && !!secondHandle && secondSawRefresh
+        && secondHandle.hostPath !== firstHandle.hostPath
+        && !fs.existsSync(firstHandle.hostPath),
+      JSON.stringify({ secondWaitedForWholeRun, secondSawRefresh,
+        unique: secondHandle && secondHandle.hostPath !== firstHandle.hostPath }));
+    if (secondHandle) await AUTH.releaseTaskCache(secondHandle);
+
+    const seedRoot = path.join(root, 'seed-once');
+    const sourceHome = path.join(seedRoot, 'source');
+    const privateRoot = path.join(seedRoot, 'private');
+    fs.mkdirSync(sourceHome, { recursive: true });
+    fs.mkdirSync(privateRoot, { recursive: true });
+    fs.writeFileSync(path.join(sourceHome, 'auth.json'), JSON.stringify(managed('original-seed')));
+    fs.writeFileSync(path.join(privateRoot, 'auth.json'), JSON.stringify(managed('durable-refresh')));
+    const existing = await Promise.resolve(AUTH.preflight({
+      mode: 'chatgpt', codexHome: sourceHome, cacheRoot: privateRoot,
+      retryMs: 5, timeoutMs: 500,
+    }));
+    const keptRefresh = readRefresh(path.join(privateRoot, 'auth.json'));
+    const freshRoot = path.join(seedRoot, 'fresh-private');
+    const seeded = await Promise.resolve(AUTH.preflight({
+      mode: 'chatgpt', codexHome: sourceHome, cacheRoot: freshRoot,
+      retryMs: 5, timeoutMs: 500,
+    }));
+    check('C2 preflight seeds a missing private cache once and never overwrites its refreshed auth from the original host seed',
+      existing && existing.ok && seeded && seeded.ok
+        && keptRefresh === 'durable-refresh'
+        && readRefresh(path.join(freshRoot, 'auth.json')) === 'original-seed',
+      JSON.stringify({ existing, seeded, keptRefresh }));
+
+    const faultRoot = path.join(root, 'atomic-fault');
+    fs.mkdirSync(faultRoot, { recursive: true });
+    fs.writeFileSync(path.join(faultRoot, 'auth.json'), JSON.stringify(managed('recoverable-prior')));
+    const faultHandle = await AUTH.stageTaskCache({
+      cacheRoot: faultRoot, taskId: 'fault', retryMs: 5, timeoutMs: 1000,
+    });
+    fs.writeFileSync(path.join(faultHandle.hostPath, 'auth.json'), JSON.stringify(managed('new-refresh')));
+    const durableAuth = path.join(faultRoot, 'auth.json');
+    const faultFs = Object.create(fs);
+    faultFs.renameSync = (source, destination) => {
+      if (path.resolve(destination) === path.resolve(durableAuth)) {
+        throw new Error('injected atomic replacement failure');
+      }
+      return fs.renameSync(source, destination);
+    };
+    let faultError = null;
+    try { await AUTH.releaseTaskCache({ ...faultHandle, fs: faultFs }); }
+    catch (error) { faultError = error; }
+    check('C3 failed atomic persistence preserves the prior durable cache and recoverable task copy',
+      !!faultError && readRefresh(durableAuth) === 'recoverable-prior'
+        && fs.existsSync(path.join(faultHandle.hostPath, 'auth.json')),
+      JSON.stringify({ faultError: faultError && faultError.message,
+        durable: readRefresh(durableAuth), taskExists: fs.existsSync(faultHandle.hostPath) }));
   } finally {
     try { fs.rmSync(root, { recursive: true, force: true }); } catch {}
   }
 }
 
 main().catch(error => {
-  check('C4 concurrent lifecycle harness completes', false, error && (error.stack || error.message) || String(error));
+  check('C2-C3 credential-lane lifecycle harness completes', false,
+    error && (error.stack || error.message) || String(error));
 }).finally(() => { process.exitCode = failed; });
