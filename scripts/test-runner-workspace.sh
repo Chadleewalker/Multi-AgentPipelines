@@ -65,10 +65,11 @@ EOF
 
 I1=$(bdq create "first task" -d x --acceptance ok --design "design-ref: 4.2" -p 0 --silent)
 freeze "$I1"
+FIXTURE_TOKEN="runner-workspace-fixture-token-never-used"
 run() {
   # A verified commit must open a PR before the settlement can close Beads. The workspace
   # suite uses a local bare remote, so isolate it from live GitHub through the host seam.
-  PIPELINE_EXEC_STUB="$1" PIPELINE_GH_CMD="printf 'https://example.test/pr/1\\n'" \
+  CLAUDE_CODE_OAUTH_TOKEN="$FIXTURE_TOKEN" PIPELINE_EXEC_STUB="$1" PIPELINE_GH_CMD="printf 'https://example.test/pr/1\\n'" \
     RUN_ID="$2" PIPELINE_KEEP_WORKSPACE=1 node runner/run.js --config "$CFG" 2>&1
 }
 
@@ -145,8 +146,7 @@ printf '{"targetRepoPath":"%s","targetRepoRemote":"%s/nope.git","image":"pipelin
 git -C "$TGT" remote set-url origin "$REMOTEW/nope.git"
 I3=$(bdq create "unclonable" -d x --acceptance ok --design "design-ref: 4.2" -p 0 --silent)
 freeze "$I3"
-# tee to stderr streams the run live; stdout still captured, pipefail preserves RC.
-OUT=$(set -o pipefail; PIPELINE_EXEC_STUB="$TMP/stub-work.sh" RUN_ID=t13-badremote node runner/run.js --config "$BADCFG" 2>&1 | tee /dev/stderr); RC=$?
+OUT=$(CLAUDE_CODE_OAUTH_TOKEN="$FIXTURE_TOKEN" PIPELINE_EXEC_STUB="$TMP/stub-work.sh" RUN_ID=t13-badremote node runner/run.js --config "$BADCFG" 2>&1); RC=$?
 [ "$RC" = 1 ] && pass "unreachable remote aborts the run" || fail "unreachable remote did not abort (rc=$RC)"
 echo "$OUT" | grep -q "nope.git" && pass "the abort names the remote it could not reach" \
   || fail "the abort does not name the remote"

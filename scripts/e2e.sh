@@ -185,7 +185,8 @@ run_scenario() { # run_scenario <target-issue> <stub-name> <run-id>
   ' "$CFG" "$stub" "$tmpcfg"
   # The caller captures this stream for semantic assertions. Avoid /dev/stderr and
   # /dev/tty: neither is guaranteed in non-interactive Git Bash sessions.
-  RUN_ID="$runid" node "$ROOT/runner/run.js" --config "$tmpcfg" 2>&1
+  CLAUDE_CODE_OAUTH_TOKEN="e2e-fixture-token-never-used" RUN_ID="$runid" \
+    node "$ROOT/runner/run.js" --config "$tmpcfg" 2>&1
 }
 
 echo "############################################################"
