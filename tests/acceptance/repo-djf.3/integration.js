@@ -121,7 +121,10 @@ async function main() {
       let pre;
       try {
         pre = chatgpt.ok && await Promise.resolve(PREFLIGHT.preflight(chatgpt.cfg, REPO, { runId: 'accept-djf3', info: (_t, line) => logLines.push(String(line)), error() {} }, {
-          env: { ...process.env, CODEX_HOME: sessionHome, CODEX_API_KEY: secret }, admitEntry: () => ({ ok: true, mode: 'standalone' }),
+          // A valid durable cache correctly wins over the operator seed. Isolate the durable
+          // cache here so these negative seed-shape cases stay deterministic when the suite is
+          // rerun in a long-lived worker that has already bootstrapped its own saved session.
+          env: { ...process.env, CODEX_HOME: sessionHome, PIPELINE_CODEX_CACHE: path.join(root, `${kind}-cache`), CODEX_API_KEY: secret }, admitEntry: () => ({ ok: true, mode: 'standalone' }),
           verifyRepoIdentity: () => { touched.push('identity'); return { ok: false, reason: 'must not run' }; }, dockerAvailable: () => { touched.push('docker'); return { status: 1 }; }, networkUp: () => { touched.push('network'); return { ok: true }; }, recoverStaleIssues: () => { touched.push('beads'); return { recovered: [] }; },
         }));
       } finally { if (previousHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previousHome; }
@@ -219,12 +222,19 @@ async function main() {
       /subscription token loaded \(\$\{credential\.name\}\)/.test(runSource)
         && /task resumed across \$\{pauses\}/.test(runSource));
     const verifier = fs.readFileSync(path.join(REPO, 'pipeline', 'entrypoint.sh'), 'utf8');
+    const runAgent = verifier.slice(verifier.indexOf('run_agent() {'), verifier.indexOf('run_verifier() {'));
+    const runVerifier = verifier.slice(verifier.indexOf('run_verifier() {'), verifier.indexOf('restore_verified()'));
     check('C3 repository-controlled verifier code runs under a different identity that cannot traverse either the internal node-only session or root-only host-cache handoff',
-      /runuser\s+-u\s+node[\s\S]{0,300}CODEX_HOME=\/root\/\.codex/.test(verifier)
-        && /runuser\s+-u\s+nobody[\s\S]{0,300}node\s+"\$PIPE\/verify\.js"/.test(verifier)
+      /runuser\s+-u\s+node\s+--preserve-environment[\s\S]{0,180}CODEX_HOME=\/root\/\.codex/.test(runAgent)
+        && /runuser\s+-u\s+nobody[\s\S]{0,300}node\s+"\$PIPE\/verify\.js"/.test(runVerifier)
         && /\/run\/pipeline-auth-host\/cache/.test(verifier)
-        && /chmod\s+700[\s\S]{0,180}\/run\/pipeline-auth-host/.test(verifier),
+        && /chmod\s+700[\s\S]{0,180}\/run\/pipeline-auth-host/.test(verifier)
+        && /chmod\s+-R\s+a\+rwX\s+"\$(?:WS|WORKSPACE)"[\s\S]{0,300}runuser\s+-u\s+nobody/.test(runVerifier),
       verifier.match(/runuser[^\n]*/g)?.join(' | ') || 'no identity split');
+    check('C3 every managed Codex invocation persists refreshed auth before its exit status is returned, while non-ChatGPT verification retains the established node identity',
+      /runuser\s+-u\s+node[\s\S]{0,300}(?:sync|persist)_chatgpt_auth[\s\S]{0,160}return/.test(runAgent)
+        && /if\s+\[\s+"?\$[^"\]]*(?:CHATGPT_AUTH|PIPELINE_CHATGPT_AUTH)[^\]]*\][\s\S]{0,500}runuser\s+-u\s+nobody[\s\S]{0,500}(?:^|\n)\s*(?:else|fi)[\s\S]{0,220}env\s+-u\s+CODEX_API_KEY\s+-u\s+OPENAI_API_KEY\s+-u\s+CODEX_HOME\s+node\s+"\$PIPE\/verify\.js"/m.test(runVerifier),
+      JSON.stringify({ runAgent, runVerifier }));
     check('C3 the staged secret never reaches workspace, task artifacts, container log, or the repository-controlled verifier environment', !!actual && !readTree(actual.workspaceDir).includes(secret) && !readTree(actual.taskDir).includes(secret)
       && /env\s+-u\s+CODEX_API_KEY\s+-u\s+OPENAI_API_KEY\s+-u\s+CODEX_HOME\s+node\s+"\$PIPE\/verify\.js"/.test(verifier));
     if (AUTH && staged) await Promise.resolve(AUTH.releaseTaskCache(staged));
