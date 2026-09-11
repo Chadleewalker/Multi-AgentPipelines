@@ -303,7 +303,7 @@ function runCfg(target, overrides = {}) {
     targetRepoPath: fwd(target),
     targetRepoRemote: 'https://example.invalid/hw6/target.git',
     image: 'pipeline-hw6:latest',
-    hostShell: 'C:/no/such/shell.exe',
+    hostShell: 'missing-shell-fixture.exe',
     network: 'hw6-net',
     proxyName: 'hw6-proxy',
     proxyPort: 18446,
