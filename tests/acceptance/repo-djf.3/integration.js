@@ -157,6 +157,15 @@ async function main() {
       && !actual.launch.argv.some(arg => arg === 'CODEX_API_KEY' || String(arg).startsWith('CODEX_API_KEY='));
     check('C3 runner/container.js consumes the injected spawn seam and points Codex at only the writable pipeline-owned cache, never the operator home or either API-key spelling', !!actual && !!actual.launch && actual.result.exitCode === 0 && staged.hostPath.startsWith(privateRoot) && staged.hostPath !== sourceHome && cacheMountedWritable && safeLaunch, secretSafe(actual && actual.launch, secret));
     check('C3 runner/run.js awaits the credential-lane lease and supplies that cache to runTask, so a disconnected helper or fake launch cannot satisfy the suite', /await\s+(?:Promise\.resolve\()?\s*codexAuth\.stageTaskCache/.test(fs.readFileSync(RUN_FILE, 'utf8')) && /runTask\(cfg,\s*\{[\s\S]{0,1600}authCache/.test(fs.readFileSync(RUN_FILE, 'utf8')));
+    let queueResult = null; let queueError = null;
+    try {
+      const runner = require(RUN_FILE);
+      queueResult = await runner.drainQueue([{ id: 'first' }, { id: 'second' }],
+        async issue => issue.id, 2);
+    } catch (error) { queueError = error; }
+    check('C3 credential-lane staging stays inside the per-task body and cannot make the provider-agnostic queue scheduler depend on task config',
+      !queueError && JSON.stringify(queueResult) === JSON.stringify(['first', 'second']),
+      JSON.stringify({ queueResult, queueError: queueError && queueError.message }));
     check('C3 runner requests an unbounded wait for the serialized task credential lane instead of failing queued ideas after the short preflight timeout',
       /stageTaskCache\(\{[\s\S]{0,500}wait:\s*true/.test(fs.readFileSync(RUN_FILE, 'utf8'))
         && !/0x7fffffff|2147483647/.test(fs.readFileSync(AUTH_FILE, 'utf8')));
