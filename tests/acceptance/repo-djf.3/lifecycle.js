@@ -188,6 +188,38 @@ async function main() {
       if (dead.exitCode === null) dead.kill('SIGKILL');
     }
 
+    const abandonedRoot = path.join(root, 'abandoned-task-lane');
+    fs.mkdirSync(abandonedRoot, { recursive: true });
+    fs.writeFileSync(path.join(abandonedRoot, 'auth.json'), JSON.stringify(managed('abandoned')));
+    const abandonedCode = [
+      "const auth=require(process.argv[1]);",
+      "const root=process.argv[2];",
+      "Promise.resolve(auth.stageTaskCache({cacheRoot:root,taskId:'abandoned',wait:true,staleMs:0,retryMs:5})).then(()=>{",
+      "process.stdout.write('STAGED\\n');setInterval(()=>{},1000);",
+      "},()=>process.exit(2));",
+    ].join('');
+    const abandoned = spawn(process.execPath, ['-e', abandonedCode, AUTH_PATH, abandonedRoot],
+      { stdio: ['ignore', 'pipe', 'pipe'] });
+    let recoveredTaskLane = null;
+    try {
+      await waitForText(abandoned, 'STAGED');
+      abandoned.kill('SIGKILL');
+      await waitForExit(abandoned);
+      recoveredTaskLane = await Promise.race([
+        Promise.resolve(AUTH.stageTaskCache({
+          cacheRoot: abandonedRoot, taskId: 'successor', wait: false,
+          retryMs: 5, timeoutMs: 750, staleMs: 0,
+        })).catch(() => null),
+        delay(1200).then(() => null),
+      ]);
+      check('C3 a task process that dies after staging cannot permanently brick the actual long-lived credential lane',
+        !!recoveredTaskLane,
+        JSON.stringify({ recovered: !!recoveredTaskLane }));
+    } finally {
+      if (abandoned.exitCode === null) abandoned.kill('SIGKILL');
+      if (recoveredTaskLane) await AUTH.releaseTaskCache(recoveredTaskLane);
+    }
+
     const durable = path.join(root, 'serialized-lane');
     fs.mkdirSync(durable, { recursive: true });
     fs.writeFileSync(path.join(durable, 'auth.json'), JSON.stringify(managed('initial')));
@@ -221,6 +253,33 @@ async function main() {
       JSON.stringify({ secondWaitedForWholeRun, secondError: secondError && secondError.message, secondSawRefresh,
         unique: secondHandle && secondHandle.hostPath !== firstHandle.hostPath }));
     if (secondHandle) await AUTH.releaseTaskCache(secondHandle);
+
+    const preStageRoot = path.join(root, 'no-copy-before-lane');
+    fs.mkdirSync(preStageRoot, { recursive: true });
+    fs.writeFileSync(path.join(preStageRoot, 'auth.json'), JSON.stringify(managed('one-copy')));
+    const preStageHolder = await AUTH.stageTaskCache({
+      cacheRoot: preStageRoot, taskId: 'holder', retryMs: 5, timeoutMs: 500,
+    });
+    const taskWrites = [];
+    const observingStageFs = Object.create(fs);
+    observingStageFs.writeFileSync = (file, ...args) => {
+      if (typeof file === 'string'
+        && path.resolve(file).startsWith(`${path.resolve(preStageRoot, 'tasks')}${path.sep}`)) {
+        taskWrites.push(path.resolve(file));
+      }
+      return fs.writeFileSync(file, ...args);
+    };
+    let preStageBusy = null;
+    try {
+      await AUTH.stageTaskCache({
+        cacheRoot: preStageRoot, taskId: 'contender', fs: observingStageFs,
+        retryMs: 5, timeoutMs: 80, wait: false,
+      });
+    } catch (error) { preStageBusy = error; }
+    check('C3 a worker acquires the exclusive lane before creating any second task credential copy',
+      !!preStageBusy && taskWrites.length === 0,
+      JSON.stringify({ busy: preStageBusy && preStageBusy.message, taskWrites: taskWrites.length }));
+    await AUTH.releaseTaskCache(preStageHolder);
 
     const containmentRoot = path.join(root, 'task-containment');
     fs.mkdirSync(containmentRoot, { recursive: true });

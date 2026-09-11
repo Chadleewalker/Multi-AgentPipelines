@@ -82,6 +82,7 @@ async function main() {
       runTask(_cfg, opts) {
         launches.push(opts);
         if (failurePoint === 'launch') throw new Error('injected container-launch failure');
+        if (failurePoint === 'rate-limit') return Promise.resolve({ exitCode: 20, durationMs: 1 });
         return Promise.resolve({ exitCode: 0, durationMs: 1 });
       },
     },
@@ -141,6 +142,27 @@ async function main() {
       && calls.map(call => call[0]).join(',') === 'stage,release'
       && calls[1] && calls[1][1] === handle,
     JSON.stringify({ thrown: thrown && thrown.message, calls: calls.map(call => call[0]) }));
+
+  calls.length = 0;
+  launches.length = 0;
+  failurePoint = 'rate-limit';
+  const pauseGate = {
+    admit: async () => true,
+    reportLimit: async () => { calls.push(['pause']); return { resumed: false, reason: 'fixture stop' }; },
+  };
+  await require(RUN_FILE).runOneTask({
+    provider: 'codex', codexAuth: 'chatgpt', codexAuthCacheRoot: handle.cacheRoot,
+    hostShell: 'bash', targetRepoPath: root, targetRepoRemote: root,
+    wallClockMinutes: 1, lifecycleTimeoutMs: 2000, maxAttempts: 1,
+  }, { id: 'lane-rate-limit', title: 'release the lane while usage is parked', priority: 1 },
+  {
+    runId: 'accept-djf3-rate-limit', dir: root,
+    trace(id) { return `accept-djf3-rate-limit/${id}`; }, taskDir() { return taskDir; },
+    info() {}, error() {}, event() {},
+  }, '', pauseGate);
+  check('C3 a stopped rate-limited container writes back and releases the credential lane before the run waits, so another queued idea can use the subscription',
+    calls.map(call => call[0]).join(',') === 'stage,release,pause',
+    JSON.stringify({ calls: calls.map(call => call[0]) }));
 
   calls.length = 0;
   launches.length = 0;
