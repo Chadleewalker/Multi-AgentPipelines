@@ -224,17 +224,23 @@ async function main() {
     const verifier = fs.readFileSync(path.join(REPO, 'pipeline', 'entrypoint.sh'), 'utf8');
     const runAgent = verifier.slice(verifier.indexOf('run_agent() {'), verifier.indexOf('run_verifier() {'));
     const runVerifier = verifier.slice(verifier.indexOf('run_verifier() {'), verifier.indexOf('restore_verified()'));
+    const syncStart = Math.max(verifier.indexOf('sync_chatgpt_auth() {'), verifier.indexOf('persist_chatgpt_auth() {'));
+    const authSync = syncStart >= 0 ? verifier.slice(syncStart, verifier.indexOf('run_agent() {')) : '';
     check('C3 repository-controlled verifier code runs under a different identity that cannot traverse either the internal node-only session or root-only host-cache handoff',
       /runuser\s+-u\s+node\s+--preserve-environment[\s\S]{0,180}CODEX_HOME=\/root\/\.codex/.test(runAgent)
         && /runuser\s+-u\s+nobody[\s\S]{0,300}node\s+"\$PIPE\/verify\.js"/.test(runVerifier)
         && /\/run\/pipeline-auth-host\/cache/.test(verifier)
         && /chmod\s+700[\s\S]{0,180}\/run\/pipeline-auth-host/.test(verifier)
+        && /chown\s+(?:-R\s+)?node:node\s+\/root\/\.codex/.test(verifier)
+        && /chmod\s+600\s+\/root\/\.codex\/auth\.json/.test(verifier)
         && /chmod\s+-R\s+a\+rwX\s+"\$(?:WS|WORKSPACE)"[\s\S]{0,300}runuser\s+-u\s+nobody/.test(runVerifier),
       verifier.match(/runuser[^\n]*/g)?.join(' | ') || 'no identity split');
     check('C3 every managed Codex invocation persists refreshed auth before its exit status is returned, while non-ChatGPT verification retains the established node identity',
       /runuser\s+-u\s+node[\s\S]{0,300}(?:sync|persist)_chatgpt_auth[\s\S]{0,160}return/.test(runAgent)
+        && /cp\s+-f\s+\/root\/\.codex\/auth\.json\s+"?\$[A-Z_]+"?[\s\S]{0,220}chmod\s+600\s+"?\$[A-Z_]+"?[\s\S]{0,220}mv\s+-f\s+"?\$[A-Z_]+"?[\s\S]{0,120}auth\.json/.test(authSync)
+        && (authSync.match(/\|\|\s*die30/g) || []).length >= 3
         && /if\s+\[\s+"?\$[^"\]]*(?:CHATGPT_AUTH|PIPELINE_CHATGPT_AUTH)[^\]]*\][\s\S]{0,500}runuser\s+-u\s+nobody[\s\S]{0,500}(?:^|\n)\s*(?:else|fi)[\s\S]{0,220}env\s+-u\s+CODEX_API_KEY\s+-u\s+OPENAI_API_KEY\s+-u\s+CODEX_HOME\s+node\s+"\$PIPE\/verify\.js"/m.test(runVerifier),
-      JSON.stringify({ runAgent, runVerifier }));
+      JSON.stringify({ authSync, runAgent, runVerifier }));
     check('C3 the staged secret never reaches workspace, task artifacts, container log, or the repository-controlled verifier environment', !!actual && !readTree(actual.workspaceDir).includes(secret) && !readTree(actual.taskDir).includes(secret)
       && /env\s+-u\s+CODEX_API_KEY\s+-u\s+OPENAI_API_KEY\s+-u\s+CODEX_HOME\s+node\s+"\$PIPE\/verify\.js"/.test(verifier));
     if (AUTH && staged) await Promise.resolve(AUTH.releaseTaskCache(staged));
