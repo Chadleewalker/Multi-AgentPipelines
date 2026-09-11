@@ -18,7 +18,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g --no-fund --no-audit \
+RUN chmod 711 /root \
+    && npm install -g --no-fund --no-audit \
     @anthropic-ai/claude-code@2.1.220 \
     @openai/codex@0.154.0 \
     @beads/bd@1.1.0

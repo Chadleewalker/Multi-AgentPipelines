@@ -216,6 +216,8 @@ function loadConfig(file) {
     }
   }
   const cfg = { ...DEFAULTS, ...raw, configPath: p };
+  if (raw.codexAuth !== undefined && !['chatgpt', 'api-key'].includes(raw.codexAuth)) throw new Error("run.config.json: 'codexAuth' must be one of chatgpt | api-key");
+  cfg.codexAuth = raw.codexAuth || 'api-key';
   // Resolved AFTER the spread and deliberately NOT in contracts/control-plane.json's
   // configDefaults: a stage field's default is the run-wide value, and the run-wide value's
   // default is the constant — a chain, not a single value a defaults table could carry.
@@ -255,6 +257,7 @@ function readEnvPipeline(repoRoot, name) {
 }
 
 function loadProviderCredential(repoRoot, provider, env = process.env) {
+  if (normalizeProvider(provider) === 'codex' && env && env.CODEX_AUTH_MODE === 'chatgpt') return null;
   const name = CREDENTIAL_NAMES[normalizeProvider(provider)];
   const fromFile = readEnvPipeline(repoRoot, name);
   if (fromFile) return { name, value: fromFile };
