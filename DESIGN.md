@@ -1872,9 +1872,15 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     cores. The coordinator and the standalone commands share the runner's target-global lock,
     so no preparation worker can overlap a pipeline run or be rediscovered through an ambiguous
     folder. `runs/preparations/<batch>/` holds an immutable manifest, hash-chained events and
-    nonce-paired worker start/results. A live or unmatched start is observed, never replayed; it
-    blocks all preparation until an operator stops the worker and descendants, then uses the
-    separate `acknowledge-interrupted` verb before retry. Config secrets and `hostEnv` values are
+    nonce-paired worker start/results. The manifest records the coordinator's process identity,
+    and each worker start records the child's identity using the target-lock liveness shape: pid,
+    capture time, host uptime and the platform's process-start identity where available. Status
+    applies the same reboot- and recycled-pid-safe liveness rule as the target lock. An unresolved
+    live worker reports its recorded phase (`authoring` or `proving`) even after its coordinator
+    exits; only a falsified worker identity with no terminal result reports
+    `interrupted-unknown`. Existing terminal results always win over liveness. An unmatched start
+    is observed, never replayed; it blocks all preparation until an operator stops the worker and
+    descendants, then uses the separate `acknowledge-interrupted` verb before retry. Config secrets and `hostEnv` values are
     neither persisted nor included in the durable config hash, and their values are scrubbed from
     persisted worker evidence and errors.
 

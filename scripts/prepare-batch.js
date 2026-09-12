@@ -308,7 +308,12 @@ function runWorker(root, batch, item, configPath, state = prepState, seams = {})
       cwd: ROOT, windowsHide: true, shell: false, stdio: ['pipe', 'pipe', 'pipe'],
       env: workerEnv(process.env),
     });
-    const started = { nonce, pid: child.pid, phase: item.action, data: { action: item.action } };
+    const started = {
+      nonce, pid: child.pid,
+      phase: item.action === 'author-proof' ? 'authoring' : item.action === 'proof' ? 'proving' : item.action,
+      ...(Number.isInteger(child.pid) && child.pid > 0 ? { process: lock.livenessFields(child.pid) } : {}),
+      data: { action: item.action },
+    };
     try { state.writeWorkerStarted(root, batch, item.id, started); }
     catch (e) {
       try { child.kill('SIGKILL'); } catch { /* the not-yet-fed worker owns no descendant */ }
@@ -414,10 +419,10 @@ function manifestInput(record) {
   };
 }
 
-function statusReport(root, batch, json, state = prepState, io = {}) {
+function statusReport(root, batch, json, state = prepState, io = {}, opts = {}) {
   const out = io.out || console.log; const err = io.err || console.error;
   try {
-    const derived = state.deriveState(root, batch);
+    const derived = state.deriveState(root, batch, opts);
     if (!derived.ok) {
       if (json) out(JSON.stringify(derived, null, 2));
       throw new Error(derived.error || 'preparation state is invalid');
@@ -453,7 +458,7 @@ function latestAttempt(records) {
 }
 
 function attemptPhase(started) {
-  return started && (started.phase || (started.data && started.data.action)) || null;
+  return started && ((started.data && started.data.action) || started.phase) || null;
 }
 
 function unresolvedWorkers(root, state = prepState, targetRepoPath = null) {
@@ -622,7 +627,7 @@ async function execute(opts, io = {}, seams = {}) {
   const out = io.out || console.log; const err = io.err || console.error;
   const state = seams.state || prepState;
   const root = (seams.preparationRoot || state.preparationRoot)(process.env);
-  if (opts.mode === 'status') return statusReport(root, opts.batch, opts.json, state, io);
+  if (opts.mode === 'status') return statusReport(root, opts.batch, opts.json, state, io, seams);
 
   let manifest = null; let configPath = opts.config; let concurrency = opts.concurrency;
   let ids = opts.issues; let rosterIds = opts.issues;
@@ -794,6 +799,7 @@ async function execute(opts, io = {}, seams = {}) {
         intent: 'all-proven test preparation', concurrency,
         integrationBranch: integration.branch,
         integrationHead: baseHead, config: cfg, issues: snapshots.map((s) => s.summary),
+        owner: lock.livenessFields(),
       };
       manifest = state.createManifest(root, opts.batch, input);
     }
