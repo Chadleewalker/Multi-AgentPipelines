@@ -83,6 +83,22 @@ object with `version`, `title`, `description`, `constraints`, `examples`, `nonGo
 `priority`, `relations` and `origin`; see `node scripts/kickoff.js --help` for the input bound
 and refusal vocabulary.
 
+Turn one intake record into its canonical Beads spec with the subscription-authenticated
+specifier. It pins the configured integration commit, gives Codex only an isolated read-only
+checkout, and either creates one issue or returns a question without touching Git or Beads:
+
+```bash
+node scripts/specify-proposal.js run --config run.config.<project>.json --proposal kp-…
+node scripts/specify-proposal.js answer --config run.config.<project>.json --proposal kp-… \
+  --evidence sha256:… --answer "the product choice"
+node scripts/specify-proposal.js run --config run.config.<project>.json --proposal kp-…
+```
+
+Questions, answers and self-verifying receipts live beside the durable intake partition,
+outside the target repository. Answers must name the exact question-evidence hash. Restarts
+reuse a verified receipt, while recovery after a successful Beads create searches the exact
+external kickoff reference so Beads remains the only source of issue identity.
+
 ## Model provider selection
 
 A run selects one model provider from a closed vocabulary — `claude` or `codex`
