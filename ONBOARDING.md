@@ -481,7 +481,9 @@ node scripts/prepare-batch.js status <batch>  # read-only: one known preparation
 records and each run's own artifacts and reports which target is held, by which run, and
 whether that holder is still live. It writes nothing. When the holder is a preparation
 whose batch name you already know, `node scripts/prepare-batch.js status <batch>` reports
-that known batch's stages the same read-only way. Neither command touches the holder.
+that known batch's stages the same read-only way. A live unresolved child is shown in its
+recorded `authoring` or `proving` phase; `interrupted-unknown` means its persisted process
+identity was falsified and no terminal result exists. Neither command touches the holder.
 
 **Never delete a lock, never bypass it, never take over a live holder, and never interrupt,
 kill or cancel one.** Each of those trades a visible wait for two owners of one target, and

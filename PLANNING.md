@@ -368,9 +368,11 @@ attempt; fix it and rerun the same command with the same batch name. `status` an
 `acknowledge-interrupted` remain usable while those prerequisites are unavailable.
 
 State is durable under `runs/preparations/<batch>/`. `resume <batch>` reports or continues work
-whose ownership is unambiguous; a worker that may still be alive is never duplicated, and a
-crash with no matching result becomes `interrupted-unknown` and blocks new preparation. Stop the
-recorded worker and any descendants, then record that human check with
+whose ownership is unambiguous; coordinator and worker process identities use the target lock's
+reboot- and recycled-pid-safe liveness rule, so a live unresolved worker reports its recorded
+`authoring` or `proving` phase and is never duplicated. Only a falsified worker identity with no
+matching result becomes `interrupted-unknown` and blocks new preparation; a terminal result stays
+terminal regardless of later owner liveness. Stop the recorded worker and any descendants, then record that human check with
 `acknowledge-interrupted <batch> <id>...`; only after that may `retry <batch> <id>...` start a new
 attempt. A successful item means **proven at the recorded integration base**. The coordinator
 never freezes, commits, merges, pushes, changes Beads, or turns blocked
