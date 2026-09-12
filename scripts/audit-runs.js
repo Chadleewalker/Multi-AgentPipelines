@@ -45,6 +45,10 @@
 // tests/unit/audit-runs.test.js.
 'use strict';
 const fs = require('fs');
+// Descriptor output is not a corpus mutation. Keep terminal report writes synchronous so a
+// large report cannot be truncated when this copyable CLI exits with stdout connected to a
+// pipe (notably under the Windows host used by the mandatory sweep).
+const writeFd = require('fs').writeSync;
 const path = require('path');
 
 const USAGE = [
@@ -585,16 +589,15 @@ function render(corpus) {
 }
 
 // ---- entry point --------------------------------------------------------------------
-// process.exitCode rather than process.exit(): a pending write to a pipe is truncated by
-// an explicit exit, and the report is the whole product.
+// The report is the whole product, so write its descriptor synchronously before returning.
 function main(argv) {
   if (argv.length) {
-    process.stderr.write(`${USAGE}\n`);
+    writeFd(2, `${USAGE}\n`);
     return 2;
   }
   const root = resolveRoot();
-  process.stderr.write(`audit-runs: reading ${root}\n`);
-  process.stdout.write(render(readCorpus(root)));
+  writeFd(2, `audit-runs: reading ${root}\n`);
+  writeFd(1, render(readCorpus(root)));
   return 0;
 }
 
