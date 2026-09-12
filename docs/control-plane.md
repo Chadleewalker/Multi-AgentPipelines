@@ -208,6 +208,10 @@ Publication owns one immutable `docs/design/provenance/<issue-id>.md` path, comm
 only that path, and updates the issue through the host Beads adapter. The canonical-target lock,
 optional expected-HEAD lease and refuse-on-different-bytes rule prevent concurrent planning
 sessions from overwriting or silently diverging provenance already referenced by a frozen task.
+As an import-compatible alternative, the canonical issue may carry a self-contained
+`design-snapshot: sha256:<digest>` plus a fenced body; the resolver accepts it without repository
+access only when the digest matches the UTF-8 body bytes. Routine planning still uses the
+published `design-ref` path so the approved provenance remains reviewable in Git.
 
 ## Write protection
 

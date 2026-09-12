@@ -320,6 +320,14 @@ the canonical issue's structured `design-ref` through the host. Preparation repe
 from its pinned integration HEAD and records that commit; an unresolved path or heading becomes
 `needs-design`, launches no worker, and names the publish command as its remedy.
 
+For an imported canonical issue that cannot publish a repository document, the design field may
+instead be self-contained: `design-snapshot: sha256:<digest>` followed by a fenced block whose
+UTF-8 body (including one trailing newline) hashes to that digest. Preparation resolves a valid
+snapshot without repository or operator-local files and refuses a mismatched digest as
+`snapshot-mismatch`. The normal `new-issue.sh` workflow continues to require a structured
+`design-ref`; publication is the preferred planning path because it leaves reviewable provenance
+in the integration history.
+
 Under a live project supervisor, preparation instead runs as that supervisor's admitted
 `preparation` child: it takes no lock of its own and releases none, because its parent's lease
 is the same target-global authority and already excludes every other coordinator (DESIGN.md
