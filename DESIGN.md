@@ -1891,7 +1891,12 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     blocks all preparation until an operator stops the worker and descendants, then uses the
     separate `acknowledge-interrupted` verb before retry. Config secrets and `hostEnv` values are
     neither persisted nor included in the durable config hash, and their values are scrubbed from
-    persisted worker evidence and errors.
+    persisted worker evidence and errors. The manifest and each worker start also persist the
+    lock module's falsifiable process identity. Status evaluates those identities with the same
+    cross-platform, recycled-PID-safe liveness rule: a live unresolved worker reports `authoring`
+    or `proving`, while `interrupted-unknown` is reserved for an unresolved worker whose identity
+    has been falsified. A terminal worker result remains authoritative regardless of owner or
+    worker liveness.
 
     Each proof preparation creates its owned baseline/probe container under a fresh private
     namespace in the configured temporary root. A verifier running as another host identity

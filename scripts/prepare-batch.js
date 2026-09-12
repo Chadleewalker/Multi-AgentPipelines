@@ -308,7 +308,11 @@ function runWorker(root, batch, item, configPath, state = prepState, seams = {})
       cwd: ROOT, windowsHide: true, shell: false, stdio: ['pipe', 'pipe', 'pipe'],
       env: workerEnv(process.env),
     });
-    const started = { nonce, pid: child.pid, phase: item.action, data: { action: item.action } };
+    const started = {
+      nonce, pid: child.pid, phase: item.action,
+      process: lock.livenessFields(child.pid),
+      data: { action: item.action },
+    };
     try { state.writeWorkerStarted(root, batch, item.id, started); }
     catch (e) {
       try { child.kill('SIGKILL'); } catch { /* the not-yet-fed worker owns no descendant */ }
@@ -414,10 +418,10 @@ function manifestInput(record) {
   };
 }
 
-function statusReport(root, batch, json, state = prepState, io = {}) {
+function statusReport(root, batch, json, state = prepState, io = {}, opts = {}) {
   const out = io.out || console.log; const err = io.err || console.error;
   try {
-    const derived = state.deriveState(root, batch);
+    const derived = state.deriveState(root, batch, opts);
     if (!derived.ok) {
       if (json) out(JSON.stringify(derived, null, 2));
       throw new Error(derived.error || 'preparation state is invalid');
@@ -793,7 +797,8 @@ async function execute(opts, io = {}, seams = {}) {
         project: path.basename(cfg.targetRepoPath), runConfig: path.resolve(configPath),
         intent: 'all-proven test preparation', concurrency,
         integrationBranch: integration.branch,
-        integrationHead: baseHead, config: cfg, issues: snapshots.map((s) => s.summary),
+        integrationHead: baseHead, config: cfg, owner: lock.livenessFields(),
+        issues: snapshots.map((s) => s.summary),
       };
       manifest = state.createManifest(root, opts.batch, input);
     }
