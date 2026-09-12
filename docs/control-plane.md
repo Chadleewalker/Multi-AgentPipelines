@@ -219,6 +219,17 @@ known. Use `reconcile({ project, id })` for uncertain settlement; it settles the
 or leaves attention in place, but never starts a child. `stop({ project, id })` applies only to a
 running implementation feed and writes that run's normal stop sentinel.
 
+After sibling task PRs publish, a supervisor can use `runner/batch-merge.js` to coordinate the
+fan without delaying or rewriting either task's product commit. `plan(...)` and
+`renderReport(...)` are read-only and report pairwise merge readiness, shared Markdown paths,
+and the required review order. `integrateDocs(...)` creates one separately reviewable docs-only
+branch containing every safely reconcilable contribution; `rebaseTask(...)` creates a new review
+ref and leaves the published task ref untouched. A supervising caller must hold
+`integration-publish` for either mutation and supply the host Beads state adapter. Neither API
+merges to the integration branch. Failed reconciliation or rebase attempts create no partial ref,
+write recoverable JSON evidence under `runs/merge-batch/`, and keep the named issues open or
+blocked.
+
 Launch-capable `prepare-batch` modes check the Docker daemon, configured image, configured
 host shell, and authentication for the author/probe providers before write-protection admission,
 locking, manifests, Beads, worktrees, attempts or workers. Each probe is bounded and the first
