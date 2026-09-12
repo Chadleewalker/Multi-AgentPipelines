@@ -194,6 +194,21 @@ be started or retried immediately after repair. Codex planning stages accept a p
 key or a healthy saved ChatGPT login reported by `codex login status`. `status` and
 `acknowledge-interrupted` stay available when those prerequisites are down.
 
+Preparation also resolves each not-yet-frozen issue's structured `design-ref` from the exact
+integration HEAD recorded in its immutable manifest. It never consults an operator-local file
+or a newer working-tree copy. Approved text that is not committed is published through the
+pipeline-owned path, then verified before acceptance freeze:
+
+```bash
+node scripts/design-provenance.js publish <issue-id> --config run.config.<project>.json --source <approved-file> [--anchor <heading>] [--expected-head <sha>]
+node scripts/design-provenance.js verify <issue-id> --config run.config.<project>.json [--commit <sha>]
+```
+
+Publication owns one immutable `docs/design/provenance/<issue-id>.md` path, commits and pushes
+only that path, and updates the issue through the host Beads adapter. The canonical-target lock,
+optional expected-HEAD lease and refuse-on-different-bytes rule prevent concurrent planning
+sessions from overwriting or silently diverging provenance already referenced by a frozen task.
+
 ## Write protection
 
 A checkout whose selected integration fork point carries `pipeline.config.json` is
