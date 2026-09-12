@@ -75,6 +75,16 @@ function ownerRecordPath(container) {
   return path.join(path.dirname(resolved), `.${path.basename(resolved)}${OWNER_SUFFIX}`);
 }
 
+function removeEmptyProbeRoots(container) {
+  const probeRoot = path.dirname(path.resolve(container));
+  if (path.basename(probeRoot) !== PROBE_ROOT_NAME) return;
+  try { fs.rmdirSync(probeRoot); } catch { return; }
+  const namespace = path.dirname(probeRoot);
+  if (new RegExp(`^\\.${PROBE_ROOT_NAME}-[A-Za-z0-9]{6}$`).test(path.basename(namespace))) {
+    try { fs.rmdirSync(namespace); } catch { /* best effort */ }
+  }
+}
+
 function ownedContainer(container) {
   const marker = path.join(container, MARKER);
   const ownerRecord = ownerRecordPath(container);
@@ -114,11 +124,13 @@ function removeOwnedContainer(container) {
   const ownerRecord = ownerRecordPath(container);
   fs.rmSync(container, { recursive: true, force: true });
   fs.rmSync(ownerRecord, { force: true });
+  removeEmptyProbeRoots(container);
 }
 
 function discardNewContainer(container) {
   try { fs.rmSync(container, { recursive: true, force: true }); } catch { /* best effort */ }
   try { fs.rmSync(ownerRecordPath(container), { force: true }); } catch { /* best effort */ }
+  removeEmptyProbeRoots(container);
 }
 
 function readManagedProbe(probePath) {
@@ -311,8 +323,15 @@ function prepareProbe(built, model, run = runSync, tempRoot = os.tmpdir()) {
   if (!fs.existsSync(sourceSuite) || !fs.statSync(sourceSuite).isDirectory()) {
     return { ok: false, error: `the authored suite does not exist at ${sourceSuite}` };
   }
-  const probeRoot = path.join(path.resolve(tempRoot), PROBE_ROOT_NAME);
-  fs.mkdirSync(probeRoot, { recursive: true, mode: 0o700 });
+  // A verifier may run under a different host identity than the planning worker. A shared
+  // mode-0700 root in the OS temp directory would then strand every later proof behind the
+  // first identity that created it. Give each preparation a private namespace while retaining
+  // the fixed innermost root name that the ownership validator recognizes.
+  const resolvedTempRoot = path.resolve(tempRoot);
+  fs.mkdirSync(resolvedTempRoot, { recursive: true });
+  const namespace = fs.mkdtempSync(path.join(resolvedTempRoot, `.${PROBE_ROOT_NAME}-`));
+  const probeRoot = path.join(namespace, PROBE_ROOT_NAME);
+  fs.mkdirSync(probeRoot, { mode: 0o700 });
   const container = fs.mkdtempSync(path.join(probeRoot, `${PROBE_PREFIX}${suiteId}-`));
   const baseline = path.join(container, 'baseline');
   const probe = path.join(container, 'probe');
