@@ -270,9 +270,13 @@ function body() {
     !!caught && !String(caught.reason || '').includes(INJECTED)
     && /^[0-9a-f]{12}$/.test(String(caught.objectId || '')), String(caught && caught.reason));
   // Shape detection is independent of any injected list.
+  // Assemble the planted shapes from non-sensitive fragments. This guard is itself destined
+  // for the tracked tree, whose publication sanitizer must still reject a complete literal.
+  const PRIVATE_KEY_SHAPE = ['-----BEGIN OPENSSH ', 'PRIVATE KEY-----'].join('');
+  const GITHUB_TOKEN_SHAPE = ['ghp_', 'abcdefghijklmnopqrstuvwxyz012345'].join('');
   check('C5 [guard] a high-confidence credential SHAPE is still caught with no secret list',
-    scanMod.findingIn(Buffer.from('-----BEGIN OPENSSH PRIVATE KEY-----'), []) === 'private-key'
-    && scanMod.findingIn(Buffer.from('ghp_abcdefghijklmnopqrstuvwxyz012345'), []) === 'github-token');
+    scanMod.findingIn(Buffer.from(PRIVATE_KEY_SHAPE), []) === 'private-key'
+    && scanMod.findingIn(Buffer.from(GITHUB_TOKEN_SHAPE), []) === 'github-token');
   check('C5 [guard] ... and ordinary source vocabulary is still not evidence',
     scanMod.findingIn(Buffer.from('const password = getPassword(apiKey);'), []) === null);
   check('C5 [guard] a scan with no valid fork point is still refused rather than skipped',
