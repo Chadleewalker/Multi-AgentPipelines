@@ -1893,11 +1893,16 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     neither persisted nor included in the durable config hash, and their values are scrubbed from
     persisted worker evidence and errors.
 
+    Each proof preparation creates its owned baseline/probe container under a fresh private
+    namespace in the configured temporary root. A verifier running as another host identity
+    therefore never inherits an inaccessible shared mode-0700 probe root; successful removal or
+    pre-proof discard also removes the now-empty private roots on a best-effort basis.
+
     The managed proof has one issue-independent integration-base identity: before an authored
     suite is overlaid it includes every receipt byte the integration commit carries, including
-    malformed receipts, instead of excluding the receipt named by the issue being proved. Independently prepared
-    suites at one integration HEAD therefore share a base without making receipt mutation
-    invisible. Its later integration-target comparison normalizes two non-test host artifacts;
+    malformed receipts, instead of excluding the receipt named by the issue being proved.
+    Independently prepared suites at one integration HEAD therefore share a base without making
+    receipt mutation invisible. Its later integration-target comparison normalizes two non-test host artifacts;
     retained baseline and probe marker identities keep their original full semantics. A sibling suite's freeze
     receipt is omitted only when the runner's own receipt parser accepts it, Git proves it is
     untracked, and it is a single-link regular non-symlink file; promotion stages only the suite under proof,
