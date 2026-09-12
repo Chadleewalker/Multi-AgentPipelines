@@ -35,7 +35,10 @@ Three phases joined by a task queue:
    with its full attempt history. Each PR ends with one line —
    `node scripts/verdict.js record <issue-id> <merged|rejected> "<why>"` — because
    merge-or-send-back is the one signal the pipeline cannot generate about itself, and it
-   exists only while you are looking at the PR.
+   exists only while you are looking at the PR. When sibling PRs touch the same Markdown,
+   their code tips remain independently reviewable while the supervisor reports pairwise
+   readiness and review order. It can publish a separate docs-only integration ref carrying
+   all contributions, but never merges a task or that ref into the integration branch.
 
 The design's central bet: **an agent never judges its own work.** Verification is a
 deterministic script running tests that were frozen before the code was written.
@@ -105,7 +108,7 @@ on the shared base image, and `bd init` — [`PLANNING.md`](PLANNING.md) walks t
 | `docs/STATUS.md` | historical status archive retained in place for stable links |
 | `contracts/` | the machine-readable policy every component reads instead of restating it — control-plane outcomes and defaults, and the write-protection role and path-class vocabulary |
 | `advisors/` | the specialist registry — one charter per critic/advisor lens |
-| `runner/` | the host-side orchestrator — plain JavaScript, no dependencies, no LLM |
+| `runner/` | the host-side orchestrator — plain JavaScript, no dependencies, no LLM; `batch-merge.js` plans sibling review order and creates explicit review refs for documentation reconciliation or rebases |
 | `pipeline/` | what runs *inside* a container: entrypoint, verifier, agent stubs |
 | `schemas/` | the frozen contracts between separately-built components — the status file, the verify result, the run manifest, and the event ledger a run appends beside its log |
 | `docker/` | the pinned base image and the allowlist proxy sidecar |
