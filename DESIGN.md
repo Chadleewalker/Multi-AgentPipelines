@@ -137,6 +137,22 @@ results.
 Small standalone chores may skip the doc layer and enter at step 3 with just a spec — but
 large, doc-first projects are the default path.
 
+**Durable kickoff-to-spec entry.** `scripts/specify-proposal.js` is the bounded bridge from
+`kickoff-intake/1` to this pipeline. Deterministic host code verifies the immutable intent
+hash, pins the configured integration commit, and launches the configured Codex model against
+an isolated checkout with its sandbox explicitly read-only and API-key fallbacks removed.
+The model returns at most 64 KiB of exact JSON under a closed content-only contract; it cannot
+name an issue, command, transition, priority, or other operational identity. A concrete
+`needs-input` question is stored as immutable evidence keyed by the kickoff hash, and only an
+answer linked to that evidence starts another attempt.
+
+On a complete proposal the host resolves every `design-ref` at the pinned commit, maps the
+proposal into Beads' native spec fields, and includes kickoff/spec hashes plus field-level
+intent references in metadata. Beads alone returns the issue id. An exact external kickoff
+reference makes creation idempotent across the Beads/receipt crash boundary; the durable
+self-verifying receipt makes ordinary restart side-effect free, while malformed linkage or
+changed receipt evidence fails before a model or Beads call.
+
 **Below the panel.** §3.5's escalation ladder — judgment migrates leftward into frozen
 tests as a check proves itself — applies to the panel itself. The first full panel run
 against a real backlog returned `concerns` on **every spec in the batch**, and most of what
