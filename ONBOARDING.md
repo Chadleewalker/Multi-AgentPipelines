@@ -426,8 +426,10 @@ refused by owner name, and an admitted child takes no lock of its own and releas
 it does change is that a preparation and an implementation worker of one project can be live
 together; the two things that must not overlap, Beads writes and integration publication, stay
 serialized as named critical sections. There is no supervisor command to run yet — it is a
-host-side library a supervising process drives, so nothing in this walkthrough asks you to set
-that variable by hand.
+host-side library a supervising process drives through `runner/operation-manager.js`, so
+nothing in this walkthrough asks you to set that variable by hand. That manager starts the
+existing preparation command and one live-feed runner, observes their durable artifacts, and
+requires an approved retry rather than guessing that an interrupted child is safe to duplicate.
 
 ### Preparing several frozen suites for one project at once
 

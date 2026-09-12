@@ -929,6 +929,22 @@ preparation marker and without declaring its child complete. A child holds an ad
 no lease, so it cannot grant itself anything, cannot widen its own scope by rewriting the
 authority it was handed (the host record disagrees), and cannot reach a third section.
 
+**The supervisor observes durable child operations, not adapter promises.**
+`runner/operation-manager.js` writes a host-owned launching record before it spawns anything,
+then launches the existing `scripts/prepare-batch.js start` and `runner/run.js --config`
+entrypoints with `shell:false`, a bounded lifetime, the exact config argument, and one scoped
+authority file. Provider credentials are removed from the child environment. Preparation
+status is derived from `runner/preparation-state.js`; implementation status is derived from
+the real `run.json` plus the child process identity. The implementation child is one live-feed
+runner for the project, not one runner per proposal, so work frozen after launch enters through
+the same queue re-read as every other task and retains the runner's branch, PR and manifest
+evidence. A live or completed record is never relaunched. A dead child without terminal
+evidence becomes `attention`; only an explicitly approved retry creates a new attempt, and the
+new record retains every prior attempt. Terminal evidence is also the only point at which the
+parent settlement is attempted, with an accepted settlement recorded durably so later status
+reads cannot repeat it. A stop request writes the existing per-run sentinel and lets active
+workers drain.
+
 ## 4. The Implementation Phase (the execution layer)
 
 Carried over from v3, amended over two critic-review rounds; this section is the

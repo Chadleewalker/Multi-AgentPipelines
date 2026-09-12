@@ -198,9 +198,18 @@ A grant leaves the outstanding list only when its parent settles it as `complete
 `released` — never by expiry, a dead parent or a reclaim — so an interrupted supervisor leaves
 a readable record of what it had in flight. A live parent is never taken over, and a provably
 dead one is reclaimed only when a person asks explicitly, without deleting an uncertain
-preparation marker and without declaring its child complete. There is no supervisor CLI:
-`runner/supervisor.js` is a host-side library, and a supervising process takes the lease and
-issues grants through it.
+preparation marker and without declaring its child complete.
+
+There is no supervisor CLI. A supervising process takes the lease and issues grants through
+`runner/supervisor.js`, then uses `runner/operation-manager.js` to launch and observe the real
+children. `startPreparation` invokes the existing named-batch CLI; `startImplementation`
+invokes one existing live-feed runner for the project. Operation records, authority copies,
+attempt history, child process identity, batch/run identity and artifact paths live under the
+host state root, outside the target tree. `status` derives its answer from preparation state or
+the terminal run manifest together with child liveness. `restart` never duplicates recorded
+work; `retry` requires an explicit approval and retains earlier attempts; `stop` writes the
+existing `runs/<run-id>/stop` sentinel so active work drains. Ambient provider credentials are
+removed at both child process boundaries and grants settle only after durable terminal evidence.
 
 Launch-capable `prepare-batch` modes check the Docker daemon, configured image, configured
 host shell, and authentication for the author/probe providers before write-protection admission,
