@@ -944,6 +944,21 @@ evidence. Settlement intent has its own exclusive marker: an uncertain result fo
 until the parent record proves whether the original grant settled, after which reconciliation
 either completes it or retries only that same settlement. Child exit alone never proves success.
 
+**Sibling task publication stays independent; shared documentation is coordinated afterward.**
+`runner/batch-merge.js` is a host-side library for a supervisor, not another task worker and
+not a command that merges to the integration branch. Its read-only `plan` operation discovers
+the common fork, preserves each existing product-only code tip as the independently reviewable
+task ref, simulates the published task branches pairwise with `git merge-tree`, and reports the
+shared Markdown paths and required review order. Mutation is explicit and separate:
+`integrateDocs` creates one new docs-only review branch containing every reconcilable task
+contribution, while `rebaseTask` creates a new rebased review ref without moving the task ref.
+The supervisor must hold the `integration-publish` section for either mutation. Neither call
+updates the integration branch. A content conflict, ref race, or unsafe mixed code/docs commit
+is named rather than hidden; reconciliation and rebase failures persist machine-readable
+evidence under `runs/merge-batch/` and leave affected issues open or blocked through the
+host-supplied Beads adapter. This keeps the first code PR reviewable as soon as publication
+finishes while making the batch's later documentation judgment one explicit review artifact.
+
 ## 4. The Implementation Phase (the execution layer)
 
 Carried over from v3, amended over two critic-review rounds; this section is the
@@ -1194,7 +1209,11 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
    `batch-sibling-partials`). "Paused" appears in a final report only if the
    operator stopped the run before a window reset; otherwise the run ends only when the
    queue is drained. Recurring "didn't know the current API" failures mean vendor those
-   docs, not open the network.
+   docs, not open the network. A supervisor may additionally render
+   `runner/batch-merge.js`'s batch report after sibling publication. That report names exact
+   pairwise merge readiness, multiply touched shared-document paths, and the review sequence;
+   unlike the run report it is a coordination plan, and its explicit `autoMerge: false` is a
+   contract rather than a status inferred from Git.
 10. **Workers are stateless; hierarchy is flat; the host owns all durable state.** The
     container's inputs are exactly: the `/workspace` mount; the pipeline scaffolding
     (entrypoint + verifier) bind-mounted **read-only at `/pipeline` by the runner from
@@ -1375,6 +1394,13 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     `scripts/design-provenance.js publish` as the remedy, and make the batch return attention.
     Already-frozen suites are deliberately not re-admitted against a newer provenance rule;
     `scripts/design-provenance.js verify` is their explicit pre-freeze audit.
+
+    Batch merge planning is read-only and needs no critical section. Creating a docs-integration
+    or rebased review ref through `runner/batch-merge.js` is integration publication and therefore
+    runs only while a supervising caller holds the `integration-publish` section. Those operations
+    create new refs atomically; they never move a task ref or the integration ref. A failed
+    simulation or reconciliation creates no partial review ref and leaves a durable failure record
+    for a later process before asking the host Beads adapter to keep the affected issue blocked.
 
     **The Beads checkout and publication remote are one project, proven before either is
     touched.** `targetRepoPath` is the database side of the runner while
