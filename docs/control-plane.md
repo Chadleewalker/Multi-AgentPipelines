@@ -211,6 +211,14 @@ forbids retry. `reconcile` asks the parent grant record for deterministic settle
 never launches replacement work. Prior attempts remain immutable evidence, and `stop` uses the
 existing run sentinel so active workers drain.
 
+The manager API deliberately separates observation from mutation. `status({ project, id })`
+may recover an implementation PID only from the authenticated child artifact; `restart(...)`
+never launches recorded work. `retry({ project, id, approved: true, grant })` is the only retry
+path and accepts only an attention operation whose child identity and settlement are already
+known. Use `reconcile({ project, id })` for uncertain settlement; it settles the original grant
+or leaves attention in place, but never starts a child. `stop({ project, id })` applies only to a
+running implementation feed and writes that run's normal stop sentinel.
+
 Launch-capable `prepare-batch` modes check the Docker daemon, configured image, configured
 host shell, and authentication for the author/probe providers before write-protection admission,
 locking, manifests, Beads, worktrees, attempts or workers. Each probe is bounded and the first
