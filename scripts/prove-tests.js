@@ -405,6 +405,32 @@ function prepareProbe(built, model, run = runSync, tempRoot = os.tmpdir()) {
   return { ok: true, container, baseline, probe, sourceSuite, baselineSuite, probeSuite, head, manifest };
 }
 
+function resumeProbe(built, probePath, run = runSync) {
+  const managed = readManagedProbe(probePath);
+  if (!managed) return { ok: false, error: 'retained probe has missing or invalid ownership evidence' };
+  const suiteId = suiteIdOf(built);
+  const { marker, container, baseline, probe } = managed;
+  const sourceSuite = path.join(built.folder.dir, 'tests', 'acceptance', suiteId);
+  const baselineSuite = path.join(baseline, 'tests', 'acceptance', suiteId);
+  const probeSuite = path.join(probe, 'tests', 'acceptance', suiteId);
+  if (marker.issue !== suiteId || path.resolve(marker.sourceWorktree || '') !== path.resolve(built.folder.dir)
+      || marker.status === 'proven') return { ok: false, error: 'retained probe identity does not match this unfinished proof' };
+  const headResult = run('git', ['rev-parse', 'HEAD'], {
+    cfg: built.cfg, kind: 'git', cwd: built.folder.dir, label: 'validate retained green-probe HEAD',
+  });
+  const head = String(headResult.stdout || '').trim();
+  if (headResult.status !== 0 || head !== marker.head) return { ok: false, error: 'retained probe no longer matches the author HEAD' };
+  try {
+    const manifest = normalizedManagedManifest(baseline,
+      protectedManifest(baseline, built.policy, suiteId), suiteId);
+    if (manifestHash(manifest) !== marker.manifestHash || suiteDifference(sourceSuite, baselineSuite).length
+        || suiteDifference(sourceSuite, probeSuite).length) {
+      return { ok: false, error: 'retained probe or authored suite changed while preparation was parked' };
+    }
+    return { ok: true, container, baseline, probe, sourceSuite, baselineSuite, probeSuite, head, manifest };
+  } catch (e) { return { ok: false, error: e.message }; }
+}
+
 function probePrompt(built, previous = '') {
   const suite = `tests/acceptance/${suiteIdOf(built)}/`;
   return [
@@ -485,7 +511,9 @@ function invariantErrors(built, prepared) {
 function proveTests(built, model, seams = {}) {
   const run = seams.runSync || runSync;
   const prepared = runStage(seams, 'prepare', null,
-    () => (seams.prepareProbe || prepareProbe)(built, model, run, seams.tempRoot || os.tmpdir()));
+    () => seams.retainedProbe
+      ? (seams.resumeProbe || resumeProbe)(built, seams.retainedProbe, run)
+      : (seams.prepareProbe || prepareProbe)(built, model, run, seams.tempRoot || os.tmpdir()));
   if (!prepared.ok) return { ok: false, kind: 'setup', error: prepared.error };
   const attempts = Math.max(1, Number(built.cfg.testProbeAttempts) || 3);
   let evidence = '';
@@ -495,6 +523,12 @@ function proveTests(built, model, seams = {}) {
       const launched = runStage(seams, 'probe-agent', attempt,
         () => (seams.launchProbe || launchProbe)(built, prepared, model, evidence, run));
       if (launched.status !== 0) {
+        const provider = AGENT.providerFor(built.cfg, 'test-probe');
+        const limited = AGENT.usageLimitFromLaunch(provider, launched, model);
+        if (limited) {
+          keepBaseline = true;
+          return { ...limited, kind: 'usage-limit', attempt, probe: prepared.probe };
+        }
         return { ok: false, kind: 'agent', attempt, probe: prepared.probe,
           error: failureText(launched, 'green-probe agent failed') };
       }
@@ -614,6 +648,7 @@ module.exports = {
   invariantErrors, suiteDifference, validIssueId,
   suiteIdOf,
   ownerRecordPath, ownedContainer, removeOwnedPath, removeOwnedContainer, readManagedProbe, validateManagedProbe,
+  resumeProbe,
   promoteManagedSuite, rollbackManagedPromotion, finalizeManagedPromotion, markProven, policyAt,
   validStageEvent, proofStageLine, runStage, PROOF_STAGES,
   PROBE_TOOLS, PROBE_DENIED, PROBE_PREFIX, PROBE_ROOT_NAME, MARKER,

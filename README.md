@@ -56,6 +56,11 @@ shell, and author/probe provider authentication before creating batch state or c
 attempt. If one is unavailable, follow the named remedy and retry the same batch; `status`
 and `acknowledge-interrupted` remain available while prerequisites are down.
 
+If an author or green-probe worker reaches the provider's canonical usage limit, preparation
+parks the whole batch until the reported reset time instead of failing the remaining issues.
+Use `node scripts/prepare-batch.js status <batch>` to see the paused stage, affected workers,
+preserved suite or probe paths, and exact resume command; an early resume launches no model.
+
 ```bash
 # 1. put your model credential where the runner can find it
 #    (git-ignored; get a Claude one with `claude setup-token`)

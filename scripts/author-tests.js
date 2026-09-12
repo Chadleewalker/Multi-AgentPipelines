@@ -190,6 +190,8 @@ function authorIssue(built, configPath, io = {}, seams = {}) {
   if (r.stdout) out(String(r.stdout).trimEnd());
   if (r.stderr) err(String(r.stderr).trimEnd());
   if (r.status !== 0) {
+    const limited = AGENT.usageLimitFromLaunch(AGENT.providerFor(built.cfg, 'test-author'), r, model);
+    if (limited) return { ...limited, kind: 'usage-limit', agentStatus: r.status, exitCode: EXIT_AGENT };
     const detail = failureText(r, 'Claude executable failed');
     if (!r.stderr && !r.stdout) err(`author-tests: ${detail}`);
     err(`Outcome: test-author agent failed (exit ${r.status === null ? 'unavailable' : r.status}).`);

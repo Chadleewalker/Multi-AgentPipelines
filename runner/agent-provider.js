@@ -286,6 +286,19 @@ function normalizeOutput(provider, raw, configuredModel) {
     : normalizeClaude(raw, configuredModel);
 }
 
+function usageLimitFromLaunch(provider, launched, configuredModel) {
+  const normalized = normalizeOutput(provider,
+    `${launched && launched.stdout || ''}\n${launched && launched.stderr || ''}`, configuredModel);
+  const limit = normalized && normalized.rateLimit;
+  if (!limit || typeof limit.resetAt !== 'string' || !Number.isFinite(Date.parse(limit.resetAt))
+      || new Date(limit.resetAt).toISOString() !== limit.resetAt
+      || typeof limit.evidence !== 'string' || !limit.evidence.length) return null;
+  return {
+    ok: false, outcome: 'usage-limit', rateLimit: { resetAt: limit.resetAt, evidence: limit.evidence },
+    provider: normalized.provider, model: normalized.model || configuredModel || null,
+  };
+}
+
 // ---- selected-provider readiness (§4.12) ---------------------------------------------
 
 function remediesFor(provider, cfg) {
@@ -349,5 +362,5 @@ module.exports = {
   normalizeProvider, normalizeReasoningEffort, validProvider, validReasoningEffort,
   providerFor, reasoningEffortFor, credentialNameFor, providerForCredentialName, executableFor,
   codexExecArgs, buildLaunch, launch,
-  missingCodexCapabilities, normalizeOutput, preflightProvider,
+  missingCodexCapabilities, normalizeOutput, usageLimitFromLaunch, preflightProvider,
 };
