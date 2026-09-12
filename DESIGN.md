@@ -1893,7 +1893,16 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     neither persisted nor included in the durable config hash, and their values are scrubbed from
     persisted worker evidence and errors.
 
-    The managed proof's integration-target comparison normalizes two non-test host artifacts;
+    Each proof preparation creates its owned baseline/probe container under a fresh private
+    namespace in the configured temporary root. A verifier running as another host identity
+    therefore never inherits an inaccessible shared mode-0700 probe root; successful removal or
+    pre-proof discard also removes the now-empty private roots on a best-effort basis.
+
+    The managed proof has one issue-independent integration-base identity: before an authored
+    suite is overlaid it includes every receipt byte the integration commit carries, including
+    malformed receipts, instead of excluding the receipt named by the issue being proved.
+    Independently prepared suites at one integration HEAD therefore share a base without making
+    receipt mutation invisible. Its later integration-target comparison normalizes two non-test host artifacts;
     retained baseline and probe marker identities keep their original full semantics. A sibling suite's freeze
     receipt is omitted only when the runner's own receipt parser accepts it, Git proves it is
     untracked, and it is a single-link regular non-symlink file; promotion stages only the suite under proof,
@@ -1945,12 +1954,14 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     failure. Operators can now distinguish a live expensive gate from a stalled integrity scan.
 
     The strongest batch result is deliberately **proven-at-base**. A proof is bound to the exact
-    integration HEAD and protected-tree manifest, so freezing one suite makes every other old
+    integration HEAD and issue-independent protected-tree base manifest, including every receipt
+    byte that commit carries, so freezing one suite makes every other old
     proof stale. Preparation therefore has no freeze, commit, merge, push or Beads-write verb.
     After one human review, proofs sharing one base may be published atomically: the freeze
     command takes one issue-to-managed-probe mapping per suite, validates every marker before a
     write, gates each retained baseline/probe pair, promotes only the disjoint suite union, and
-    makes one commit and one leased push. A missing, mixed-base, changed or mismatched member
+    makes one commit and one leased push. Existing valid receipts do not split that common base;
+    a missing, mixed-base, changed or mismatched member
     refuses the whole publication. Proofs that do not share a base are re-proved and frozen in
     series. Dependency edges are recorded for the handoff, but they do not serialize
     spec-derived test authors; the ordinary Beads-ready feed remains the only authority that

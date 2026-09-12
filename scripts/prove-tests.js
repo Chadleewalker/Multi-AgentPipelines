@@ -75,6 +75,16 @@ function ownerRecordPath(container) {
   return path.join(path.dirname(resolved), `.${path.basename(resolved)}${OWNER_SUFFIX}`);
 }
 
+function removeEmptyProbeRoots(container) {
+  const probeRoot = path.dirname(path.resolve(container));
+  if (path.basename(probeRoot) !== PROBE_ROOT_NAME) return;
+  try { fs.rmdirSync(probeRoot); } catch { return; }
+  const namespace = path.dirname(probeRoot);
+  if (new RegExp(`^\\.${PROBE_ROOT_NAME}-[A-Za-z0-9]{6}$`).test(path.basename(namespace))) {
+    try { fs.rmdirSync(namespace); } catch { /* best effort */ }
+  }
+}
+
 function ownedContainer(container) {
   const marker = path.join(container, MARKER);
   const ownerRecord = ownerRecordPath(container);
@@ -114,11 +124,13 @@ function removeOwnedContainer(container) {
   const ownerRecord = ownerRecordPath(container);
   fs.rmSync(container, { recursive: true, force: true });
   fs.rmSync(ownerRecord, { force: true });
+  removeEmptyProbeRoots(container);
 }
 
 function discardNewContainer(container) {
   try { fs.rmSync(container, { recursive: true, force: true }); } catch { /* best effort */ }
   try { fs.rmSync(ownerRecordPath(container), { force: true }); } catch { /* best effort */ }
+  removeEmptyProbeRoots(container);
 }
 
 function readManagedProbe(probePath) {
@@ -143,6 +155,15 @@ function policyAt(repoRoot) {
   return { frozenPaths: Array.isArray(raw.frozenPaths) ? raw.frozenPaths : [] };
 }
 
+// A base is the integration commit, not the issue-specific view used after a gate may rewrite
+// that issue's receipt. Include every receipt here so independently prepared proofs at one HEAD
+// get one identity, while malformed, forged or subsequently changed receipt bytes still move it.
+function integrationBaseManifest(repoRoot, policy, issueId, options = {}) {
+  return normalizedManagedManifest(repoRoot,
+    protectedManifest(repoRoot, policy, issueId, undefined, { includeIssueReceipt: true }),
+    issueId, { ...options, baseIdentity: true });
+}
+
 function validateManagedProbe(probePath, targetRepoPath, ids, head) {
   const resolvedProbe = path.resolve(probePath);
   const managedShape = path.basename(resolvedProbe) === 'probe'
@@ -162,11 +183,14 @@ function validateManagedProbe(probePath, targetRepoPath, ids, head) {
     const targetManifest = normalizedManagedManifest(targetRepoPath,
       protectedManifest(targetRepoPath, policy, marker.issue), marker.issue,
       { targetComparison: true });
+    const targetBaseManifest = integrationBaseManifest(targetRepoPath, policy, marker.issue,
+      { targetComparison: true });
     const probeManifest = normalizedManagedManifest(probe,
       protectedManifest(probe, policy, marker.issue), marker.issue);
     const baselineManifest = normalizedManagedManifest(baseline,
       protectedManifest(baseline, policy, marker.issue), marker.issue);
     const targetHash = manifestHash(targetManifest);
+    const targetBaseHash = manifestHash(targetBaseManifest);
     const probeHash = manifestHash(probeManifest);
     const baselineHash = manifestHash(baselineManifest);
     if (probeHash !== marker.manifestHash) {
@@ -176,7 +200,7 @@ function validateManagedProbe(probePath, targetRepoPath, ids, head) {
       return { ok: false, managed: true, error: 'the retained red baseline changed a protected path after it was proven' };
     }
     const targetIsProbe = targetHash === marker.manifestHash;
-    const targetIsBase = targetHash === marker.baseManifestHash;
+    const targetIsBase = targetBaseHash === marker.baseManifestHash;
     if (!targetIsProbe && !targetIsBase) {
       // A pre-promotion integration checkout is expected to resemble the clean base, while an
       // already-promoted checkout resembles the proven tree. Report the closer identity so the
@@ -299,8 +323,15 @@ function prepareProbe(built, model, run = runSync, tempRoot = os.tmpdir()) {
   if (!fs.existsSync(sourceSuite) || !fs.statSync(sourceSuite).isDirectory()) {
     return { ok: false, error: `the authored suite does not exist at ${sourceSuite}` };
   }
-  const probeRoot = path.join(path.resolve(tempRoot), PROBE_ROOT_NAME);
-  fs.mkdirSync(probeRoot, { recursive: true, mode: 0o700 });
+  // A verifier may run under a different host identity than the planning worker. A shared
+  // mode-0700 root in the OS temp directory would then strand every later proof behind the
+  // first identity that created it. Give each preparation a private namespace while retaining
+  // the fixed innermost root name that the ownership validator recognizes.
+  const resolvedTempRoot = path.resolve(tempRoot);
+  fs.mkdirSync(resolvedTempRoot, { recursive: true });
+  const namespace = fs.mkdtempSync(path.join(resolvedTempRoot, `.${PROBE_ROOT_NAME}-`));
+  const probeRoot = path.join(namespace, PROBE_ROOT_NAME);
+  fs.mkdirSync(probeRoot, { mode: 0o700 });
   const container = fs.mkdtempSync(path.join(probeRoot, `${PROBE_PREFIX}${suiteId}-`));
   const baseline = path.join(container, 'baseline');
   const probe = path.join(container, 'probe');
@@ -340,8 +371,7 @@ function prepareProbe(built, model, run = runSync, tempRoot = os.tmpdir()) {
   }
 
   let baseManifest;
-  try { baseManifest = normalizedManagedManifest(baseline,
-    protectedManifest(baseline, built.policy, suiteId), suiteId); }
+  try { baseManifest = integrationBaseManifest(baseline, built.policy, suiteId); }
   catch (e) {
     discardNewContainer(container);
     return { ok: false, error: e.message };
