@@ -100,6 +100,25 @@ When a thread graduates, its slug is already the change-log ref (§3.8), its sta
 wanted becomes `dropped` with the reason. Either way the file stays — deleting it throws
 away the reason, which is the only thing that stops the idea coming back.
 
+An idea already submitted through `scripts/kickoff.js` has a durable `kickoff-intake/1`
+record instead of a Markdown inbox entry. Turn that exact immutable intent into the initial
+canonical Beads spec before authoring its tests:
+
+```bash
+node scripts/specify-proposal.js run --config run.config.<project>.json --proposal kp-…
+# If it returns needs-input, preserve the printed evidence hash when answering:
+node scripts/specify-proposal.js answer --config run.config.<project>.json --proposal kp-… \
+  --evidence sha256:… --answer "the product choice"
+node scripts/specify-proposal.js run --config run.config.<project>.json --proposal kp-…
+```
+
+The specifier uses the configured Codex model with saved ChatGPT authentication and a
+read-only checkout pinned to integration. It creates no issue while a product choice is
+missing; a linked answer starts a fresh attempt, and a completed proposal creates or
+recovers exactly one Beads issue. Treat that issue as the starting draft for the review,
+critics and approval steps below—its generated criteria and difficulty are proposals, not
+a substitute for user approval or the frozen-test proof.
+
 Then run the drift report against the target (change-log row `trace-ledger`):
 
 ```bash
@@ -550,9 +569,11 @@ the question that catches it before drafting, and for what to do with the work i
 ### 5. The user approves intent
 Write the drafted specs to **one reviewable file in the repo** —
 `docs/planning-draft-<YYYY-MM-DD>.md` — so the user has a single, findable thing to
-read (never a scratchpad or chat-only summary). The draft is **superseded by the Beads
-issues at freeze**: the issue is the canonical spec from then on, so the snapshot is
-disposable and can be deleted once the tasks have run. The user reads the plain-English
+read (never a scratchpad or chat-only summary). For a manually entered task, the draft is
+**superseded by the Beads issue at freeze**; for a durable kickoff, the specifier-created
+issue is already canonical and the reviewable file records the revisions that must be
+applied to it before freeze. Either way, the snapshot is disposable and can be deleted once
+the tasks have run. The user reads the plain-English
 spec — description, constraints, acceptance criteria in "Done means" form, and the
 difficulty label — and says whether it matches what they want. Adjust until yes. For a
 backlog decomposed from a design doc, this is a single list pass checking the slicing,
