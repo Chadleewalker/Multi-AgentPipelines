@@ -180,6 +180,15 @@ function createHostOperationManager(options = {}) {
     return { ok: true, feedPath, token };
   }
 
+  function authenticatedChildFor(slot) {
+    if (!slot || typeof slot.runId !== 'string' || !slot.runId) return null;
+    const observed = readJson(path.join(runsRoot, slot.runId, 'child-observed.json'));
+    if (!observed || observed.kind !== 'implementation-child' || observed.authenticated !== true
+        || observed.authorityNonce !== slot.grantNonce || observed.runId !== slot.runId
+        || !Number.isInteger(observed.pid) || observed.pid <= 0) return null;
+    return observed;
+  }
+
   function releaseFeedSlot(record) {
     if (!record || !record.feedPath || !record.feedSlotToken) return;
     const holder = readJson(record.feedPath);
@@ -270,6 +279,7 @@ function createHostOperationManager(options = {}) {
       attention: record.attention || record.launchError || 'child exited without terminal artifact evidence',
       settlement: record.settlement || null,
       childIdentity: record.childIdentity || (record.pid ? 'known' : 'uncertain'),
+      reconciliation: record.reconciliation || null,
     };
   }
 
@@ -412,6 +422,9 @@ function createHostOperationManager(options = {}) {
     if (kind === 'implementation') {
       feedSlot = acquireFeedSlot(project, id, attempt, input.grant.authority.nonce, currentRunId);
       if (!feedSlot.ok) return feedSlot;
+      if (faults.afterFeedReservation === true) {
+        throw new Error('operation manager: injected crash after implementation feed reservation');
+      }
       const competitor = competingImplementation(project, id);
       if (competitor) {
         releaseFeedSlot({ id, attempt, feedPath: feedSlot.feedPath, feedSlotToken: feedSlot.token });
@@ -456,7 +469,13 @@ function createHostOperationManager(options = {}) {
       releaseFeedSlot(record);
       return { ok: false, error: `operation manager: operation ${id} is already recorded` };
     }
+    if (kind === 'implementation' && faults.afterOperationIntent === true) {
+      throw new Error('operation manager: injected crash after operation intent persistence');
+    }
     writeJson(authorityPath, input.grant.authority);
+    if (kind === 'implementation' && faults.afterAuthorityPersist === true) {
+      throw new Error('operation manager: injected crash after authority persistence');
+    }
 
     const childEnv = { ...env, PIPELINE_CHILD_AUTHORITY: authorityPath };
     for (const name of PROVIDER_CREDENTIALS) delete childEnv[name];
@@ -556,6 +575,9 @@ function createHostOperationManager(options = {}) {
       if (prior.childIdentity === 'pending') {
         return { ok: false, error: 'operation manager: child identity is uncertain; retry is forbidden' };
       }
+      if (prior.recoveryPending === true) {
+        return { ok: false, error: 'operation manager: interrupted launch recovery must be resumed explicitly' };
+      }
       // Validate supplied authority before observing or persisting anything: a bad transition
       // must leave the operation evidence byte-for-byte unchanged.
       const grantError = validateGrant(prior.kind, prior.project, prior.batchId, input.grant);
@@ -577,6 +599,133 @@ function createHostOperationManager(options = {}) {
         authorConcurrency: prior.authorConcurrency,
         grant: input.grant,
       }, retryPrior);
+    } finally {
+      releaseTransition(retryPath, transition.token);
+    }
+  }
+
+  function recoverLaunch(input = {}) {
+    if (input.approved !== true) {
+      return { ok: false, error: 'operation manager: launch recovery requires explicit parent approval' };
+    }
+    const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
+    if (!reason) {
+      return { ok: false, error: 'operation manager: launch recovery requires a non-empty audit reason' };
+    }
+
+    let project, id, statePath, retryPath, feedPath;
+    try {
+      project = assertExternal(input.project);
+      id = safeId(input.operationId || input.id);
+      ({ statePath, retryPath, feedPath } = pathsFor(project, id));
+    } catch (e) { return { ok: false, error: e.message }; }
+    const grantError = validateGrant('implementation', project, null, input.grant);
+    if (grantError) return { ok: false, error: `operation manager: ${grantError}` };
+
+    const transition = acquireTransition(retryPath, { kind: 'operation-launch-recovery', statePath });
+    if (!transition.ok) return transition;
+    try {
+      const current = readJson(statePath);
+      const slot = readJson(feedPath);
+
+      if (!current && fs.existsSync(statePath)) {
+        return { ok: false, error: 'operation manager: operation record is unreadable; recovery refuses to erase evidence' };
+      }
+
+      // A recovery process may itself have died after preserving the abandoned attempt and
+      // releasing its slot. That state is deliberately resumable only through this API.
+      if (!slot && current && current.kind === 'implementation' && current.id === id
+          && current.project === project && current.recoveryPending === true
+          && current.childIdentity === 'not-spawned') {
+        return launch({
+          kind: 'implementation', id, project,
+          configPath: current.configPath || input.configPath,
+          grant: input.grant,
+        }, current);
+      }
+
+      if (!slot || slot.kind !== 'implementation-feed-slot' || slot.id !== id
+          || slot.project !== project || !Number.isInteger(slot.attempt) || slot.attempt <= 0
+          || typeof slot.token !== 'string' || !slot.token
+          || slot.grantNonce !== input.grant.authority.nonce) {
+        return { ok: false, error: 'operation manager: no matching interrupted implementation reservation' };
+      }
+      if (authenticatedChildFor(slot)) {
+        return { ok: false, error: 'operation manager: authenticated child evidence exists; pre-spawn recovery is forbidden' };
+      }
+
+      const authorityPath = path.join(path.dirname(statePath), `${id}.attempt-${slot.attempt}.authority.json`);
+      const audit = {
+        decision: 'parent-approved-not-spawned',
+        reason,
+        reconciledAt: new Date().toISOString(),
+      };
+      const attention = `pre-spawn reservation reconciled as not spawned: ${reason}`;
+      let abandoned;
+
+      if (!current) {
+        if (slot.attempt !== 1) {
+          return { ok: false, error: 'operation manager: orphan reservation has an invalid first attempt' };
+        }
+        abandoned = {
+          schema: 1, kind: 'implementation', id, project, state: 'attention', statePath,
+          attempt: 1, previousAttempts: [], attempts: [], startedAt: slot.reservedAt,
+          pid: null, processIdentity: null, childIdentity: 'not-spawned',
+          grantNonce: slot.grantNonce, authorityPath, parentLease: input.grant.parentLease,
+          configPath: input.configPath, issues: [], batchId: null,
+          runId: slot.runId, runDir: path.join(runsRoot, slot.runId),
+          feedPath, feedSlotToken: slot.token,
+          artifactPaths: {
+            runDir: path.join(runsRoot, slot.runId),
+            manifest: path.join(runsRoot, slot.runId, 'run.json'),
+            log: path.join(runsRoot, slot.runId, 'run.log'),
+          },
+          attention, reconciliation: audit, recoveryPending: true,
+        };
+      } else if (current.kind === 'implementation' && current.id === id
+          && current.project === project && current.attempt === slot.attempt
+          && current.pid === null && current.childIdentity === 'pending'
+          && (current.state === 'launching' || current.state === 'attention')) {
+        abandoned = { ...current, state: 'attention', childIdentity: 'not-spawned',
+          attention, reconciliation: audit, recoveryPending: true };
+      } else if (current.kind === 'implementation' && current.id === id
+          && current.project === project && slot.attempt === current.attempt + 1) {
+        const observedPrior = inspect(current, false);
+        if (observedPrior.state !== 'attention') {
+          return { ok: false, error: `operation manager: prior attempt is ${observedPrior.state}; recovery cannot launch another feed` };
+        }
+        const priorAttempts = [...(Array.isArray(current.attempts) ? current.attempts
+          : (Array.isArray(current.previousAttempts) ? current.previousAttempts : [])), attemptSnapshot(current)];
+        abandoned = {
+          ...current,
+          state: 'attention', attempt: slot.attempt,
+          previousAttempts: priorAttempts, attempts: priorAttempts,
+          startedAt: slot.reservedAt, pid: null, processIdentity: null,
+          childIdentity: 'not-spawned', grantNonce: slot.grantNonce,
+          authorityPath, parentLease: input.grant.parentLease,
+          configPath: current.configPath || input.configPath,
+          runId: slot.runId, runDir: path.join(runsRoot, slot.runId),
+          feedPath, feedSlotToken: slot.token,
+          artifactPaths: {
+            runDir: path.join(runsRoot, slot.runId),
+            manifest: path.join(runsRoot, slot.runId, 'run.json'),
+            log: path.join(runsRoot, slot.runId, 'run.log'),
+          },
+          attention, reconciliation: audit, recoveryPending: true,
+        };
+      } else {
+        return { ok: false, error: 'operation manager: reservation and operation do not form a recoverable pre-spawn state' };
+      }
+
+      // Preserve the abandoned attempt before releasing its reservation. If interrupted after
+      // either write, recoverLaunch deterministically resumes; ordinary retry remains closed.
+      persist(abandoned);
+      releaseFeedSlot(abandoned);
+      return launch({
+        kind: 'implementation', id, project,
+        configPath: abandoned.configPath || input.configPath,
+        grant: input.grant,
+      }, abandoned);
     } finally {
       releaseTransition(retryPath, transition.token);
     }
@@ -641,7 +790,7 @@ function createHostOperationManager(options = {}) {
     return { ok: true, id: found.id, runId: found.runId, stopFile };
   }
 
-  return { startPreparation, startImplementation, status, restart, retry, reconcile, stop };
+  return { startPreparation, startImplementation, status, restart, retry, recoverLaunch, reconcile, stop };
 }
 
 module.exports = { createHostOperationManager };
