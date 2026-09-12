@@ -559,14 +559,16 @@ function body() {
   const boundaryDirectories = ['', 'docs', 'docs/threads', 'runner', 'tools',
     'tests/acceptance/repo-f65'];
   const boundaryNames = ['DESIGN', 'change-log', 'pipeline-map', 'test'];
-  const boundaryExtensions = ['.md', '.txt', '.html', '.js', '.json'];
+  // The docs phase deliberately accepts Markdown case-insensitively. Keep uppercase in this
+  // corpus so a coordinator cannot silently drift to a narrower, case-sensitive partition.
+  const boundaryExtensions = ['.md', '.MD', '.txt', '.html', '.js', '.json'];
   const boundaryCorpus = boundaryDirectories.flatMap((dir) => boundaryNames.flatMap((name) =>
     boundaryExtensions.map((ext) => `${dir ? `${dir}/` : ''}${name}${ext}`)));
-  const docsPhaseOwns = (p) => /^[^/]+\.md$/.test(p) || /^docs\/.+\.md$/.test(p);
+  const docsPhaseOwns = (p) => /^[^/]+\.md$/i.test(p) || /^docs\/.+\.md$/i.test(p);
   check('C2 the shared-document boundary is exactly the one the docs phase writes through',
     hasFn('isSharedDocument')
     && boundaryCorpus.every((p) => coordinator.isSharedDocument(p) === docsPhaseOwns(p)),
-    'isSharedDocument must be `^[^/]+\\.md$` or `^docs/.+\\.md$` and nothing else');
+    'isSharedDocument must match the docs phase case-insensitively and nothing else');
 
   const onePlanTasks = Array.isArray(onePlan.tasks) ? onePlan.tasks : [];
   const byId = (id) => onePlanTasks.find((t) => t && t.issueId === id) || {};

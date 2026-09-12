@@ -10,6 +10,7 @@
 // C6: this file supplies the fake clock/launcher and asserts attempts, ledger, liveness, idempotence.
 'use strict';
 
+const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const prepare = require('../../../scripts/prepare-batch');
@@ -104,6 +105,93 @@ async function realCoordinatorIntegration() {
     noFalseClassification, JSON.stringify(calls));
 }
 
+// Drive the persisted execute path through the exact crash window the in-memory helper cannot
+// represent. The first eligible resume dies during snapshotting. A durable "resumed" event
+// written before that point would deactivate the pause and make the second invocation skip the
+// unfinished usage-limit result. Recovery is lossless only when the pause remains active until
+// the replacement attempt has actually run and settled.
+async function persistedResumeRecovery() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'repo-wsj-resume-'));
+  const batch = 'repo-wsj-resume';
+  const id = 'wsj-resume-worker';
+  const cfg = {
+    targetRepoPath: root,
+    targetRepoRemote: 'https://example.invalid/repo.git',
+    model: 'fixture', wallClockMinutes: 1, allowHalfProven: false,
+  };
+  const manifest = { value: {
+    project: 'fixture', runConfig: 'fixture.json', concurrency: 1,
+    integrationBranch: 'main', integrationHead: 'f'.repeat(40),
+    config: cfg, configHash: 'fixture-config-hash',
+    issues: [{ id, title: id, priority: 1, dependencies: [] }],
+  } };
+  const events = [{
+    type: 'batch.usage-limit-paused',
+    payload: {
+      state: 'paused', resetAt: RESET, stage: 'author-proof',
+      activeWorkers: [id], issueId: id,
+      resumeCommand: `node scripts/prepare-batch.js resume ${batch}`,
+    },
+  }];
+  const timeline = [];
+  const prior = {
+    started: { nonce: 'b'.repeat(32), pid: 987654321, phase: 'author-proof', data: { action: 'author-proof' } },
+    result: { outcome: 'usage-limit', data: { id, ...LIMIT } },
+  };
+  const state = {
+    preparationRoot: () => root,
+    readManifest: () => manifest,
+    canonicalHash: () => 'fixture-config-hash',
+    redactConfig: (value) => value,
+    appendEvent: (_root, _batch, type, payload) => { events.push({ type, payload }); timeline.push(type); },
+    readEvents: () => events.slice(),
+    readWorkerRecords: (_root, _batch, issueId) => issueId === id ? prior : null,
+  };
+  let snapshots = 0;
+  let launches = 0;
+  const seams = {
+    state,
+    preparationRoot: () => root,
+    now: () => RESET,
+    loadConfig: () => cfg,
+    admitEntry: () => ({ ok: true, mode: 'standalone' }),
+    acquire: () => ({ ok: true, tookOver: false, ownership: {} }),
+    release() {},
+    inspectIntegration: () => ({ ok: true, branch: 'main', head: 'f'.repeat(40) }),
+    readyQueue: () => ({ ok: true, issues: [] }),
+    buildBrief: ({ id: issueId }) => {
+      snapshots += 1;
+      if (snapshots === 1) throw new Error('injected crash after resume admission');
+      return built(issueId, cfg);
+    },
+    resolveDesign: () => ({ ok: true, refs: [], reasons: [], remedies: [] }),
+    runWorker: async (_root, _batch, item) => {
+      launches += 1;
+      timeline.push('worker.launch');
+      return { id: item.id, ok: true, outcome: 'proven-at-base', proof: { probe: `/retained/${item.id}` } };
+    },
+  };
+  const opts = { mode: 'resume', batch, config: null, issues: [], concurrency: 1 };
+  let interrupted = false;
+  try { await prepare.execute(opts, {}, seams); }
+  catch (error) { interrupted = /injected crash/.test(String(error && error.message)); }
+  const resumedBeforeRecovery = events.filter((event) => event.type === 'batch.usage-limit-resumed').length;
+  const exit = await prepare.execute(opts, {}, seams);
+  const resumedEvents = events.filter((event) => event.type === 'batch.usage-limit-resumed');
+  check('C4/C6 persisted execute interruption leaves the usage-limit pause active for recovery',
+    interrupted && resumedBeforeRecovery === 0,
+    JSON.stringify({ interrupted, resumedBeforeRecovery, events }));
+  check('C3/C4/C6 repeated persisted resume launches the unfinished attempt exactly once',
+    exit === 0 && launches === 1,
+    JSON.stringify({ exit, launches, events }));
+  check('C4/C6 persisted resume is recorded only after the replacement attempt settles',
+    resumedEvents.length === 1
+      && timeline.indexOf('worker.launch') >= 0
+      && timeline.indexOf('batch.usage-limit-resumed') > timeline.indexOf('worker.launch'),
+    JSON.stringify({ timeline, resumedEvents }));
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
 async function main() {
   check('C1/C2/C3/C4/C6 preparation exports the deterministic batch usage-limit controller this suite drives',
     typeof prepare.createUsageLimitPreparation === 'function',
@@ -161,6 +249,7 @@ async function main() {
     JSON.stringify({ again, launches: h.launches, ledger: h.ledger }));
 
   await realCoordinatorIntegration();
+  await persistedResumeRecovery();
 }
 
 main()

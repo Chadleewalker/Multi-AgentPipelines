@@ -1,19 +1,20 @@
 // Frozen acceptance test — repo-7en: show live preparation workers as running.
 //
 // CRITERION MAP (every criterion has named checks below, and no check is orphaned):
-//   C1 persisted owner and worker process identity + liveness evaluation -> C1.1-C1.4
+//   C1 persisted owner and worker process identity + liveness evaluation -> C1.1-C1.5
 //   C2 live preparation reports its truthful active phase                 -> C2.1-C2.3
 //   C3 interrupted-unknown follows falsified liveness and no result       -> C3.1-C3.3
 //   C4 deterministic live/stale/recycled/owner-exit/terminal coverage     -> C4.1-C4.5
 //
 // FROZEN INTERFACE / SPEC DEFECT: the Beads issue names neither a persisted identity
 // shape nor a status API. This suite makes the smallest existing-project-shaped contract:
-// worker start records persist `owner` equal to lock.livenessFields(), and
-// preparation-state.deriveState(root, batch, { isLive }) returns each issue's `liveness`
-// and its state. `isLive` receives that persisted object and returns a boolean. The default
-// is lock.isHolderLive. This reuses the project's cross-platform, PID-recycle-safe lock
-// identity rather than inventing a second PID-only probe. `statusReport` must pass its
-// liveness seam through to deriveState. The specification should ratify this interface.
+// worker start records persist `owner` equal to lock.livenessFields() and retain the existing
+// retry-safe action phase (`author-proof` or `proof`). preparation-state.deriveState(root,
+// batch, { isLive }) returns each issue's `liveness` and maps those durable action phases to
+// the human status labels `authoring` and `proving` only in its derived view. `isLive` receives
+// the persisted identity and returns a boolean. The default is lock.isHolderLive. This reuses
+// the project's cross-platform, PID-recycle-safe lock identity without breaking interruption
+// acknowledgement/retry, and `statusReport` must pass its liveness seam through to deriveState.
 'use strict';
 
 const fs = require('fs');
@@ -59,11 +60,11 @@ function row(derived, id) { return derived.issues.find((issue) => issue.id === i
 
 try {
   makeManifest();
-  start(ids[0], 'authoring', identities.author);
-  start(ids[1], 'proving', identities.proof);
-  start(ids[2], 'authoring', identities.stale);
-  start(ids[3], 'proving', identities.ownerExit);
-  start(ids[4], 'authoring', identities.terminal); result(ids[4], 'proven-at-base');
+  start(ids[0], 'author-proof', identities.author);
+  start(ids[1], 'proof', identities.proof);
+  start(ids[2], 'author-proof', identities.stale);
+  start(ids[3], 'proof', identities.ownerExit);
+  start(ids[4], 'author-proof', identities.terminal); result(ids[4], 'proven-at-base');
 
   // C1 — persistence is asserted against durable records, not the in-memory fixture.
   const records = state.readWorkerRecords(root, batch, ids[0]);
@@ -79,6 +80,11 @@ try {
       return seen.some((value) => same(value, owner)) && ids.slice(0, 4).every((id) => seen.some((value) => same(value, identities[id === ids[0] ? 'author' : id === ids[1] ? 'proof' : id === ids[2] ? 'stale' : 'ownerExit']))); })());
   check('C1.4 the default evaluator is the established recycled-PID-safe lock liveness rule',
     typeof lock.isHolderLive === 'function' && derive().ok === true);
+  check('C1.5 durable worker phase remains compatible with interruption acknowledgement and retry',
+    records[0].started.phase === 'author-proof'
+      && typeof prep.attemptPhase === 'function'
+      && prep.attemptPhase(records[0].started) === 'author-proof',
+    JSON.stringify(records[0] && records[0].started));
 
   // C2 — both live workers must say what they are doing, never a guessed terminal state.
   const live = derive((identity) => identity.pid === owner.pid || identity.pid === identities.author.pid || identity.pid === identities.proof.pid || identity.pid === identities.ownerExit.pid);
