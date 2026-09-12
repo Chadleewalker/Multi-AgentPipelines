@@ -227,6 +227,12 @@ be started or retried immediately after repair. Codex planning stages accept a p
 key or a healthy saved ChatGPT login reported by `codex login status`. `status` and
 `acknowledge-interrupted` stay available when those prerequisites are down.
 
+Preparation manifests and worker starts persist the lock module's process identity. Read-only
+`status <batch>` evaluates those identities with the recycled-PID-safe, cross-platform liveness
+rule: an unresolved live worker reports `authoring` or `proving`, while
+`interrupted-unknown` requires a falsified worker identity and no terminal result. Owner exit is
+reported independently from worker liveness, and an existing terminal result always wins.
+
 Preparation also resolves each not-yet-frozen issue's structured `design-ref` from the exact
 integration HEAD recorded in its immutable manifest. It never consults an operator-local file
 or a newer working-tree copy. Approved text that is not committed is published through the
