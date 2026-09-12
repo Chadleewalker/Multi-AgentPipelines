@@ -227,6 +227,13 @@ be started or retried immediately after repair. Codex planning stages accept a p
 key or a healthy saved ChatGPT login reported by `codex login status`. `status` and
 `acknowledge-interrupted` stay available when those prerequisites are down.
 
+A canonical author or green-probe usage-limit response parks the named preparation batch at the
+provider's reset instant. Already-active workers settle normally, untouched issues remain pending,
+and authored suite or retained probe paths are preserved. Inspect the reset, paused stage, affected
+workers, paths and exact command with `node scripts/prepare-batch.js status <batch>`; the printed
+`node scripts/prepare-batch.js resume <batch>` refuses before the reset without launching a model
+and afterwards continues only the unfinished limited attempt.
+
 Preparation also resolves each not-yet-frozen issue's structured `design-ref` from the exact
 integration HEAD recorded in its immutable manifest. It never consults an operator-local file
 or a newer working-tree copy. Approved text that is not committed is published through the

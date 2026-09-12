@@ -1893,6 +1893,17 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     neither persisted nor included in the durable config hash, and their values are scrubbed from
     persisted worker evidence and errors.
 
+    A canonical provider usage-limit result with an absolute reset instant parks this whole
+    preparation batch. The first settled limit closes the shared worker pool to new admissions;
+    workers already active may settle once, and their authored suites and managed probe paths
+    remain evidence rather than becoming per-issue failures. The hash-chained ledger records one
+    `batch.usage-limit-paused` event with the affected workers, stage, reset and exact resume
+    command. Resume before that instant refuses before a worker launch. Eligible resume reuses
+    every valid snapshot and retained path, runs only the limited unfinished attempt, and records
+    `batch.usage-limit-resumed` only after that replacement settles, so interruption and repeated
+    resume cannot deactivate the park early or duplicate work. Only the provider adapter's closed
+    structured protocol can select this state; ordinary agent failures and model prose cannot.
+
     Each proof preparation creates its owned baseline/probe container under a fresh private
     namespace in the configured temporary root. A verifier running as another host identity
     therefore never inherits an inaccessible shared mode-0700 probe root; successful removal or
