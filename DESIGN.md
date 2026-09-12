@@ -939,6 +939,12 @@ One atomic host-global feed slot per canonical project closes cross-manager laun
 one atomic attempt transition closes concurrent retry races. A crash after spawn but before
 PID persistence may bind only to a durable child artifact matching both the preallocated run id
 and authority nonce; absent that proof, the operation remains attention and its slot stays held.
+The reservation itself is also recoverable before spawn: a slot with no operation, a matching
+pending launch, or a retry slot exactly one attempt ahead has one explicit recovery path. The
+parent must approve it with a non-empty audit reason attesting that no child remains; ordinary
+start and retry stay closed. Recovery records the abandoned attempt as `not-spawned` before it
+releases the old slot and reserves the next attempt, so an interruption at either boundary is
+resumable without erasing evidence or admitting two feeds.
 Every retry snapshots the prior operation, exit, attention, settlement, authority and artifact
 evidence. Settlement intent has its own exclusive marker: an uncertain result forbids retry
 until the parent record proves whether the original grant settled, after which reconciliation

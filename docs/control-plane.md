@@ -215,8 +215,13 @@ The manager API deliberately separates observation from mutation. `status({ proj
 may recover an implementation PID only from the authenticated child artifact; `restart(...)`
 never launches recorded work. `retry({ project, id, approved: true, grant })` is the only retry
 path and accepts only an attention operation whose child identity and settlement are already
-known. Use `reconcile({ project, id })` for uncertain settlement; it settles the original grant
-or leaves attention in place, but never starts a child. `stop({ project, id })` applies only to a
+known. A pre-spawn reservation is different: `recoverLaunch({ project, operationId, configPath,
+grant, approved: true, reason })` requires a non-empty parent audit reason attesting that no child
+remains, preserves the reserved attempt as `not-spawned`, and launches the next attempt. It is
+the only mutation path for an orphan slot, a matching pending launch, or a retry slot whose next
+operation record was not persisted. Use `reconcile({ project, id })` for uncertain settlement; it
+settles the original grant or leaves attention in place, but never starts a child.
+`stop({ project, id })` applies only to a
 running implementation feed and writes that run's normal stop sentinel.
 
 Launch-capable `prepare-batch` modes check the Docker daemon, configured image, configured
