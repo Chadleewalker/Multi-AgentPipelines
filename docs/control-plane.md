@@ -219,10 +219,12 @@ known. A pre-spawn reservation is different: `recoverLaunch({ project, operation
 grant, approved: true, reason })` requires a non-empty parent audit reason attesting that no child
 remains, preserves the reserved attempt as `not-spawned`, and launches the next attempt. It is
 the only mutation path for an orphan slot, a matching pending launch, or a retry slot whose next
-operation record was not persisted. Use `reconcile({ project, id })` for uncertain settlement; it
-settles the original grant or leaves attention in place, but never starts a child.
-`stop({ project, id })` applies only to a
-running implementation feed and writes that run's normal stop sentinel.
+operation record was not persisted. Authenticated child evidence forbids this recovery; if the
+recovery itself stops after recording `not-spawned`, only another explicitly approved
+`recoverLaunch` call may resume it. Use `reconcile({ project, id })` for uncertain settlement;
+it settles the original grant or leaves attention in place, but never starts a child.
+`stop({ project, id })` applies only to a running implementation feed and writes that run's
+normal stop sentinel.
 
 Launch-capable `prepare-batch` modes check the Docker daemon, configured image, configured
 host shell, and authentication for the author/probe providers before write-protection admission,
