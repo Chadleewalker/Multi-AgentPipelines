@@ -149,10 +149,13 @@ async function main() {
     const result = execute(job, { onStage: (event) => {
       if (proof.validStageEvent(event)) process.stderr.write(`${STAGE_PREFIX}${JSON.stringify(event)}\n`);
     } });
-    process.stdout.write(`${JSON.stringify(result)}\n`);
+    // This protocol is consumed through a pipe and the process exits immediately afterward.
+    // A synchronous write keeps the one-result envelope intact on Windows hosts, where
+    // process.stdout.write to a pipe is asynchronous and can otherwise be truncated.
+    fs.writeSync(1, `${JSON.stringify(result)}\n`);
     return result.ok ? 0 : 1;
   } catch (e) {
-    process.stdout.write(`${JSON.stringify({ ok: false, outcome: 'invalid', error: e.message })}\n`);
+    fs.writeSync(1, `${JSON.stringify({ ok: false, outcome: 'invalid', error: e.message })}\n`);
     return 2;
   }
 }

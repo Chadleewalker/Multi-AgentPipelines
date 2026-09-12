@@ -135,8 +135,10 @@ The five fields:
 - **Acceptance criteria** — the "Done means" list: 3–6 concrete, machine-checkable
   outcomes. Each must be verifiable by a script or test with no human judgment
   ("`verify.sh` exits 0 and the branch exists", never "works well").
-- **design-ref** — the design-doc section this task implements. Mandatory: a task that
-  cites nothing is scope creep (§3.1).
+- **design-ref** — the repository-relative design document and optional Markdown heading this
+  task implements, for example `design-ref: DESIGN.md#§3.10`. Mandatory: a task that cites
+  nothing is scope creep, and a path or anchor absent from the integration commit cannot be
+  handed to an implementation worker (§3.1).
 - **Attempt log** — starts empty; the runner appends to it during runs.
 
 Label the task **trivial / medium / hard**, and split anything bigger than one PR the
@@ -302,6 +304,29 @@ at most ten test authors, both by default and at the hard maximum. Workers recei
 snapshot on stdin; they cannot re-read Beads or choose another worktree. The same target-global
 lock excludes a normal pipeline run and either standalone author/proof command while preparation
 owns the target.
+
+Before preparation, publish approved design text that exists only in an operator checkout and
+audit the exact integration commit:
+
+```bash
+node scripts/design-provenance.js publish <issue-id> --config run.config.<project>.json \
+  --source <approved-file> [--anchor '§3.10'] [--expected-head <sha>]
+node scripts/design-provenance.js verify <issue-id> --config run.config.<project>.json
+```
+
+Publication commits and pushes only `docs/design/provenance/<issue-id>.md`, refuses a live
+target owner, stale expected HEAD, or different bytes already owned by that issue, and updates
+the canonical issue's structured `design-ref` through the host. Preparation repeats resolution
+from its pinned integration HEAD and records that commit; an unresolved path or heading becomes
+`needs-design`, launches no worker, and names the publish command as its remedy.
+
+For an imported canonical issue that cannot publish a repository document, the design field may
+instead be self-contained: `design-snapshot: sha256:<digest>` followed by a fenced block whose
+UTF-8 body (including one trailing newline) hashes to that digest. Preparation resolves a valid
+snapshot without repository or operator-local files and refuses a mismatched digest as
+`snapshot-mismatch`. The normal `new-issue.sh` workflow continues to require a structured
+`design-ref`; publication is the preferred planning path because it leaves reviewable provenance
+in the integration history.
 
 Under a live project supervisor, preparation instead runs as that supervisor's admitted
 `preparation` child: it takes no lock of its own and releases none, because its parent's lease

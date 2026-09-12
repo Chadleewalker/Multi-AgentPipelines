@@ -453,6 +453,14 @@ so start Docker Desktop, build the named image, correct `hostShell`, or restore 
 provider login as instructed and rerun the same batch name. Read-only status and interrupted
 worker acknowledgement do not depend on these prerequisites.
 
+Every issue must use a repository-relative structured design reference such as
+`design-ref: DESIGN.md#§4.12`. If approved rationale exists only outside the integration commit,
+publish it before preparation with `node scripts/design-provenance.js publish <issue-id>
+--config run.config.<project>.json --source <approved-file> --anchor <heading>`, then run the
+same command's `verify` verb. The publisher creates the issue-owned
+`docs/design/provenance/<issue-id>.md` commit and updates Beads on the host; preparation refuses
+an unresolved path or heading before creating any suite worktree.
+
 **Never launch independent `author-tests.js` sessions to get parallel preparation** — not
 two by hand, not one per issue, not in separate terminals. `author-tests.js` is the
 single-suite path and takes the same target ownership for itself, so extra sessions refuse

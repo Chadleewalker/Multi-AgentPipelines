@@ -92,9 +92,15 @@ entries alongside the survivors, and `queue.queueSummary()` names them in the ru
 an epic that never runs is still visible in the place a reviewer already reads.
 
 One canonical home per artifact; everything else (PR descriptions, the run report) is a
-generated copy, never edited by hand. Each Beads issue carries a `design-ref` naming the
-design-doc section it implements — this makes two checks cheap: doc sections with no issue
-(coverage gap) and issues citing nothing (scope creep).
+generated copy, never edited by hand. Each Beads issue carries a structured `design-ref`
+with a repository-relative document path and optional Markdown heading anchor. Preparation
+resolves every such reference from the exact integration commit it snapshots, never from the
+operator's working tree. Approved text absent from that commit is first published by
+`scripts/design-provenance.js` under `docs/design/provenance/<issue-id>.md`; that one-path
+commit is immutable per issue, and the publisher writes the resulting reference through the
+host's sole Beads writer. This makes three checks cheap: doc sections with no issue (coverage
+gap), issues citing nothing (scope creep), and unpublished rationale absent from an
+implementation clone.
 
 **Issue fields.** The five spec fields (description, constraints, acceptance criteria,
 `design-ref`, attempt log) are stored as structured markdown sections in the issue
@@ -892,6 +898,10 @@ one exclude the other would serialize the workers completely and leave "two work
 together" with no content. A child may enter those two sections and no others; a section
 whose holder is provably gone is taken over on the same falsifiable evidence §4.12 uses for
 the lock, since a section nobody can be shown to be inside is the block-forever case again.
+Standalone design-provenance publication takes the canonical-target authority itself, so two
+planning sessions cannot overwrite one issue's provenance or race an integration update. A
+second publication of identical bytes is idempotent; different bytes at the same issue-owned
+path are refused, and an expected-HEAD lease turns a read/write race into a named refusal.
 
 **Interruption produces evidence, never inference.** A grant is removed from the outstanding
 list by exactly one thing: its parent settling it as `complete` or `released`. Not by
@@ -1327,7 +1337,13 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     The runner's order remains write-protection admission, child admission, project lock,
     repository identity, host shell, Docker, image, network, egress, stale-issue recovery;
     preparation's order is child admission, prerequisites, write-protection admission, then its
-    target lock or delegated supervisor ownership.
+    target lock or delegated supervisor ownership. Once it holds that authority, preparation
+    pins the integration HEAD and resolves every not-yet-frozen issue's structured design
+    reference from that commit before creating a worktree or launching a worker. Missing paths,
+    missing anchors and operator-local references become `needs-design`, name
+    `scripts/design-provenance.js publish` as the remedy, and make the batch return attention.
+    Already-frozen suites are deliberately not re-admitted against a newer provenance rule;
+    `scripts/design-provenance.js verify` is their explicit pre-freeze audit.
 
     **The Beads checkout and publication remote are one project, proven before either is
     touched.** `targetRepoPath` is the database side of the runner while

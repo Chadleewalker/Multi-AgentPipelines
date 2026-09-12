@@ -22,6 +22,7 @@ const proof = require('./prove-tests');
 const prepState = require('../runner/preparation-state');
 const prerequisites = require('../runner/prerequisites');
 const writeProtection = require('./write-protection-policy');
+const designRef = require('../runner/design-ref');
 
 const ROOT = path.resolve(__dirname, '..');
 const WORKER = path.join(__dirname, 'prepare-batch-worker.js');
@@ -132,6 +133,9 @@ function classifyBuilt(id, built) {
     return { id, outcome: collision ? 'collision' : 'attention', error: built && built.error };
   }
   if (built.state === 'ready') return { id, outcome: 'already-frozen', built };
+  if (built.design && built.design.ok === false) {
+    return { id, outcome: 'needs-design', built };
+  }
   const criteria = built.criteria || null;
   const missing = criteria ? criteria.source === 'none'
     : /ISSUE CARRIES NO ACCEPTANCE CRITERIA/i.test(String(built.text || ''));
@@ -749,6 +753,31 @@ async function execute(opts, io = {}, seams = {}) {
     const integration = (seams.inspectIntegration || inspectIntegration)(cfg, expectedBranch, seams);
     if (!integration.ok) { err(`prepare-batch: ${integration.error}`); return EXIT_ATTENTION; }
     const baseHead = integration.head;
+    const resolveDesign = seams.resolveDesign || designRef.resolveIssue;
+    for (const item of snapshots) {
+      // A suite that already crossed the publication boundary keeps its established result.
+      // New preparation work is judged against the pinned integration commit before a
+      // worktree or worker exists.
+      if (!item.built || item.outcome === 'already-frozen') continue;
+      const resolution = resolveDesign(item.issue || item.built.issue, {
+        repoPath: cfg.targetRepoPath, commit: baseHead,
+      });
+      item.built.design = resolution;
+      item.designCommit = resolution && resolution.commit || baseHead;
+      item.designReasons = resolution && Array.isArray(resolution.reasons) ? resolution.reasons : [];
+      if (resolution && resolution.ok === true) {
+        const next = classifyBuilt(item.id, item.built);
+        item.outcome = next.outcome;
+        if (next.action) item.action = next.action; else delete item.action;
+        if (next.error) item.error = next.error; else delete item.error;
+      } else {
+        item.outcome = 'needs-design';
+        delete item.action;
+        item.error = designRef.refusalLines(resolution || {
+          ok: false, reasons: ['unparsable'], remedies: [], refs: [],
+        }, { issueId: item.id }).join(' ');
+      }
+    }
     const priorFingerprints = opts.mode === 'start' ? new Map() : snapshotFingerprints(state, root, opts.batch);
     for (const item of snapshots) {
       const prior = priorFingerprints.get(item.id);
@@ -815,6 +844,8 @@ async function execute(opts, io = {}, seams = {}) {
         criteriaHash: item.built && item.built.criteria && item.built.criteria.sha256,
         branch: item.built && item.built.folder && item.built.folder.branch,
         folder: item.built && item.built.folder && item.built.folder.dir,
+        designCommit: item.designCommit || null,
+        designReasons: item.designReasons || [],
       }, cfg));
       if (item.action) runnable.push(item);
     }
@@ -828,7 +859,7 @@ async function execute(opts, io = {}, seams = {}) {
     for (const result of results) out(`${result.id}: ${result.outcome}${result.error ? ` — ${result.error}` : ''}`);
     if (strays.ids.length) out(`stray dispatchable issues outside this batch: ${strays.ids.join(', ')}`);
     if (!strays.ok) out(`ready-queue attention: ${strays.error}`);
-    const attention = snapshots.some((s) => ['attention', 'collision', 'needs-criteria'].includes(s.outcome))
+    const attention = snapshots.some((s) => ['attention', 'collision', 'needs-criteria', 'needs-design'].includes(s.outcome))
       || results.some((r) => !r.ok) || !strays.ok || strays.ids.length > 0;
     return attention ? EXIT_ATTENTION : 0;
   } finally {
