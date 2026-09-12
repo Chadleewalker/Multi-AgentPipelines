@@ -360,6 +360,10 @@ is the same target-global authority and already excludes every other coordinator
 lock, and any worker, worktree or Beads read, so a preparation presenting no grant — or a
 forged, replayed, expired, wrong-target, wrong-parent or released one — is refused by name with
 nothing launched. With no supervisor present the paragraph above is exactly what happens.
+The supervising host launches those commands through `runner/operation-manager.js`. Its durable
+operation record is separate from preparation and run artifacts, and retry is admitted only
+after child identity and any prior settlement are known; concurrent starts and retries contend
+on host-global atomic transitions.
 
 Before allocating the named batch, the coordinator checks Docker daemon reachability, the
 configured image, the configured host shell, and authentication for every provider selected by

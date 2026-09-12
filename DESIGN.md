@@ -929,6 +929,21 @@ preparation marker and without declaring its child complete. A child holds an ad
 no lease, so it cannot grant itself anything, cannot widen its own scope by rewriting the
 authority it was handed (the host record disagrees), and cannot reach a third section.
 
+**The supervisor observes durable child operations, not adapter promises.**
+`runner/operation-manager.js` writes host-owned launch intent and the exact scoped authority
+before invoking the existing `scripts/prepare-batch.js start` or live-feed
+`runner/run.js --config` entrypoint. Provider credentials are stripped at that boundary.
+Preparation truth remains derived from preparation artifacts; implementation truth remains
+derived from the terminal run manifest plus authenticated child identity and OS liveness.
+One atomic host-global feed slot per canonical project closes cross-manager launch races, and
+one atomic attempt transition closes concurrent retry races. A crash after spawn but before
+PID persistence may bind only to a durable child artifact matching both the preallocated run id
+and authority nonce; absent that proof, the operation remains attention and its slot stays held.
+Every retry snapshots the prior operation, exit, attention, settlement, authority and artifact
+evidence. Settlement intent has its own exclusive marker: an uncertain result forbids retry
+until the parent record proves whether the original grant settled, after which reconciliation
+either completes it or retries only that same settlement. Child exit alone never proves success.
+
 ## 4. The Implementation Phase (the execution layer)
 
 Carried over from v3, amended over two critic-review rounds; this section is the

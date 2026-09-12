@@ -281,14 +281,14 @@ function isHolderLive(rec) {
 // every other host-global record that has to answer "is its owner still there?" — the
 // supervisor lease and the critical-section records in `runner/supervisor.js` — is decided by
 // these rules rather than by a second copy of them that can drift out of step with this one.
-function livenessFields() {
+function livenessFields(pid = process.pid) {
   return {
-    pid: process.pid,
+    pid,
     host: os.hostname(),
     platform: process.platform,
     takenAtMs: Date.now(),
     uptimeSeconds: Math.floor(os.uptime()),
-    procStart: procStartTicks(process.pid),
+    procStart: procStartTicks(pid),
   };
 }
 
