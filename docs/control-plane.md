@@ -194,6 +194,15 @@ once, so what the lock used to serialize is now two independent host-global crit
 keyed on (canonical target, section): `beads-write` and `integration-publish`, one child inside
 each at a time.
 
+After sibling task branches publish, `runner/batch-merge.js` supplies the batch review boundary.
+`plan` and `renderReport` are read-only and may run while the first code PR is already under
+review. A supervising caller holds `integration-publish` only while `integrateDocs` or
+`rebaseTask` creates a new review ref. Those operations never merge to the integration branch,
+never move a task branch and never close an issue. Docs reconciliation is all-or-nothing; on a
+conflict the coordinator writes a machine-readable record under `runs/merge-batch` (or
+`PIPELINE_BATCH_EVIDENCE_DIR`), names every affected path and issue, and leaves the issue open
+or blocked for recovery.
+
 A grant leaves the outstanding list only when its parent settles it as `complete` or
 `released` — never by expiry, a dead parent or a reclaim — so an interrupted supervisor leaves
 a readable record of what it had in flight. A live parent is never taken over, and a provably
