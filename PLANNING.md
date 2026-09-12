@@ -320,6 +320,12 @@ the canonical issue's structured `design-ref` through the host. Preparation repe
 from its pinned integration HEAD and records that commit; an unresolved path or heading becomes
 `needs-design`, launches no worker, and names the publish command as its remedy.
 
+If publication stops after the local commit or after the remote accepts the push, rerun the
+same publish command with the same source bytes. The retry reuses the existing commit only when
+it is the exact one-file provenance commit and proves that commit reachable from the configured
+remote integration ref before updating Beads. Remote divergence refuses without force-pushing,
+creating a duplicate commit, or deleting the stranded evidence.
+
 For an imported canonical issue that cannot publish a repository document, the design field may
 instead be self-contained: `design-snapshot: sha256:<digest>` followed by a fenced block whose
 UTF-8 body (including one trailing newline) hashes to that digest. Preparation resolves a valid
