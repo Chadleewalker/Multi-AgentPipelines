@@ -218,7 +218,7 @@ function entryFor(root, rel, gitBacked, gitHashes = null, modeSource = null) {
   return `other:${mode}`;
 }
 
-function protectedManifest(repoRoot, policy, issueId, run = spawnSync) {
+function protectedManifest(repoRoot, policy, issueId, run = spawnSync, options = {}) {
   const root = path.resolve(repoRoot);
   const patterns = ['tests/acceptance', 'pipeline.config.json', ...((policy && policy.frozenPaths) || [])]
     .map((p) => safePattern(p, root));
@@ -228,8 +228,14 @@ function protectedManifest(repoRoot, policy, issueId, run = spawnSync) {
     const matchers = patterns.map(regexFor);
     matches = allFilesystemPaths(root).filter((rel) => matchers.some((re) => re.test(rel)));
   }
-  const ignoredReceipt = `tests/acceptance/${issueId}/${RECEIPT_NAME}`;
-  matches = matches.filter((rel) => rel !== ignoredReceipt);
+  // The retained proof identity excludes the receipt the gate is entitled to rewrite. The
+  // integration-base identity is different: it must not depend on which issue is being proved,
+  // so its caller asks to include every receipt. Those bytes then remain evidence rather than
+  // being normalized away; a malformed or later-mutated receipt changes the base identity.
+  if (options.includeIssueReceipt !== true) {
+    const ignoredReceipt = `tests/acceptance/${issueId}/${RECEIPT_NAME}`;
+    matches = matches.filter((rel) => rel !== ignoredReceipt);
+  }
   const regularFiles = matches.filter((rel) => {
     try {
       const stat = fs.lstatSync(path.resolve(root, ...rel.split('/')));
@@ -329,7 +335,7 @@ function generatedGodotUids(repoRoot, manifest, issueId, run = spawnSync) {
 
 function untrackedSiblingReceipt(repoRoot, rel, issueId, run = spawnSync) {
   const match = /^tests\/acceptance\/([^/]+)\/\.freeze-gate\.json$/.exec(rel);
-  if (!match || match[1] === issueId) return false;
+  if (!match || (issueId !== null && match[1] === issueId)) return false;
   const file = path.resolve(repoRoot, ...rel.split('/'));
   if (!within(repoRoot, file)) return false;
   let stat; let text;
@@ -358,7 +364,8 @@ function normalizedManagedManifest(repoRoot, manifest, issueId, runOrOptions = s
   for (const [rel, value] of manifest) {
     // This projection is authorized only for the long-lived integration target. Baseline and
     // probe identities stay bound to every raw byte the proof marker originally hashed.
-    if (options.targetComparison === true && untrackedSiblingReceipt(repoRoot, rel, issueId, run)) continue;
+    if (options.targetComparison === true
+        && untrackedSiblingReceipt(repoRoot, rel, options.baseIdentity === true ? null : issueId, run)) continue;
     const match = /^tests\/acceptance\/([^/]+)\/(.+\.gd)\.uid$/.exec(rel);
     if (!match || match[1] === issueId || !entries.has(`tests/acceptance/${match[1]}/${match[2]}`)) {
       answer.push([rel, value]); continue;

@@ -143,6 +143,15 @@ function policyAt(repoRoot) {
   return { frozenPaths: Array.isArray(raw.frozenPaths) ? raw.frozenPaths : [] };
 }
 
+// A base is the integration commit, not the issue-specific view used after a gate may rewrite
+// that issue's receipt. Include every receipt here so independently prepared proofs at one HEAD
+// get one identity, while malformed, forged or subsequently changed receipt bytes still move it.
+function integrationBaseManifest(repoRoot, policy, issueId, options = {}) {
+  return normalizedManagedManifest(repoRoot,
+    protectedManifest(repoRoot, policy, issueId, undefined, { includeIssueReceipt: true }),
+    issueId, { ...options, baseIdentity: true });
+}
+
 function validateManagedProbe(probePath, targetRepoPath, ids, head) {
   const resolvedProbe = path.resolve(probePath);
   const managedShape = path.basename(resolvedProbe) === 'probe'
@@ -162,11 +171,14 @@ function validateManagedProbe(probePath, targetRepoPath, ids, head) {
     const targetManifest = normalizedManagedManifest(targetRepoPath,
       protectedManifest(targetRepoPath, policy, marker.issue), marker.issue,
       { targetComparison: true });
+    const targetBaseManifest = integrationBaseManifest(targetRepoPath, policy, marker.issue,
+      { targetComparison: true });
     const probeManifest = normalizedManagedManifest(probe,
       protectedManifest(probe, policy, marker.issue), marker.issue);
     const baselineManifest = normalizedManagedManifest(baseline,
       protectedManifest(baseline, policy, marker.issue), marker.issue);
     const targetHash = manifestHash(targetManifest);
+    const targetBaseHash = manifestHash(targetBaseManifest);
     const probeHash = manifestHash(probeManifest);
     const baselineHash = manifestHash(baselineManifest);
     if (probeHash !== marker.manifestHash) {
@@ -176,7 +188,7 @@ function validateManagedProbe(probePath, targetRepoPath, ids, head) {
       return { ok: false, managed: true, error: 'the retained red baseline changed a protected path after it was proven' };
     }
     const targetIsProbe = targetHash === marker.manifestHash;
-    const targetIsBase = targetHash === marker.baseManifestHash;
+    const targetIsBase = targetBaseHash === marker.baseManifestHash;
     if (!targetIsProbe && !targetIsBase) {
       // A pre-promotion integration checkout is expected to resemble the clean base, while an
       // already-promoted checkout resembles the proven tree. Report the closer identity so the
@@ -340,8 +352,7 @@ function prepareProbe(built, model, run = runSync, tempRoot = os.tmpdir()) {
   }
 
   let baseManifest;
-  try { baseManifest = normalizedManagedManifest(baseline,
-    protectedManifest(baseline, built.policy, suiteId), suiteId); }
+  try { baseManifest = integrationBaseManifest(baseline, built.policy, suiteId); }
   catch (e) {
     discardNewContainer(container);
     return { ok: false, error: e.message };
