@@ -1,0 +1,10 @@
+{
+  "gateVersion": 1,
+  "verdict": "red",
+  "probeSupplied": true,
+  "suiteHash": "a6610de819b8cae27c28b80b4727cc04455a12336df1ce23692e210147b4d9d5",
+  "gateHead": "9b947f41638375d5661e5afcc2ad75ad1faf39e1",
+  "guards": null,
+  "brittleness": 0,
+  "writtenAt": "2026-09-12T14:48:33.459Z"
+}
