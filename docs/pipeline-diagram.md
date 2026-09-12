@@ -145,6 +145,36 @@ that queue too, through the run config the marker names, reporting each id `read
 where a link of that join cannot be made). It reads the queue the runner will drain; it never
 changes it.
 
+## Under a project supervisor
+
+A supervisor does not replace either half of the pipeline. Its host operation manager launches
+the existing preparation coordinator and exactly one existing live-feed runner with separate
+scoped grants, then observes their canonical artifacts. The operation records are outside the
+project checkout and survive a supervisor restart.
+
+```mermaid
+flowchart LR
+  S["Project supervisor<br/>sole target lease holder"] -->|"preparation grant"| OM["Durable operation manager<br/>launch record + child identity"]
+  S -->|"implementation grant"| OM
+  OM --> P["prepare-batch.js start<br/>named batch"]
+  OM --> R["runner/run.js --config<br/>one live queue feed"]
+  P -->|"newly frozen issue"| Q[("Beads ready queue")]
+  Q --> R
+  P -.-> PA["Preparation manifest<br/>events + worker outcomes"]
+  R -.-> RA["Run manifest<br/>task rows + branches + PR URLs"]
+  PA --> OM
+  RA --> OM
+  OM -->|"durable terminal evidence"| S
+```
+
+Child exit alone is not completion: status combines the recorded process identity with the
+derived preparation state or terminal `run.json`. A live or completed operation is never
+relaunched; a dead child without terminal evidence becomes `attention`, and only an explicitly
+approved retry with a new grant creates another attempt while retaining the old evidence. A
+stop request writes the runner's existing `runs/<run-id>/stop` sentinel, so active tasks drain
+before the feed closes, and each child grant settles once only after its terminal artifact is
+durable.
+
 Slots 1 and 2 need **no pipeline code**: they are prompts you run during a planning
 session, before anything is frozen. Slot 2 is the higher-leverage of the two — a domain
 check that becomes a frozen test steers the retry loop on every attempt, whereas a

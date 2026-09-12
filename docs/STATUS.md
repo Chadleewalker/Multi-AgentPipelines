@@ -2092,6 +2092,24 @@ checks into `tests/unit/supervisor.test.js` plus a `scripts/test-supervisor.sh` 
 work for an interactive session, and until it happens a change to the lease, grant, admission
 or section logic is judged by nothing.
 
+## Durable supervised operations (`repo-djf.7`, 2026-09-12)
+
+`runner/operation-manager.js` closes the host-side execution gap above the scoped authority
+layer. It records launch intent before spawning the existing named-batch preparation command
+and one project-wide live-feed runner, gives each its own scoped authority record, strips
+ambient provider API keys, and persists child identity plus canonical artifact locations
+outside the model-editable checkout. Preparation and implementation can therefore overlap;
+an issue frozen after the runner starts is picked up by that same runner and appears in the
+real run manifest with its branch and PR evidence.
+
+Status is reconstructed from process liveness and the preparation or run artifacts rather
+than an adapter promise. Restart cannot duplicate a live or completed child, dead incomplete
+work becomes explicit attention, approved retry preserves every prior attempt, and stop uses
+the existing feed sentinel so active workers drain. The parent settles each grant only after
+durable terminal evidence. The frozen Docker-free fixture exercises real child processes,
+inverted completion order, late feed pickup, exact-once observation and settlement, approved
+retry, argv/environment boundaries, and stop/drain behavior.
+
 ## What's next
 
 **The live queue feed shipped on 2026-08-25** — a run re-reads the ready queue while it is
