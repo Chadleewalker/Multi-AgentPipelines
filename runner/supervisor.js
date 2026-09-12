@@ -425,6 +425,24 @@ function settle(lease, nonce, options = {}) {
   return { ok: true };
 }
 
+// Parent-side recovery query for a caller that durably recorded settlement intent but lost
+// the result. This does not mutate the grant: it reports only what the authenticated host
+// record proves, so an unreadable, foreign or released record cannot be guessed into success.
+function settlementState(lease, nonce) {
+  const held = ourLease(lease);
+  if (!held.ok) return { ok: false, error: `supervisor: cannot inspect child settlement — ${held.error}` };
+  const record = readGrant(held.target, String(nonce || ''));
+  if (!record) return { ok: false, error: `supervisor: no grant record for ${nonce}` };
+  if (record.authority.parent.id !== held.record.id || record.authority.parent.pid !== held.record.pid) {
+    return { ok: false, error: `supervisor: ${nonce} was granted by another supervisor` };
+  }
+  if (record.state === 'complete') return { ok: true, settled: true, nonce: record.nonce };
+  if (record.state === 'granted' || record.state === 'redeemed') {
+    return { ok: true, settled: false, nonce: record.nonce };
+  }
+  return { ok: false, error: `supervisor: grant ${nonce} is settled as ${record.state}, not complete` };
+}
+
 // ---- admission -----------------------------------------------------------------------------
 
 const REASONS = ['no-authority', 'forged', 'replayed', 'expired', 'wrong-target',
@@ -717,7 +735,7 @@ function withSection(admission, section, fn, options = {}) {
 module.exports = {
   SCOPES, SECTIONS, REASONS, AUTHORITY_ENV, MAX_TTL_MS,
   acquire, release, leaseHolder, supervisorPresence,
-  grant, settle, outstanding,
+  grant, settle, settlementState, outstanding,
   admit, admitEntry, childOwnership,
   tryEnterSection, exitSection, enterSection, withSection,
   supervisorDir,

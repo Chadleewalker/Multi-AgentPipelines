@@ -202,6 +202,23 @@ preparation marker and without declaring its child complete. There is no supervi
 `runner/supervisor.js` is a host-side library, and a supervising process takes the lease and
 issues grants through it.
 
+That process uses `runner/operation-manager.js` to launch the existing preparation command and
+one live-feed implementation runner. Its records and authority copies live under host state,
+outside the target tree. Project feed reservation and retry advancement are atomic across
+manager processes. Status trusts only durable preparation/run artifacts and authenticated child
+identity; an unproven post-spawn identity or uncertain parent settlement remains attention and
+forbids retry. `reconcile` asks the parent grant record for deterministic settlement truth and
+never launches replacement work. Prior attempts remain immutable evidence, and `stop` uses the
+existing run sentinel so active workers drain.
+
+The manager API deliberately separates observation from mutation. `status({ project, id })`
+may recover an implementation PID only from the authenticated child artifact; `restart(...)`
+never launches recorded work. `retry({ project, id, approved: true, grant })` is the only retry
+path and accepts only an attention operation whose child identity and settlement are already
+known. Use `reconcile({ project, id })` for uncertain settlement; it settles the original grant
+or leaves attention in place, but never starts a child. `stop({ project, id })` applies only to a
+running implementation feed and writes that run's normal stop sentinel.
+
 Launch-capable `prepare-batch` modes check the Docker daemon, configured image, configured
 host shell, and authentication for the author/probe providers before write-protection admission,
 locking, manifests, Beads, worktrees, attempts or workers. Each probe is bounded and the first
