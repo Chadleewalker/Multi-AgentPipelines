@@ -36,7 +36,9 @@ flowchart TB
   FEED -->|"new work, or a refusal that has cleared"| I
   G -.->|"frozen mid-run, suite pushed"| FEED
   I --> J["One fresh container per task<br/>1 at a time by default · N with the concurrency knob"]
-  J --> K["Run report + pull requests<br/>ordered by scrutiny needed"]
+  J --> K["Run report + task pull requests<br/>each code review available when its task publishes"]
+  K -.-> BM2["Batch merge report — pairwise readiness · shared Markdown paths · review order<br/>optional separate docs-integration review ref · never auto-merges integration"]
+  BM2 --> L
   K --> L{"Merge, or send back"}
   L -->|"send back as a new task"| B
   L -->|"either way, one line per PR"| VD["Record the verdict — merged or rejected, and why<br/>runs/&lt;runId&gt;/tasks/&lt;id&gt;/verdict.json · evidence, never a gate"]
@@ -53,6 +55,14 @@ The dotted branch off the run report is the only reader that spans runs (§5, ch
 row `repo-73k`). It is post-hoc and host-only: nothing in a run waits on it, it gates
 nothing, and what it finds reaches the pipeline the same way any other observation does —
 through a human, into a planning session.
+
+The batch merge report is also post-publication, but it compares sibling task tips from one
+fork point rather than historical runs. `runner/batch-merge.js` names exact pairwise merge
+readiness, shared Markdown paths and the required review order while the first task's code
+review remains available. If shared docs need reconciliation, the coordinator can create one
+docs-only integration ref; conflicts leave machine-readable recovery evidence and affected
+issues open or blocked. Neither that path nor the optional rebase path moves a task branch or
+merges anything into the integration branch.
 
 The dotted branch off the run itself is its live sibling (§5, change-log row `repo-kfg`):
 `node scripts/dashboard.js` reads the same `runs/` tree while a run is still in flight and
