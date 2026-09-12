@@ -929,6 +929,15 @@ preparation marker and without declaring its child complete. A child holds an ad
 no lease, so it cannot grant itself anything, cannot widen its own scope by rewriting the
 authority it was handed (the host record disagrees), and cannot reach a third section.
 
+**Batch merge coordination is a supervised publication operation, not task settlement.**
+Sibling implementation and documentation commits remain on each task's published branch, so
+the first completed code review is available immediately and no coordinator rewrites or moves
+it. After publication, `runner/batch-merge.js` reads the sibling tips and their common fork,
+simulates the pairwise merges, and separates each existing product-only code tip from the later
+shared-document contribution. Creating a docs-integration or rebased review ref belongs under
+the supervisor's `integration-publish` section; `plan` and `renderReport` are pure readers. No
+operation merges a review ref into the integration branch or closes an issue.
+
 ## 4. The Implementation Phase (the execution layer)
 
 Carried over from v3, amended over two critic-review rounds; this section is the
@@ -1180,6 +1189,11 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
    operator stopped the run before a window reset; otherwise the run ends only when the
    queue is drained. Recurring "didn't know the current API" failures mean vendor those
    docs, not open the network.
+   A batch-level merge report is the post-publication companion to the run report. It names the
+   exact pairwise readiness measured by `git merge-tree`, the shared-document paths touched by
+   more than one sibling, and the required review order. Code steps precede the separately
+   reviewable docs-integration step and are never blocked by it; a mixed product/docs commit is
+   named as non-isolated and is not silently rewritten into a code step.
 10. **Workers are stateless; hierarchy is flat; the host owns all durable state.** The
     container's inputs are exactly: the `/workspace` mount; the pipeline scaffolding
     (entrypoint + verifier) bind-mounted **read-only at `/pipeline` by the runner from
@@ -1360,6 +1374,16 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     `scripts/design-provenance.js publish` as the remedy, and make the batch return attention.
     Already-frozen suites are deliberately not re-admitted against a newer provenance rule;
     `scripts/design-provenance.js verify` is their explicit pre-freeze audit.
+
+    **Concurrent task publication reconciles documentation without integrating it.** The
+    coordinator uses the same root-Markdown or `docs/**/*.md` boundary enforced by the task
+    docs phase. It creates at most one new docs-integration branch from the current integration
+    tip, carrying all shared-document contributions and no product bytes. Concurrent additive
+    appends are retained in deterministic task order; competing replacements that Git cannot
+    reconcile fail all-or-nothing. Rebase support likewise writes a new review ref and never
+    moves the task branch. Either failure writes a versioned record under `runs/merge-batch`
+    naming branch tips, paths, affected issues and a recovery action, and leaves those issues
+    `open` or `blocked`; it never silently drops a contribution or advances integration.
 
     **The Beads checkout and publication remote are one project, proven before either is
     touched.** `targetRepoPath` is the database side of the runner while

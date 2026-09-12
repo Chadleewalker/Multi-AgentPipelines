@@ -32,7 +32,12 @@ Three phases joined by a task queue:
    the verifier runs the frozen tests, and it retries at most three times.
 3. **Review** (with you) — verified work arrives as a pull request carrying the spec, a
    change summary, and the verification evidence. Failed work arrives as a pushed branch
-   with its full attempt history. Each PR ends with one line —
+   with its full attempt history. Sibling code reviews remain available as soon as each task
+   publishes; afterward, the batch coordinator reports pairwise merge readiness and shared
+   Markdown paths, and can place both documentation contributions on one separately reviewable
+   docs-integration ref. It never merges into the integration branch or rewrites a task branch,
+   and a reconciliation failure leaves explicit recovery evidence instead of dropping either
+   contribution. Each PR ends with one line —
    `node scripts/verdict.js record <issue-id> <merged|rejected> "<why>"` — because
    merge-or-send-back is the one signal the pipeline cannot generate about itself, and it
    exists only while you are looking at the PR.
