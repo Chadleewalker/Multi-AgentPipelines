@@ -2913,7 +2913,7 @@ bounded refusals. A dead owner can be recovered, but age alone never steals a li
 lock and nonce ownership prevents an old owner from deleting its successor.
 
 An explicit `codexAuthCacheRoots` roster is stronger than the legacy implicit single lane:
-every entry must already exist under its canonical absolute spelling, become private to the
+every entry must already exist under its canonical absolute spelling, be private to the
 host identity, and sit outside the target, pipeline checkout, task workspaces and every other
 lane. Preflight validates the whole roster before target mutation, then quarantines malformed
 or busy saved sessions individually and proceeds only when at least one lane is healthy.
