@@ -950,6 +950,21 @@ evidence. Settlement intent has its own exclusive marker: an uncertain result fo
 until the parent record proves whether the original grant settled, after which reconciliation
 either completes it or retries only that same settlement. Child exit alone never proves success.
 
+**The production proposal supervisor is a durable poller, not an operator-driven
+tick.** `runner/proposal-supervisor.js` acquires the parent lease before its unattended
+`run()` loop admits work, then polls durable intake and child-operation evidence through
+one bounded wait seam. Specification, preparation, implementation and review may all remain
+pending without ending that process. A completed implementation feed is settled and retired;
+prepared work that appears later receives a monotonically identified successor feed, while
+proposal-to-feed bindings ensure an old manifest cannot supply a later proposal's branch or
+PR identity. The append-only journal records each controller return before the next
+transition, so restart observes the same issue, freeze, operation, run, branch and PR
+identities and never invokes retry, recovery or reconciliation implicitly. Clean stop closes
+intake first, launches nothing new, requests the current feed's normal drain, settles every
+owned grant, and only then releases exactly the parent lease. A crash does none of that
+cleanup by inference: outstanding grants remain evidence for the explicit recovery paths
+above.
+
 **Sibling task publication stays independent; shared documentation is coordinated afterward.**
 `runner/batch-merge.js` is a host-side library for a supervisor, not another task worker and
 not a command that merges to the integration branch. Its read-only `plan` operation discovers
