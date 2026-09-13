@@ -40,6 +40,7 @@ function validateJob(job) {
   if (job.action === 'proof' && !['freeze', 're-gate', 'write'].includes(built.state)) {
     return 'proof job has an unsupported brief state';
   }
+  if (job.retainedProbe !== undefined && typeof job.retainedProbe !== 'string') return 'retained probe must be a path string';
   return null;
 }
 
@@ -70,6 +71,7 @@ function authorStructured(built, configPath, seams, log) {
   const probeSeams = { ...(seams.probeSeams || {}) };
   if (typeof seams.onStage === 'function' && typeof probeSeams.onStage !== 'function') probeSeams.onStage = seams.onStage;
   const result = (seams.proveTests || proof.proveTests)(built, probeModel, probeSeams);
+  if (result && result.outcome === 'usage-limit' && result.rateLimit) return { ...result };
   return result.ok
     ? { ok: true, outcome: 'proven-at-base', probe: result.probe, attempt: result.attempt,
       evidence: limited(result.evidence), agentOutput: limited(result.agentOutput) }
@@ -77,12 +79,14 @@ function authorStructured(built, configPath, seams, log) {
       error: result.error, evidence: limited(result.evidence) };
 }
 
-function proofStructured(built, seams) {
+function proofStructured(built, seams, retainedProbe = null) {
   const model = String(built.cfg.testProbeModel || built.cfg.testAuthorModel || built.cfg.model || '').trim();
   if (!model) return { ok: false, outcome: 'unproven', kind: 'config', error: 'no probe model is configured' };
   const probeSeams = { ...(seams.probeSeams || {}) };
+  if (retainedProbe) probeSeams.retainedProbe = retainedProbe;
   if (typeof seams.onStage === 'function' && typeof probeSeams.onStage !== 'function') probeSeams.onStage = seams.onStage;
   const result = (seams.proveTests || proof.proveTests)(built, model, probeSeams);
+  if (result && result.outcome === 'usage-limit' && result.rateLimit) return { ...result };
   return result.ok
     ? { ok: true, outcome: 'proven-at-base', probe: result.probe, attempt: result.attempt,
       evidence: limited(result.evidence), agentOutput: limited(result.agentOutput) }
@@ -96,7 +100,7 @@ function execute(job, seams = {}) {
   const log = [];
   let answer = job.action === 'author-proof'
     ? authorStructured(job.built, job.configPath, seams, log)
-    : proofStructured(job.built, seams);
+    : proofStructured(job.built, seams, job.retainedProbe);
   answer = answer && typeof answer === 'object' ? { ...answer } : { ok: false, outcome: 'unproven', error: 'worker returned no result' };
   if (answer.ok) answer.outcome = 'proven-at-base';
   else if (!answer.outcome) answer.outcome = 'unproven';

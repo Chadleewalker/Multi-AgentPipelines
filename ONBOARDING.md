@@ -455,6 +455,13 @@ so start Docker Desktop, build the named image, correct `hostShell`, or restore 
 provider login as instructed and rerun the same batch name. Read-only status and interrupted
 worker acknowledgement do not depend on these prerequisites.
 
+An author or green-probe worker that returns the provider's canonical usage-limit response
+parks admission for the entire batch at the reported reset time. Workers already running settle
+once, untouched issues stay pending, and completed suites and retained probes stay available.
+Run `node scripts/prepare-batch.js status <batch>` for the paused stage, affected workers,
+preserved paths, reset time, and exact `resume` command. Running that command before reset
+refuses without a model launch; at or after reset it continues only unfinished proof work.
+
 Every issue must use a repository-relative structured design reference such as
 `design-ref: DESIGN.md#§4.12`. If approved rationale exists only outside the integration commit,
 publish it before preparation with `node scripts/design-provenance.js publish <issue-id>

@@ -381,6 +381,13 @@ never freezes, commits, merges, pushes, changes Beads, or turns blocked
 implementation dependencies into test-author dependencies: specs may be prepared together, then
 the ordinary Beads-ready runner releases their implementation waves in dependency order.
 
+A canonical provider usage-limit result from either the author or green-probe stage is batch
+state, not an issue failure. The first result closes new worker admission, records one pause with
+its reset time and currently active workers, and preserves authored suites and managed probes.
+`status <batch>` prints those details and the exact `resume <batch>` command. Resume before the
+reset refuses without launching a worker; eligible resume reuses valid retained evidence and
+continues only the unfinished attempt, including after an interrupted or repeated resume.
+
 While a proof is running, the coordinator reports the current fixed stage (`prepare`, probe
 agent, protected check, gate, final protected check, or marker write) and the elapsed time of each
 completed stage. These messages are progress only; the durable worker result remains the sole

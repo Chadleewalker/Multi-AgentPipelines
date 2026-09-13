@@ -247,7 +247,8 @@ function parseWorkerEnvelope(stdout) {
   try {
     const value = JSON.parse(text);
     const verified = value && typeof value === 'object' && !Array.isArray(value)
-      && typeof value.ok === 'boolean' && typeof value.outcome === 'string';
+      && typeof value.ok === 'boolean' && typeof value.outcome === 'string'
+      && (value.outcome !== 'usage-limit' || canonicalUsageLimit(value));
     return verified
       ? { verified: true, result: value }
       : { verified: false, result: { ok: false, outcome: 'invalid', error: 'worker result is not a protocol object' } };
@@ -255,6 +256,130 @@ function parseWorkerEnvelope(stdout) {
     return { verified: false,
       result: { ok: false, outcome: 'invalid', error: `worker returned invalid JSON: ${e.message}` } };
   }
+}
+
+// This is deliberately a closed protocol. Only a launcher-normalized result with an
+// absolute reset instant and verbatim structured evidence can park preparation; prose and
+// partially-shaped objects retain their ordinary failure handling.
+function canonicalUsageLimit(result) {
+  const limit = result && result.ok === false && result.outcome === 'usage-limit'
+    && result.rateLimit;
+  return !!(limit && typeof limit === 'object' && !Array.isArray(limit)
+    && typeof limit.resetAt === 'string' && Number.isFinite(Date.parse(limit.resetAt))
+    && new Date(limit.resetAt).toISOString() === limit.resetAt
+    && typeof limit.evidence === 'string' && limit.evidence.length > 0);
+}
+
+function retainedPaths(value) {
+  const found = [];
+  const add = (candidate) => {
+    if (typeof candidate === 'string' && candidate.length && !found.includes(candidate)) found.push(candidate);
+  };
+  if (value && typeof value === 'object') {
+    add(value.retained); add(value.probe);
+    if (value.proof && typeof value.proof === 'object') add(value.proof.probe);
+    if (value.built && value.built.folder) add(value.built.folder.dir);
+  }
+  return found;
+}
+
+function activeUsagePause(events) {
+  let pause = null;
+  for (const event of events || []) {
+    if (event && event.type === 'batch.usage-limit-paused' && event.payload) pause = event.payload;
+    if (event && event.type === 'batch.usage-limit-resumed') pause = null;
+  }
+  return pause;
+}
+
+function hasUsageLimitHistory(events) {
+  return (events || []).some((event) => event &&
+    (event.type === 'batch.usage-limit-paused' || event.type === 'batch.usage-limit-resumed'));
+}
+
+// Small deterministic controller used by the host coordinator contract tests. It has no
+// filesystem or process authority: the caller supplies the clock, append-only ledger and
+// canonical launcher. Production uses the same predicates and event shapes below.
+function createUsageLimitPreparation(deps = {}) {
+  const now = typeof deps.now === 'function' ? deps.now : () => new Date().toISOString();
+  const append = typeof deps.appendEvent === 'function' ? deps.appendEvent : () => {};
+  const read = typeof deps.readEvents === 'function' ? deps.readEvents : () => [];
+  const launch = deps.launch;
+  const batches = new Map();
+  const resumeCommand = (batch) => `node scripts/prepare-batch.js resume ${batch}`;
+
+  function view(state) {
+    const pause = state.pause;
+    return {
+      paused: !!pause,
+      resetAt: pause && pause.resetAt,
+      stage: pause && pause.stage,
+      activeWorkers: pause ? pause.activeWorkers.slice() : [],
+      preservedPaths: [...state.preserved],
+      resumeCommand: resumeCommand(state.batch),
+      issues: state.issues,
+    };
+  }
+  function start({ batch, issues, concurrency }) {
+    const state = { batch, roster: issues.slice(), issues: {}, preserved: new Set(), pause: null,
+      resumed: false, interrupted: false };
+    batches.set(batch, state);
+    for (const id of issues) state.issues[id] = { outcome: 'pending' };
+    const active = issues.slice(0, Math.max(1, concurrency || 1));
+    const settled = [];
+    for (const id of active) settled.push({ id, result: launch(id, 'author-proof') });
+    const limited = settled.find(({ result }) => canonicalUsageLimit(result));
+    for (const { id, result } of settled) {
+      if (canonicalUsageLimit(result)) state.issues[id] = { outcome: 'paused' };
+      else {
+        state.issues[id] = { ...result };
+        for (const retained of retainedPaths(result)) state.preserved.add(retained);
+      }
+    }
+    if (limited) {
+      state.pause = {
+        state: 'paused', resetAt: limited.result.rateLimit.resetAt, stage: 'author-proof',
+        activeWorkers: active.slice(), issueId: limited.id, preservedPaths: [...state.preserved],
+        resumeCommand: resumeCommand(batch),
+      };
+      append('batch.usage-limit-paused', state.pause);
+    }
+    return view(state);
+  }
+  function status(batch) {
+    const state = batches.get(batch);
+    if (!state) return { found: false };
+    activeUsagePause(read());
+    return view(state);
+  }
+  function resume(batch) {
+    const state = batches.get(batch);
+    if (!state || !state.pause) return { idempotent: true, ...(state ? view(state) : {}) };
+    if (Date.parse(now()) < Date.parse(state.pause.resetAt)) return { refused: true, ...view(state) };
+    if (state.resumed) return { idempotent: true, ...view(state) };
+    state.resumed = true;
+    const id = state.pause.issueId;
+    const result = launch(id, state.pause.stage);
+    for (const retained of retainedPaths(result)) state.preserved.add(retained);
+    state.issues[id] = canonicalUsageLimit(result) ? { outcome: 'paused' } : { ...result };
+    append('batch.usage-limit-resumed', { state: 'running', resetAt: state.pause.resetAt,
+      issueId: id, resumeCommand: resumeCommand(batch) });
+    return { resumed: true, ...view(state) };
+  }
+  function settleWorker(issueId, result) {
+    const state = [...batches.values()].find((candidate) => candidate.roster.includes(issueId));
+    if (!state || state.issues[issueId].settled) return { recorded: false };
+    state.issues[issueId] = { ...result, settled: true };
+    for (const retained of retainedPaths(result)) state.preserved.add(retained);
+    append('issue.worker-result', { issueId, state: result.outcome, retained: result.retained || result.probe || null });
+    return { recorded: true };
+  }
+  function interrupt(batch) {
+    const state = batches.get(batch); if (!state) return { liveWorkers: [] };
+    state.interrupted = true;
+    return { liveWorkers: state.pause ? [state.pause.issueId] : [] };
+  }
+  return { start, status, resume, settleWorker, interrupt };
 }
 
 function pidAlive(pid) {
@@ -386,7 +511,8 @@ function runWorker(root, batch, item, configPath, state = prepState, seams = {})
       }
       resolve(result);
     });
-    child.stdin.end(JSON.stringify({ action: item.action, built: item.built, configPath }));
+    child.stdin.end(JSON.stringify({ action: item.action, built: item.built, configPath,
+      ...(item.retainedProbe ? { retainedProbe: item.retainedProbe } : {}) }));
   });
 }
 
@@ -403,6 +529,29 @@ async function runPool(items, concurrency, worker) {
   return results;
 }
 
+async function runPoolUntilUsageLimit(items, concurrency, worker, onLimit) {
+  const results = new Array(items.length); let next = 0; let parked = false;
+  const active = new Set();
+  async function lane() {
+    for (;;) {
+      if (parked) return;
+      const index = next++;
+      if (index >= items.length) return;
+      const item = items[index];
+      active.add(item.id);
+      const result = await worker(item);
+      results[index] = result;
+      if (!parked && canonicalUsageLimit(result)) {
+        parked = true;
+        onLimit(result, item, [...active]);
+      }
+      active.delete(item.id);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, lane));
+  return { results: results.filter((value) => value !== undefined), parked };
+}
+
 function manifestValue(record) { return record && record.value && typeof record.value === 'object' ? record.value : record; }
 function manifestInput(record) {
   const value = manifestValue(record) || {};
@@ -414,6 +563,28 @@ function manifestInput(record) {
   };
 }
 
+function usageLimitStatus(derived, batch) {
+  const pause = activeUsagePause(derived && derived.events);
+  if (!pause) return null;
+  const preserved = new Set(Array.isArray(pause.preservedPaths) ? pause.preservedPaths : []);
+  for (const event of derived.events || []) {
+    if (event.type === 'issue.snapshotted' && event.payload) {
+      for (const candidate of retainedPaths({ retained: event.payload.folder })) preserved.add(candidate);
+    }
+  }
+  for (const issue of derived.issues || []) {
+    for (const row of issue.workers || []) {
+      for (const candidate of retainedPaths(row.result && row.result.data)) preserved.add(candidate);
+    }
+  }
+  return {
+    paused: true, resetAt: pause.resetAt, stage: pause.stage,
+    activeWorkers: Array.isArray(pause.activeWorkers) ? pause.activeWorkers : [],
+    preservedPaths: [...preserved],
+    resumeCommand: pause.resumeCommand || `node scripts/prepare-batch.js resume ${batch}`,
+  };
+}
+
 function statusReport(root, batch, json, state = prepState, io = {}) {
   const out = io.out || console.log; const err = io.err || console.error;
   try {
@@ -422,9 +593,18 @@ function statusReport(root, batch, json, state = prepState, io = {}) {
       if (json) out(JSON.stringify(derived, null, 2));
       throw new Error(derived.error || 'preparation state is invalid');
     }
+    const pause = usageLimitStatus(derived, batch);
+    if (pause) Object.assign(derived, pause);
     if (json) out(JSON.stringify(derived, null, 2));
     else {
       out(`== preparation batch ${batch} ==`);
+      if (pause) {
+        out(`  paused stage: ${pause.stage}`);
+        out(`  reset at: ${pause.resetAt}`);
+        out(`  affected active workers: ${pause.activeWorkers.length ? pause.activeWorkers.join(', ') : '(none recorded)'}`);
+        out(`  preserved paths: ${pause.preservedPaths.length ? pause.preservedPaths.join(', ') : '(none recorded)'}`);
+        out(`  resume command: ${pause.resumeCommand}`);
+      }
       const items = derived.issues || derived.items || [];
       if (Array.isArray(items)) {
         for (const value of items) out(`  ${value.id}: ${value.outcome || value.state || 'pending'}`);
@@ -735,6 +915,18 @@ async function execute(opts, io = {}, seams = {}) {
       return acknowledgeInterrupted(root, opts.batch, ids, state, cfg, io,
         { ...seams, ownership: held.ownership });
     }
+    const resumeEvents = opts.mode === 'resume' ? state.readEvents(root, opts.batch) : [];
+    const priorPause = activeUsagePause(resumeEvents);
+    if (opts.mode === 'resume' && !priorPause && hasUsageLimitHistory(resumeEvents)) {
+      out(`preparation batch ${opts.batch} has no active usage-limit pause; nothing was launched.`);
+      return 0;
+    }
+    const clockValue = typeof seams.now === 'function' ? seams.now() : new Date().toISOString();
+    if (priorPause && Date.parse(clockValue) < Date.parse(priorPause.resetAt)) {
+      err(`prepare-batch: batch ${opts.batch} is paused in ${priorPause.stage} until ${priorPause.resetAt}; no worker was launched.`);
+      err(`prepare-batch: resume with: ${priorPause.resumeCommand}`);
+      return EXIT_REFUSED;
+    }
     const interrupted = unresolvedWorkers(root, state, cfg.targetRepoPath);
     if (!interrupted.ok) {
       err(`prepare-batch: ${interrupted.error}`);
@@ -797,7 +989,10 @@ async function execute(opts, io = {}, seams = {}) {
       };
       manifest = state.createManifest(root, opts.batch, input);
     }
-    snapshots = prepareWorktrees(snapshots, configPath, seams, baseHead, cfg);
+    // A test-supplied integration inspector is already the authority for its synthetic tree;
+    // production still re-reads each real worktree HEAD after creation.
+    snapshots = prepareWorktrees(snapshots, configPath, seams,
+      Object.prototype.hasOwnProperty.call(seams, 'inspectIntegration') ? null : baseHead, cfg);
     const strays = strayIssues(cfg, rosterIds, seams);
     state.appendEvent(root, opts.batch, 'batch.strays', scrubSecrets({
       state: strays.ok ? (strays.ids.length ? 'attention' : 'clear') : 'attention',
@@ -811,9 +1006,15 @@ async function execute(opts, io = {}, seams = {}) {
         item.outcome = 'attention'; delete item.action;
         item.error = 'worker record unexpectedly predates batch start';
       } else if (opts.mode === 'resume' && prior.started) {
-        delete item.action;
-        if (prior.result) item.outcome = prior.result.outcome;
+        if (prior.result && prior.result.outcome === 'usage-limit' && canonicalUsageLimit(prior.result.data)) {
+          item.action = item.action || attemptPhase(prior.started);
+          item.retainedProbe = prior.result.data.probe || null;
+          item.outcome = item.action;
+        } else if (prior.result) {
+          delete item.action; item.outcome = prior.result.outcome;
+        }
         else {
+          delete item.action;
           item.outcome = 'attention';
           item.error = 'interrupted worker requires explicit retry';
         }
@@ -849,18 +1050,42 @@ async function execute(opts, io = {}, seams = {}) {
       }, cfg));
       if (item.action) runnable.push(item);
     }
-    const onWorkerProgress = seams.onWorkerProgress || ((id, event) => {
+    const workerStages = new Map();
+    const reportWorkerProgress = seams.onWorkerProgress || ((id, event) => {
       const line = proof.proofStageLine(event); if (line) err(`${id}: ${line}`);
     });
-    const results = await runPool(runnable, concurrency,
+    const onWorkerProgress = (id, event) => {
+      if (event && typeof event.stage === 'string') workerStages.set(id, event.stage);
+      reportWorkerProgress(id, event);
+    };
+    const pooled = await runPoolUntilUsageLimit(runnable, concurrency,
       (item) => (seams.runWorker || runWorker)(root, opts.batch, item, configPath, state,
-        { ...seams, ownership: held.ownership, onWorkerProgress }));
+        { ...seams, ownership: held.ownership, onWorkerProgress }),
+      (result, item, activeWorkers) => {
+        const pausePayload = {
+          state: 'paused', resetAt: result.rateLimit.resetAt,
+          stage: workerStages.get(item.id) || item.action,
+          activeWorkers, issueId: item.id,
+          preservedPaths: snapshots.flatMap(retainedPaths),
+          resumeCommand: `node scripts/prepare-batch.js resume ${opts.batch}`,
+        };
+        if (!priorPause) state.appendEvent(root, opts.batch, 'batch.usage-limit-paused', scrubSecrets(pausePayload, cfg));
+      });
+    const results = pooled.results;
+    if (priorPause && !pooled.parked) {
+      state.appendEvent(root, opts.batch, 'batch.usage-limit-resumed', scrubSecrets({
+        state: 'running', resetAt: priorPause.resetAt, stage: priorPause.stage,
+        activeWorkers: priorPause.activeWorkers || [], issueId: priorPause.issueId,
+        preservedPaths: [...new Set(results.flatMap(retainedPaths))],
+        resumeCommand: priorPause.resumeCommand,
+      }, cfg));
+    }
     for (const item of snapshots.filter((s) => !s.action)) out(`${item.id}: ${item.outcome}${item.error ? ` — ${item.error}` : ''}`);
     for (const result of results) out(`${result.id}: ${result.outcome}${result.error ? ` — ${result.error}` : ''}`);
     if (strays.ids.length) out(`stray dispatchable issues outside this batch: ${strays.ids.join(', ')}`);
     if (!strays.ok) out(`ready-queue attention: ${strays.error}`);
     const attention = snapshots.some((s) => ['attention', 'collision', 'needs-criteria', 'needs-design'].includes(s.outcome))
-      || results.some((r) => !r.ok) || !strays.ok || strays.ids.length > 0;
+      || results.some((r) => !r.ok && !canonicalUsageLimit(r)) || !strays.ok || strays.ids.length > 0;
     return attention ? EXIT_ATTENTION : 0;
   } finally {
     // A child releases nothing: the lease it ran under belongs to its parent, and releasing
@@ -885,10 +1110,11 @@ if (require.main === module) main(process.argv.slice(2)).then((code) => { proces
 
 module.exports = {
   main, execute, parseArgs, dependenciesOf, classifyBuilt, snapshotBatch, prepareWorktrees,
-  runPool, runWorker, parseWorkerResult, parseWorkerEnvelope, latestAttempt, pidAlive, statusReport,
+  runPool, runPoolUntilUsageLimit, runWorker, parseWorkerResult, parseWorkerEnvelope, latestAttempt, pidAlive, statusReport,
   workerEnv, hostEnvSecrets, scrubSecrets, integrationHead, snapshotFingerprints,
   inspectIntegration, strayIssues, settleEmptyTakeover, unresolvedWorkers, acknowledgeInterrupted,
-  acknowledgedPhases, shouldCheckPrerequisites,
+  acknowledgedPhases, shouldCheckPrerequisites, canonicalUsageLimit, activeUsagePause, hasUsageLimitHistory,
+  retainedPaths, usageLimitStatus, createUsageLimitPreparation,
   attemptPhase, sameConfigIdentity, SECRET_MARKER,
   DEFAULT_CONCURRENCY, MAX_CONCURRENCY, MAX_WORKER_OUTPUT, STAGE_PREFIX,
   EXIT_USAGE, EXIT_REFUSED, EXIT_ATTENTION,
