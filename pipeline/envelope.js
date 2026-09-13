@@ -7,12 +7,15 @@
 //
 // The Claude CLI writes its `--output-format json` envelope as one line, but may
 // print unrelated lines first (e.g. an untrusted-workspace warning), so a whole-file
-// JSON.parse silently fails and the model is never recorded. The rule here is exactly:
-// scan lines BOTTOM-UP and take the first one that parses to an object with a string
-// `result`. No regex over prose, no list of known warning strings — new noise from a
-// CLI upgrade needs no change here.
+// JSON.parse silently fails and the model is never recorded. The extraction rule is to scan
+// lines BOTTOM-UP and take the first supported human result: a Claude object with a string
+// `result`, or a completed Codex `agent_message`. Command output and intermediate messages
+// remain separate records and must never become a PR summary. There is no regex over prose
+// and no list of known warning strings, so new CLI noise needs no change here; both formats
+// get the same deterministic "final human message" rule without parsing the log as one JSON
+// document.
 //
-// `modelUsage` lists EVERY model the CLI billed, and the cheap internal helper model is
+// `modelUsage` lists EVERY model the Claude CLI billed, and the cheap internal helper model is
 // listed first — ahead of the pinned model that did the work. Taking key[0] therefore
 // named the wrong model in the status file, the manifest, the PR footer and the report
 // (repo-wxh). Selection is now a deterministic rule; see chooseModel below.
@@ -90,9 +93,12 @@ function parse(text, expectedAlias) {
     let j;
     try { j = JSON.parse(line); } catch { continue; }
     if (!j || typeof j !== 'object' || Array.isArray(j)) continue;
-    if (typeof j.result !== 'string') continue;
+    const codexItem = j.type === 'item.completed' && j.item
+      && typeof j.item === 'object' && j.item.type === 'agent_message'
+      && typeof j.item.text === 'string' ? j.item.text : null;
+    if (typeof j.result !== 'string' && codexItem === null) continue;
     const { model, aliasMiss } = chooseModel(j.modelUsage, expectedAlias);
-    return { result: j.result, model, aliasMiss };
+    return { result: codexItem === null ? j.result : codexItem, model, aliasMiss };
   }
   return null;
 }

@@ -39,6 +39,10 @@ else
   AGENT_DEFAULT="claude -p --dangerously-skip-permissions${MODEL_ARG}"
 fi
 AGENT_CMD="${PIPELINE_AGENT_CMD:-$AGENT_DEFAULT}"
+# A nested entrypoint fixture has no mounted credential handoff. Let that fixture opt out
+# only through a capability production launch code never transmits; an agentCommand by
+# itself remains on the managed-auth path and therefore cannot expose the durable cache.
+if [ "${PIPELINE_TESTING_NESTED_ENTRYPOINT:-}" = "1" ] && [ -n "${PIPELINE_AGENT_CMD:-}" ]; then PIPELINE_CHATGPT_AUTH=""; fi
 
 # When we own the invocation, ask for JSON so the RESOLVED model id can be recorded (a
 # `--model opus` alias hides which Opus actually ran) and so the docs phase hands back a
