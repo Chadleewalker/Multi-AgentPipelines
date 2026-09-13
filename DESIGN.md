@@ -2912,6 +2912,15 @@ overwrites refreshed state. Missing or malformed login state and a busy lane hav
 bounded refusals. A dead owner can be recovered, but age alone never steals a live owner's
 lock and nonce ownership prevents an old owner from deleting its successor.
 
+An explicit `codexAuthCacheRoots` roster is a stronger contract than the legacy implicit
+single lane: every entry must already exist under its canonical absolute spelling, be private
+to the host identity, and sit outside the target, pipeline checkout, task workspaces and every
+other lane. Preflight validates the whole roster before target mutation. A failed refresh
+quarantines that lane and retains its task copy without changing the durable source. Repair
+must acquire the lane's current exclusive lock and compare the durable source digest captured
+at staging before atomically writing back; a busy or changed lane remains untouched and
+quarantined while other healthy lanes continue.
+
 **One saved ChatGPT session is one exclusive lane.** The owner holds it continuously from
 task-cache staging through every implementation and docs Codex invocation through atomic
 refresh write-back. A second worker waits instead of receiving a concurrent copy of the same

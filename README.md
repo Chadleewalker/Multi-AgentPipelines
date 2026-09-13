@@ -88,7 +88,8 @@ node scripts/fast-full-sweep.js --repo .
 #     number) to put that many containers in flight at once for a daytime batch —
 #     API-key containers may use those slots concurrently. One saved ChatGPT login is
 #     one exclusive credential lane, so subscription tasks wait and run serially unless
-#     you provide independently authenticated lane caches. A usage
+#     you provide independently authenticated private directories through
+#     `codexAuthCacheRoots`. A usage
 #     limit parks the whole run, not each task: one shared wait, and no new task
 #     launches while the window is closed.)
 cp run.config.example.json run.config.myproject.json

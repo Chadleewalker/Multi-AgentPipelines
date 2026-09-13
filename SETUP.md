@@ -336,7 +336,9 @@ directly when you need its per-suite diagnostic logs and timings.
    `codexAuth: "api-key"` to use `.env.pipeline`; the example declares dormant ChatGPT
    auth while retaining the canonical Claude/opus defaults. One saved login is one exclusive
    worker lane regardless of `concurrency`; parallel subscription workers require separate,
-   independently authenticated lane caches. A fifth if you ever hit it:
+   independently authenticated host-private directories listed in `codexAuthCacheRoots`.
+   They must be canonical absolute paths outside every repository, pipeline checkout and task
+   workspace. A fifth if you ever hit it:
    `allowHalfProven: false` is the default and means the runner refuses a suite the freeze
    gate found red with no probe supplied — set it
    to `true` only if you accept dispatching suites whose green side has never been seen

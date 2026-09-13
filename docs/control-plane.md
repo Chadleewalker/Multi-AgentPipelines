@@ -166,6 +166,12 @@ at `/run/pipeline-auth-host/cache`; the root entrypoint copies it into an intern
 verification runs as `nobody` with `CODEX_API_KEY`, `OPENAI_API_KEY`, and `CODEX_HOME`
 unset. Successful cleanup removes only the task copy; failed refresh persistence keeps the
 prior durable cache and recoverable task copy.
+Configure parallel subscription lanes with `codexAuthCacheRoots`, a nonempty array of existing
+canonical absolute directories, each authenticated independently and private to the host user.
+Repository-local, pipeline-local, workspace-local, relative, aliased, overlapping and
+non-private roots are refused before target mutation. A retained repair reacquires that lane's
+lock and verifies the durable source version; contention or a changed source leaves both copies
+unchanged and the lane quarantined without blocking healthy siblings.
 
 ## Supervised operation
 

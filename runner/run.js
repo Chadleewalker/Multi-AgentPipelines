@@ -131,24 +131,29 @@ async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClo
   }
   // Container names must be unique across relaunches (§4.7 resume).
   const attempt = (executeTask.counter = (executeTask.counter || 0) + 1);
-  let authCache = null;
-  if (providerFor(cfg) === 'codex' && cfg.codexAuth === 'chatgpt') {
-    authCache = await Promise.resolve(codexAuth.stageTaskCache({ cacheRoot: cfg.codexAuthCacheRoot, taskId: issue.id, wait: true }));
-  }
-  try { return await runTask(cfg, {
+  const launch = (authCache) => runTask(cfg, {
     containerName: `task-${issue.id}-${log.runId}-${attempt}`.replace(/[^A-Za-z0-9_.-]/g, '-'),
     workspaceDir: ws.dir,
     pipelineDir: path.join(REPO_ROOT, 'pipeline'),
     issueId: issue.id,
     taskDir,
-    // Paired with its environment-variable NAME here, so the container layer never has to
-    // guess which provider a bare value belongs to.
     ...(authCache ? {} : {
       credential: { name: credentialNameFor(providerFor(cfg)), value: token },
     }),
     wallClockMinutes: wallClockMinutes || cfg.wallClockMinutes,
     authCache,
-  }, log, traceId); } finally { if (authCache) await Promise.resolve(codexAuth.releaseTaskCache(authCache)); }
+  }, log, traceId);
+  if (providerFor(cfg) === 'codex' && cfg.codexAuth === 'chatgpt'
+      && cfg.codexAuthLanePool && typeof cfg.codexAuthLanePool.run === 'function') {
+    return cfg.codexAuthLanePool.run({ id: issue.id, stage: 'implementation', credential: true },
+      ({ authCache }) => launch(authCache));
+  }
+  let authCache = null;
+  if (providerFor(cfg) === 'codex' && cfg.codexAuth === 'chatgpt') {
+    authCache = await Promise.resolve(codexAuth.stageTaskCache({ cacheRoot: cfg.codexAuthCacheRoot, taskId: issue.id, wait: true }));
+  }
+  try { return await launch(authCache); }
+  finally { if (authCache) await Promise.resolve(codexAuth.releaseTaskCache(authCache)); }
 }
 
 // ---- the bounded worker pool (§7, §4.12) ------------------------------------------

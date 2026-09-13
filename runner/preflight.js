@@ -416,10 +416,18 @@ function preflight(cfg, repoRoot, log, deps = {}) {
   if (providerFor(cfg) !== 'codex' || cfg.codexAuth !== 'chatgpt') return preflightAfterAuth(cfg, repoRoot, log, deps);
   const env = deps.env || process.env;
   return Promise.resolve((deps.codexAuth || codexAuth).preflight({
-    mode: 'chatgpt', codexHome: env.CODEX_HOME, cacheRoot: env.PIPELINE_CODEX_CACHE,
+    mode: 'chatgpt', codexHome: env.CODEX_HOME,
+    ...(Array.isArray(cfg.codexAuthCacheRoots)
+      ? { cacheRoots: cfg.codexAuthCacheRoots }
+      : { cacheRoot: env.PIPELINE_CODEX_CACHE }),
+    targetRepoPath: cfg.targetRepoPath, repoRoot,
   })).then((auth) => {
     if (!auth || !auth.ok) return { ok: false, authRefused: true, reason: auth && auth.reason || 'ChatGPT authentication unavailable' };
     cfg.codexAuthCacheRoot = auth.cacheRoot;
+    if (Array.isArray(auth.cacheRoots)) cfg.codexAuthCacheRoots = auth.cacheRoots;
+    if (Array.isArray(auth.lanes) && typeof (deps.codexAuth || codexAuth).createLanePool === 'function') {
+      cfg.codexAuthLanePool = (deps.codexAuth || codexAuth).createLanePool({ lanes: auth.lanes });
+    }
     return preflightAfterAuth(cfg, repoRoot, log, deps);
   });
 }
