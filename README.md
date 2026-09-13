@@ -63,6 +63,9 @@ If an author or green-probe worker reaches the provider's canonical usage limit,
 parks the whole batch until the reported reset time instead of failing the remaining issues.
 Use `node scripts/prepare-batch.js status <batch>` to see the paused stage, affected workers,
 preserved suite or probe paths, and exact resume command; an early resume launches no model.
+Outside a usage-limit pause, the same read-only status reports live workers as `authoring` or
+`proving`; it reports `interrupted-unknown` only after persisted process identity proves that an
+unsettled worker is no longer live.
 
 ```bash
 # 1. put your model credential where the runner can find it
