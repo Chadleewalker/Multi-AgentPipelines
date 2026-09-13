@@ -198,9 +198,9 @@ A grant leaves the outstanding list only when its parent settles it as `complete
 `released` — never by expiry, a dead parent or a reclaim — so an interrupted supervisor leaves
 a readable record of what it had in flight. A live parent is never taken over, and a provably
 dead one is reclaimed only when a person asks explicitly, without deleting an uncertain
-preparation marker and without declaring its child complete. There is no supervisor CLI:
-`runner/supervisor.js` is a host-side library, and a supervising process takes the lease and
-issues grants through it.
+preparation marker and without declaring its child complete. There is no standalone
+lease-management CLI: `runner/supervisor.js` is a host-side library, and the proposal supervisor
+below takes the lease and issues grants through it.
 
 That process uses `runner/operation-manager.js` to launch the existing preparation command and
 one live-feed implementation runner. Its records and authority copies live under host state,

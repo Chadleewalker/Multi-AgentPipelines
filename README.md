@@ -24,7 +24,10 @@ Three phases joined by a task queue:
    anything starts. Durable kickoff packets can enter this phase through
    `scripts/specify-proposal.js`: its read-only Codex planner either asks one
    evidence-linked product question or creates the single canonical Beads issue that the
-   rest of planning reviews and freezes.
+   rest of planning reviews and freezes. `scripts/proposal-supervisor.js run` can watch that
+   intake continuously and carry ready proposals through preparation, implementation, and
+   review observation in one durable process, rotating completed implementation feeds as
+   later work becomes ready.
 2. **Implementation** (autonomous) — a plain script on your PC works through the queue.
    Each task gets a fresh container that can reach nothing except the handful of
    endpoints its own model provider needs, holds no git credentials, and cannot edit its
