@@ -1018,10 +1018,17 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
    success stands with `docsPhaseError` as evidence (change-log row `final-verification-boundary`). Phases of
    a task are scaffolding, not an LLM decision. No leader agent inside. **Agent output is a contract artifact, so it is
    read structurally, never scraped.** When the entrypoint owns the invocation (no
-   `PIPELINE_AGENT_CMD`) both agent phases request `--output-format json`, and the
-   envelope reader (`pipeline/envelope.js`) takes the last line of the log that parses to
-   a JSON object with a string `result` — that result is the change summary, and the
-   resolved model id recorded per 4.11 is **selected** from its `modelUsage`, never simply
+   `PIPELINE_AGENT_CMD`) both agent phases request their provider's structured format —
+   Claude adds `--output-format json`, while Codex's constructed command already carries
+   `--json` — and the
+   envelope reader (`pipeline/envelope.js`) scans physical lines from the bottom for the
+   provider's bounded final-result shape. For Claude that is a JSON object with a string
+   `result`; for Codex it is an `item.completed` event whose item is an `agent_message`
+   with string `text`. That final human text — including escaped newlines decoded only
+   after the complete JSONL record is parsed — is the change summary. Command-execution
+   events and every other JSONL item are ineligible regardless of their size, so tool
+   output cannot become the PR body merely by occurring near the end of the stream. The
+   resolved Claude model id recorded per 4.11 is **selected** from its `modelUsage`, never simply
    taken in listed order: `modelUsage` enumerates every model the CLI billed, and the cheap
    internal helper model is listed *first*, ahead of the pinned model that did the work.
    The selection rule is deterministic and applied in order: (1) the pinned alias, passed
@@ -1033,8 +1040,11 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
    diagnostic naming the alias and the keys seen — never fatal, and never silenced, since
    the wrong id going unnoticed is exactly the failure this rule exists to end. The rule is
    deliberately structural: a CLI that prints warnings around its own output must never
-   require a list of known warning strings to filter, and a log with no envelope (a stub,
-   a caller-supplied command, an error page) falls back to its raw text unchanged. The
+   require a list of known warning strings to filter, and a log with no recognized final
+   envelope (a stub, a caller-supplied command, an error page) falls back to its raw text
+   unchanged. A caller-supplied `PIPELINE_AGENT_CMD` owns its invocation completely;
+   inherited managed-auth markers are cleared so this deterministic seam neither restages
+   unused credentials nor changes the verifier user. The
    docs phase additionally keeps stderr out of the file its summary is read from, and the
    entrypoint seeds this workspace's trust/onboarding flags into the CLI's config before
    the first call so the untrusted-workspace warning is not emitted at all.
@@ -1296,7 +1306,8 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     (`memoryNotes`, 3.6), and any spec concerns the agent raised (`specConcerns`, 3.7 —
     evidence only, like `advisories`). The summary and the model id are the two artifacts the host
     reuses verbatim (PR body, manifest, report), so both are extracted deterministically
-    by scaffolding — 4.3's envelope rule — and never by an LLM re-reading agent prose. Its schema is `status.schema.json`, checked into this repo, owned by the
+    by scaffolding — 4.3's provider-specific final-envelope rule — and never by an LLM
+    re-reading agent prose or by taking a raw tail of its event stream. Its schema is `status.schema.json`, checked into this repo, owned by the
     entrypoint task and cited as a frozen input by the runner and report tasks.
 12. **Runner configuration, lifecycle ownership, and logs.** The runner reads
     `run.config.json` in this repo: target repo path and remote, image name, wall-clock
@@ -2177,7 +2188,9 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
 
 The user reads the run report and works through the PRs it points at, most-scrutiny-first.
 Each PR carries everything needed to judge it without archaeology: the spec, the change
-summary, and the verification evidence. Outcomes per PR: merge it, or send it back — and
+summary, and the verification evidence. The summary is only the docs agent's bounded final
+human message; command output and other provider events remain diagnostic artifacts and do
+not enter the report or PR body. Outcomes per PR: merge it, or send it back — and
 "send it back" means writing feedback that becomes a new task through the normal planning
 phase, not editing the branch by hand. Stuck, tampered, and failed tasks arrive as pushed
 WIP branches linked from the report, with their full attempt history on the issue and a

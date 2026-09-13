@@ -71,7 +71,11 @@ real use. All are fixed.
    resolved model id was in fact never recorded. Fixed at both ends: `pipeline/envelope.js`
    extracts the envelope bottom-up, and the entrypoint seeds the workspace trust flags so
    the warning is not emitted in the first place. (The id it then started recording was
-   still the wrong one — defect 8.)
+   still the wrong one — defect 8.) Codex later exposed the provider-shaped version of the
+   same boundary (`repo-djf.15`): its JSONL stream interleaves command events with a final
+   agent-message event, so treating the stream as raw text stored a tail of command JSON in
+   `changeSummary`. The shared reader now admits only a completed Codex `agent_message`,
+   preserving its escaped newlines while excluding command output of any size.
 6. **The pause loop had no working bound** (found 2026-07-26 by the full-suite re-run, not
    by a run). `pause.js` capped wait cycles at 96, but `run.js` re-entered `waitForWindow`
    fresh on every pause, so the counter restarted at 1 each time and the stop condition
@@ -294,11 +298,13 @@ real use. All are fixed.
   are why every runner Beads call is now bounded (`repo-sls`, above). If you write a new
   host-side `bd` invocation, put it through `runner/bd.js` — a bare `spawnSync('bd', …)`
   elsewhere is unbounded again, and the failure it produces is a run that parks silently.
-- **The Claude CLI writes chatter around its output**, and a warning line on stdout is
-  enough to break a whole-file `JSON.parse`. Never parse an agent log as one document:
-  `pipeline/envelope.js` scans lines bottom-up for the first that parses to an object with
-  a string `result`. The rule is structural on purpose — no list of known warning strings
-  to maintain when a CLI upgrade invents new noise. Untrusted-workspace warnings are also
+- **Provider CLIs write structured output among chatter and execution events.** Never parse
+  an agent log as one document or take its raw tail: `pipeline/envelope.js` scans physical
+  lines bottom-up for either Claude's string `result` or Codex's completed
+  `agent_message.text`. Other Codex JSONL events, including arbitrarily large command
+  output, are not final results; escaped newlines are decoded only after one complete JSONL
+  line parses. The rule is structural on purpose — no list of known warning strings to
+  maintain when a CLI upgrade invents new noise. Untrusted-workspace warnings are also
   removed at source: the entrypoint seeds `hasTrustDialogAccepted` /
   `hasCompletedOnboarding` for `$WS` into `$HOME/.claude.json` before the first agent call.
 - **Test suites share one Docker network.** Run them one at a time; concurrent runs tear
@@ -408,6 +414,17 @@ alias and the keys seen to **stderr** and still records the rule-3 choice — st
 the model id alone, so the entrypoint's `$(...)` capture is unaffected. `DESIGN.md` is
 amended in change-log row `repo-wxh`. Nothing under `runner/` changed: the manifest,
 report and PR footer all read the status file, so they were corrected by the one fix.
+
+**`repo-djf.15` extended that boundary to Codex JSONL.** `envelope.js` now recognizes only
+an `item.completed` event carrying an `agent_message` as Codex's final result, ignores
+command-execution and unrelated events even when their output exceeds the status summary
+bound, and lets `JSON.parse` decode escaped newlines from the physically framed record.
+Consequently `status.json`, `report.md`, and the PR body receive only the final human
+summary. The entrypoint also clears inherited ChatGPT-auth staging when
+`PIPELINE_AGENT_CMD` supplies the deterministic override, keeping the offline seam owned by
+its caller. Frozen `repo-djf.15` coverage exercises the docs phase through that seam and
+checks the artifact schema and report; its guard remains offline and separate from the
+mandatory regression sweep.
 
 ## The spec-concern batch (frozen 2026-07-26)
 
@@ -2661,8 +2678,9 @@ task by task.
 at `tests/acceptance/repo-eyn/` and `tests/acceptance/repo-4gp/`, which drive it through
 the `PIPELINE_BD_CMD` stub seam. Fold it into a `test-runner-memory.sh` if the module
 grows past the two entry points. The same is true of `pipeline/envelope.js` and
-`status.js summary`: their coverage is `tests/acceptance/repo-52m/` and
-`tests/acceptance/repo-wxh/`, which drive the whole entrypoint with a `PIPELINE_AGENT_CMD`
+`status.js summary`: their coverage is `tests/acceptance/repo-52m/`,
+`tests/acceptance/repo-wxh/`, and the Codex JSONL regression in
+`tests/acceptance/repo-djf.15/`, which drive the whole entrypoint with a `PIPELINE_AGENT_CMD`
 stub and a stub `verify.js` (never the real verifier — that would self-nest, the
 shadow-01 lesson). Note the seam between those two: a verifier run covers only the task's
 own directory, so `repo-wxh`'s suite shells out to `node tests/acceptance/repo-52m/test.js`
@@ -2672,7 +2690,8 @@ a silent regression in the one-argument `parse(text)` that `status.js summary` d
 touching this module should chain the same way.
 
 **Gap worth knowing:** `pipeline/envelope.js` and `status.js summary` have no
-`scripts/test-*.sh` suite — their coverage is `tests/acceptance/repo-52m/`, which drives
+`scripts/test-*.sh` suite — their coverage is `tests/acceptance/repo-52m/`,
+`tests/acceptance/repo-wxh/`, and `tests/acceptance/repo-djf.15/`, which drive
 the whole entrypoint with a `PIPELINE_AGENT_CMD` stub and a stub `verify.js` (never the
 real verifier — that would self-nest, the shadow-01 lesson). That is a frozen artifact of
 a finished task, so nothing re-runs it: the modules are untested going forward. The same
