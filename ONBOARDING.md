@@ -455,6 +455,12 @@ so start Docker Desktop, build the named image, correct `hostShell`, or restore 
 provider login as instructed and rerun the same batch name. Read-only status and interrupted
 worker acknowledgement do not depend on these prerequisites.
 
+If a completed author worker leaves an unpublished suite after an `unproven` proof, use
+`node scripts/prepare-batch.js re-author <batch> <issue-id>` rather than moving or deleting the
+suite by hand. It accepts one issue, archives the failed generation and diagnostics in host
+preparation evidence, and only then launches one ordinary replacement worker. A suite already on
+the integration branch or already dispatchable is deliberately ineligible.
+
 An author or green-probe worker that returns the provider's canonical usage-limit response
 parks admission for the entire batch at the reported reset time. Workers already running settle
 once, untouched issues stay pending, and completed suites and retained probes stay available.

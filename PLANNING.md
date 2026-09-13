@@ -383,6 +383,13 @@ never freezes, commits, merges, pushes, changes Beads, or turns blocked
 implementation dependencies into test-author dependencies: specs may be prepared together, then
 the ordinary Beads-ready runner releases their implementation waves in dependency order.
 
+A different recovery applies when an author worker completed normally but its proof ended
+`unproven`, leaving the failed suite in the issue worktree. Run
+`re-author <batch> <id>` for exactly that one issue. Before the ordinary worker launch, the host
+archives the selected attempt's suite and diagnostics under its preparation evidence root. The
+command accepts only the real unpublished `freeze` state; frozen, dispatchable, or otherwise
+branch-published suites remain outside this transition.
+
 A canonical provider usage-limit result from either the author or green-probe stage is batch
 state, not an issue failure. The first result closes new worker admission, records one pause with
 its reset time and currently active workers, and preserves authored suites and managed probes.

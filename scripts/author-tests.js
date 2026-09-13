@@ -146,8 +146,9 @@ function auditAuthorTree(built, run = runSync) {
 function authorIssue(built, configPath, io = {}, seams = {}) {
   const out = io.out || console.log; const err = io.err || console.error;
   const setup = (kind, error) => ({ ok: false, outcome: 'setup-failed', kind, error, exitCode: EXIT_SETUP });
-  if (!built || !built.ok || built.state !== 'write') {
-    const result = setup('state', `structured author requires write state (got ${(built && built.state) || 'invalid'})`);
+  const reAuthor = seams.reAuthor === true;
+  if (!built || !built.ok || (built.state !== 'write' && !(reAuthor && built.state === 'freeze'))) {
+    const result = setup('state', `structured author requires write state or an explicit re-author transition (got ${(built && built.state) || 'invalid'})`);
     err(`author-tests: ${result.error}`);
     return result;
   }

@@ -34,8 +34,13 @@ function validateJob(job) {
   if (!built.folder || built.folder.exists !== true || typeof built.folder.dir !== 'string') {
     return 'job has no existing dedicated worktree';
   }
-  if (job.action === 'author-proof' && (built.state !== 'write' || typeof built.text !== 'string')) {
-    return 'author-proof needs a write-state brief';
+  if (job.reAuthor !== undefined && job.reAuthor !== true) return 'reAuthor must be true when present';
+  if (job.reAuthor && (job.action !== 'author-proof' || built.state !== 'freeze')) {
+    return 're-author needs an author-proof action and a real freeze-state brief';
+  }
+  if (job.action === 'author-proof'
+      && ((!job.reAuthor && built.state !== 'write') || typeof built.text !== 'string')) {
+    return 'author-proof needs a write-state brief or an explicit re-author transition';
   }
   if (job.action === 'proof' && !['freeze', 're-gate', 'write'].includes(built.state)) {
     return 'proof job has an unsupported brief state';
@@ -53,9 +58,10 @@ function currentHead(built, run = runSync) {
   return r.status === 0 && /^[0-9a-f]{40,64}$/i.test(head) ? head : null;
 }
 
-function authorStructured(built, configPath, seams, log) {
+function authorStructured(built, configPath, seams, log, reAuthor = false) {
   if (typeof author.authorIssue === 'function') {
-    return author.authorIssue(built, configPath, { out: (s) => log.push(limited(s)), err: (s) => log.push(limited(s)) }, seams);
+    return author.authorIssue(built, configPath, { out: (s) => log.push(limited(s)), err: (s) => log.push(limited(s)) },
+      { ...seams, reAuthor });
   }
   // Compatibility with the immediately preceding release. This is the same bd-free core that
   // authorIssue extracts: audit, restricted author, audit, then the independent green proof.
@@ -99,7 +105,7 @@ function execute(job, seams = {}) {
   if (invalid) return { ok: false, outcome: 'invalid', error: invalid };
   const log = [];
   let answer = job.action === 'author-proof'
-    ? authorStructured(job.built, job.configPath, seams, log)
+    ? authorStructured(job.built, job.configPath, seams, log, job.reAuthor === true)
     : proofStructured(job.built, seams, job.retainedProbe);
   answer = answer && typeof answer === 'object' ? { ...answer } : { ok: false, outcome: 'unproven', error: 'worker returned no result' };
   if (answer.ok) answer.outcome = 'proven-at-base';

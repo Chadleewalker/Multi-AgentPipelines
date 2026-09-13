@@ -257,6 +257,14 @@ worker process identities using the target lock's reboot- and PID-recycle-aware 
 reports `interrupted-unknown` only when an unmatched worker identity is no longer live; an existing
 terminal result remains authoritative even after either process exits.
 
+When a completed author-and-proof attempt ends `unproven` and leaves an unpublished suite in its
+issue worktree, explicitly start a fresh author with
+`node scripts/prepare-batch.js re-author <batch> <issue>`. The command accepts exactly one issue,
+archives that failed generation's suite and diagnostics beneath the host preparation evidence root,
+then uses the ordinary worker launcher for the one replacement generation. It never fabricates a
+write-state brief or edits the integration checkout. Dispatchable and branch-published suites are
+ineligible; use the normal review/freeze path for those states.
+
 Preparation also resolves each not-yet-frozen issue's structured `design-ref` from the exact
 integration HEAD recorded in its immutable manifest. It never consults an operator-local file
 or a newer working-tree copy. Approved text that is not committed is published through the

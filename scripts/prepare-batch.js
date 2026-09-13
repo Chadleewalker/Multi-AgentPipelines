@@ -45,12 +45,13 @@ const USAGE = [
   '  node scripts/prepare-batch.js resume <batch>',
   '  node scripts/prepare-batch.js status <batch> [--json]',
   '  node scripts/prepare-batch.js retry <batch> <id> [<id> ...]',
+  '  node scripts/prepare-batch.js re-author <batch> <id>',
   '  node scripts/prepare-batch.js acknowledge-interrupted <batch> <id> [<id> ...]',
 ].join('\n');
 
 function parseArgs(argv) {
   const answer = { mode: argv[0] || null, batch: argv[1] || null, issues: [], concurrency: DEFAULT_CONCURRENCY };
-  const modes = new Set(['start', 'resume', 'status', 'retry', 'acknowledge-interrupted']);
+  const modes = new Set(['start', 'resume', 'status', 'retry', 're-author', 'acknowledge-interrupted']);
   if (!modes.has(answer.mode)) return { error: `unknown mode ${JSON.stringify(answer.mode)}` };
   for (let i = 2; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -62,7 +63,8 @@ function parseArgs(argv) {
       else answer.concurrency = Number(value);
     } else if (arg === '--json') answer.json = true;
     else if (arg.startsWith('--')) return { error: `unknown option ${JSON.stringify(arg)}` };
-    else if (answer.mode === 'retry' || answer.mode === 'acknowledge-interrupted') answer.issues.push(arg);
+    else if (answer.mode === 'retry' || answer.mode === 're-author'
+        || answer.mode === 'acknowledge-interrupted') answer.issues.push(arg);
     else return { error: `unexpected argument ${JSON.stringify(arg)}` };
   }
   try { prepState.validateBatchId(answer.batch); }
@@ -77,6 +79,9 @@ function parseArgs(argv) {
   if (answer.mode !== 'start' && argv.includes('--issue')) return { error: `--issue is accepted only by start` };
   if ((answer.mode === 'retry' || answer.mode === 'acknowledge-interrupted') && !answer.issues.length) {
     return { error: `${answer.mode} needs at least one issue id` };
+  }
+  if (answer.mode === 're-author' && answer.issues.length !== 1) {
+    return { error: 're-author needs exactly one issue id' };
   }
   if (answer.mode !== 'start' && argv.includes('--author-concurrency')) {
     return { error: `--author-concurrency is fixed by the manifest for ${answer.mode}` };
@@ -436,7 +441,9 @@ function runWorker(root, batch, item, configPath, state = prepState, seams = {})
     const workerIdentity = Number.isInteger(child.pid) && child.pid > 0
       ? lock.livenessFields(child.pid) : null;
     const started = { nonce, pid: child.pid, phase: item.action,
-      ...(workerIdentity ? { process: workerIdentity } : {}), data: { action: item.action } };
+      ...(workerIdentity ? { process: workerIdentity } : {}),
+      data: { action: item.action,
+        ...(item.reAuthor ? { reAuthor: true, archive: item.reAuthorArchive } : {}) } };
     try { state.writeWorkerStarted(root, batch, item.id, started); }
     catch (e) {
       try { child.kill('SIGKILL'); } catch { /* the not-yet-fed worker owns no descendant */ }
@@ -515,6 +522,7 @@ function runWorker(root, batch, item, configPath, state = prepState, seams = {})
       resolve(result);
     });
     child.stdin.end(JSON.stringify({ action: item.action, built: item.built, configPath,
+      ...(item.reAuthor ? { reAuthor: true } : {}),
       ...(item.retainedProbe ? { retainedProbe: item.retainedProbe } : {}) }));
   });
 }
@@ -635,8 +643,178 @@ function latestAttempt(records) {
   return { started, result };
 }
 
+function reauthorAttempt(records) {
+  if (!Array.isArray(records)) {
+    const prior = latestAttempt(records);
+    return attemptPhase(prior.started) === 'author-proof'
+      && prior.result && prior.result.outcome === 'unproven' ? prior : null;
+  }
+  let selected = null;
+  for (const record of records) {
+    if (!record || !record.started || !record.result) continue;
+    if (attemptPhase(record.started) === 'author-proof' && record.result.outcome === 'unproven') {
+      selected = { started: record.started, result: record.result };
+    }
+  }
+  // Compatibility with the older split-record seam understood by latestAttempt(). Production
+  // preparation state returns paired rows, ordered by immutable generation.
+  if (!selected && records.some((record) => record && !record.started)) {
+    const prior = latestAttempt(records);
+    if (attemptPhase(prior.started) === 'author-proof'
+        && prior.result && prior.result.outcome === 'unproven') selected = prior;
+  }
+  return selected;
+}
+
 function attemptPhase(started) {
   return started && (started.phase || (started.data && started.data.action)) || null;
+}
+
+function pathBelow(root, candidate) {
+  const base = path.resolve(root); const target = path.resolve(candidate);
+  const fold = (value) => process.platform === 'win32' ? value.toLowerCase() : value;
+  const a = fold(base); const b = fold(target);
+  return b !== a && b.startsWith(`${a}${path.sep}`);
+}
+
+function ensureArchiveDirectory(dir, root) {
+  if (fs.existsSync(dir)) {
+    const stat = fs.lstatSync(dir);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`archive path is not a real directory: ${dir}`);
+    return;
+  }
+  const parent = path.dirname(dir);
+  if (parent !== dir && !fs.existsSync(parent)) ensureArchiveDirectory(parent, root);
+  if (dir !== path.resolve(root) && !pathBelow(root, dir)) throw new Error(`archive path escapes preparation evidence root: ${dir}`);
+  fs.mkdirSync(dir, { mode: 0o700 });
+}
+
+function durableCopyFile(source, destination) {
+  const stat = fs.lstatSync(source);
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`archive source is not a real file: ${source}`);
+  fs.copyFileSync(source, destination, fs.constants.COPYFILE_EXCL);
+  try { fs.chmodSync(destination, 0o600); } catch { /* mode is advisory on Windows */ }
+  const fd = fs.openSync(destination, 'r');
+  try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+}
+
+function copyArchiveTree(source, destination, limits = { files: 0, bytes: 0 }) {
+  const stat = fs.lstatSync(source);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`suite archive source is not a real directory: ${source}`);
+  fs.mkdirSync(destination, { mode: 0o700 });
+  for (const name of fs.readdirSync(source).sort()) {
+    const from = path.join(source, name); const to = path.join(destination, name);
+    const child = fs.lstatSync(from);
+    if (child.isSymbolicLink()) throw new Error(`suite archive refuses symbolic link: ${from}`);
+    if (child.isDirectory()) copyArchiveTree(from, to, limits);
+    else if (child.isFile()) {
+      limits.files += 1; limits.bytes += child.size;
+      if (limits.files > 4096 || limits.bytes > 64 * 1024 * 1024) throw new Error('suite archive exceeds its bounded size');
+      durableCopyFile(from, to);
+    } else throw new Error(`suite archive refuses non-file entry: ${from}`);
+  }
+  const fd = fs.openSync(destination, 'r');
+  try { fs.fsyncSync(fd); } catch { /* directory fsync is unavailable on some hosts */ }
+  finally { fs.closeSync(fd); }
+  return limits;
+}
+
+function diagnosticPaths(value, worktree, found = new Set()) {
+  if (typeof value === 'string') {
+    if (path.isAbsolute(value) && pathBelow(worktree, value)) {
+      try {
+        const stat = fs.lstatSync(value);
+        if (stat.isFile() && !stat.isSymbolicLink()) found.add(path.resolve(value));
+      } catch { /* the immutable worker result remains the diagnostic authority */ }
+    }
+  } else if (Array.isArray(value)) value.forEach((item) => diagnosticPaths(item, worktree, found));
+  else if (value && typeof value === 'object') Object.values(value).forEach((item) => diagnosticPaths(item, worktree, found));
+  return [...found].sort();
+}
+
+// Preserve the failed artifact before granting another model write access. The archive is
+// immutable per worker nonce and published by one directory rename, so a crash exposes either
+// the complete prior evidence or no archive at all. Existing archives make the transition
+// restart-safe; they never authorize a different prior attempt.
+function archiveReauthorEvidence(root, batch, item, prior, cfg) {
+  const issueId = prepState.validateIssueId(item.id);
+  prepState.validateBatchId(batch);
+  const nonce = prepState.validateNonce(prior.started && prior.started.nonce);
+  const generation = Number(prior.started.generation);
+  if (!Number.isInteger(generation) || generation < 1) throw new Error('prior worker has no valid generation');
+  const worktree = path.resolve(item.built.folder.dir);
+  const suiteId = prepState.validateIssueId(item.built.suiteId || item.id);
+  const suite = path.join(worktree, 'tests', 'acceptance', suiteId);
+  if (!pathBelow(worktree, suite)) throw new Error('suite path escapes the issue worktree');
+  const evidenceRoot = path.resolve(root);
+  ensureArchiveDirectory(evidenceRoot, evidenceRoot);
+  const target = path.resolve(cfg.targetRepoPath);
+  const realEvidence = fs.realpathSync(evidenceRoot);
+  const realTarget = fs.realpathSync(target);
+  if (realEvidence === realTarget || pathBelow(realTarget, realEvidence)) {
+    throw new Error('preparation evidence root must be outside the target repository');
+  }
+  const parent = path.join(evidenceRoot, batch, 're-author', issueId);
+  ensureArchiveDirectory(parent, evidenceRoot);
+  const leaf = `generation-${String(generation).padStart(6, '0')}-${nonce}`;
+  const destination = path.join(parent, leaf);
+  if (fs.existsSync(destination)) {
+    const receipt = path.join(destination, 'archive.json');
+    const value = JSON.parse(fs.readFileSync(receipt, 'utf8'));
+    if (value.batch !== batch || value.issueId !== issueId || value.nonce !== nonce || value.generation !== generation) {
+      throw new Error('existing re-author archive does not match the selected attempt');
+    }
+    return destination;
+  }
+  const staging = path.join(parent, `.archive-${process.pid}-${nonce}`);
+  fs.mkdirSync(staging, { mode: 0o700 });
+  try {
+    copyArchiveTree(suite, path.join(staging, 'suite'));
+    const diagnostics = path.join(staging, 'diagnostics');
+    fs.mkdirSync(diagnostics, { mode: 0o700 });
+    const resultFile = path.join(diagnostics, 'worker-result.json');
+    const resultText = `${JSON.stringify(scrubSecrets(prior.result, cfg), null, 2)}\n`;
+    fs.writeFileSync(resultFile, resultText, { flag: 'wx', mode: 0o600 });
+    const resultFd = fs.openSync(resultFile, 'r');
+    try { fs.fsyncSync(resultFd); } finally { fs.closeSync(resultFd); }
+    const copied = [];
+    for (const [index, source] of diagnosticPaths(prior.result, worktree).entries()) {
+      const name = `${String(index + 1).padStart(3, '0')}-${path.basename(source)}`;
+      durableCopyFile(source, path.join(diagnostics, name)); copied.push(name);
+    }
+    const receipt = {
+      schema: 1, batch, issueId, nonce, generation, phase: attemptPhase(prior.started),
+      outcome: prior.result.outcome, suite: `tests/acceptance/${suiteId}`, diagnostics: copied,
+    };
+    const receiptFile = path.join(staging, 'archive.json');
+    fs.writeFileSync(receiptFile, `${JSON.stringify(receipt, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+    const receiptFd = fs.openSync(receiptFile, 'r');
+    try { fs.fsyncSync(receiptFd); } finally { fs.closeSync(receiptFd); }
+    const stagingFd = fs.openSync(staging, 'r');
+    try { fs.fsyncSync(stagingFd); } catch { /* directory fsync is unavailable on some hosts */ }
+    finally { fs.closeSync(stagingFd); }
+    fs.renameSync(staging, destination);
+    const parentFd = fs.openSync(parent, 'r');
+    try { fs.fsyncSync(parentFd); } catch { /* directory fsync is unavailable on some hosts */ }
+    finally { fs.closeSync(parentFd); }
+    return destination;
+  } catch (e) {
+    try { fs.rmSync(staging, { recursive: true, force: true }); } catch { /* incomplete hidden staging is inert */ }
+    throw e;
+  }
+}
+
+function reauthorPrompt(built, archive) {
+  const suiteId = built.suiteId || built.id;
+  const criteria = built.criteria && built.criteria.text ? built.criteria.text : '(criteria unavailable)';
+  return [
+    `You are explicitly re-authoring the failed acceptance suite at tests/acceptance/${suiteId}/.`,
+    `The prior suite and proof diagnostics were archived by the host at ${archive}.`,
+    'Inspect and rewrite the existing suite as needed. Modify nothing outside that suite directory.',
+    'Do not freeze, commit, push, edit Beads, or edit the integration checkout.',
+    `Run only the configured verifier for tests/acceptance/${suiteId}/ before returning.`,
+    '', 'Canonical acceptance criteria:', criteria,
+  ].join('\n');
 }
 
 function unresolvedWorkers(root, state = prepState, targetRepoPath = null) {
@@ -817,7 +995,7 @@ async function execute(opts, io = {}, seams = {}) {
     concurrency = input.authorConcurrency || DEFAULT_CONCURRENCY;
     rosterIds = (input.issues || []).map((v) => typeof v === 'string' ? v : v.id);
     if (opts.mode === 'resume') ids = rosterIds;
-    if (opts.mode === 'retry' || opts.mode === 'acknowledge-interrupted') {
+    if (opts.mode === 'retry' || opts.mode === 're-author' || opts.mode === 'acknowledge-interrupted') {
       const outside = ids.filter((id) => !rosterIds.includes(id));
       if (outside.length) {
         err(`prepare-batch: retry names issue(s) outside the immutable batch: ${outside.join(', ')}`);
@@ -1005,7 +1183,8 @@ async function execute(opts, io = {}, seams = {}) {
     const runnable = [];
     const ackedPhases = acknowledgedPhases(state, root, opts.batch);
     for (const item of snapshots) {
-      const prior = latestAttempt(state.readWorkerRecords(root, opts.batch, item.id));
+      const workerRecords = state.readWorkerRecords(root, opts.batch, item.id);
+      const prior = latestAttempt(workerRecords);
       if (opts.mode === 'start' && prior.started) {
         item.outcome = 'attention'; delete item.action;
         item.error = 'worker record unexpectedly predates batch start';
@@ -1043,12 +1222,38 @@ async function execute(opts, io = {}, seams = {}) {
           }
         }
       }
+      if (opts.mode === 're-author') {
+        delete item.action;
+        if (!ids.includes(item.id)) continue;
+        const selected = reauthorAttempt(workerRecords);
+        const eligible = item.built && item.built.state === 'freeze'
+          && item.built.folder && item.built.folder.exists === true
+          && selected;
+        if (!eligible) {
+          item.outcome = 'attention';
+          item.error = item.built && ['ready', 're-gate'].includes(item.built.state)
+            ? 'frozen or published suites are not eligible for re-authoring'
+            : 're-author requires a completed unproven author-proof attempt and its existing issue-worktree suite';
+        } else {
+          try {
+            const archive = archiveReauthorEvidence(root, opts.batch, item, selected, cfg);
+            item.reAuthor = true; item.reAuthorArchive = archive;
+            item.action = 'author-proof'; item.outcome = 'author-proof';
+            item.built = { ...item.built, text: reauthorPrompt(item.built, archive) };
+          } catch (e) {
+            item.outcome = 'attention';
+            item.error = `cannot archive failed suite and diagnostics before re-authoring: ${e.message}`;
+          }
+        }
+      }
       state.appendEvent(root, opts.batch, 'issue.snapshotted', scrubSecrets({
         issueId: item.id, state: item.outcome, action: item.action || null,
         error: item.error || null, issueUpdatedAt: item.built && item.built.issueUpdatedAt,
         criteriaHash: item.built && item.built.criteria && item.built.criteria.sha256,
         branch: item.built && item.built.folder && item.built.folder.branch,
         folder: item.built && item.built.folder && item.built.folder.dir,
+        reAuthor: item.reAuthor === true,
+        reAuthorArchive: item.reAuthorArchive || null,
         designCommit: item.designCommit || null,
         designReasons: item.designReasons || [],
       }, cfg));
@@ -1114,12 +1319,13 @@ if (require.main === module) main(process.argv.slice(2)).then((code) => { proces
 
 module.exports = {
   main, execute, parseArgs, dependenciesOf, classifyBuilt, snapshotBatch, prepareWorktrees,
-  runPool, runPoolUntilUsageLimit, runWorker, parseWorkerResult, parseWorkerEnvelope, latestAttempt, pidAlive, statusReport,
+  runPool, runPoolUntilUsageLimit, runWorker, parseWorkerResult, parseWorkerEnvelope,
+  latestAttempt, reauthorAttempt, pidAlive, statusReport,
   workerEnv, hostEnvSecrets, scrubSecrets, integrationHead, snapshotFingerprints,
   inspectIntegration, strayIssues, settleEmptyTakeover, unresolvedWorkers, acknowledgeInterrupted,
   acknowledgedPhases, shouldCheckPrerequisites, canonicalUsageLimit, activeUsagePause, hasUsageLimitHistory,
   retainedPaths, usageLimitStatus, createUsageLimitPreparation,
-  attemptPhase, sameConfigIdentity, SECRET_MARKER,
+  attemptPhase, archiveReauthorEvidence, reauthorPrompt, sameConfigIdentity, SECRET_MARKER,
   DEFAULT_CONCURRENCY, MAX_CONCURRENCY, MAX_WORKER_OUTPUT, STAGE_PREFIX,
   EXIT_USAGE, EXIT_REFUSED, EXIT_ATTENTION,
 };
