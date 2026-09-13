@@ -950,6 +950,18 @@ evidence. Settlement intent has its own exclusive marker: an uncertain result fo
 until the parent record proves whether the original grant settled, after which reconciliation
 either completes it or retries only that same settlement. Child exit alone never proves success.
 
+**One deterministic proposal scheduler owns the stage order.**
+`runner/proposal-supervisor.js` folds an append-only host journal and composes immutable
+`scripts/kickoff.js` records, the bounded `scripts/specify-proposal.js` controller, scoped
+child grants, preparation operations, one shared live implementation feed, and
+`scripts/verdict.js` evidence. It records the exact value returned after each side effect
+before choosing another action; restart therefore polls the named durable operation instead
+of replaying a call. Issue, freeze, run, branch, PR and review identities come only from those
+controllers. Its scheduler measures concurrency by live calls, gives newly implementation-ready
+work priority over fresh specification, and closes intake before stop drains granted work.
+Production adapters are fixed. Tests may replace them only by presenting an opaque object held
+by the same host process, never through configuration or a worker environment.
+
 **Sibling task publication stays independent; shared documentation is coordinated afterward.**
 `runner/batch-merge.js` is a host-side library for a supervisor, not another task worker and
 not a command that merges to the integration branch. Its read-only `plan` operation discovers

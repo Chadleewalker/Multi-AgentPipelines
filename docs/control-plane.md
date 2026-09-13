@@ -202,6 +202,14 @@ preparation marker and without declaring its child complete. There is no supervi
 `runner/supervisor.js` is a host-side library, and a supervising process takes the lease and
 issues grants through it.
 
+The production supervising process for kickoff proposals is `scripts/proposal-supervisor.js`.
+It enters `runner/proposal-supervisor.js`, whose append-only host journal records immutable
+intake and the exact evidence returned by the specifier, scoped authority, operation manager,
+run manifest and verdict reader. Its `run`, `resume`, `tick`, `stop` and `status` commands never
+accept a stage or a downstream identity. Deterministic adapter replacement exists only as an
+opaque same-process test capability exported by the library; no configuration key or environment
+value enables it.
+
 That process uses `runner/operation-manager.js` to launch the existing preparation command and
 one live-feed implementation runner. Its records and authority copies live under host state,
 outside the target tree. Project feed reservation and retry advancement are atomic across
