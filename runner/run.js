@@ -131,24 +131,32 @@ async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClo
   }
   // Container names must be unique across relaunches (§4.7 resume).
   const attempt = (executeTask.counter = (executeTask.counter || 0) + 1);
-  let authCache = null;
+  const launch = async (laneContext) => {
+    const authCache = laneContext && laneContext.authCache;
+    return runTask(cfg, {
+      containerName: `task-${issue.id}-${log.runId}-${attempt}`.replace(/[^A-Za-z0-9_.-]/g, '-'),
+      workspaceDir: ws.dir,
+      pipelineDir: path.join(REPO_ROOT, 'pipeline'),
+      issueId: issue.id,
+      taskDir,
+      // Paired with its environment-variable NAME here, so the container layer never has to
+      // guess which provider a bare value belongs to.
+      ...(authCache ? {} : {
+        credential: { name: credentialNameFor(providerFor(cfg)), value: token },
+      }),
+      wallClockMinutes: wallClockMinutes || cfg.wallClockMinutes,
+      authCache,
+    }, log, traceId);
+  };
   if (providerFor(cfg) === 'codex' && cfg.codexAuth === 'chatgpt') {
-    authCache = await Promise.resolve(codexAuth.stageTaskCache({ cacheRoot: cfg.codexAuthCacheRoot, taskId: issue.id, wait: true }));
+    if (cfg.codexLanePool) {
+      return cfg.codexLanePool.run({ id: issue.id, stage: 'implementation', credential: true }, launch);
+    }
+    const authCache = await Promise.resolve(codexAuth.stageTaskCache({ cacheRoot: cfg.codexAuthCacheRoot, taskId: issue.id, wait: true }));
+    try { return await launch({ authCache }); }
+    finally { await Promise.resolve(codexAuth.releaseTaskCache(authCache)); }
   }
-  try { return await runTask(cfg, {
-    containerName: `task-${issue.id}-${log.runId}-${attempt}`.replace(/[^A-Za-z0-9_.-]/g, '-'),
-    workspaceDir: ws.dir,
-    pipelineDir: path.join(REPO_ROOT, 'pipeline'),
-    issueId: issue.id,
-    taskDir,
-    // Paired with its environment-variable NAME here, so the container layer never has to
-    // guess which provider a bare value belongs to.
-    ...(authCache ? {} : {
-      credential: { name: credentialNameFor(providerFor(cfg)), value: token },
-    }),
-    wallClockMinutes: wallClockMinutes || cfg.wallClockMinutes,
-    authCache,
-  }, log, traceId); } finally { if (authCache) await Promise.resolve(codexAuth.releaseTaskCache(authCache)); }
+  return launch(null);
 }
 
 // ---- the bounded worker pool (§7, §4.12) ------------------------------------------
@@ -630,6 +638,9 @@ async function main() {
   // and every publication below can name the section it must be alone inside. Null for a
   // standalone run, where the target lock already makes that true.
   cfg.childAdmission = resolvedPre.childAdmission || null;
+  if (managedChatgpt && Array.isArray(cfg.codexAuthLanes)) {
+    cfg.codexLanePool = codexAuth.createLanePool({ lanes: cfg.codexAuthLanes });
+  }
   const releaseOnExit = () => {
     try { networkDown(REPO_ROOT, cfg); } catch { /* process exit: best effort only */ }
     finally {

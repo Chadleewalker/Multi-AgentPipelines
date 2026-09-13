@@ -2912,18 +2912,30 @@ overwrites refreshed state. Missing or malformed login state and a busy lane hav
 bounded refusals. A dead owner can be recovered, but age alone never steals a live owner's
 lock and nonce ownership prevents an old owner from deleting its successor.
 
+An explicit `codexAuthCacheRoots` roster is stronger than the legacy implicit single lane:
+every entry must already exist under its canonical absolute spelling, become private to the
+host identity, and sit outside the target, pipeline checkout, task workspaces and every other
+lane. Preflight validates the whole roster before target mutation, then quarantines malformed
+or busy saved sessions individually and proceeds only when at least one lane is healthy.
+
 **One saved ChatGPT session is one exclusive lane.** The owner holds it continuously from
 task-cache staging through every implementation and docs Codex invocation through atomic
 refresh write-back. A second worker waits instead of receiving a concurrent copy of the same
-refresh token, so configured task concurrency does not create parallel use of one login;
-that requires independently authenticated lane caches. Each task receives only a unique,
-writable, host-private handoff at `/run/pipeline-auth-host/cache`. The entrypoint starts as
+refresh token, so configured task concurrency does not create parallel use of one login.
+Credential jobs use one deterministic FIFO queue and reach, but never exceed, the healthy
+independently authenticated lane count. Credential-free stages retain their own caps and may
+overlap held credential lanes. Each task receives only a unique, writable, host-private
+handoff at `/run/pipeline-auth-host/cache`. The entrypoint starts as
 root solely to fail closed while copying and protecting an internal `/root/.codex`, then runs
 Codex as the retained image `node` user with `CODEX_HOME=/root/.codex`; only traversal is
 granted on `/root`. The repository-controlled verifier runs as `nobody` with a writable
 workspace and all Codex credential variables unset. Refresh persistence replaces the durable
 file atomically with mode `0600`; on failure the prior durable file and recoverable task copy
-remain, while successful cleanup removes only that task copy.
+remain and only that lane is quarantined. Recovery reacquires the exact lane lock and proves
+the durable source digest captured at staging before writing once; a busy or changed lane is
+left byte-for-byte untouched while healthy siblings continue. Credential ownership never
+alters caller streams or installs caller keepalive polling. Successful cleanup removes only
+the task copy it owns.
 
 **One egress profile per provider, never one widened to both.** `docker/proxy-codex/`
 is a separate deny-by-default sidecar image whose allowlist is exactly `api.openai.com`,
