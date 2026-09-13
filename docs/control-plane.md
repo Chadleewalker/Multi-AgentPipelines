@@ -198,9 +198,9 @@ A grant leaves the outstanding list only when its parent settles it as `complete
 `released` — never by expiry, a dead parent or a reclaim — so an interrupted supervisor leaves
 a readable record of what it had in flight. A live parent is never taken over, and a provably
 dead one is reclaimed only when a person asks explicitly, without deleting an uncertain
-preparation marker and without declaring its child complete. There is no supervisor CLI:
-`runner/supervisor.js` is a host-side library, and a supervising process takes the lease and
-issues grants through it.
+preparation marker and without declaring its child complete. There is no standalone
+lease-management CLI: `runner/supervisor.js` is a host-side library, and the proposal supervisor
+below takes the lease and issues grants through it.
 
 That process uses `runner/operation-manager.js` to launch the existing preparation command and
 one live-feed implementation runner. Its records and authority copies live under host state,
@@ -225,6 +225,16 @@ recovery itself stops after recording `not-spawned`, only another explicitly app
 it settles the original grant or leaves attention in place, but never starts a child.
 `stop({ project, id })` applies only to a running implementation feed and writes that run's
 normal stop sentinel.
+
+`scripts/proposal-supervisor.js run --config <run.config.json> [--proposal <kp-id>]`
+enters the unattended proposal conveyor. The process acquires the project supervisor lease,
+discovers durable kickoff records, and remains alive across pending specification,
+preparation, implementation, and review evidence. It retires a drained implementation feed
+before assigning later prepared work to a uniquely named successor. The `stop` command
+closes durable intake immediately; the live process then drains and settles children before
+releasing its parent lease. If the process crashes, restart only observes recorded
+operations—attention and uncertain settlement still require the explicit operation-manager
+recovery commands described above.
 
 After sibling task PRs publish, a supervisor can use `runner/batch-merge.js` to coordinate the
 fan without delaying or rewriting either task's product commit. `plan(...)` and
