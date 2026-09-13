@@ -25,7 +25,9 @@ const PROVIDER_CREDENTIALS = [
   'CLAUDE_CODE_OAUTH_TOKEN',
 ];
 const DEFAULT_LIFECYCLE_TIMEOUT_MS = 24 * 60 * 60 * 1000;
-const ACTIVE_PREPARATION_STATES = new Set(['pending', 'interrupted-unknown']);
+const ACTIVE_PREPARATION_STATES = new Set([
+  'pending', 'authoring', 'proving', 'interrupted-unknown',
+]);
 
 function readJson(file) {
   try {

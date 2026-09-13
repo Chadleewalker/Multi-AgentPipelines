@@ -10,6 +10,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const lock = require('./lock');
 
 const STATE_SCHEMA = 1;
 const ROOT_ENV = 'PREPARATION_RUNS_DIR';
@@ -296,6 +297,10 @@ function createManifest(root, batchId, input, opts = {}) {
   }
   if (typeof input.integrationBranch === 'string') fields.integrationBranch = input.integrationBranch;
   if (typeof input.integrationHead === 'string') fields.integrationHead = input.integrationHead;
+  if (input.owner !== undefined) {
+    if (!plainObject(input.owner)) throw new Error('manifest owner must be a process identity object');
+    fields.owner = canonicalValue(input.owner);
+  }
   const manifest = hashedRecord('preparation-manifest', fields);
   const dir = batchDir(root, batchId, true);
   // The manifest itself is the immutable allocation of the batch id. O_EXCL means a second
@@ -431,12 +436,20 @@ function writeWorkerStarted(root, batchId, issueId, data = {}, opts = {}) {
   const nonce = validateNonce(data.nonce || createWorkerNonce());
   const phase = validateNamedId(data.phase || data.action || 'author', SAFE_LABEL, 'worker phase');
   if (data.pid !== undefined && (!Number.isInteger(data.pid) || data.pid < 1)) throw new Error('worker pid must be a positive integer');
+  if (data.process !== undefined && !plainObject(data.process)) {
+    throw new Error('worker process must be a process identity object');
+  }
+  if (data.process !== undefined && (!Number.isInteger(data.process.pid) || data.process.pid < 1
+      || (data.pid !== undefined && data.process.pid !== data.pid))) {
+    throw new Error('worker process identity must match its positive pid');
+  }
   const dir = workerDir(root, batchId, issueId, true);
   const generation = nextWorkerGeneration(dir, batchId, issueId);
   const record = hashedRecord('worker-started', {
     batchId, issueId: validateIssueId(issueId), nonce, generation, phase, startedAt: isoNow(opts),
     ...(data.pid === undefined ? {} : { pid: data.pid }),
-    data: workerPayload(data, new Set(['nonce', 'pid', 'phase', 'action', 'startedAt'])),
+    ...(data.process === undefined ? {} : { process: canonicalValue(data.process) }),
+    data: workerPayload(data, new Set(['nonce', 'pid', 'phase', 'action', 'startedAt', 'process'])),
   });
   writeAtomicExclusive(path.join(dir, `${nonce}.started.json`), record);
   return record;
@@ -521,10 +534,13 @@ function readWorkerRecords(root, batchId, issueId) {
     || a.started.recordHash.localeCompare(b.started.recordHash));
 }
 
-function deriveState(root, batchId) {
+function deriveState(root, batchId, opts = {}) {
   try {
     const manifest = readManifest(root, batchId);
     const events = readEvents(root, batchId);
+    const isLive = typeof opts.isLive === 'function' ? opts.isLive : lock.isHolderLive;
+    const ownerLiveness = manifest.owner === undefined
+      ? 'unknown' : (isLive(manifest.owner) ? 'live' : 'stale');
     const issues = manifest.issues.map((issue) => ({ ...issue, state: 'pending', events: [], workers: [] }));
     const byId = new Map(issues.map((issue) => [issue.id, issue]));
     for (const event of events) {
@@ -538,8 +554,20 @@ function deriveState(root, batchId) {
     for (const issue of issues) {
       issue.workers = readWorkerRecords(root, batchId, issue.id);
       const latest = issue.workers[issue.workers.length - 1];
-      if (latest && !latest.result) issue.state = 'interrupted-unknown';
-      else if (latest && latest.result && issue.state === 'pending') issue.state = latest.result.outcome;
+      if (latest && latest.result) {
+        if (issue.state === 'pending') issue.state = latest.result.outcome;
+        issue.liveness = { owner: ownerLiveness, worker: 'terminal' };
+      } else if (latest) {
+        const workerLive = isLive(latest.started.process);
+        issue.liveness = { owner: ownerLiveness, worker: workerLive ? 'live' : 'stale' };
+        if (workerLive) {
+          issue.state = latest.started.phase === 'proof' ? 'proving' : 'authoring';
+        } else {
+          issue.state = 'interrupted-unknown';
+        }
+      } else {
+        issue.liveness = { owner: ownerLiveness, worker: 'none' };
+      }
     }
     return { ok: true, manifest, events, issues, headHash: events.length ? events[events.length - 1].recordHash : manifest.recordHash };
   } catch (e) {

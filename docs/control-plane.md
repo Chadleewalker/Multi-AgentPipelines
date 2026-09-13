@@ -252,6 +252,11 @@ workers, paths and exact command with `node scripts/prepare-batch.js status <bat
 `node scripts/prepare-batch.js resume <batch>` refuses before the reset without launching a model
 and afterwards continues only the unfinished limited attempt.
 
+Preparation status derives live `authoring` and `proving` phases from immutable batch-owner and
+worker process identities using the target lock's reboot- and PID-recycle-aware liveness rule. It
+reports `interrupted-unknown` only when an unmatched worker identity is no longer live; an existing
+terminal result remains authoritative even after either process exits.
+
 Preparation also resolves each not-yet-frozen issue's structured `design-ref` from the exact
 integration HEAD recorded in its immutable manifest. It never consults an operator-local file
 or a newer working-tree copy. Approved text that is not committed is published through the
