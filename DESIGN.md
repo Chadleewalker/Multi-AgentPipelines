@@ -1007,7 +1007,12 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
    implementation commit → docs-only agent → final verify → docs commit**.
    The agent command is read from the `PIPELINE_AGENT_CMD` environment variable,
    defaulting to the headless `claude -p` invocation when unset — this is the deliberate
-   test seam that lets the E2E pass substitute deterministic stubs (see section 7). The docs phase is one agent invocation
+   test seam that lets the E2E pass substitute deterministic stubs (see section 7). An
+   explicit command changes only the executable: under managed ChatGPT authentication it
+   still runs as the unprivileged Codex user against the protected internal cache. A nested
+   entrypoint fixture may suppress inherited managed-auth setup only when it supplies both
+   an explicit command and the `PIPELINE_TESTING_NESTED_ENTRYPOINT=1` capability; production
+   config and container construction never transmit that capability. The docs phase is one agent invocation
    that writes the change summary into the status file and updates in-repo docs the change
    affects. Its writable Git delta is limited by deterministic scaffolding to regular
    root-level Markdown files and regular Markdown files beneath `docs/`; a symlink, source,
@@ -1019,8 +1024,10 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
    a task are scaffolding, not an LLM decision. No leader agent inside. **Agent output is a contract artifact, so it is
    read structurally, never scraped.** When the entrypoint owns the invocation (no
    `PIPELINE_AGENT_CMD`) both agent phases request `--output-format json`, and the
-   envelope reader (`pipeline/envelope.js`) takes the last line of the log that parses to
-   a JSON object with a string `result` — that result is the change summary, and the
+   envelope reader (`pipeline/envelope.js`) scans lines from the end and takes either the
+   first JSON object with a string `result` (Claude) or the last completed Codex
+   `agent_message` text — that bounded human result is the change summary, while command
+   records and intermediate messages are excluded. The
    resolved model id recorded per 4.11 is **selected** from its `modelUsage`, never simply
    taken in listed order: `modelUsage` enumerates every model the CLI billed, and the cheap
    internal helper model is listed *first*, ahead of the pinned model that did the work.
@@ -2923,7 +2930,10 @@ Codex as the retained image `node` user with `CODEX_HOME=/root/.codex`; only tra
 granted on `/root`. The repository-controlled verifier runs as `nobody` with a writable
 workspace and all Codex credential variables unset. Refresh persistence replaces the durable
 file atomically with mode `0600`; on failure the prior durable file and recoverable task copy
-remain, while successful cleanup removes only that task copy.
+remain, while successful cleanup removes only that task copy. A configured `agentCommand`
+does not alter any of these identity, mount, environment or persistence rules. The only
+managed-auth bypass is the nested-entrypoint test capability described in 4.3, which is not a
+configuration field and is never forwarded by the production launcher.
 
 **One egress profile per provider, never one widened to both.** `docker/proxy-codex/`
 is a separate deny-by-default sidecar image whose allowlist is exactly `api.openai.com`,
