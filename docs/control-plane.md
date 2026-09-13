@@ -215,9 +215,27 @@ The manager API deliberately separates observation from mutation. `status({ proj
 may recover an implementation PID only from the authenticated child artifact; `restart(...)`
 never launches recorded work. `retry({ project, id, approved: true, grant })` is the only retry
 path and accepts only an attention operation whose child identity and settlement are already
-known. Use `reconcile({ project, id })` for uncertain settlement; it settles the original grant
-or leaves attention in place, but never starts a child. `stop({ project, id })` applies only to a
-running implementation feed and writes that run's normal stop sentinel.
+known. A pre-spawn reservation is different: `recoverLaunch({ project, operationId, configPath,
+grant, approved: true, reason })` requires a non-empty parent audit reason attesting that no child
+remains, preserves the reserved attempt as `not-spawned`, and launches the next attempt. It is
+the only mutation path for an orphan slot, a matching pending launch, or a retry slot whose next
+operation record was not persisted. Authenticated child evidence forbids this recovery; if the
+recovery itself stops after recording `not-spawned`, only another explicitly approved
+`recoverLaunch` call may resume it. Use `reconcile({ project, id })` for uncertain settlement;
+it settles the original grant or leaves attention in place, but never starts a child.
+`stop({ project, id })` applies only to a running implementation feed and writes that run's
+normal stop sentinel.
+
+After sibling task PRs publish, a supervisor can use `runner/batch-merge.js` to coordinate the
+fan without delaying or rewriting either task's product commit. `plan(...)` and
+`renderReport(...)` are read-only and report pairwise merge readiness, shared Markdown paths,
+and the required review order. `integrateDocs(...)` creates one separately reviewable docs-only
+branch containing every safely reconcilable contribution; `rebaseTask(...)` creates a new review
+ref and leaves the published task ref untouched. A supervising caller must hold
+`integration-publish` for either mutation and supply the host Beads state adapter. Neither API
+merges to the integration branch. Failed reconciliation or rebase attempts create no partial ref,
+write recoverable JSON evidence under `runs/merge-batch/`, and keep the named issues open or
+blocked.
 
 Launch-capable `prepare-batch` modes check the Docker daemon, configured image, configured
 host shell, and authentication for the author/probe providers before write-protection admission,
