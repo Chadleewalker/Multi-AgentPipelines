@@ -97,6 +97,19 @@ function loadConfig(file) {
   if (raw.codexAuth !== undefined && !CODEX_AUTH_MODES.includes(raw.codexAuth)) {
     throw new Error("run.config.json: 'codexAuth' must be 'chatgpt' or 'api-key'");
   }
+  if (raw.codexAuthCacheRoots !== undefined) {
+    if (!Array.isArray(raw.codexAuthCacheRoots) || raw.codexAuthCacheRoots.length < 1
+        || raw.codexAuthCacheRoots.some((item) => typeof item !== 'string' || !item.trim())) {
+      throw new Error("run.config.json: 'codexAuthCacheRoots' must be a non-empty array of paths");
+    }
+    const identities = raw.codexAuthCacheRoots.map((item) => {
+      const resolved = path.resolve(item);
+      return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+    });
+    if (new Set(identities).size !== identities.length) {
+      throw new Error("run.config.json: 'codexAuthCacheRoots' entries must be unique distinct paths");
+    }
+  }
   for (const k of ['wallClockMinutes', 'probeIntervalMinutes', 'proxyPort']) {
     if (raw[k] !== undefined && (typeof raw[k] !== 'number' || raw[k] <= 0)) {
       throw new Error(`run.config.json: '${k}' must be a positive number`);

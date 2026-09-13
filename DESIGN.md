@@ -2915,15 +2915,23 @@ lock and nonce ownership prevents an old owner from deleting its successor.
 **One saved ChatGPT session is one exclusive lane.** The owner holds it continuously from
 task-cache staging through every implementation and docs Codex invocation through atomic
 refresh write-back. A second worker waits instead of receiving a concurrent copy of the same
-refresh token, so configured task concurrency does not create parallel use of one login;
-that requires independently authenticated lane caches. Each task receives only a unique,
-writable, host-private handoff at `/run/pipeline-auth-host/cache`. The entrypoint starts as
-root solely to fail closed while copying and protecting an internal `/root/.codex`, then runs
-Codex as the retained image `node` user with `CODEX_HOME=/root/.codex`; only traversal is
-granted on `/root`. The repository-controlled verifier runs as `nobody` with a writable
-workspace and all Codex credential variables unset. Refresh persistence replaces the durable
-file atomically with mode `0600`; on failure the prior durable file and recoverable task copy
-remain, while successful cleanup removes only that task copy.
+refresh token, so configured task concurrency does not create parallel use of one login.
+Operators who need parallel subscription workers configure `codexAuthCacheRoots` with distinct,
+independently authenticated private caches. Preflight visits the complete roster before the
+target lock or any mutable gate, quarantines malformed or busy lanes without exposing their
+tokens, and refuses only when none is healthy. Credential jobs enter one FIFO queue and never
+exceed the healthy-lane count; credential-free specification, proof, verification, publication
+and other stages remain independently capped and do not consume a lane.
+
+Each credential worker receives one lane and only a unique, writable, host-private handoff at
+`/run/pipeline-auth-host/cache`. The entrypoint starts as root solely to fail closed while
+copying and protecting an internal `/root/.codex`, then runs Codex as the retained image `node`
+user with `CODEX_HOME=/root/.codex`; only traversal is granted on `/root`. The
+repository-controlled verifier runs as `nobody` with a writable workspace and all Codex
+credential variables unset. Refresh persistence replaces only that lane's durable file
+atomically with mode `0600`; on failure the prior durable file and recoverable task copy remain,
+that lane is quarantined while other lanes continue, and a repaired retained copy can recover
+the lane. Successful cleanup removes only that task copy.
 
 **One egress profile per provider, never one widened to both.** `docker/proxy-codex/`
 is a separate deny-by-default sidecar image whose allowlist is exactly `api.openai.com`,

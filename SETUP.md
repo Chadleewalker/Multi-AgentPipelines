@@ -202,7 +202,10 @@ The same file holds `CODEX_API_KEY=<key>` on its own line only when a Codex run 
 accepts only a managed ChatGPT session with a refresh token and seeds a private durable
 cache from it once. It never replaces that durable cache with the original login after
 Codex has refreshed it. A missing `codexAuth` retains legacy `api-key` behavior, and there
-is no fallback between modes or providers.
+is no fallback between modes or providers. To use several subscription workers, authenticate
+several private cache directories independently and list their paths in
+`codexAuthCacheRoots`; do not copy one login between them. Preflight validates every listed
+lane and quarantines a bad one before target mutation.
 
 ### B3. Install the git hooks
 
@@ -336,7 +339,8 @@ directly when you need its per-suite diagnostic logs and timings.
    `codexAuth: "api-key"` to use `.env.pipeline`; the example declares dormant ChatGPT
    auth while retaining the canonical Claude/opus defaults. One saved login is one exclusive
    worker lane regardless of `concurrency`; parallel subscription workers require separate,
-   independently authenticated lane caches. A fifth if you ever hit it:
+   independently authenticated lane caches listed in `codexAuthCacheRoots`. A fifth if you
+   ever hit it:
    `allowHalfProven: false` is the default and means the runner refuses a suite the freeze
    gate found red with no probe supplied — set it
    to `true` only if you accept dispatching suites whose green side has never been seen

@@ -328,7 +328,9 @@ Copy this section in (adjust nothing but the project name):
       provider-only allowlist the sidecar builds, so the host needs a base image carrying
       the pinned Codex CLI before the run starts. One saved ChatGPT session is one exclusive
       implementation lane even when `concurrency` is higher; parallel subscription workers
-      need independently authenticated lane caches. Set `model` to something that provider
+      need independently authenticated lane caches listed as distinct paths in
+      `codexAuthCacheRoots`. Preflight validates the complete list before target mutation and
+      quarantines a bad lane while healthy lanes continue. Set `model` to something that provider
       understands while you are there; `reasoningEffort` (`minimal | low | medium | high`,
       and its two stage twins) applies to Codex launches.
       See `docs/control-plane.md` and `DESIGN.md` §6.5.

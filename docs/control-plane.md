@@ -159,13 +159,16 @@ CODEX_LIVE_SMOKE=1 node scripts/codex-live-smoke.js --image <rebuilt-pinned-task
 
 One saved ChatGPT session is one exclusive credential lane. The lane is held from task-cache
 staging through every Codex invocation and atomic refresh write-back, so a second worker waits
-and never receives a concurrent copy of the refresh token. Parallel subscription workers need
-independently authenticated lane caches. Each task gets only a unique writable handoff mounted
+and never receives a concurrent copy of the refresh token. Parallel subscription workers use
+`codexAuthCacheRoots`, an array of distinct paths to independently authenticated private lane
+caches. Preflight validates the whole array before target mutation, quarantines invalid or busy
+lanes, and bounds credential work by the healthy count; stages that need no credential keep
+their own caps and overlap those workers. Each task gets only a unique writable handoff mounted
 at `/run/pipeline-auth-host/cache`; the root entrypoint copies it into an internal
 `CODEX_HOME=/root/.codex`, then runs Codex as the image's `node` user. Repository
 verification runs as `nobody` with `CODEX_API_KEY`, `OPENAI_API_KEY`, and `CODEX_HOME`
 unset. Successful cleanup removes only the task copy; failed refresh persistence keeps the
-prior durable cache and recoverable task copy.
+prior durable cache and recoverable task copy, quarantining only its source lane until repair.
 
 ## Supervised operation
 
