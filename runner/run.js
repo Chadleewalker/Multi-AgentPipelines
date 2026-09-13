@@ -131,24 +131,32 @@ async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClo
   }
   // Container names must be unique across relaunches (§4.7 resume).
   const attempt = (executeTask.counter = (executeTask.counter || 0) + 1);
-  let authCache = null;
+  const launch = async (laneContext) => {
+    const authCache = laneContext && laneContext.authCache;
+    return runTask(cfg, {
+      containerName: `task-${issue.id}-${log.runId}-${attempt}`.replace(/[^A-Za-z0-9_.-]/g, '-'),
+      workspaceDir: ws.dir,
+      pipelineDir: path.join(REPO_ROOT, 'pipeline'),
+      issueId: issue.id,
+      taskDir,
+      // Paired with its environment-variable NAME here, so the container layer never has to
+      // guess which provider a bare value belongs to.
+      ...(authCache ? {} : {
+        credential: { name: credentialNameFor(providerFor(cfg)), value: token },
+      }),
+      wallClockMinutes: wallClockMinutes || cfg.wallClockMinutes,
+      authCache,
+    }, log, traceId);
+  };
   if (providerFor(cfg) === 'codex' && cfg.codexAuth === 'chatgpt') {
-    authCache = await Promise.resolve(codexAuth.stageTaskCache({ cacheRoot: cfg.codexAuthCacheRoot, taskId: issue.id, wait: true }));
+    if (cfg.codexLanePool) {
+      return cfg.codexLanePool.run({ id: issue.id, stage: 'implementation', credential: true }, launch);
+    }
+    const authCache = await Promise.resolve(codexAuth.stageTaskCache({ cacheRoot: cfg.codexAuthCacheRoot, taskId: issue.id, wait: true }));
+    try { return await launch({ authCache }); }
+    finally { await Promise.resolve(codexAuth.releaseTaskCache(authCache)); }
   }
-  try { return await runTask(cfg, {
-    containerName: `task-${issue.id}-${log.runId}-${attempt}`.replace(/[^A-Za-z0-9_.-]/g, '-'),
-    workspaceDir: ws.dir,
-    pipelineDir: path.join(REPO_ROOT, 'pipeline'),
-    issueId: issue.id,
-    taskDir,
-    // Paired with its environment-variable NAME here, so the container layer never has to
-    // guess which provider a bare value belongs to.
-    ...(authCache ? {} : {
-      credential: { name: credentialNameFor(providerFor(cfg)), value: token },
-    }),
-    wallClockMinutes: wallClockMinutes || cfg.wallClockMinutes,
-    authCache,
-  }, log, traceId); } finally { if (authCache) await Promise.resolve(codexAuth.releaseTaskCache(authCache)); }
+  return launch(null);
 }
 
 // ---- the bounded worker pool (§7, §4.12) ------------------------------------------
@@ -302,6 +310,51 @@ function integrationPublish(cfg, fn, onBlocked) {
   catch (e) { return onBlocked(e && e.message ? e.message : String(e)); }
 }
 
+function laneBoundaryFailure(cfg, issue, log, tr, ws, pauses, activeMs, ownership, error) {
+  // A provider exception may carry credential evidence in its message or own fields. Only
+  // retain a bounded identifier whose alphabet cannot contain a token; never stringify the
+  // exception into a log, manifest, report, PR input or Beads note.
+  const code = error && typeof error.code === 'string' && /^[A-Za-z0-9_.-]{1,80}$/.test(error.code)
+    ? error.code : 'credential-lane-boundary';
+  const reason = `task execution boundary failed (${code})`;
+  log.error(tr, reason);
+  const failedOutcome = { status: 'failed', beads: 'blocked' };
+  const settled = beadsWrite(cfg, () => finish(cfg, issue.id, failedOutcome,
+    [`run ${log.runId}: ${reason}`], ownership),
+  (why) => ({ ok: false, transition: null, error: why }));
+  const completionError = settled.ok ? null : `Beads completion incomplete: ${settled.error}`;
+
+  // Keep the canonical dashboard prefix and exact event schema. Resolving a row here is
+  // what lets Promise.all await healthy siblings instead of rejecting the shared drain.
+  const finishedMessage = 'task finished: exit unavailable -> failed' +
+    (completionError ? ' (completion pending; issue stays in_progress)' : ' (issue blocked)');
+  log.error(tr, finishedMessage, {
+    event: 'task.finished',
+    data: { exitCode: null, outcome: 'failed', beads: completionError ? null : 'blocked' },
+  });
+  if (completionError || process.env.PIPELINE_KEEP_WORKSPACE) {
+    log.info(tr, `workspace kept at ${ws.dir}`);
+  } else {
+    discard(ws.dir);
+  }
+  return {
+    issueId: issue.id,
+    title: issue.title || '',
+    outcome: 'failed',
+    exitCode: null,
+    branch: ws.branch,
+    pushed: false,
+    prUrl: null,
+    attempts: 0,
+    pauses,
+    activeSeconds: Math.round(activeMs / 1000),
+    diffLines: 0,
+    attemptNotes: [`run ${log.runId}: ${reason}`],
+    error: [reason, completionError].filter(Boolean).join('; '),
+    ...(completionError ? { recoveryWorkspace: ws.dir } : {}),
+  };
+}
+
 async function runOneTask(cfg, issue, log, token, gate, ownership) {
   const tr = log.trace(issue.id);
   const taskDir = log.taskDir(issue.id);
@@ -395,7 +448,13 @@ async function runOneTask(cfg, issue, log, token, gate, ownership) {
       artifacts = collectArtifacts(ws.dir, taskDir, issue.id);
       break;
     }
-    exec = await executeTask(cfg, issue, taskDir, log, tr, ws, token, remainingMinutes);
+    try {
+      exec = await executeTask(cfg, issue, taskDir, log, tr, ws, token, remainingMinutes);
+    } catch (error) {
+      // Staging, worker launch and refresh persistence are per-lane task boundaries. The
+      // failed task settles here while every already-started sibling continues to drain.
+      return laneBoundaryFailure(cfg, issue, log, tr, ws, pauses, activeMs, ownership, error);
+    }
     activeMs += exec.durationMs || 0;
     if (exec.durationMs !== undefined) {
       log.info(tr, `container ran ${Math.round(exec.durationMs / 1000)}s` +
@@ -630,6 +689,9 @@ async function main() {
   // and every publication below can name the section it must be alone inside. Null for a
   // standalone run, where the target lock already makes that true.
   cfg.childAdmission = resolvedPre.childAdmission || null;
+  if (managedChatgpt && Array.isArray(cfg.codexAuthLanes)) {
+    cfg.codexLanePool = codexAuth.createLanePool({ lanes: cfg.codexAuthLanes });
+  }
   const releaseOnExit = () => {
     try { networkDown(REPO_ROOT, cfg); } catch { /* process exit: best effort only */ }
     finally {

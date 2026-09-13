@@ -1019,8 +1019,11 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
    a task are scaffolding, not an LLM decision. No leader agent inside. **Agent output is a contract artifact, so it is
    read structurally, never scraped.** When the entrypoint owns the invocation (no
    `PIPELINE_AGENT_CMD`) both agent phases request `--output-format json`, and the
-   envelope reader (`pipeline/envelope.js`) takes the last line of the log that parses to
-   a JSON object with a string `result` — that result is the change summary, and the
+   envelope reader (`pipeline/envelope.js`) takes the last line of a Claude log that parses
+   to a JSON object with a string `result`. For Codex JSONL it takes only the final completed
+   `agent_message` from a completed turn; commands, paths, usage, chatter, malformed or
+   partial streams, and rate-limit-only records produce no summary. That result is the
+   change summary, and the
    resolved model id recorded per 4.11 is **selected** from its `modelUsage`, never simply
    taken in listed order: `modelUsage` enumerates every model the CLI billed, and the cheap
    internal helper model is listed *first*, ahead of the pinned model that did the work.
@@ -1033,8 +1036,8 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
    diagnostic naming the alias and the keys seen — never fatal, and never silenced, since
    the wrong id going unnoticed is exactly the failure this rule exists to end. The rule is
    deliberately structural: a CLI that prints warnings around its own output must never
-   require a list of known warning strings to filter, and a log with no envelope (a stub,
-   a caller-supplied command, an error page) falls back to its raw text unchanged. The
+   require a list of known warning strings to filter. A non-JSON plain-text stub still falls
+   back to its raw text unchanged; structured-looking incomplete output never does. The
    docs phase additionally keeps stderr out of the file its summary is read from, and the
    entrypoint seeds this workspace's trust/onboarding flags into the CLI's config before
    the first call so the untrusted-workspace warning is not emitted at all.
@@ -2912,18 +2915,30 @@ overwrites refreshed state. Missing or malformed login state and a busy lane hav
 bounded refusals. A dead owner can be recovered, but age alone never steals a live owner's
 lock and nonce ownership prevents an old owner from deleting its successor.
 
+An explicit `codexAuthCacheRoots` roster is stronger than the legacy implicit single lane:
+every entry must already exist under its canonical absolute spelling, be private to the
+host identity, and sit outside the target, pipeline checkout, task workspaces and every other
+lane. Preflight validates the whole roster before target mutation, then quarantines malformed
+or busy saved sessions individually and proceeds only when at least one lane is healthy.
+
 **One saved ChatGPT session is one exclusive lane.** The owner holds it continuously from
 task-cache staging through every implementation and docs Codex invocation through atomic
 refresh write-back. A second worker waits instead of receiving a concurrent copy of the same
-refresh token, so configured task concurrency does not create parallel use of one login;
-that requires independently authenticated lane caches. Each task receives only a unique,
-writable, host-private handoff at `/run/pipeline-auth-host/cache`. The entrypoint starts as
+refresh token, so configured task concurrency does not create parallel use of one login.
+Credential jobs use one deterministic FIFO queue and reach, but never exceed, the healthy
+independently authenticated lane count. Credential-free stages retain their own caps and may
+overlap held credential lanes. Each task receives only a unique, writable, host-private
+handoff at `/run/pipeline-auth-host/cache`. The entrypoint starts as
 root solely to fail closed while copying and protecting an internal `/root/.codex`, then runs
 Codex as the retained image `node` user with `CODEX_HOME=/root/.codex`; only traversal is
 granted on `/root`. The repository-controlled verifier runs as `nobody` with a writable
 workspace and all Codex credential variables unset. Refresh persistence replaces the durable
 file atomically with mode `0600`; on failure the prior durable file and recoverable task copy
-remain, while successful cleanup removes only that task copy.
+remain and only that lane is quarantined. Recovery reacquires the exact lane lock and proves
+the durable source digest captured at staging before writing once; a busy or changed lane is
+left byte-for-byte untouched while healthy siblings continue. Credential ownership never
+alters caller streams or installs caller keepalive polling. Successful cleanup removes only
+the task copy it owns.
 
 **One egress profile per provider, never one widened to both.** `docker/proxy-codex/`
 is a separate deny-by-default sidecar image whose allowlist is exactly `api.openai.com`,

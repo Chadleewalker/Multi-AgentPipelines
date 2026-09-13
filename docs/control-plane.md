@@ -159,13 +159,29 @@ CODEX_LIVE_SMOKE=1 node scripts/codex-live-smoke.js --image <rebuilt-pinned-task
 
 One saved ChatGPT session is one exclusive credential lane. The lane is held from task-cache
 staging through every Codex invocation and atomic refresh write-back, so a second worker waits
-and never receives a concurrent copy of the refresh token. Parallel subscription workers need
-independently authenticated lane caches. Each task gets only a unique writable handoff mounted
+and never receives a concurrent copy of the refresh token. Parallel subscription workers use
+`codexAuthCacheRoots`, a roster of independently authenticated canonical absolute private
+directories outside repositories and task workspaces. Preflight validates the whole roster,
+quarantines bad saved sessions individually, and refuses only when none remain healthy.
+Credential work waits in FIFO order without treating the external lock timeout as a queue
+deadline; credential-free stage caps continue independently. Each task gets one unique writable handoff mounted
 at `/run/pipeline-auth-host/cache`; the root entrypoint copies it into an internal
 `CODEX_HOME=/root/.codex`, then runs Codex as the image's `node` user. Repository
 verification runs as `nobody` with `CODEX_API_KEY`, `OPENAI_API_KEY`, and `CODEX_HOME`
 unset. Successful cleanup removes only the task copy; failed refresh persistence keeps the
-prior durable cache and recoverable task copy.
+prior durable cache and recoverable task copy. Repair reacquires that lane's exact lock and
+compares its staged durable-source digest before writing; busy or changed lanes remain
+untouched while healthy siblings continue. A staging, launch, or refresh rejection settles as
+one failed task row and one canonical `task.finished` event while the shared drain awaits every
+healthy sibling before report generation and cleanup. The ownership module does not mutate
+process I/O or add caller keepalive polling.
+
+Codex docs output is a JSONL contract, not publishable console text. Status extraction scans
+the structured stream for the final completed `agent_message` from a completed turn and uses
+only that text in the run report and PR body. Commands, paths, token usage, CLI chatter,
+malformed or partial streams, rate-limit-only records and sensitive fields produce no change
+summary; Claude result envelopes and genuinely plain-text test stubs retain their established
+behavior.
 
 ## Supervised operation
 

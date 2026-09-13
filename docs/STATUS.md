@@ -301,6 +301,11 @@ real use. All are fixed.
   to maintain when a CLI upgrade invents new noise. Untrusted-workspace warnings are also
   removed at source: the entrypoint seeds `hasTrustDialogAccepted` /
   `hasCompletedOnboarding` for `$WS` into `$HOME/.claude.json` before the first agent call.
+- **Codex output is a JSONL event stream, not a raw-text summary.** Only the final completed
+  `agent_message` from a completed turn may reach status, reports or PR bodies. Command
+  events, paths, usage, chatter, malformed or partial streams, rate-limit-only records and
+  sensitive fields yield no summary; only genuinely plain-text stubs retain the historical
+  raw fallback (`repo-djf.28`).
 - **Test suites share one Docker network.** Run them one at a time; concurrent runs tear
   `pipeline-net` down under each other and produce meaningless failures. Real runs no
   longer share it (`repo-jur` made the network and sidecar per project), but the suites
@@ -390,6 +395,10 @@ file the summary is read from (the code phase's log stays merged — the rate-li
 reads it), and seeds `hasTrustDialogAccepted` / `hasCompletedOnboarding` for `$WS` into
 `$HOME/.claude.json` before the first call, merging into any existing config and never
 touching the token. `DESIGN.md` is amended in change-log row `repo-52m`.
+
+That raw fallback description is the historical `repo-52m` behavior. `repo-djf.28` narrows
+it for structured Codex JSONL: an incomplete, malformed, rate-limit-only or message-free
+stream yields an empty summary, while only non-JSON plain text retains the fallback.
 
 Session learnings: critic panel earned its keep (Task C split in two, unverified `bd`
 subcommands caught, an unowned contract — nothing injects memory.md into the prompt —
@@ -2681,6 +2690,11 @@ gap covered `runner/memory.js` until repo-dhp closed it by extracting
 (the frozen directories stayed put — extract, never move). Extracting the entrypoint
 coverage the same way is the obvious next one, and the `PIPELINE_AGENT_CMD` stub it needs
 must be a `.js` file run through `process.execPath` for the same EFTYPE reason.
+
+**Update (`repo-djf.28`):** the mandatory frozen replacement fixture now re-exercises the
+legacy Claude envelope and plain-text paths and adds realistic Codex JSONL publication cases,
+including malformed, partial and rate-limit-only streams. The absence of a dedicated
+`scripts/test-*.sh` leaf remains, but this path is no longer untested by the mandatory profile.
 
 **Fourth sweep, after merging #16 (the epic filter): 20 of 20 green in 10:59.**
 `test-runner-queue` passed its full 24 assertions — it is the suite whose six greps of the

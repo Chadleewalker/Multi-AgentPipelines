@@ -327,8 +327,12 @@ Copy this section in (adjust nothing but the project name):
       The selection also controls which command the container entrypoint runs and which
       provider-only allowlist the sidecar builds, so the host needs a base image carrying
       the pinned Codex CLI before the run starts. One saved ChatGPT session is one exclusive
-      implementation lane even when `concurrency` is higher; parallel subscription workers
-      need independently authenticated lane caches. Set `model` to something that provider
+      implementation lane even when `concurrency` is higher. For parallel subscription work,
+      set `codexAuthCacheRoots` to a nonempty array of canonical absolute private directories,
+      each already populated by an independent Codex login and outside every repository,
+      task workspace and other lane. The runner validates the whole roster before target
+      mutation, quarantines a bad lane individually, and admits FIFO credential work up to
+      the healthy lane count. Set `model` to something that provider
       understands while you are there; `reasoningEffort` (`minimal | low | medium | high`,
       and its two stage twins) applies to Codex launches.
       See `docs/control-plane.md` and `DESIGN.md` §6.5.

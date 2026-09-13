@@ -74,6 +74,8 @@ echo 'CLAUDE_CODE_OAUTH_TOKEN=...' > .env.pipeline
 #    for Codex, set "codexAuth" to "chatgpt" to reuse `codex login`, or to
 #    "api-key" to read CODEX_API_KEY from this file. Missing codexAuth keeps the
 #    legacy api-key behavior; the checked-in example selects dormant ChatGPT auth.
+#    To run subscription tasks in parallel, also set "codexAuthCacheRoots" to
+#    canonical absolute private directories, each populated by its own Codex login.
 
 # 2. run the routine complete host pass — no model calls
 node scripts/fast-full-sweep.js --repo .
@@ -87,8 +89,9 @@ node scripts/fast-full-sweep.js --repo .
 #     project the runner works one task at a time; set `concurrency` (any whole
 #     number) to put that many containers in flight at once for a daytime batch —
 #     API-key containers may use those slots concurrently. One saved ChatGPT login is
-#     one exclusive credential lane, so subscription tasks wait and run serially unless
-#     you provide independently authenticated lane caches. A usage
+#     one exclusive credential lane. An explicit `codexAuthCacheRoots` array lets FIFO
+#     subscription work use up to the number of healthy, independently authenticated
+#     lanes while quarantining a bad lane rather than stopping healthy siblings. A usage
 #     limit parks the whole run, not each task: one shared wait, and no new task
 #     launches while the window is closed.)
 cp run.config.example.json run.config.myproject.json
