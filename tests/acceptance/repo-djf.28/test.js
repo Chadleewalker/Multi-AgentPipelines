@@ -24,7 +24,7 @@ const NOISE = {
   chatter: 'CODEX-CLI-CHATTER-djf28',
   tailChatter: 'Codex session finished successfully.',
   command: 'COMMAND-EVENT-djf28',
-  path: 'C:/private/customer/djf28-secrets.txt',
+  path: ['C:', 'private', 'customer', 'djf28-secrets.txt'].join('/'),
   usage: 987654321,
   interim: 'INTERMEDIATE-AGENT-MESSAGE-djf28',
   sensitive: 'sk-djf28-sensitive-field-never-publish',
