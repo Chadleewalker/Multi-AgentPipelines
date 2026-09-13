@@ -84,17 +84,45 @@ function chooseModel(modelUsage, alias) {
 // `expectedAlias` is optional; absent, empty or whitespace-only all mean "no alias".
 function parse(text, expectedAlias) {
   const lines = String(text).split('\n');
+  let codexMessage = null;
+  let codexModel = null;
+  let codexCompleted = false;
+  let sawCodexRecord = false;
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i].trim();
     if (!line.startsWith('{')) continue;   // cheap reject; JSON.parse decides the rest
+    // A structured-looking but truncated record is not a plain-text stub. Remember that
+    // distinction before parsing so its raw bytes can never become a public fallback.
+    sawCodexRecord = true;
     let j;
     try { j = JSON.parse(line); } catch { continue; }
     if (!j || typeof j !== 'object' || Array.isArray(j)) continue;
-    if (typeof j.result !== 'string') continue;
-    const { model, aliasMiss } = chooseModel(j.modelUsage, expectedAlias);
-    return { result: j.result, model, aliasMiss };
+    if (typeof j.result === 'string') {
+      const { model, aliasMiss } = chooseModel(j.modelUsage, expectedAlias);
+      return { result: j.result, model, aliasMiss };
+    }
+
+    // Codex emits JSONL events rather than Claude's one result envelope. Publication is
+    // allowed to see only an agent message from a COMPLETED turn: a message in a partial
+    // stream is working state, and falling back to the raw JSONL would disclose commands,
+    // paths, usage and error fields. Scan bottom-up so the first eligible message is the
+    // final one, while still requiring a later turn.completed record in the original log.
+    if (j.type === 'turn.completed') codexCompleted = true;
+    if (!codexModel && typeof j.model === 'string' && j.model.trim()) codexModel = j.model.trim();
+    if (!codexModel && j.thread && typeof j.thread.model === 'string' && j.thread.model.trim()) {
+      codexModel = j.thread.model.trim();
+    }
+    const item = j.item && typeof j.item === 'object' ? j.item : null;
+    if (!codexMessage && codexCompleted && j.type === 'item.completed' && item
+        && item.type === 'agent_message' && typeof item.text === 'string') {
+      codexMessage = item.text;
+    }
   }
-  return null;
+  if (codexMessage !== null) return { result: codexMessage, model: codexModel, aliasMiss: null };
+  // A structured Codex stream that is malformed, partial, empty of a completed message,
+  // or rate-limit-only has no publishable summary. The marker lets callers distinguish it
+  // from a genuine plain-text stub, whose historical raw-text fallback remains compatible.
+  return sawCodexRecord ? { result: '', model: null, aliasMiss: null } : null;
 }
 
 module.exports = { parse, chooseModel };
