@@ -210,6 +210,21 @@ accept a stage or a downstream identity. Deterministic adapter replacement exist
 opaque same-process test capability exported by the library; no configuration key or environment
 value enables it.
 
+```bash
+node scripts/proposal-supervisor.js run --config run.config.<project>.json --proposal kp-…
+node scripts/proposal-supervisor.js tick --config run.config.<project>.json
+node scripts/proposal-supervisor.js status --config run.config.<project>.json --proposal kp-…
+node scripts/proposal-supervisor.js stop --config run.config.<project>.json
+node scripts/proposal-supervisor.js resume --config run.config.<project>.json
+```
+
+`run` admits one existing kickoff record and advances all work currently able to advance;
+`tick` and `resume` continue the durable scheduler without resubmitting it. `status` projects
+queue position, stage and timing together with attempts, model and token use, kickoff and spec
+hashes, and the controller-returned issue, freeze, run, branch, PR and verdict evidence. `stop`
+closes intake first, waits for the active scheduler turn, then asks the live implementation feed
+to drain; `resume` does not reopen intake.
+
 That process uses `runner/operation-manager.js` to launch the existing preparation command and
 one live-feed implementation runner. Its records and authority copies live under host state,
 outside the target tree. Project feed reservation and retry advancement are atomic across
