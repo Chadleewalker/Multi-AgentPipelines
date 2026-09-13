@@ -443,7 +443,12 @@ staging, Codex execution and atomic refresh write-back. A task sees only its pri
 handoff; the entrypoint stages it into `/root/.codex`, runs Codex as `node`, and runs the
 repository verifier as `nobody` with every Codex credential variable unset. Consequently,
 raising the worker-pool concurrency does not make one subscription login concurrent;
-parallel ChatGPT workers require independently authenticated lane caches.
+parallel ChatGPT workers require independently authenticated, non-overlapping private lane
+directories configured by canonical absolute path outside repositories and task workspaces.
+If refresh persistence fails, the prior durable cache and task copy remain quarantined.
+Recovery must reacquire that lane's current lock and prove its durable source version is
+unchanged before one atomic write-back, so a busy or changed lane cannot be overwritten while
+healthy sibling lanes continue.
 
 The shell node is a Windows host-identity gate, not merely a check that some executable
 named `bash` exists (change-log row `verified-host-shell`). The runner proves the shell is

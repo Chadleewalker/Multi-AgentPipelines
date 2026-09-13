@@ -198,11 +198,12 @@ Git-ignored, and must stay that way. Passed to containers by name at launch, nev
 an image.
 
 The same file holds `CODEX_API_KEY=<key>` on its own line only when a Codex run selects
-`"codexAuth": "api-key"`. For `"codexAuth": "chatgpt"`, run `codex login` instead; preflight
-accepts only a managed ChatGPT session with a refresh token and seeds a private durable
-cache from it once. It never replaces that durable cache with the original login after
-Codex has refreshed it. A missing `codexAuth` retains legacy `api-key` behavior, and there
-is no fallback between modes or providers.
+`"codexAuth": "api-key"`. For `"codexAuth": "chatgpt"`, run `codex login` instead; the legacy
+implicit lane accepts only a managed ChatGPT session with a refresh token and seeds a private
+durable cache from it once. Explicit `codexAuthCacheRoots` lanes must each already contain an
+independently authenticated managed session. Preflight never replaces a durable cache with the
+original login after Codex has refreshed it. A missing `codexAuth` retains legacy `api-key`
+behavior, and there is no fallback between modes or providers.
 
 ### B3. Install the git hooks
 
