@@ -67,6 +67,12 @@ Outside a usage-limit pause, the same read-only status reports live workers as `
 `proving`; it reports `interrupted-unknown` only after persisted process identity proves that an
 unsettled worker is no longer live.
 
+If an `author-proof` attempt completes `unproven` with its suite still unpublished, run
+`node scripts/prepare-batch.js re-author <batch> <issue-id>`. The command accepts exactly one
+issue, archives the failed suite and diagnostics under host preparation evidence, and then uses
+the ordinary worker launcher for one fresh author generation; frozen or published suites remain
+ineligible.
+
 ```bash
 # 1. put your model credential where the runner can find it
 #    (git-ignored; get a Claude one with `claude setup-token`)
