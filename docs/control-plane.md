@@ -170,6 +170,26 @@ verification runs as `nobody` with `CODEX_API_KEY`, `OPENAI_API_KEY`, and `CODEX
 unset. Successful cleanup removes only the task copy; failed refresh persistence keeps the
 prior durable cache and recoverable task copy, quarantining only its source lane until repair.
 
+Create each configured lane by logging in with that lane as `CODEX_HOME`; do not populate the
+roster by copying an existing `auth.json`. Use absolute paths in the run config. An explicit
+roster is never seeded from the ambient login, because that would present clones of one rotating
+refresh credential as independent authentication.
+
+```bash
+CODEX_HOME=/absolute/private/codex-lane-1 codex login
+CODEX_HOME=/absolute/private/codex-lane-2 codex login
+```
+
+```json
+{
+  "codexAuth": "chatgpt",
+  "codexAuthCacheRoots": [
+    "/absolute/private/codex-lane-1",
+    "/absolute/private/codex-lane-2"
+  ]
+}
+```
+
 ## Supervised operation
 
 One live project supervisor may hold that same host-global canonical-target authority and

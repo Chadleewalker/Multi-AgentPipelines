@@ -205,7 +205,9 @@ Codex has refreshed it. A missing `codexAuth` retains legacy `api-key` behavior,
 is no fallback between modes or providers. To use several subscription workers, authenticate
 several private cache directories independently and list their paths in
 `codexAuthCacheRoots`; do not copy one login between them. Preflight validates every listed
-lane and quarantines a bad one before target mutation.
+lane and quarantines a bad one before target mutation. Create each one with
+`CODEX_HOME=/absolute/private/lane-N codex login`, then put those absolute directory paths in
+the array. An explicit roster is never seeded from the ambient login.
 
 ### B3. Install the git hooks
 
