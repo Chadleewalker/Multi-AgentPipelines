@@ -255,7 +255,10 @@ and afterwards continues only the unfinished limited attempt.
 Preparation status derives live `authoring` and `proving` phases from immutable batch-owner and
 worker process identities using the target lock's reboot- and PID-recycle-aware liveness rule. It
 reports `interrupted-unknown` only when an unmatched worker identity is no longer live; an existing
-terminal result remains authoritative even after either process exits.
+terminal result remains authoritative even after either process exits. The worker's canonical
+top-level `started.process` supplies `started.pid`; platform selection is an explicit host-owned
+coordinator input, so portable verification can prove the Windows identity path without changing
+global process state, while Windows-host integration exercises the real platform default.
 
 Preparation also resolves each not-yet-frozen issue's structured `design-ref` from the exact
 integration HEAD recorded in its immutable manifest. It never consults an operator-local file

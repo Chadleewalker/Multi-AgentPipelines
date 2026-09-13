@@ -433,9 +433,11 @@ function runWorker(root, batch, item, configPath, state = prepState, seams = {})
       cwd: ROOT, windowsHide: true, shell: false, stdio: ['pipe', 'pipe', 'pipe'],
       env: workerEnv(process.env),
     });
-    const workerIdentity = Number.isInteger(child.pid) && child.pid > 0
-      ? lock.livenessFields(child.pid) : null;
-    const started = { nonce, pid: child.pid, phase: item.action,
+    const platform = typeof seams.platform === 'string' ? seams.platform : process.platform;
+    const workerPid = child.pid;
+    const workerIdentity = Number.isInteger(workerPid) && workerPid > 0
+      ? lock.livenessFields(workerPid, { platform }) : null;
+    const started = { nonce, pid: workerIdentity ? workerIdentity.pid : workerPid, phase: item.action,
       ...(workerIdentity ? { process: workerIdentity } : {}), data: { action: item.action } };
     try { state.writeWorkerStarted(root, batch, item.id, started); }
     catch (e) {
@@ -445,7 +447,8 @@ function runWorker(root, batch, item, configPath, state = prepState, seams = {})
     }
     try {
       (seams.markPreparationUncertain || lock.markPreparationUncertain)(seams.ownership, {
-        nonce, pid: child.pid, batch, issueId: item.id, phase: item.action,
+        nonce, pid: workerIdentity ? workerIdentity.pid : workerPid,
+        batch, issueId: item.id, phase: item.action,
       });
     } catch (e) {
       try { child.kill('SIGKILL'); } catch { /* immutable job was never fed */ }
