@@ -435,7 +435,7 @@ function runWorker(root, batch, item, configPath, state = prepState, seams = {})
     });
     const workerIdentity = Number.isInteger(child.pid) && child.pid > 0
       ? lock.livenessFields(child.pid) : null;
-    const started = { nonce, pid: child.pid, phase: item.action,
+    const started = { nonce, pid: workerIdentity ? workerIdentity.pid : child.pid, phase: item.action,
       ...(workerIdentity ? { process: workerIdentity } : {}), data: { action: item.action } };
     try { state.writeWorkerStarted(root, batch, item.id, started); }
     catch (e) {

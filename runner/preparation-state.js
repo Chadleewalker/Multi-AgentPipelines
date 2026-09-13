@@ -443,11 +443,15 @@ function writeWorkerStarted(root, batchId, issueId, data = {}, opts = {}) {
       || (data.pid !== undefined && data.process.pid !== data.pid))) {
     throw new Error('worker process identity must match its positive pid');
   }
+  // A process identity is the liveness authority, including for Windows wrappers where
+  // PID-only observation cannot distinguish a recycled generation. Keep the compatibility
+  // pid as a projection of that exact object so the two persisted fields cannot diverge.
+  const pid = data.process === undefined ? data.pid : data.process.pid;
   const dir = workerDir(root, batchId, issueId, true);
   const generation = nextWorkerGeneration(dir, batchId, issueId);
   const record = hashedRecord('worker-started', {
     batchId, issueId: validateIssueId(issueId), nonce, generation, phase, startedAt: isoNow(opts),
-    ...(data.pid === undefined ? {} : { pid: data.pid }),
+    ...(pid === undefined ? {} : { pid }),
     ...(data.process === undefined ? {} : { process: canonicalValue(data.process) }),
     data: workerPayload(data, new Set(['nonce', 'pid', 'phase', 'action', 'startedAt', 'process'])),
   });
