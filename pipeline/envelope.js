@@ -5,12 +5,12 @@
 // Agent-envelope reader — turns a raw agent log into the contract artifacts
 // (DESIGN.md §4.3, §4.11). Deterministic scaffolding, no LLM (hard rule 7).
 //
-// The Claude CLI writes its `--output-format json` envelope as one line, but may
-// print unrelated lines first (e.g. an untrusted-workspace warning), so a whole-file
-// JSON.parse silently fails and the model is never recorded. The rule here is exactly:
-// scan lines BOTTOM-UP and take the first one that parses to an object with a string
-// `result`. No regex over prose, no list of known warning strings — new noise from a
-// CLI upgrade needs no change here.
+// The Claude CLI writes its `--output-format json` envelope as one line, while Codex
+// writes a JSONL stream whose final human response is an `item.completed` agent-message
+// event. Either CLI may print unrelated lines around that structured output, so a
+// whole-file JSON.parse silently fails. Scan lines BOTTOM-UP and take the first object
+// that carries either provider's final-result shape. No regex over prose, no list of
+// known warning strings — new noise from a CLI upgrade needs no change here.
 //
 // `modelUsage` lists EVERY model the CLI billed, and the cheap internal helper model is
 // listed first — ahead of the pinned model that did the work. Taking key[0] therefore
@@ -80,6 +80,21 @@ function chooseModel(modelUsage, alias) {
   return { model: best, aliasMiss };
 }
 
+// Codex command executions and other JSONL events may contain arbitrarily large output;
+// none of it is a final result. Only the documented completed agent-message boundary is
+// allowed through. JSON.parse decodes escaped newlines in `item.text` after the complete
+// JSONL record has been framed by its physical line.
+function codexResult(event) {
+  if (event.type !== 'item.completed') return null;
+  const item = event.item;
+  if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
+  if (item.type !== 'agent_message' || typeof item.text !== 'string') return null;
+  const model = typeof event.model === 'string' && event.model.trim()
+    ? event.model.trim()
+    : (typeof item.model === 'string' && item.model.trim() ? item.model.trim() : null);
+  return { result: item.text, model, aliasMiss: null };
+}
+
 // -> { result, model, aliasMiss } | null   (model is null when there is no modelUsage)
 // `expectedAlias` is optional; absent, empty or whitespace-only all mean "no alias".
 function parse(text, expectedAlias) {
@@ -90,9 +105,12 @@ function parse(text, expectedAlias) {
     let j;
     try { j = JSON.parse(line); } catch { continue; }
     if (!j || typeof j !== 'object' || Array.isArray(j)) continue;
-    if (typeof j.result !== 'string') continue;
-    const { model, aliasMiss } = chooseModel(j.modelUsage, expectedAlias);
-    return { result: j.result, model, aliasMiss };
+    if (typeof j.result === 'string') {
+      const { model, aliasMiss } = chooseModel(j.modelUsage, expectedAlias);
+      return { result: j.result, model, aliasMiss };
+    }
+    const codex = codexResult(j);
+    if (codex) return codex;
   }
   return null;
 }

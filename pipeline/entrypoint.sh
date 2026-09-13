@@ -39,6 +39,10 @@ else
   AGENT_DEFAULT="claude -p --dangerously-skip-permissions${MODEL_ARG}"
 fi
 AGENT_CMD="${PIPELINE_AGENT_CMD:-$AGENT_DEFAULT}"
+# A caller-supplied command is the deterministic test/override seam and owns its
+# invocation completely. Do not let a managed-auth marker inherited from an outer
+# pipeline make that command restage credentials it never uses or change verifier users.
+[ -n "${PIPELINE_AGENT_CMD:-}" ] && PIPELINE_CHATGPT_AUTH=""
 
 # When we own the invocation, ask for JSON so the RESOLVED model id can be recorded (a
 # `--model opus` alias hides which Opus actually ran) and so the docs phase hands back a
