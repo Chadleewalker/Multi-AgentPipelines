@@ -165,7 +165,12 @@ at `/run/pipeline-auth-host/cache`; the root entrypoint copies it into an intern
 `CODEX_HOME=/root/.codex`, then runs Codex as the image's `node` user. Repository
 verification runs as `nobody` with `CODEX_API_KEY`, `OPENAI_API_KEY`, and `CODEX_HOME`
 unset. Successful cleanup removes only the task copy; failed refresh persistence keeps the
-prior durable cache and recoverable task copy.
+prior durable cache and recoverable task copy. An `agentCommand` override changes the executable,
+not this boundary: the managed-auth marker, protected handoff mount, unprivileged agent identity,
+and credential-free verifier remain in force. Only a nested entrypoint fixture that supplies both
+an explicit command and `PIPELINE_TESTING_NESTED_ENTRYPOINT=1` may suppress inherited managed-auth
+setup; that test capability is neither a configuration field nor forwarded by production launch
+construction.
 
 ## Supervised operation
 
