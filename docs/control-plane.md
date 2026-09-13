@@ -176,6 +176,13 @@ one failed task row and one canonical `task.finished` event while the shared dra
 healthy sibling before report generation and cleanup. The ownership module does not mutate
 process I/O or add caller keepalive polling.
 
+Codex docs output is a JSONL contract, not publishable console text. Status extraction scans
+the structured stream for the final completed `agent_message` from a completed turn and uses
+only that text in the run report and PR body. Commands, paths, token usage, CLI chatter,
+malformed or partial streams, rate-limit-only records and sensitive fields produce no change
+summary; Claude result envelopes and genuinely plain-text test stubs retain their established
+behavior.
+
 ## Supervised operation
 
 One live project supervisor may hold that same host-global canonical-target authority and
