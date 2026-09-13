@@ -752,7 +752,7 @@ deterministic aggregation, not an agent. Read both before proposing a new agent.
   arrive. Which of those is right depends on whether the value is "is it alive" or "what is it
   actually doing". 2026-07-30
 
-- **Give the docs phase a merge strategy, or batched runs will always conflict** — file-ownership
+- **Shipped as `repo-f65`: give the docs phase a merge strategy, or batched runs will always conflict** — file-ownership
   constraints in a spec keep *code* disjoint across a batch, and on 2026-07-30 three chained tasks
   touched three different code areas with no collision at all. Every one of them also edited the
   target's DESIGN.md, README.md and SPEC.md, because the docs phase always does, so every
@@ -763,7 +763,11 @@ deterministic aggregation, not an agent. Read both before proposing a new agent.
   Options worth weighing: an append-only convention for the doc sections a task may touch; a docs
   phase that writes to a per-task file the host merges; or simply accepting the conflicts and
   saying so in the playbook, since resolving them took one pass and no judgment. Filed rather than
-  fixed because which of those is right depends on how large batches get. 2026-07-30
+  fixed because which of those is right depends on how large batches get. **Resolved 2026-09-12:**
+  `runner/batch-merge.js` preserves the independently reviewable code tips, reports the pairwise
+  collision and required order, and can create one separately reviewed docs-only ref containing
+  every safely reconcilable contribution. Failure leaves durable evidence and blocked/open issue
+  state; no path automatically merges to the integration branch. 2026-07-30
 
 - **Say somewhere that a pure refactor cannot be frozen** — the freeze model assumes a task
   changes observable behaviour, because that is what an acceptance test can witness. A
