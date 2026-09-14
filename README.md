@@ -21,10 +21,11 @@ Three phases joined by a task queue:
    writing down what was frozen — `node scripts/batch.js show` reads that marker back in
    whatever session eventually launches the run, so "this batch is ready" lives on disk
    rather than in someone's memory, and says how the live queue differs from it before
-   anything starts. Durable kickoff packets can enter this phase through
-   `scripts/specify-proposal.js`: its read-only Codex planner either asks one
-   evidence-linked product question or creates the single canonical Beads issue that the
-   rest of planning reviews and freezes.
+   anything starts. Durable kickoff packets enter the production conveyor through
+   `scripts/proposal-supervisor.js`, which invokes the read-only Codex specifier and the
+   existing preparation and implementation controllers in order. The specifier either asks
+   one evidence-linked product question or creates the single canonical Beads issue; every
+   later identity comes from the controller that performed that work.
 2. **Implementation** (autonomous) — a plain script on your PC works through the queue.
    Each task gets a fresh container that can reach nothing except the handful of
    endpoints its own model provider needs, holds no git credentials, and cannot edit its
