@@ -119,6 +119,24 @@ recovers exactly one Beads issue. Treat that issue as the starting draft for the
 critics and approval steps below—its generated criteria and difficulty are proposals, not
 a substitute for user approval or the frozen-test proof.
 
+For continuous intake, the production supervisor performs that specification step and the later
+preparation, implementation, and review observation without operator ticks:
+
+```bash
+node scripts/proposal-supervisor.js run --config run.config.<project>.json
+```
+
+It discovers new kickoff records while it runs and rotates a drained implementation feed before
+assigning later prepared work. Stop it cleanly with:
+
+```bash
+node scripts/proposal-supervisor.js stop --config run.config.<project>.json
+```
+
+This closes intake first and lets already-owned work settle before the project lease is released.
+A restart preserves recorded identities and outstanding grants rather than invoking retry,
+recovery, or reconciliation implicitly.
+
 Then run the drift report against the target (change-log row `trace-ledger`):
 
 ```bash

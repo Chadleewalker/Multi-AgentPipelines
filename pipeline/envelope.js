@@ -85,8 +85,10 @@ function chooseModel(modelUsage, alias) {
 function parse(text, expectedAlias) {
   const lines = String(text).split('\n');
   let codexMessage = null;
+  let legacyCodexMessage = null;
   let codexModel = null;
   let codexCompleted = false;
+  let sawTurnFrame = false;
   let sawCodexRecord = false;
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i].trim();
@@ -103,18 +105,26 @@ function parse(text, expectedAlias) {
     }
     // Codex emits JSONL. Only a completed agent message from a completed turn is
     // publication material; commands, usage, errors and partial turns are not.
+    if (j.type === 'turn.started' || j.type === 'turn.completed') sawTurnFrame = true;
     if (j.type === 'turn.completed') codexCompleted = true;
     if (!codexModel && typeof j.model === 'string' && j.model.trim()) codexModel = j.model.trim();
     if (!codexModel && j.thread && typeof j.thread.model === 'string' && j.thread.model.trim()) {
       codexModel = j.thread.model.trim();
     }
     const item = j.item && typeof j.item === 'object' ? j.item : null;
+    if (!legacyCodexMessage && j.type === 'item.completed' && item
+        && item.type === 'agent_message' && typeof item.text === 'string') {
+      legacyCodexMessage = item.text;
+    }
     if (!codexMessage && codexCompleted && j.type === 'item.completed' && item
         && item.type === 'agent_message' && typeof item.text === 'string') {
       codexMessage = item.text;
     }
   }
   if (codexMessage !== null) return { result: codexMessage, model: codexModel, aliasMiss: null };
+  if (!sawTurnFrame && legacyCodexMessage !== null) {
+    return { result: legacyCodexMessage, model: codexModel, aliasMiss: null };
+  }
   return sawCodexRecord ? { result: '', model: null, aliasMiss: null } : null;
 }
 

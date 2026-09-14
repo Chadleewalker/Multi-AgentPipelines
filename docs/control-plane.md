@@ -169,7 +169,12 @@ at `/run/pipeline-auth-host/cache`; the root entrypoint copies it into an intern
 `CODEX_HOME=/root/.codex`, then runs Codex as the image's `node` user. Repository
 verification runs as `nobody` with `CODEX_API_KEY`, `OPENAI_API_KEY`, and `CODEX_HOME`
 unset. Successful cleanup removes only the task copy; failed refresh persistence keeps the
-prior durable cache and recoverable task copy. Repair reacquires that lane's exact lock and
+prior durable cache and recoverable task copy. An `agentCommand` override changes the executable,
+not this boundary: the managed-auth marker, protected handoff mount, unprivileged agent identity,
+and credential-free verifier remain in force. Only a nested entrypoint fixture that supplies both
+an explicit command and `PIPELINE_TESTING_NESTED_ENTRYPOINT=1` may suppress inherited managed-auth
+setup; that test capability is neither a configuration field nor forwarded by production launch
+construction. Repair reacquires that lane's exact lock and
 compares its staged durable-source digest before writing; busy or changed lanes remain
 untouched while healthy siblings continue. A staging, launch, or refresh rejection settles as
 one failed task row and one canonical `task.finished` event while the shared drain awaits every
@@ -207,9 +212,9 @@ A grant leaves the outstanding list only when its parent settles it as `complete
 `released` — never by expiry, a dead parent or a reclaim — so an interrupted supervisor leaves
 a readable record of what it had in flight. A live parent is never taken over, and a provably
 dead one is reclaimed only when a person asks explicitly, without deleting an uncertain
-preparation marker and without declaring its child complete. There is no supervisor CLI:
-`runner/supervisor.js` is a host-side library, and a supervising process takes the lease and
-issues grants through it.
+preparation marker and without declaring its child complete. There is no standalone
+lease-management CLI: `runner/supervisor.js` is a host-side library, and the proposal supervisor
+below takes the lease and issues grants through it.
 
 That process uses `runner/operation-manager.js` to launch the existing preparation command and
 one live-feed implementation runner. Its records and authority copies live under host state,
@@ -234,6 +239,16 @@ recovery itself stops after recording `not-spawned`, only another explicitly app
 it settles the original grant or leaves attention in place, but never starts a child.
 `stop({ project, id })` applies only to a running implementation feed and writes that run's
 normal stop sentinel.
+
+`scripts/proposal-supervisor.js run --config <run.config.json> [--proposal <kp-id>]`
+enters the unattended proposal conveyor. The process acquires the project supervisor lease,
+discovers durable kickoff records, and remains alive across pending specification,
+preparation, implementation, and review evidence. It retires a drained implementation feed
+before assigning later prepared work to a uniquely named successor. The `stop` command
+closes durable intake immediately; the live process then drains and settles children before
+releasing its parent lease. If the process crashes, restart only observes recorded
+operations—attention and uncertain settlement still require the explicit operation-manager
+recovery commands described above.
 
 After sibling task PRs publish, a supervisor can use `runner/batch-merge.js` to coordinate the
 fan without delaying or rewriting either task's product commit. `plan(...)` and
@@ -264,7 +279,10 @@ and afterwards continues only the unfinished limited attempt.
 Preparation status derives live `authoring` and `proving` phases from immutable batch-owner and
 worker process identities using the target lock's reboot- and PID-recycle-aware liveness rule. It
 reports `interrupted-unknown` only when an unmatched worker identity is no longer live; an existing
-terminal result remains authoritative even after either process exits.
+terminal result remains authoritative even after either process exits. The worker's canonical
+top-level `started.process` supplies `started.pid`; platform selection is an explicit host-owned
+coordinator input, so portable verification can prove the Windows identity path without changing
+global process state, while Windows-host integration exercises the real platform default.
 
 Preparation also resolves each not-yet-frozen issue's structured `design-ref` from the exact
 integration HEAD recorded in its immutable manifest. It never consults an operator-local file

@@ -429,11 +429,21 @@ section describes. It also changes none of the refusals above — because the su
 refused by owner name, and an admitted child takes no lock of its own and releases none. What
 it does change is that a preparation and an implementation worker of one project can be live
 together; the two things that must not overlap, Beads writes and integration publication, stay
-serialized as named critical sections. There is no supervisor command to run yet — it is a
-host-side library a supervising process drives through `runner/operation-manager.js`, so nothing
-in this walkthrough asks you to set that variable by hand. The manager launches the existing
-preparation command and one project live feed; uncertain child identity or settlement requires
-reconciliation and cannot be bypassed by an approved retry.
+serialized as named critical sections. The host-side library is driven by the unattended
+proposal conveyor:
+
+```bash
+node scripts/proposal-supervisor.js run --config run.config.<project>.json
+```
+
+The command discovers durable kickoff records and stays alive while specification, preparation,
+implementation, or review evidence is pending. It launches the existing preparation command and
+one project live feed, retires a drained feed before creating a uniquely identified successor,
+and passes child authority itself; do not set `PIPELINE_CHILD_AUTHORITY` by hand. Use
+`node scripts/proposal-supervisor.js stop --config run.config.<project>.json` for a clean drain:
+intake closes immediately, owned children settle, and only then is the parent lease released.
+After a crash, restart observes the journal but does not guess through uncertain child identity
+or settlement; those states still require the explicit operation-manager recovery paths.
 
 ### Preparing several frozen suites for one project at once
 
