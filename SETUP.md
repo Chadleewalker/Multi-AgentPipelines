@@ -20,6 +20,14 @@ moments — a planning session before a run where you approve what "done" means,
 review after. Nothing in between is interactive, and nothing that runs unattended can
 change what "done" means.
 
+> **Were you told to use the pinned "safe-v1" version?** This file describes the *latest*
+> pipeline. If someone pointed you at the known-good **safe-v1** snapshot instead, do the
+> clone in B1 below, then immediately run `git checkout safe-v1-branch` and follow the
+> `SETUP.md` you find *in that checkout* — not this one. That snapshot is a simpler,
+> Claude-only pipeline (no Codex, no write-protection or session guards), and its own
+> SETUP.md is the accurate guide for it. Don't mix the two docs. Everything below this
+> box assumes the latest `main`.
+
 ---
 
 ## Part 0 — What whoever is bringing you in must supply
