@@ -1929,6 +1929,17 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     neither persisted nor included in the durable config hash, and their values are scrubbed from
     persisted worker evidence and errors.
 
+    A completed `author-proof` whose terminal outcome is `unproven` has one explicit recovery
+    transition: `prepare-batch re-author <batch> <issue>`. It accepts exactly one issue, requires
+    the current suite to remain unpublished in that issue's real worktree (`freeze` state), and
+    refuses a dispatchable or branch-published suite. Before the ordinary worker launcher receives
+    an `author-proof` job, the host atomically archives the selected generation's complete suite,
+    immutable result and worktree-local diagnostic files beneath that batch's preparation evidence
+    root. The current brief remains a real `freeze` snapshot with an explicit re-author marker; no
+    synthetic `write` classification and no integration-checkout edit is used. `runWorker` alone
+    allocates the replacement generation after spawn, preserving the rule that every durable
+    PID-bearing start corresponds to one actual child.
+
     A canonical provider usage-limit result with an absolute reset instant parks this whole
     preparation batch. The first settled limit closes the shared worker pool to new admissions;
     workers already active may settle once, and their authored suites and managed probe paths
