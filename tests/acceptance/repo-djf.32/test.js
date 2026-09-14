@@ -72,7 +72,7 @@ function fixture(name, mode, extra = {}) {
   installPipeline(pipe); const agent = path.join(base, 'agent.js'); installAgent(agent);
   const observe = path.join(base, 'observed.jsonl'), docsPwd = path.join(base, 'docs-pwd'); const host = path.join(base, 'host-sentinel'); write(host, 'host stays\n');
   const result = run(SHELL, [ENTRYPOINT], task, { WORKSPACE: task, ISSUE_ID: 'repo-djf.32', PIPELINE_DIR: pipe,
-    PIPELINE_AGENT_CMD: `node "${agent.replace(/\\\\/g, '/')}"`, DOCS_MODE: mode, OBSERVE: observe, DOCS_PWD: docsPwd, ...extra });
+    PIPELINE_AGENT_CMD: `node "${agent.replace(/\\\\/g, '/')}"`, PIPELINE_TESTING_NESTED_ENTRYPOINT: '1', DOCS_MODE: mode, OBSERVE: observe, DOCS_PWD: docsPwd, ...extra });
   const observations = fs.existsSync(observe) ? fs.readFileSync(observe, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : [];
   const status = JSON.parse(fs.readFileSync(path.join(task, '.run', 'status.json'), 'utf8'));
   const evidence = JSON.parse(fs.readFileSync(path.join(task, '.run', 'verify.json'), 'utf8'));
