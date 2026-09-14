@@ -240,7 +240,7 @@ it settles the original grant or leaves attention in place, but never starts a c
 `stop({ project, id })` applies only to a running implementation feed and writes that run's
 normal stop sentinel.
 
-`scripts/proposal-supervisor.js run --config <run.config.json> [--proposal <kp-id>]`
+`scripts/proposal-supervisor.js start --config <run.config.json> [--proposal <kp-id>]`
 enters the unattended proposal conveyor. The process acquires the project supervisor lease,
 discovers durable kickoff records, and remains alive across pending specification,
 preparation, implementation, and review evidence. It retires a drained implementation feed
@@ -249,6 +249,15 @@ closes durable intake immediately; the live process then drains and settles chil
 releasing its parent lease. If the process crashes, restart only observes recorded
 operations—attention and uncertain settlement still require the explicit operation-manager
 recovery commands described above.
+
+`supervisorGlobalConcurrency` bounds all controller calls together;
+`supervisorStageConcurrency` independently bounds `specification`, `preparation`, and `review`.
+Both are positive whole-number host configuration, validated before supervisor authority is
+acquired. Ready implementation work is admitted ahead of newly queued specification work.
+`status [--proposal <kp-id>] [--json]` reports queue position, current stage, wait and active
+time, attempts, selected model, recorded and currently available token counts, kickoff/spec,
+issue/freeze/run/branch/PR/review identities, history, and the smallest next action. The human
+form is a rendering of the same durable facts.
 
 After sibling task PRs publish, a supervisor can use `runner/batch-merge.js` to coordinate the
 fan without delaying or rewriting either task's product commit. `plan(...)` and

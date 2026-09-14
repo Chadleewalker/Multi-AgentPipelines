@@ -965,6 +965,19 @@ owned grant, and only then releases exactly the parent lease. A crash does none 
 cleanup by inference: outstanding grants remain evidence for the explicit recovery paths
 above.
 
+The conveyor's proposal history is append-only and uses a closed host-owned graph:
+`queued` through `specifying`, `criticizing`, `authoring-tests`, `proving`, `freezing`,
+`ready`, `implementing`, `publishing`, and `review`, with `needs-input`, `failed`, and
+`rejected` as explicit branches. A linked answer returns the same proposal from
+`needs-input` to `specifying`; model output cannot name a transition. Every derived spec and
+test brief retains the immutable kickoff hash and field-level intent references. Invalid
+durable history is rejected before controller calls. The scheduler enforces one validated
+global ceiling and independent specification, preparation, and review ceilings, consumes a
+bounded admission turn at a time, and prioritizes ready implementation over new specification.
+Stopping closes intake before waiting for already-owned critical sections and the shared feed
+to settle. JSON and human status are projections of the same journal and expose timing,
+attempt, model/token, identity, queue, and next-action facts.
+
 **Sibling task publication stays independent; shared documentation is coordinated afterward.**
 `runner/batch-merge.js` is a host-side library for a supervisor, not another task worker and
 not a command that merges to the integration branch. Its read-only `plan` operation discovers

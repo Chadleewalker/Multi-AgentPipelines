@@ -192,6 +192,22 @@ function loadConfig(file) {
       && !(Number.isInteger(raw.concurrency) && raw.concurrency >= 1)) {
     throw new Error(`run.config.json: 'concurrency' must be a whole number of 1 or more`);
   }
+  // Proposal-conveyor limits are host policy. Models never get to raise them, and bad
+  // values are rejected here before the supervisor acquires authority or calls an adapter.
+  if (raw.supervisorGlobalConcurrency !== undefined
+      && !(Number.isInteger(raw.supervisorGlobalConcurrency)
+        && raw.supervisorGlobalConcurrency >= 1)) {
+    throw new Error("run.config.json: 'supervisorGlobalConcurrency' must be a positive whole number");
+  }
+  if (raw.supervisorStageConcurrency !== undefined) {
+    const value = raw.supervisorStageConcurrency;
+    const allowed = new Set(['specification', 'preparation', 'review']);
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+        || Object.keys(value).some(key => !allowed.has(key))
+        || Object.values(value).some(limit => !Number.isInteger(limit) || limit < 1)) {
+      throw new Error("run.config.json: 'supervisorStageConcurrency' must contain only positive whole-number specification, preparation, and review limits");
+    }
+  }
   // The live queue feed (§4.12). ZERO IS LEGAL AND IS THE DEFAULT — it means "off" — which is
   // why this is `>= 0` where every other numeric field here is `> 0`. Validating it like its
   // neighbours would reject the one value that expresses today's behaviour, and the config
