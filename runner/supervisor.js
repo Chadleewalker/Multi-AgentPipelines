@@ -150,7 +150,7 @@ function unseal(record) {
 
 // ---- the lease ---------------------------------------------------------------------------
 
-function leaseRecordFor(id, target, token, ownership) {
+function leaseRecordFor(id, target, token, ownership, recoveredGrants = []) {
   return sealed({
     schema: 1,
     kind: 'supervisor-lease',
@@ -159,6 +159,7 @@ function leaseRecordFor(id, target, token, ownership) {
     token,
     runId: String(id),
     ownerToken: ownership && ownership.token ? String(ownership.token) : null,
+    recoveredGrants,
     startedAt: new Date().toISOString(),
     ...lock.livenessFields(),
   });
@@ -282,7 +283,11 @@ function acquire(repoRoot, targetRepoPath, supervisorId, options = {}) {
     };
   }
   const token = crypto.randomBytes(24).toString('hex');
-  const record = leaseRecordFor(id, target, token, held.ownership);
+  const recoveredGrants = options.reclaim === true && existing
+    ? priorOutstanding.map(item => ({ nonce: item.nonce,
+      parent: { id: existing.record.id, pid: existing.record.pid,
+        ownerToken: existing.record.ownerToken || null } })) : [];
+  const record = leaseRecordFor(id, target, token, held.ownership, recoveredGrants);
   writeJson(leaseFile(target), record);
   const lease = {
     id, token, target, pid: process.pid,
@@ -411,7 +416,12 @@ function settle(lease, nonce, options = {}) {
   }
   const record = readGrant(held.target, String(nonce || ''));
   if (!record) return { ok: false, error: `supervisor: no grant record for ${nonce}` };
-  if (record.authority.parent.id !== held.record.id || record.authority.parent.pid !== held.record.pid) {
+  const recovered = (held.record.recoveredGrants || []).some(item => item
+    && item.nonce === record.nonce && item.parent
+    && item.parent.id === record.authority.parent.id
+    && item.parent.pid === record.authority.parent.pid);
+  if ((record.authority.parent.id !== held.record.id
+      || record.authority.parent.pid !== held.record.pid) && !recovered) {
     return { ok: false, error: `supervisor: ${nonce} was granted by ${record.authority.parent.id}, not by this supervisor` };
   }
   if (record.state !== 'granted' && record.state !== 'redeemed') {
@@ -422,6 +432,16 @@ function settle(lease, nonce, options = {}) {
   writeJson(grantFile(held.target, record.nonce), sealed({
     ...body, state: outcome, settledAt: new Date().toISOString(), settledBy: held.record.id,
   }));
+  if (recovered && lease && lease.ownership) {
+    const recoveredEntry = held.record.recoveredGrants.find(item => item.nonce === record.nonce);
+    const ownerToken = recoveredEntry && recoveredEntry.parent && recoveredEntry.parent.ownerToken;
+    const sameOwnerOutstanding = held.record.recoveredGrants.some(item => {
+      if (!item.parent || item.parent.ownerToken !== ownerToken || item.nonce === record.nonce) return false;
+      const sibling = readGrant(held.target, item.nonce);
+      return sibling && (sibling.state === 'granted' || sibling.state === 'redeemed');
+    });
+    if (ownerToken && !sameOwnerOutstanding) lock.clearRecoveryOwner(lease.ownership, ownerToken);
+  }
   return { ok: true };
 }
 
@@ -433,7 +453,12 @@ function settlementState(lease, nonce) {
   if (!held.ok) return { ok: false, error: `supervisor: cannot inspect child settlement — ${held.error}` };
   const record = readGrant(held.target, String(nonce || ''));
   if (!record) return { ok: false, error: `supervisor: no grant record for ${nonce}` };
-  if (record.authority.parent.id !== held.record.id || record.authority.parent.pid !== held.record.pid) {
+  const recovered = (held.record.recoveredGrants || []).some(item => item
+    && item.nonce === record.nonce && item.parent
+    && item.parent.id === record.authority.parent.id
+    && item.parent.pid === record.authority.parent.pid);
+  if ((record.authority.parent.id !== held.record.id
+      || record.authority.parent.pid !== held.record.pid) && !recovered) {
     return { ok: false, error: `supervisor: ${nonce} was granted by another supervisor` };
   }
   if (record.state === 'complete') return { ok: true, settled: true, nonce: record.nonce };
