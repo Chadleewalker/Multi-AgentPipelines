@@ -32,6 +32,57 @@ const REASONING_EFFORT_FIELDS = [
 ];
 const CODEX_AUTH_MODES = ['chatgpt', 'api-key'];
 
+function sameHostPath(left, right) {
+  const a = path.resolve(left); const b = path.resolve(right);
+  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+function pathInside(parent, child) {
+  const rel = path.relative(parent, child);
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
+}
+function insideTaskWorkspace(candidate) {
+  for (let cursor = candidate;;) {
+    if (fs.existsSync(path.join(cursor, '.git')) && fs.existsSync(path.join(cursor, '.run'))) return true;
+    const parent = path.dirname(cursor);
+    if (parent === cursor) return false;
+    cursor = parent;
+  }
+}
+function configuredLaneRoots(raw, targetRepoPath) {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new Error("run.config.json: 'codexAuthCacheRoots' must be a non-empty array of private canonical absolute directories");
+  }
+  const roots = raw.map((value) => {
+    if (typeof value !== 'string' || !value || !path.isAbsolute(value)
+        || path.normalize(value) !== value || !fs.existsSync(value)) {
+      throw new Error("run.config.json: 'codexAuthCacheRoots' entries must be existing canonical absolute directories");
+    }
+    let real; let stat;
+    try { real = fs.realpathSync(value); stat = fs.statSync(real); } catch {
+      throw new Error("run.config.json: 'codexAuthCacheRoots' entries must be existing canonical absolute directories");
+    }
+    if (!sameHostPath(value, real) || !stat.isDirectory()) {
+      throw new Error("run.config.json: 'codexAuthCacheRoots' entries must name their canonical directory identity");
+    }
+    return real;
+  });
+  const pipelineRoot = path.resolve(__dirname, '..');
+  let target = path.resolve(targetRepoPath);
+  try { target = fs.realpathSync(target); } catch { /* target identity is checked later */ }
+  for (let i = 0; i < roots.length; i += 1) {
+    if (pathInside(pipelineRoot, roots[i]) || pathInside(target, roots[i]) || insideTaskWorkspace(roots[i])) {
+      throw new Error("run.config.json: 'codexAuthCacheRoots' entries must be outside repositories and task workspaces");
+    }
+    for (let j = i + 1; j < roots.length; j += 1) {
+      if (pathInside(roots[i], roots[j]) || pathInside(roots[j], roots[i])) {
+        throw new Error("run.config.json: 'codexAuthCacheRoots' entries must not overlap");
+      }
+    }
+  }
+  return roots;
+}
+
 // ---- per-project network + proxy names (§4.8, §4.12) -------------------------------
 // The task network and the proxy sidecar are per project, not per pipeline: two runner
 // processes against different projects must not create, restart or destroy each other's
@@ -97,6 +148,7 @@ function loadConfig(file) {
   if (raw.codexAuth !== undefined && !CODEX_AUTH_MODES.includes(raw.codexAuth)) {
     throw new Error("run.config.json: 'codexAuth' must be 'chatgpt' or 'api-key'");
   }
+  const laneRoots = configuredLaneRoots(raw.codexAuthCacheRoots, raw.targetRepoPath);
   for (const k of ['wallClockMinutes', 'probeIntervalMinutes', 'proxyPort']) {
     if (raw[k] !== undefined && (typeof raw[k] !== 'number' || raw[k] <= 0)) {
       throw new Error(`run.config.json: '${k}' must be a positive number`);
@@ -221,6 +273,7 @@ function loadConfig(file) {
   }
   const cfg = { ...DEFAULTS, ...raw, configPath: p };
   cfg.codexAuth = raw.codexAuth === undefined ? 'api-key' : raw.codexAuth;
+  if (laneRoots) cfg.codexAuthCacheRoots = laneRoots;
   // Resolved AFTER the spread and deliberately NOT in contracts/control-plane.json's
   // configDefaults: a stage field's default is the run-wide value, and the run-wide value's
   // default is the constant — a chain, not a single value a defaults table could carry.

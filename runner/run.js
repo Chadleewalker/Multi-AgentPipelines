@@ -131,24 +131,39 @@ async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClo
   }
   // Container names must be unique across relaunches (§4.7 resume).
   const attempt = (executeTask.counter = (executeTask.counter || 0) + 1);
-  let authCache = null;
+  const launch = async (laneContext) => {
+    const authCache = laneContext && laneContext.authCache;
+    return runTask(cfg, {
+      containerName: `task-${issue.id}-${log.runId}-${attempt}`.replace(/[^A-Za-z0-9_.-]/g, '-'),
+      workspaceDir: ws.dir,
+      pipelineDir: path.join(REPO_ROOT, 'pipeline'),
+      issueId: issue.id,
+      taskDir,
+      ...(authCache ? {} : {
+        credential: { name: credentialNameFor(providerFor(cfg)), value: token },
+      }),
+      wallClockMinutes: wallClockMinutes || cfg.wallClockMinutes,
+      authCache,
+    }, log, traceId);
+  };
   if (providerFor(cfg) === 'codex' && cfg.codexAuth === 'chatgpt') {
-    authCache = await Promise.resolve(codexAuth.stageTaskCache({ cacheRoot: cfg.codexAuthCacheRoot, taskId: issue.id, wait: true }));
+    try {
+      if (cfg.codexLanePool) {
+        return await cfg.codexLanePool.run({ id: issue.id, stage: 'implementation', credential: true }, launch);
+      }
+      const authCache = await Promise.resolve(codexAuth.stageTaskCache({ cacheRoot: cfg.codexAuthCacheRoot, taskId: issue.id, wait: true }));
+      try { return await launch({ authCache }); }
+      finally { await Promise.resolve(codexAuth.releaseTaskCache(authCache)); }
+    } catch (error) {
+      // Boundary exceptions resolve as task-local data so neither a direct caller nor the
+      // shared worker drain can be rejected. Never copy exception text or fields: provider
+      // errors can carry refresh-token evidence.
+      const code = error && typeof error.code === 'string' && /^[A-Za-z0-9_.-]{1,80}$/.test(error.code)
+        ? error.code : 'credential-lane-boundary';
+      return { exitCode: null, laneBoundaryError: code };
+    }
   }
-  try { return await runTask(cfg, {
-    containerName: `task-${issue.id}-${log.runId}-${attempt}`.replace(/[^A-Za-z0-9_.-]/g, '-'),
-    workspaceDir: ws.dir,
-    pipelineDir: path.join(REPO_ROOT, 'pipeline'),
-    issueId: issue.id,
-    taskDir,
-    // Paired with its environment-variable NAME here, so the container layer never has to
-    // guess which provider a bare value belongs to.
-    ...(authCache ? {} : {
-      credential: { name: credentialNameFor(providerFor(cfg)), value: token },
-    }),
-    wallClockMinutes: wallClockMinutes || cfg.wallClockMinutes,
-    authCache,
-  }, log, traceId); } finally { if (authCache) await Promise.resolve(codexAuth.releaseTaskCache(authCache)); }
+  return launch(null);
 }
 
 // ---- the bounded worker pool (§7, §4.12) ------------------------------------------
@@ -302,6 +317,32 @@ function integrationPublish(cfg, fn, onBlocked) {
   catch (e) { return onBlocked(e && e.message ? e.message : String(e)); }
 }
 
+function laneBoundaryFailure(cfg, issue, log, tr, ws, pauses, activeMs, ownership, error) {
+  const code = error && typeof error.code === 'string' && /^[A-Za-z0-9_.-]{1,80}$/.test(error.code)
+    ? error.code : 'credential-lane-boundary';
+  const reason = `task execution boundary failed (${code})`;
+  log.error(tr, reason);
+  const failedOutcome = { status: 'failed', beads: null };
+  const settled = beadsWrite(cfg, () => finish(cfg, issue.id, failedOutcome,
+    [`run ${log.runId}: ${reason}`], ownership),
+  (why) => ({ ok: false, transition: null, error: why }));
+  const completionError = settled.ok ? null : `Beads completion incomplete: ${settled.error}`;
+  log.error(tr, 'task finished: exit unavailable -> failed' +
+    ' (issue stays in_progress)', {
+    event: 'task.finished',
+    data: { exitCode: null, outcome: 'failed', beads: null },
+  });
+  log.info(tr, `workspace kept at ${ws.dir}`);
+  return {
+    issueId: issue.id, title: issue.title || '', outcome: 'failed', exitCode: null,
+    branch: ws.branch, pushed: false, prUrl: null, attempts: 0, pauses,
+    activeSeconds: Math.round(activeMs / 1000), diffLines: 0,
+    attemptNotes: [`run ${log.runId}: ${reason}`],
+    error: [reason, completionError].filter(Boolean).join('; '),
+    recoveryWorkspace: ws.dir,
+  };
+}
+
 async function runOneTask(cfg, issue, log, token, gate, ownership) {
   const tr = log.trace(issue.id);
   const taskDir = log.taskDir(issue.id);
@@ -395,7 +436,15 @@ async function runOneTask(cfg, issue, log, token, gate, ownership) {
       artifacts = collectArtifacts(ws.dir, taskDir, issue.id);
       break;
     }
-    exec = await executeTask(cfg, issue, taskDir, log, tr, ws, token, remainingMinutes);
+    try {
+      exec = await executeTask(cfg, issue, taskDir, log, tr, ws, token, remainingMinutes);
+    } catch (error) {
+      return laneBoundaryFailure(cfg, issue, log, tr, ws, pauses, activeMs, ownership, error);
+    }
+    if (exec && exec.laneBoundaryError) {
+      return laneBoundaryFailure(cfg, issue, log, tr, ws, pauses, activeMs, ownership,
+        { code: exec.laneBoundaryError });
+    }
     activeMs += exec.durationMs || 0;
     if (exec.durationMs !== undefined) {
       log.info(tr, `container ran ${Math.round(exec.durationMs / 1000)}s` +
@@ -630,6 +679,9 @@ async function main() {
   // and every publication below can name the section it must be alone inside. Null for a
   // standalone run, where the target lock already makes that true.
   cfg.childAdmission = resolvedPre.childAdmission || null;
+  if (managedChatgpt && Array.isArray(cfg.codexAuthLanes)) {
+    cfg.codexLanePool = codexAuth.createLanePool({ lanes: cfg.codexAuthLanes });
+  }
   const releaseOnExit = () => {
     try { networkDown(REPO_ROOT, cfg); } catch { /* process exit: best effort only */ }
     finally {
@@ -717,6 +769,13 @@ async function main() {
     cfg.concurrency
   );
   const results = drained.filter(Boolean);
+
+  // Recovery is an exclusive lane operation and begins only after every worker has
+  // settled. It is attempted once before any shared report or lifecycle cleanup.
+  if (cfg.codexLanePool && typeof cfg.codexLanePool.recover === 'function') {
+    try { await cfg.codexLanePool.recover(); }
+    catch { log.error(t, 'credential lane recovery remained incomplete'); }
+  }
 
   // §4.12's second admission rule refused these before `claim()`, so Beads is untouched and
   // they stay `open` for a freeze session. They never enter drainQueue — the rows are

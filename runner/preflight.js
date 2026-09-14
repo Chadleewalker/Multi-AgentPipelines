@@ -416,10 +416,17 @@ function preflight(cfg, repoRoot, log, deps = {}) {
   if (providerFor(cfg) !== 'codex' || cfg.codexAuth !== 'chatgpt') return preflightAfterAuth(cfg, repoRoot, log, deps);
   const env = deps.env || process.env;
   return Promise.resolve((deps.codexAuth || codexAuth).preflight({
-    mode: 'chatgpt', codexHome: env.CODEX_HOME, cacheRoot: env.PIPELINE_CODEX_CACHE,
+    mode: 'chatgpt', codexHome: env.CODEX_HOME,
+    ...(cfg.codexAuthCacheRoots ? { cacheRoots: cfg.codexAuthCacheRoots }
+      : { cacheRoot: env.PIPELINE_CODEX_CACHE }),
+    targetRepoPath: cfg.targetRepoPath, repoRoot,
   })).then((auth) => {
     if (!auth || !auth.ok) return { ok: false, authRefused: true, reason: auth && auth.reason || 'ChatGPT authentication unavailable' };
-    cfg.codexAuthCacheRoot = auth.cacheRoot;
+    if (Array.isArray(auth.lanes)) cfg.codexAuthLanes = auth.lanes;
+    else {
+      cfg.codexAuthCacheRoot = auth.cacheRoot;
+      cfg.codexAuthLanes = [{ id: 'lane-1', cacheRoot: auth.cacheRoot, healthy: true }];
+    }
     return preflightAfterAuth(cfg, repoRoot, log, deps);
   });
 }

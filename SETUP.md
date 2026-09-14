@@ -204,6 +204,14 @@ cache from it once. It never replaces that durable cache with the original login
 Codex has refreshed it. A missing `codexAuth` retains legacy `api-key` behavior, and there
 is no fallback between modes or providers.
 
+For parallel ChatGPT subscription work, add `codexAuthCacheRoots` to the host-local run
+config. Its value is a nonempty array of canonical absolute directories, each already
+populated by a separate Codex login; the runner never clones the ambient login into this
+roster. Keep every directory private and outside this checkout, the target repository, task
+workspaces, and every other lane. Preflight checks the complete roster before target mutation,
+quarantines invalid or busy sessions individually, and proceeds when at least one lane is
+healthy.
+
 ### B3. Install the git hooks
 
 ```bash
@@ -335,8 +343,10 @@ directly when you need its per-suite diagnostic logs and timings.
    so start at 1. For Codex, choose `codexAuth: "chatgpt"` to use the saved login or
    `codexAuth: "api-key"` to use `.env.pipeline`; the example declares dormant ChatGPT
    auth while retaining the canonical Claude/opus defaults. One saved login is one exclusive
-   worker lane regardless of `concurrency`; parallel subscription workers require separate,
-   independently authenticated lane caches. A fifth if you ever hit it:
+   worker lane regardless of `concurrency`; configure separate, independently authenticated
+   lanes with `codexAuthCacheRoots` for parallel subscription workers. Credential jobs wait
+   FIFO and use no more than the healthy lane count; a bad lane is quarantined without
+   stopping healthy siblings. A fifth if you ever hit it:
    `allowHalfProven: false` is the default and means the runner refuses a suite the freeze
    gate found red with no probe supplied — set it
    to `true` only if you accept dispatching suites whose green side has never been seen
