@@ -91,6 +91,16 @@ run_agent() {
   fi
   sh -c "$AGENT_CMD $AGENT_FORMAT"
 }
+run_docs_agent() {
+  # Codex's repository check does not recognize a freshly-created detached worktree as
+  # trusted. Admit only this invocation, after the caller has entered that exact disposable
+  # checkout. Do not alter explicit agent commands: test/operational overrides own their argv.
+  if [ "$PROVIDER" = "codex" ] && [ -z "${PIPELINE_AGENT_CMD:-}" ]; then
+    AGENT_CMD="$AGENT_CMD --skip-git-repo-check" run_agent
+  else
+    run_agent
+  fi
+}
 run_verifier() {
   if [ "${PIPELINE_CHATGPT_AUTH:-}" = "1" ]; then
     chmod -R a+rwX "$WS"
@@ -374,7 +384,7 @@ while :; do
           "docs workspace could not be created; verified implementation success stands"
         exit 0
       fi
-      if (cd "$DOCS_WORKTREE" && run_agent < "$RUN/prompt-docs.md" > "$RUN/docs-out.txt" 2> "$RUN/docs-err.txt"); then
+      if (cd "$DOCS_WORKTREE" && run_docs_agent < "$RUN/prompt-docs.md" > "$RUN/docs-out.txt" 2> "$RUN/docs-err.txt"); then
         cd "$DOCS_WORKTREE" || die30 "disposable docs workspace disappeared"
         docs_paths_allowed "$VERIFIED_HEAD" > "$RUN/docs-boundary.txt"
         DOCS_BOUNDARY_RC=$?
