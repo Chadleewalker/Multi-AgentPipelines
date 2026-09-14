@@ -1,9 +1,9 @@
 // Frozen acceptance test — repo-djf.28: one lane-safe, summary-safe replacement.
 // PAIRING (criterion -> tests): C1 -> G7,T1; C2 -> G1,T2,T3,T4,T5,T6;
 // C3 -> G2,T2,T3,T4,T5,T6; C4 -> G3,G4,G5,T7,T8,T9;
-// C5 -> G1,G2,G6,G7,G8,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10.
+// C5 -> G1,G2,G6,G7,G8,T1,T2,T3,T4,T5,T6,T7,T8,T9,T10,T11.
 // PAIRING (test -> criterion): T1 -> C1,C5; T2,T3,T4 -> C2,C3,C5;
-// T5,T6 -> C2,C3,C5; T7,T8,T9 -> C4,C5; T10 -> C5.
+// T5,T6 -> C1,C2,C3,C5; T7,T8,T9 -> C4,C5; T10 -> C1,C5; T11 -> C5.
 'use strict';
 const fs = require('fs');
 const os = require('os');
@@ -14,8 +14,8 @@ const REPO = path.resolve(__dirname, '..', '..', '..');
 const RUN_FILE = path.join(REPO, 'runner', 'run.js');
 const STATUS_JS = path.join(REPO, 'pipeline', 'status.js');
 const EVENT_SCHEMA = JSON.parse(fs.readFileSync(path.join(REPO, 'schemas', 'events.schema.json'), 'utf8'));
-const { resolveHostShell } = require(path.join(REPO, 'runner', 'host-shell.js'));
-const LANE_SUITES = ['repo-djf.22', 'repo-djf.23', 'repo-djf.24'];
+const CONFIG = require(path.join(REPO, 'runner', 'config.js'));
+const PREDECESSOR_SUITES = ['repo-djf.22', 'repo-djf.23', 'repo-djf.24', 'repo-djf.25'];
 const PROVIDER_ENV = [
   'CODEX_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'CODEX_HOME',
 ];
@@ -40,33 +40,35 @@ function scrubbedEnv(extra = {}) {
   for (const key of PROVIDER_ENV) delete env[key];
   return env;
 }
-function failureNames(output) {
-  return String(output || '').split(/\r?\n/)
-    .filter((line) => /^(?:FAIL|not ok)\b/i.test(line))
-    .map((line) => line.replace(/\s+—.*$/, '').slice(0, 180));
-}
 function read(file) {
   try { return fs.readFileSync(file, 'utf8'); } catch { return null; }
 }
 function parseJson(file) {
   try { return JSON.parse(read(file)); } catch { return null; }
 }
-function runFrozenUnion() {
-  const runs = [];
-  const hostShell = resolveHostShell();
-  for (let round = 1; round <= 2; round += 1) {
-    for (const suite of LANE_SUITES) {
-      const rel = `tests/acceptance/${suite}/`;
-      const result = hostShell.ok ? spawnSync(hostShell.command, ['tools/run-acceptance.sh', rel], {
-        cwd: REPO, encoding: 'utf8', windowsHide: true, timeout: 120000,
-        maxBuffer: 64 * 1024 * 1024, env: scrubbedEnv(),
-      }) : { status: null, stdout: '', stderr: '', error: new Error(hostShell.reason) };
-      runs.push({ round, suite, status: result.status, signal: result.signal,
-        error: result.error && result.error.message,
-        failures: failureNames(`${result.stdout || ''}\n${result.stderr || ''}`) });
-    }
-  }
-  return runs;
+function configFile(root, target, cacheRoots) {
+  const file = path.join(root, 'run.config.task-root.json');
+  fs.writeFileSync(file, JSON.stringify({
+    targetRepoPath: target,
+    targetRepoRemote: 'https://example.invalid/private-target.git',
+    image: 'fixture:image', provider: 'codex', codexAuth: 'chatgpt',
+    codexAuthCacheRoots: cacheRoots,
+  }));
+  return file;
+}
+function predecessorReceipts() {
+  return PREDECESSOR_SUITES.map((suite) => {
+    const rel = `tests/acceptance/${suite}/`;
+    const receipt = parseJson(path.join(REPO, rel, '.freeze-gate.json'));
+    return {
+      suite,
+      ok: !!receipt && receipt.verdict === 'red' && receipt.probeSupplied === true
+        && receipt.brittleness === 0 && /^[0-9a-f]{64}$/.test(receipt.suiteHash || '')
+        && fs.existsSync(path.join(REPO, rel, 'guard.js'))
+        && fs.existsSync(path.join(REPO, rel, 'test.js')),
+      receipt: receipt && receipt.suiteHash,
+    };
+  });
 }
 
 // Stringified into a child preload. The real runner entry point remains in charge; only
@@ -170,6 +172,10 @@ function fixturePreload() {
       snapshot() {
         return { healthyLaneCount: 1, quarantined: mode === 'refresh' ? [{ id: 'lane-bad' }] : [],
           retained: [...handoffs] };
+      },
+      async recover() {
+        mutation('credential.recover');
+        return { recovered: mode === 'refresh' ? ['lane-bad'] : [], healthyLaneCount: 1 };
       },
     };
   }
@@ -321,6 +327,7 @@ function fixturePreload() {
   stub('scripts/write-protection-policy.js', {
     admit() { return { admit: true, refusals: [], target: cfg.targetRepoPath }; }, admissionRefusal() { return []; },
   });
+  global.__DJF28 = { cfg, log, event, workspace, taskDir };
   process.on('exit', (code) => event('process.exit', {
     code, healthySettled, networkOwned, lockOwned,
     containers: [...containers], workspaces: [...workspaces], handoffs: [...handoffs],
@@ -333,8 +340,8 @@ function readEvents(root) {
   if (!fs.existsSync(file)) return [];
   return fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
 }
-function fixtureChild(mode) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), `accept-djf28-main-${mode}-`));
+function fixtureChild(mode, kind) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), `accept-djf28-${kind}-${mode}-`));
   roots.push(root);
   const preload = path.join(root, 'preload.js');
   fs.writeFileSync(preload, `(${fixturePreload.toString()})();\n`);
@@ -346,7 +353,19 @@ function fixtureChild(mode) {
     NODE_OPTIONS: `--require "${preload.split(path.sep).join('/')}"`,
   });
   // scrubbedEnv removes provider variables after merging the fixture-only additions.
-  const result = spawnSync(process.execPath, [RUN_FILE, '--config', 'fixture'], {
+  const direct = [
+    "'use strict';",
+    '(async()=>{',
+    ' const f=global.__DJF28;',
+    ' const run=require(process.argv[1]);',
+    " const issue={id:'bad',title:'direct lane failure',priority:0};",
+    " try { const value=await run.executeTask(f.cfg,issue,f.taskDir('bad'),f.log,'direct/bad',",
+    "   {dir:f.workspace('bad')},'',1); f.event('direct.resolve',{value}); }",
+    " catch(error){ f.event('direct.reject',{message:String(error&&error.message||error)}); }",
+    "})().catch(error=>{process.exitCode=1;});",
+  ].join('');
+  const args = kind === 'direct' ? ['-e', direct, RUN_FILE] : [RUN_FILE, '--config', 'fixture'];
+  const result = spawnSync(process.execPath, args, {
     cwd: REPO, encoding: 'utf8', windowsHide: true, timeout: 5000,
     maxBuffer: 16 * 1024 * 1024, env,
   });
@@ -394,27 +413,51 @@ function validTaskFinished(ledger) {
     && ledger.data.outcome === 'failed'
     && (typeof ledger.data.beads === 'string' || ledger.data.beads === null);
 }
-function boundaryProof(run) {
+function boundaryProof(direct, run, mode) {
+  const resolved = eventList(direct, 'direct.resolve')[0];
+  const directValue = resolved && resolved.value;
   const bad = row(run, 'bad');
   const healthy = row(run, 'healthy');
   const finished = taskFinishedRecords(run, 'bad');
   const badFinish = eventList(run, 'beads.finish', 'bad');
+  const badWorkspace = path.join(run.root, 'workspace-bad');
+  const healthyWorkspace = path.join(run.root, 'workspace-healthy');
+  const handoffRoot = path.join(run.root, 'credential-lane', 'tasks');
+  const handoffs = fs.existsSync(handoffRoot) ? fs.readdirSync(handoffRoot) : [];
+  const wantedHandoffs = mode === 'refresh' ? 1 : 0;
   return {
-    yes: run.result.status !== 3 && !run.result.signal && !run.result.error
+    yes: !!resolved && eventList(direct, 'direct.reject').length === 0
+      && directValue && ((directValue.exitCode !== undefined && directValue.exitCode !== 0)
+        || directValue.ok === false)
+      && direct.result.status === 0 && !direct.result.signal && !direct.result.error
+      && run.result.status !== 3 && !run.result.signal && !run.result.error
       && run.providerEnvPresent.length === 0
       && !!run.manifest && Array.isArray(run.manifest.tasks) && run.manifest.tasks.length === 2
       && !!bad && bad.outcome === 'failed' && typeof bad.error === 'string'
+      && bad.recoveryWorkspace === badWorkspace
       && !!healthy && healthy.outcome === 'done'
       && badFinish.length === 1 && badFinish[0].outcome
       && badFinish[0].outcome.status === 'failed'
+      && badFinish[0].outcome.beads === null
       && finished.length === 1 && validTaskFinished(finished[0].ledger)
-      && safe(run),
+      && fs.existsSync(badWorkspace) && !fs.existsSync(healthyWorkspace)
+      && eventList(run, 'verifier.complete', 'bad').length === 0
+      && eventList(run, 'github.publish', 'bad').length === 0
+      && eventList(run, 'git.workspace.discard', 'bad').length === 0
+      && handoffs.length === wantedHandoffs && safe(direct) && safe(run),
     detail: {
+      directResolved: !!resolved, directRejected: eventList(direct, 'direct.reject').length,
+      directStatus: direct.result.status, directValue,
       status: run.result.status, signal: run.result.signal,
       error: run.result.error && run.result.error.message,
       stderr: String(run.result.stderr || '').slice(-500),
       manifest: run.manifest, badFinish: badFinish.map((item) => item.outcome),
-      finished: finished.map((item) => item.ledger), safe: safe(run),
+      finished: finished.map((item) => item.ledger),
+      badWorkspace: fs.existsSync(badWorkspace), healthyWorkspace: fs.existsSync(healthyWorkspace),
+      badVerifier: eventList(run, 'verifier.complete', 'bad').length,
+      badPublish: eventList(run, 'github.publish', 'bad').length,
+      badDiscard: eventList(run, 'git.workspace.discard', 'bad').length,
+      handoffs: handoffs.length, wantedHandoffs, safe: safe(direct) && safe(run),
       providerEnvPresent: run.providerEnvPresent,
     },
   };
@@ -458,42 +501,45 @@ function publication(status) {
 
 async function main() {
   try {
-    const unionRuns = runFrozenUnion();
-    check('T1 C1/C5 the complete repo-djf.22, repo-djf.23, and repo-djf.24 lane contracts pass twice on the exact no-key candidate',
-      [1, 2].every((round) => LANE_SUITES.every((suite) => unionRuns
-        .some((item) => item.round === round && item.suite === suite)))
-        && unionRuns.every((item) => item.status === 0 && !item.signal && !item.error),
-      JSON.stringify({ platform: process.platform, runs: unionRuns }));
+    const predecessors = predecessorReceipts();
+    check('T1 C1/C5 every repo-djf.22-through-.25 lane contract retains its complete red/green frozen shape without recursively executing a foreign suite',
+      predecessors.every((item) => item.ok)
+        && PROVIDER_ENV.every((key) => !Object.prototype.hasOwnProperty.call(process.env, key)),
+      JSON.stringify({ predecessors,
+        providerEnvPresent: PROVIDER_ENV.filter((key) => Object.prototype.hasOwnProperty.call(process.env, key)) }));
 
     const scenarios = {};
-    for (const mode of ['staging', 'launch', 'refresh']) scenarios[mode] = fixtureChild(mode);
-    const staging = boundaryProof(scenarios.staging);
+    for (const mode of ['staging', 'launch', 'refresh']) {
+      scenarios[mode] = { direct: fixtureChild(mode, 'direct'), main: fixtureChild(mode, 'main') };
+    }
+    const staging = boundaryProof(scenarios.staging.direct, scenarios.staging.main, 'staging');
     check('T2 C2/C3/C5 a staging rejection becomes one failed row and one canonical schema-valid task.finished event while its healthy sibling completes',
       staging.yes, JSON.stringify(staging.detail));
-    const launch = boundaryProof(scenarios.launch);
+    const launch = boundaryProof(scenarios.launch.direct, scenarios.launch.main, 'launch');
     check('T3 C2/C3/C5 a worker-launch rejection becomes one failed row and one canonical schema-valid task.finished event while its healthy sibling completes',
       launch.yes, JSON.stringify(launch.detail));
-    const refresh = boundaryProof(scenarios.refresh);
+    const refresh = boundaryProof(scenarios.refresh.direct, scenarios.refresh.main, 'refresh');
     check('T4 C2/C3/C5 a refresh-persistence rejection becomes one failed row and one canonical schema-valid task.finished event while its healthy sibling completes',
       refresh.yes, JSON.stringify(refresh.detail));
 
-    const mains = Object.values(scenarios);
+    const mains = Object.values(scenarios).map((item) => item.main);
     const lifecycle = mains.map((run) => {
       const healthySettled = eventIndex(run, 'container.settled', 'healthy');
       const verifier = eventIndex(run, 'verifier.complete', 'healthy');
       const publish = eventIndex(run, 'github.publish', 'healthy');
       const beads = eventIndex(run, 'beads.finish', 'healthy');
+      const recover = eventIndex(run, 'credential.recover');
       const report = eventIndex(run, 'report.write');
       const down = eventIndex(run, 'network.down');
       const release = eventIndex(run, 'lock.release');
       const exit = eventIndex(run, 'process.exit');
       const healthy = row(run, 'healthy');
       const exitEvent = exit >= 0 ? run.events[exit] : null;
-      return { mode: run.mode, healthySettled, verifier, publish, beads, report, down, release, exit,
+      return { mode: run.mode, healthySettled, verifier, publish, beads, recover, report, down, release, exit,
         status: run.result.status, signal: run.result.signal, healthy, exitEvent,
         unexpected: /runner: unexpected failure/i.test(`${run.result.stdout || ''}\n${run.result.stderr || ''}`),
         yes: healthySettled >= 0 && healthySettled < verifier && verifier < publish && publish < beads
-          && beads < report && report < down && down < release && release < exit
+          && beads < recover && recover < report && report < down && down < release && release < exit
           && !!healthy && healthy.outcome === 'done' && healthy.pushed === true && !!healthy.prUrl
           && exitEvent && exitEvent.healthySettled === true && exitEvent.containers.length === 0
           && exitEvent.networkOwned === false && exitEvent.lockOwned === false
@@ -512,12 +558,14 @@ async function main() {
         networkDowns: eventList(run, 'network.down').length,
         lockReleases: eventList(run, 'lock.release').length,
         reports: eventList(run, 'report.write').length,
+        recoveries: eventList(run, 'credential.recover').length,
         afterRelease: afterRelease.map((item) => `${item.ev}:${item.issueId || ''}`),
         safe: safe(run), providerEnvPresent: run.providerEnvPresent,
       };
     });
     const ownedBeforeFixtureCleanup = ownership.every((item) => item.networkDowns === 1
-      && item.lockReleases === 1 && item.reports === 1 && item.afterRelease.length === 0
+      && item.lockReleases === 1 && item.reports === 1 && item.recoveries === 1
+      && item.afterRelease.length === 0
       && item.safe && item.providerEnvPresent.length === 0);
     check('T6 C2/C3/C5 shared cleanup runs once after each full drain with no post-release mutation or credential disclosure',
       ownedBeforeFixtureCleanup, JSON.stringify(ownership));
@@ -629,11 +677,26 @@ async function main() {
       invalidResults.every((result) => result.ok),
       JSON.stringify(invalidResults));
 
+    const configRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'accept-djf28-task-root-'));
+    roots.push(configRoot);
+    const target = path.join(configRoot, 'target');
+    const exactTaskRoot = path.join(configRoot, 'task-workspace');
+    fs.mkdirSync(target, { recursive: true });
+    fs.mkdirSync(path.join(exactTaskRoot, '.git'), { recursive: true });
+    fs.mkdirSync(path.join(exactTaskRoot, '.run'), { recursive: true });
+    let taskRootError = null;
+    try { CONFIG.loadConfig(configFile(configRoot, target, [fs.realpathSync(exactTaskRoot)])); }
+    catch (error) { taskRootError = String(error && error.message || error); }
+    check('T10 C1/C5 a credential cache root equal to a task-workspace root is rejected before launch',
+      !!taskRootError && /outside repositories and task workspaces/.test(taskRootError),
+      JSON.stringify({ refused: !!taskRootError,
+        namedBoundary: !!taskRootError && /outside repositories and task workspaces/.test(taskRootError) }));
+
     for (const root of roots) {
       try { fs.rmSync(root, { recursive: true, force: true }); } catch {}
     }
     const removed = roots.every((root) => !fs.existsSync(root));
-    check('T10 C5 all combined focused fixtures remove their containers, locks, workspaces, handoffs, and private trees',
+    check('T11 C5 all combined focused fixtures remove their containers, locks, workspaces, handoffs, and private trees',
       removed, JSON.stringify({ rootsRemoved: removed, count: roots.length }));
   } catch (error) {
     check('T1-T10 C1-C5 deterministic combined fixture executes', false,
