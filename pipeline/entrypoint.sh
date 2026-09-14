@@ -98,11 +98,11 @@ run_verifier() {
     # credential-free verifier deliberately runs as nobody. Give this process tree exactly one
     # protected Git trust entry so verifier and test subprocesses can inspect /workspace; keep
     # it in the environment rather than persisting a wildcard or a nobody-owned config file.
-    runuser -u nobody -- env -u CODEX_API_KEY -u OPENAI_API_KEY -u CODEX_HOME \
+    PIPELINE_CHATGPT_AUTH= runuser -u nobody -- env -u CODEX_API_KEY -u OPENAI_API_KEY -u CODEX_HOME \
       GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$WS" \
       node "$PIPE/verify.js"
   else
-    env -u CODEX_API_KEY -u OPENAI_API_KEY -u CODEX_HOME node "$PIPE/verify.js"
+    PIPELINE_CHATGPT_AUTH= env -u CODEX_API_KEY -u OPENAI_API_KEY -u CODEX_HOME node "$PIPE/verify.js"
   fi
   return
 
