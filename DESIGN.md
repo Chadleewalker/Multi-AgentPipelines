@@ -1029,13 +1029,21 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
    an explicit command and the `PIPELINE_TESTING_NESTED_ENTRYPOINT=1` capability; production
    config and container construction never transmit that capability. The docs phase is one agent invocation
    that writes the change summary into the status file and updates in-repo docs the change
-   affects. Its writable Git delta is limited by deterministic scaffolding to regular
-   root-level Markdown files and regular Markdown files beneath `docs/`; a symlink, source,
-   config, test or other path rejects the whole docs delta. An allowed delta is judged by a
-   second invocation of the same authoritative verifier before scaffolding authors the docs
-   commit. If the docs agent errors, crosses the path boundary, fails final verification or
-   cannot be committed, its entire delta is reset to the verified implementation commit and
-   success stands with `docsPhaseError` as evidence (change-log row `final-verification-boundary`). Phases of
+   affects. It runs in a detached disposable Git worktree rooted at the verified implementation
+   commit, never in the publishable task workspace. Deterministic scaffolding limits its tree
+   delta to regular root-level Markdown files and regular Markdown files beneath `docs/`; a
+   symlink, source, config, test or other path rejects the whole delta. Scaffolding collapses
+   any agent-authored commits into one isolated commit, serializes that commit's exact binary
+   tree delta, removes only the disposable worktree, and applies the delta to the unchanged task
+   workspace. Ignored files, untracked runtime artifacts, commits and other process side effects
+   from the docs invocation therefore cannot reach the branch or final verifier. The same
+   authoritative verifier judges the transferred delta from that clean state; its own tracked
+   tree changes or failures still reject the docs delta, and failure recovery removes only paths
+   added by that verifier rather than broadly cleaning the task workspace. If workspace creation,
+   docs execution, boundary inspection, transfer, final verification or commit fails, the verified
+   implementation and its preserved verifier evidence remain the recovery point and success stands
+   with `docsPhaseError` as evidence (change-log rows `final-verification-boundary` and
+   `repo-djf-32-docs-isolation`). Phases of
    a task are scaffolding, not an LLM decision. No leader agent inside. **Agent output is a contract artifact, so it is
    read structurally, never scraped.** When the entrypoint owns the invocation (no
    `PIPELINE_AGENT_CMD`) both agent phases request `--output-format json`, and the

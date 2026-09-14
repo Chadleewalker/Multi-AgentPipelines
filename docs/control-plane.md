@@ -394,7 +394,13 @@ Inside a task container:
 
 - `/workspace/.run/issue.md` and `/workspace/.run/memory.md` are read-only inputs.
 - Never edit `tests/acceptance/` or a path frozen by `pipeline.config.json`.
-- The deterministic verifier decides the result after the agent exits.
+- The implementation agent works in the task workspace. The later documentation agent works
+  only in a detached disposable worktree at the verified implementation commit; scaffolding
+  transfers its exact allowed Markdown tree delta back before final verification, never its
+  ignored, untracked or process-created runtime files.
+- The deterministic verifier decides the result after the agent exits. Final verification runs
+  in the publishable task workspace over the transferred docs delta and does not suppress leaks
+  created by that verifier itself.
 - Docker, Beads, Git credentials, and general network access are unavailable by design.
 - Record durable insights with `node /pipeline/status.js note "..."` and suspected spec
   defects with `node /pipeline/status.js concern "..."`; neither changes the outcome.
