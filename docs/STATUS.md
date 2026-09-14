@@ -294,11 +294,13 @@ real use. All are fixed.
   are why every runner Beads call is now bounded (`repo-sls`, above). If you write a new
   host-side `bd` invocation, put it through `runner/bd.js` — a bare `spawnSync('bd', …)`
   elsewhere is unbounded again, and the failure it produces is a run that parks silently.
-- **The Claude CLI writes chatter around its output**, and a warning line on stdout is
-  enough to break a whole-file `JSON.parse`. Never parse an agent log as one document:
-  `pipeline/envelope.js` scans lines bottom-up for the first that parses to an object with
-  a string `result`. The rule is structural on purpose — no list of known warning strings
-  to maintain when a CLI upgrade invents new noise. Untrusted-workspace warnings are also
+- **Agent CLIs write record streams, not trustworthy prose summaries.** A Claude warning
+  line on stdout is enough to break a whole-file `JSON.parse`, while Codex JSONL also carries
+  command records and intermediate messages that must not become the PR body. Never parse an
+  agent log as one document: `pipeline/envelope.js` scans bottom-up for the first supported
+  human result, either a Claude object with a string `result` or a completed Codex
+  `agent_message`. The rule is structural on purpose — no list of known warning strings to
+  maintain when a CLI upgrade invents new noise. Untrusted-workspace warnings are also
   removed at source: the entrypoint seeds `hasTrustDialogAccepted` /
   `hasCompletedOnboarding` for `$WS` into `$HOME/.claude.json` before the first agent call.
 - **Test suites share one Docker network.** Run them one at a time; concurrent runs tear
@@ -375,10 +377,11 @@ Planned from the shadow-run artifacts rather than the backlog.
 |---|---|---|---|
 | `repo-52m` | clean contract artifacts from agent CLI noise (§4.3, §4.11) | 1 | **Done** — `pipeline/envelope.js`, `status.js summary`, entrypoint trust seeding |
 
-**`repo-52m` fixed defect 5 above at both ends.** `pipeline/envelope.js` is the single
-reader of the CLI's `--output-format json` envelope: `parse(text)` scans lines bottom-up
-and returns `{result, model}` from the first that parses to an object with a string
-`result` (`model` selected from `modelUsage` per §4.3 — see defect 8 below; else null),
+**`repo-52m` fixed defect 5 above at both ends; `repo-djf.19` extended the same contract to
+Codex JSONL.** `pipeline/envelope.js` is the single reader of agent contract artifacts:
+`parse(text)` scans lines bottom-up and returns `{result, model}` from the first supported
+human result — a Claude object with a string `result` or a completed Codex `agent_message`
+(`model` selected from Claude `modelUsage` per §4.3 — see defect 8 below; else null) —
 and `node envelope.js flatten <file> [expected-alias]` rewrites a log to just its result
 text while printing the resolved model — a log with no envelope is left byte-identical and
 prints nothing, so stubs and caller-supplied commands need no special case. `status.js summary <file>` sets

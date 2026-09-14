@@ -950,6 +950,21 @@ evidence. Settlement intent has its own exclusive marker: an uncertain result fo
 until the parent record proves whether the original grant settled, after which reconciliation
 either completes it or retries only that same settlement. Child exit alone never proves success.
 
+**The production proposal supervisor is a durable poller, not an operator-driven
+tick.** `runner/proposal-supervisor.js` acquires the parent lease before its unattended
+`run()` loop admits work, then polls durable intake and child-operation evidence through
+one bounded wait seam. Specification, preparation, implementation and review may all remain
+pending without ending that process. A completed implementation feed is settled and retired;
+prepared work that appears later receives a monotonically identified successor feed, while
+proposal-to-feed bindings ensure an old manifest cannot supply a later proposal's branch or
+PR identity. The append-only journal records each controller return before the next
+transition, so restart observes the same issue, freeze, operation, run, branch and PR
+identities and never invokes retry, recovery or reconciliation implicitly. Clean stop closes
+intake first, launches nothing new, requests the current feed's normal drain, settles every
+owned grant, and only then releases exactly the parent lease. A crash does none of that
+cleanup by inference: outstanding grants remain evidence for the explicit recovery paths
+above.
+
 **Sibling task publication stays independent; shared documentation is coordinated afterward.**
 `runner/batch-merge.js` is a host-side library for a supervisor, not another task worker and
 not a command that merges to the integration branch. Its read-only `plan` operation discovers
@@ -1007,7 +1022,12 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
    implementation commit → docs-only agent → final verify → docs commit**.
    The agent command is read from the `PIPELINE_AGENT_CMD` environment variable,
    defaulting to the headless `claude -p` invocation when unset — this is the deliberate
-   test seam that lets the E2E pass substitute deterministic stubs (see section 7). The docs phase is one agent invocation
+   test seam that lets the E2E pass substitute deterministic stubs (see section 7). An
+   explicit command changes only the executable: under managed ChatGPT authentication it
+   still runs as the unprivileged Codex user against the protected internal cache. A nested
+   entrypoint fixture may suppress inherited managed-auth setup only when it supplies both
+   an explicit command and the `PIPELINE_TESTING_NESTED_ENTRYPOINT=1` capability; production
+   config and container construction never transmit that capability. The docs phase is one agent invocation
    that writes the change summary into the status file and updates in-repo docs the change
    affects. Its writable Git delta is limited by deterministic scaffolding to regular
    root-level Markdown files and regular Markdown files beneath `docs/`; a symlink, source,
@@ -1925,7 +1945,11 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     nonce-paired worker start/results. The manifest records the parent's falsifiable process
     identity, and every worker start records the same PID-recycle-safe identity used by the
     target lock. Status evaluates both identities: an unmatched live `author-proof` or `proof`
-    attempt is `authoring` or `proving`; only a falsified worker identity becomes
+    attempt is `authoring` or `proving`; worker launch passes the host platform through an
+    explicit coordinator seam to the shared identity constructor, and Linux `/proc` start ticks
+    are collected only when the represented platform is Linux. This lets portable verification
+    exercise the Windows identity path without rewriting `process.platform`, while a separate
+    Windows-host integration check exercises the actual platform default. Only a falsified worker identity becomes
     `interrupted-unknown`, while a terminal result always wins. An unmatched start is observed,
     never replayed; it blocks retry until an operator stops the worker and descendants, then uses
     the separate `acknowledge-interrupted` verb. Config secrets and `hostEnv` values are
@@ -2934,7 +2958,10 @@ Codex as the retained image `node` user with `CODEX_HOME=/root/.codex`; only tra
 granted on `/root`. The repository-controlled verifier runs as `nobody` with a writable
 workspace and all Codex credential variables unset. Refresh persistence replaces the durable
 file atomically with mode `0600`; on failure the prior durable file and recoverable task copy
-remain and only that lane is quarantined. Recovery reacquires the exact lane lock and proves
+remain and only that lane is quarantined. A configured `agentCommand` does not alter any of
+these identity, mount, environment or persistence rules. The only managed-auth bypass is the
+nested-entrypoint test capability described in 4.3, which is not a configuration field and is
+never forwarded by the production launcher. Recovery reacquires the exact lane lock and proves
 the durable source digest captured at staging before writing once; a busy or changed lane is
 left byte-for-byte untouched while healthy siblings continue. Credential ownership never
 alters caller streams or installs caller keepalive polling. Successful cleanup removes only
