@@ -113,7 +113,6 @@ run_verifier() {
 # agent crossed into source would still trust a process that violated the boundary.
 restore_verified() { # restore_verified <commit> <had-verify-json> <verify-json>
   git reset --hard "$1" >/dev/null 2>&1 || die30 "could not restore verified implementation"
-  git clean -fd >/dev/null 2>&1 || die30 "could not remove rejected docs-phase files"
   if [ "$2" -eq 1 ]; then
     printf '%s\n' "$3" > "$RUN/verify.json" || die30 "could not restore verifier evidence"
   else
@@ -121,7 +120,7 @@ restore_verified() { # restore_verified <commit> <had-verify-json> <verify-json>
   fi
 }
 
-# The docs agent gets a normal Git workspace because useful updates span root-level guides
+# The docs agent gets a disposable Git worktree because useful updates span root-level guides
 # and docs/. The boundary is enforced from Git's byte-safe path output, not from the prompt.
 # --no-renames makes a source->docs rename expose both the deleted source and new docs path.
 docs_paths_allowed() { # docs_paths_allowed <verified-commit>
@@ -144,6 +143,66 @@ docs_paths_allowed() { # docs_paths_allowed <verified-commit>
       process.exit(1);
     }
   ' "$RUN/docs-paths.z"
+}
+
+# Inventory names as well as files so an empty ignored lock directory created by the final
+# verifier remains observable. Recovery removes only names that verifier invocation added;
+# pre-existing task-workspace state is never swept broadly.
+snapshot_workspace_paths() { # snapshot_workspace_paths <output>
+  node -e '
+    const fs = require("fs");
+    const path = require("path");
+    const root = process.cwd();
+    const found = [];
+    const walk = (dir, rel) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (!rel && entry.name === ".git") continue;
+        const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+        found.push(childRel);
+        if (entry.isDirectory()) walk(path.join(dir, entry.name), childRel);
+      }
+    };
+    walk(root, "");
+    fs.writeFileSync(process.argv[1], found.join("\0") + (found.length ? "\0" : ""));
+  ' "$1"
+}
+
+remove_new_workspace_paths() { # remove_new_workspace_paths <snapshot>
+  node -e '
+    const fs = require("fs");
+    const path = require("path");
+    const root = process.cwd();
+    const before = new Set(fs.readFileSync(process.argv[1]).toString("utf8").split("\0").filter(Boolean));
+    const found = [];
+    const walk = (dir, rel) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (!rel && entry.name === ".git") continue;
+        const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+        found.push(childRel);
+        if (entry.isDirectory()) walk(path.join(dir, entry.name), childRel);
+      }
+    };
+    walk(root, "");
+    const added = found.filter((p) => !before.has(p)).sort((a, b) => b.split("/").length - a.split("/").length);
+    for (const rel of added) {
+      const target = path.resolve(root, ...rel.split("/"));
+      if (target === root || !target.startsWith(root + path.sep)) throw new Error(`unsafe verifier path: ${rel}`);
+      fs.rmSync(target, { recursive: true, force: true });
+    }
+  ' "$1"
+}
+
+DOCS_ROOT=""
+DOCS_WORKTREE=""
+cleanup_docs_workspace() {
+  trap - EXIT
+  [ -n "$DOCS_ROOT" ] || return 0
+  [ "$DOCS_ROOT" != "/" ] && [ "$DOCS_WORKTREE" = "$DOCS_ROOT/worktree" ] \
+    || die30 "refusing unsafe docs workspace cleanup"
+  git -C "$WS" worktree remove --force --force "$DOCS_WORKTREE" >/dev/null 2>&1 || true
+  rm -rf -- "$DOCS_ROOT" || die30 "could not remove disposable docs workspace"
+  DOCS_ROOT=""
+  DOCS_WORKTREE=""
 }
 
 [ -n "${ISSUE_ID:-}" ] || die30 "ISSUE_ID not set"
@@ -304,11 +363,26 @@ while :; do
       # stderr goes to its own file, never into docs-out.txt: this output becomes the PR
       # body (§4.5), and CLI warnings on stderr used to lead every one of them. The file
       # is kept for debugging and, like everything under .run/, is never committed.
-      if run_agent < "$RUN/prompt-docs.md" > "$RUN/docs-out.txt" 2> "$RUN/docs-err.txt"; then
+      DOCS_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/pipeline-docs.XXXXXX") \
+        || die30 "could not allocate disposable docs workspace"
+      DOCS_WORKTREE="$DOCS_ROOT/worktree"
+      trap cleanup_docs_workspace EXIT
+      if ! git worktree add --detach "$DOCS_WORKTREE" "$VERIFIED_HEAD" >/dev/null 2>&1; then
+        cleanup_docs_workspace
+        trap - EXIT
+        node "$PIPE/status.js" set docsPhaseError \
+          "docs workspace could not be created; verified implementation success stands"
+        exit 0
+      fi
+      if (cd "$DOCS_WORKTREE" && run_agent < "$RUN/prompt-docs.md" > "$RUN/docs-out.txt" 2> "$RUN/docs-err.txt"); then
+        cd "$DOCS_WORKTREE" || die30 "disposable docs workspace disappeared"
         docs_paths_allowed "$VERIFIED_HEAD" > "$RUN/docs-boundary.txt"
         DOCS_BOUNDARY_RC=$?
         if [ "$DOCS_BOUNDARY_RC" -ne 0 ]; then
           REJECTED=$(cat "$RUN/docs-boundary.txt" 2>/dev/null)
+          cd "$WS" || die30 "task workspace disappeared"
+          cleanup_docs_workspace
+          trap - EXIT
           restore_verified "$VERIFIED_HEAD" "$VERIFIED_RESULT_PRESENT" "$VERIFIED_RESULT"
           if [ "$DOCS_BOUNDARY_RC" -eq 1 ]; then
             node "$PIPE/status.js" set docsPhaseError \
@@ -320,13 +394,50 @@ while :; do
           exit 0
         fi
 
+        # Collapse any commits made by the model, stage only the allowed documentation
+        # surface, and author one deterministic tree delta in the isolated repository.
+        if ! git reset --soft "$VERIFIED_HEAD" \
+          || ! git add -A -- . \
+          || ! { if ! git diff --cached --quiet; then git commit -qm "Task $ISSUE_ID: isolated docs delta"; fi; }; then
+          cd "$WS" || die30 "task workspace disappeared"
+          cleanup_docs_workspace
+          trap - EXIT
+          restore_verified "$VERIFIED_HEAD" "$VERIFIED_RESULT_PRESENT" "$VERIFIED_RESULT"
+          node "$PIPE/status.js" set docsPhaseError \
+            "docs delta could not be staged safely and was discarded; verified implementation success stands"
+          exit 0
+        fi
+        DOCS_HEAD=$(git rev-parse HEAD) || die30 "could not identify isolated docs delta"
+        git diff --binary --full-index "$VERIFIED_HEAD" "$DOCS_HEAD" -- > "$RUN/docs-delta.patch" \
+          || die30 "could not serialize isolated docs delta"
+        cd "$WS" || die30 "task workspace disappeared"
+        cleanup_docs_workspace
+        trap - EXIT
+
+        # Apply exactly the isolated commit's tree delta. Ignored files, untracked runtime
+        # files and the model's commits cannot cross this patch boundary.
+        if { [ ! -s "$RUN/docs-delta.patch" ] || git apply --index --whitespace=nowarn "$RUN/docs-delta.patch"; } \
+          && git diff --quiet "$DOCS_HEAD" -- \
+          && git diff --cached --quiet "$DOCS_HEAD" --; then
+          :
+        else
+          restore_verified "$VERIFIED_HEAD" "$VERIFIED_RESULT_PRESENT" "$VERIFIED_RESULT"
+          node "$PIPE/status.js" set docsPhaseError \
+            "docs delta could not be transferred safely and was discarded; verified implementation success stands"
+          exit 0
+        fi
+
         # The authoritative gate must judge the tree that can become the branch tip. Even
         # allowed Markdown can affect a project's generated artifacts or acceptance rules.
+        snapshot_workspace_paths "$RUN/pre-final-paths.z" \
+          || die30 "could not snapshot task workspace before final verification"
         node "$PIPE/status.js" set phase verify 2>/dev/null
         run_verifier
         DOCS_VERIFY_RC=$?
         if [ "$DOCS_VERIFY_RC" -ne 0 ]; then
           restore_verified "$VERIFIED_HEAD" "$VERIFIED_RESULT_PRESENT" "$VERIFIED_RESULT"
+          remove_new_workspace_paths "$RUN/pre-final-paths.z" \
+            || die30 "could not remove final-verifier runtime artifacts"
           node "$PIPE/status.js" set docsPhaseError \
             "docs delta failed final verification (rc=$DOCS_VERIFY_RC) and was discarded; verified implementation success stands"
           exit 0
@@ -334,12 +445,12 @@ while :; do
 
         node "$PIPE/status.js" set phase docs 2>/dev/null
         node "$PIPE/status.js" summary "$RUN/docs-out.txt" || true
-        # An agent-created commit is not trusted as a phase boundary. Collapse any such
-        # commit back onto VERIFIED_HEAD and let deterministic scaffolding author one delta.
-        if ! git reset --soft "$VERIFIED_HEAD" || ! git add -A; then
+        # The verifier must leave the exact transferred tree and index intact. Its own
+        # tracked side effects are not documentation and never enter the publication commit.
+        if ! git diff --quiet "$DOCS_HEAD" -- || ! git diff --cached --quiet "$DOCS_HEAD" --; then
           restore_verified "$VERIFIED_HEAD" "$VERIFIED_RESULT_PRESENT" "$VERIFIED_RESULT"
           node "$PIPE/status.js" set docsPhaseError \
-            "docs delta could not be staged safely and was discarded; verified implementation success stands"
+            "final verifier changed the transferred docs tree; docs delta was discarded and verified implementation success stands"
           exit 0
         fi
         if ! git diff --cached --quiet; then
@@ -351,6 +462,8 @@ while :; do
           fi
         fi
       else
+        cleanup_docs_workspace
+        trap - EXIT
         node "$PIPE/status.js" set docsPhaseError "docs agent failed (see docs-out.txt / docs-err.txt); success stands"
       fi
       exit 0 ;;
