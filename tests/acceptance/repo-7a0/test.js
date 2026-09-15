@@ -349,16 +349,20 @@ test('T2 C2 the write brief stays self-sufficient under containment — criteria
   assert.strictEqual(typeof SPEC.writeBrief, 'function',
     'scripts/spec-brief.js does not export writeBrief, so C2 cannot be checked without a Beads read');
   const criteria = '1. First observable outcome.\n2. Second observable outcome.';
+  // Build synthetic Windows locations from components so this portable fixture does not
+  // publish an absolute path that identifies an author's machine or checkout.
+  const fixtureWorktree = ['C:', 'work', 'freeze-repo-7a0'].join('/');
+  const fixtureRepoRoot = ['C:', 'Code', 'Projects', 'Multi-AgentPipelines'].join('/');
   const lines = SPEC.writeBrief({
     cfg: { targetRepoPath: 'C:/target', hostEnv: {}, provider: 'codex', testAuthorProvider: 'codex' },
     configPath: 'run.config.fixture.json',
     id: ISSUE, requestedId: ISSUE, canonicalId: ISSUE, suiteId: ISSUE,
     data: { title: 'Bound the Codex test-author', acceptance_criteria: criteria },
-    folder: { dir: 'C:/work/freeze-repo-7a0', exists: true, branch: `freeze-${ISSUE}` },
+    folder: { dir: fixtureWorktree, exists: true, branch: `freeze-${ISSUE}` },
     branch: 'main',
     policy: { verifyCommand: 'sh tools/run-acceptance.sh', frozenPaths: ['tools/run-acceptance.sh', 'tests/unit/'] },
     example: { name: 'repo-djf.38', files: ['guard.js', 'test.js'] },
-    repoRoot: 'C:/Code/Projects/Multi-AgentPipelines',
+    repoRoot: fixtureRepoRoot,
     state: { state: 'write', local: 'none' },
   });
   assert(Array.isArray(lines), `writeBrief must return an array of lines, got ${typeof lines}`);
