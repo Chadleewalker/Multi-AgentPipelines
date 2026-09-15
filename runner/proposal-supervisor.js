@@ -9,6 +9,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const LOCK = require('./lock');
 
 const TESTING_SENTINEL = Symbol('proposal-supervisor-test-capability');
 const STAGES = ['queued', 'specifying', 'criticizing', 'authoring-tests', 'proving',
@@ -34,10 +35,10 @@ function inside(parent, child) {
   const rel = path.relative(path.resolve(parent), path.resolve(child));
   return rel === '' || (rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
 }
-function supervisorStateDirFor(project, env = process.env) {
+function supervisorStateDirFor(project, env = process.env, canonicalTarget = LOCK.canonicalTarget) {
   const root = path.resolve(env.PIPELINE_STATE_DIR
     || path.join(os.homedir(), '.multi-agent-pipelines'));
-  return path.join(root, 'proposal-supervisor', digest(path.resolve(project)));
+  return path.join(root, 'proposal-supervisor', digest(canonicalTarget(project)));
 }
 function atomicAppend(file, event) {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
@@ -246,12 +247,16 @@ function productionAdapters(repoRoot, options = {}) {
 
 function createProductionSupervisor(options = {}) {
   if (!options.project) throw new Error('proposal supervisor: project is required');
-  if (options.adapters && options.testingSentinel !== TESTING_SENTINEL) {
-    throw new Error('proposal supervisor: adapter substitution requires the host testing capability');
+  if ((options.adapters || options.canonicalTarget !== undefined)
+      && options.testingSentinel !== TESTING_SENTINEL) {
+    throw new Error('proposal supervisor: test substitution requires the host testing capability');
   }
   const repoRoot = path.resolve(options.repoRoot || path.join(__dirname, '..'));
-  const project = path.resolve(options.project);
-  const stateDir = path.resolve(options.stateDir || supervisorStateDirFor(project));
+  const canonicalTarget = typeof options.canonicalTarget === 'function'
+    ? options.canonicalTarget : LOCK.canonicalTarget;
+  const project = canonicalTarget(options.project);
+  const stateDir = path.resolve(options.stateDir
+    || supervisorStateDirFor(project, process.env, canonicalTarget));
   if (inside(project, stateDir)) throw new Error('proposal supervisor: state must be outside the model-editable project');
   validateSnapshot(path.join(stateDir, 'proposal-supervisor.json'));
   const journal = path.join(stateDir, 'events.jsonl');
@@ -304,8 +309,10 @@ function createProductionSupervisor(options = {}) {
   async function submit(record) {
     if (state().closed) return { accepted: false, reason: 'intake is closed' };
     const verified = await adapters.kickoff.verify(record);
+    let verifiedTarget = null;
+    try { verifiedTarget = canonicalTarget(String(verified && verified.target || '')); } catch {}
     if (!verified || verified.id !== record.id || verified.hash !== record.hash
-        || path.resolve(String(verified.target || '')) !== project) {
+        || verifiedTarget !== project) {
       throw new Error('proposal supervisor: kickoff verification failed');
     }
     const current = state();
