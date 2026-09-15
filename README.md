@@ -73,6 +73,13 @@ Outside a usage-limit pause, the same read-only status reports live workers as `
 `proving`; it reports `interrupted-unknown` only after persisted process identity proves that an
 unsettled worker is no longer live.
 
+An acceptance suite is never offered the human freeze step just because its directory holds
+files. The durable preparation record decides, so a suite left half-written by an interrupted
+author is reported as interrupted rather than freeze-ready, and recovery is one printed command
+— rerun `node scripts/author-tests.js <issue-id> --config <path>`, or
+`node scripts/prepare-batch.js retry <batch> <id>... --resume-partial` in a batch — that resumes
+authoring in the existing worktree without deleting the partial work.
+
 ```bash
 # 1. put your model credential where the runner can find it
 #    (git-ignored; get a Claude one with `claude setup-token`)

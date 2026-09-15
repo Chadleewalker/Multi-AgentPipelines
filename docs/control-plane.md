@@ -309,6 +309,20 @@ top-level `started.process` supplies `started.pid`; platform selection is an exp
 coordinator input, so portable verification can prove the Windows identity path without changing
 global process state, while Windows-host integration exercises the real platform default.
 
+The same durable records, not the presence of suite files, decide whether an acceptance suite may
+be offered the human freeze step. `runner/author-evidence.js` reads the newest recorded attempt
+for an issue into `absent`, `authoring`, `interrupted-partial`, `authored-unproven`, `proven` or
+`frozen`; an `author-proof` attempt that is unresolved with a dead worker, or whose outcome says
+its authoring half never completed, is `interrupted-partial` regardless of how complete the
+directory looks, and only `authored-unproven`, `proven` and `frozen` may print a freeze command.
+Recovery is explicit and additive: `node scripts/author-tests.js <issue-id> --config <path>` rerun
+as printed resumes the solo path in its existing worktree, and
+`node scripts/prepare-batch.js retry <batch> <id>... --resume-partial` resumes an acknowledged
+`author-proof` interruption in the batch path. `--resume-partial` is accepted only by `retry`,
+applies only where the durable evidence still says authoring never completed, launches one new
+worker generation in the existing worktree, and deletes nothing; a bare `retry` refuses as before,
+and human approval remains the sole freeze boundary.
+
 Preparation also resolves each not-yet-frozen issue's structured `design-ref` from the exact
 integration HEAD recorded in its immutable manifest. It never consults an operator-local file
 or a newer working-tree copy. Approved text that is not committed is published through the
