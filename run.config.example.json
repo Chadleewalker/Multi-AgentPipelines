@@ -30,5 +30,6 @@
   "model": "opus",
   "testAuthorModel": "opus",
   "testProbeModel": "opus",
+  "specificationModel": "gpt-5.6-terra",
   "testProbeAttempts": 3
 }

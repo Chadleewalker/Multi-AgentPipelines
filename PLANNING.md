@@ -113,7 +113,11 @@ node scripts/specify-proposal.js run --config run.config.<project>.json --propos
 ```
 
 The specifier uses the configured Codex model with saved ChatGPT authentication and a
-read-only checkout pinned to integration. It creates no issue while a product choice is
+read-only checkout pinned to integration. That model is its own run-config field,
+`specificationModel`, and it never falls back to the implementation `model`: this controller is
+Codex-only, so a Claude implementation alias would reach `codex exec --model` and fail. Leave the
+field out and the specifier uses its Codex constant default, whatever the rest of the config
+selects. It creates no issue while a product choice is
 missing; a linked answer starts a fresh attempt, and a completed proposal creates or
 recovers exactly one Beads issue. Treat that issue as the starting draft for the review,
 critics and approval steps below—its generated criteria and difficulty are proposals, not
@@ -127,7 +131,11 @@ node scripts/proposal-supervisor.js run --config run.config.<project>.json
 ```
 
 It discovers new kickoff records while it runs and rotates a drained implementation feed before
-assigning later prepared work. Stop it cleanly with:
+assigning later prepared work. Because it drives the specification lane itself, `start`, `run`,
+`resume` and `tick` first prove a saved ChatGPT login with one bounded `codex login status` — even
+on an otherwise all-Claude config — and refuse before ownership, durable intake, locks, worktrees
+or Docker if it is missing. `status` and `stop` never launch a planner, so neither is gated.
+Stop it cleanly with:
 
 ```bash
 node scripts/proposal-supervisor.js stop --config run.config.<project>.json
@@ -279,7 +287,9 @@ brief quotes the issue's own criteria rather than the planning draft that produc
 the optional `testAuthorModel` in the run config when the test author should differ from the
 implementation `model`; otherwise the launcher uses `model`. `testProbeModel` may pin the
 separate green-probe agent and falls back through `testAuthorModel` to `model`; all aliases are
-explicit argv values, never a global CLI selection. `testProbeAttempts` bounds the host-feedback
+explicit argv values, never a global CLI selection. The proposal specifier's `specificationModel`
+is outside that chain entirely — it resolves from its own field or a Codex constant and from
+nothing else. `testProbeAttempts` bounds the host-feedback
 loop at three by default. `scripts/spec-brief.js` remains the read-only command for inspecting or
 saving the brief without opening a session.
 

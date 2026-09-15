@@ -43,6 +43,7 @@ const { partitionByFreeze, resolveBranch, gitSpawnOptions, REFUSAL } = require('
 const { failureText } = require('../runner/process');
 const { suiteHash: hashSuite, treeEntries } = require('../runner/suite-hash');
 const { generatedGodotUid } = require('./protected-tree');
+const { BRIEF_NOTICE } = require('../runner/author-containment');
 
 const EXIT_OK = 0;
 const EXIT_USAGE = 2;
@@ -653,6 +654,12 @@ function writeBrief(ctx) {
   lines.push(...setupLines(cfg));
   lines.push(...criteriaLines(data));
 
+  // The criteria above are the whole of this task's context, and the author stage enforces
+  // that mechanically. runner/author-containment.js owns the wording so the notice and the
+  // shim that makes it true cannot drift apart.
+  lines.push(...BRIEF_NOTICE);
+  lines.push('');
+
   lines.push(`WRITE THEM TO tests/acceptance/${suiteId}/ in your worktree. They must run under the`);
   lines.push('project\'s own verifier, which the host invokes as:');
   lines.push('');
@@ -856,6 +863,7 @@ if (require.main === module) process.exit(main(process.argv.slice(2)));
 module.exports = {
   main,
   buildBrief,
+  writeBrief,
   parseArgs,
   classify,
   exampleSuite,

@@ -11,6 +11,7 @@ const fs = require('fs');
 const path = require('path');
 const { loadConfig } = require('../runner/config');
 const AGENT = require('../runner/agent-provider');
+const CONTAINMENT = require('../runner/author-containment');
 const { runSync, failureText } = require('../runner/process');
 const { acquire, release } = require('../runner/lock');
 const { buildBrief, verifyCommandError } = require('./spec-brief');
@@ -83,6 +84,14 @@ function launchAuthor(built, model, run = runSync) {
   const verifier = `${built.policy.verifyCommand} ${suite}`;
   const allowed = `Read,Edit,Write,Glob,Grep,Bash(${verifier})`;
   const provider = AGENT.providerFor(built.cfg, 'test-author');
+  // hostEnv is the author stage's own environment (a licence path, a binary that is
+  // not on PATH) and carries the selected provider's key on a Codex host.
+  let env = { ...process.env, ...(built.cfg.hostEnv || {}) };
+  // A Codex session reaches its own shell, so the coordinator's single Beads read buys nothing
+  // unless `bd` is closed mechanically. The argv is pinned byte for byte by
+  // tests/acceptance/repo-45g, so containment travels in the environment or not at all. Claude
+  // closes the same door through `--disallowedTools Bash(bd *)` and is left unchanged.
+  if (provider === 'codex') env = CONTAINMENT.containEnv(env, built.suiteId || built.id);
   return AGENT.launch({
     provider,
     model,
@@ -99,9 +108,7 @@ function launchAuthor(built, model, run = runSync) {
     runOptions: {
       cfg: built.cfg, cwd: built.folder.dir, input: `${built.text}\n`, timeoutMs,
       label: `${provider} test-author session`, maxBuffer: MAX_BUFFER,
-      // hostEnv is the author stage's own environment (a licence path, a binary that is
-      // not on PATH) and carries the selected provider's key on a Codex host.
-      env: { ...process.env, ...(built.cfg.hostEnv || {}) },
+      env,
     },
   }, run);
 }
@@ -205,6 +212,19 @@ function authorIssue(built, configPath, io = {}, seams = {}) {
     err('Do not freeze this suite. Inspect the dedicated worktree and remove or recover the out-of-scope changes.');
     return { ok: false, outcome: 'boundary-violation', kind: 'boundary-after',
       error: after.error, exitCode: EXIT_AGENT };
+  }
+
+  // A zero exit is the process ending, not the agent finishing. The session is accepted only
+  // when the provider's own output carries a terminal completed result; the two author attempts
+  // that consumed the whole memory corpus and wrote no suite both exited zero.
+  const authorProvider = AGENT.providerFor(built.cfg, 'test-author');
+  if (!AGENT.terminalResult(authorProvider, `${r.stdout || ''}\n${r.stderr || ''}`)) {
+    const error = `the ${authorProvider} test-author exited 0 without a terminal completed result;`
+      + ' the session ended mid-turn and its output is not evidence that a suite was written';
+    err(`Outcome: test-author session incomplete — ${error}`);
+    err(failureStep());
+    return { ok: false, outcome: 'agent-incomplete', kind: 'incomplete', error,
+      provider: authorProvider, agentStatus: r.status, exitCode: EXIT_AGENT };
   }
 
   out('Test-author agent exited successfully. Starting the isolated two-direction green proof.');

@@ -336,6 +336,13 @@ Copy this section in (adjust nothing but the project name):
       understands while you are there; `reasoningEffort` (`minimal | low | medium | high`,
       and its two stage twins) applies to Codex launches.
       See `docs/control-plane.md` and `DESIGN.md` §6.5.
+- [ ] Set `specificationModel` only to a **Codex** alias, and only if the proposal conveyor
+      should plan with something other than its default. It is the model
+      `scripts/specify-proposal.js` hands to Codex, it is independent of `model`,
+      `testAuthorModel` and `testProbeModel`, and it never falls back to any of them — so a
+      Claude implementation config still specifies through Codex on a saved ChatGPT login.
+      A host that runs the conveyor therefore needs `codex login` even when every other lane
+      is Claude.
 - [ ] **Ask the user for one integer implementation concurrency**, and record the answer as
       `concurrency` in that same host-local run config. Ask it once, as a single question —
       *how many implementation tasks may run at the same time under one coordinated run?* —
@@ -439,7 +446,11 @@ node scripts/proposal-supervisor.js run --config run.config.<project>.json
 The command discovers durable kickoff records and stays alive while specification, preparation,
 implementation, or review evidence is pending. It launches the existing preparation command and
 one project live feed, retires a drained feed before creating a uniquely identified successor,
-and passes child authority itself; do not set `PIPELINE_CHILD_AUTHORITY` by hand. Use
+and passes child authority itself; do not set `PIPELINE_CHILD_AUTHORITY` by hand. Its
+specification lane is Codex-only, so `start`, `run`, `resume` and `tick` first prove a saved
+ChatGPT login with one bounded `codex login status` — no API key substitutes for it, and the
+check happens before the lease, durable intake, locks, worktrees or Docker, so a missing login
+costs nothing but the retry. `status` and `stop` launch no planner and stay ungated. Use
 `node scripts/proposal-supervisor.js stop --config run.config.<project>.json` for a clean drain:
 intake closes immediately, owned children settle, and only then is the parent lease released.
 After a crash, restart observes the journal but does not guess through uncertain child identity

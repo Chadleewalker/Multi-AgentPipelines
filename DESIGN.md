@@ -259,6 +259,28 @@ promote the exact suite and receipt. Freeze refuses unrelated staged paths, buil
 a private immutable index, and pushes that exact object under a remote lease before the runner's
 own readback, only then removing the owned clones.
 
+**The author's setup context is bounded, and its exit is not its outcome** (change-log row
+`repo-7a0`). The coordinator reads Beads once and embeds the issue in an immutable brief, but a
+Codex author session reaches its own shell, and one `bd prime` there reloads the target
+project's entire memory corpus into a context that was deliberately bounded — two attempts on
+one issue consumed 231 memories each and exited having written no suite. So containment is
+mechanical: `runner/author-containment.js` writes a `bd` interception shim under both the POSIX
+and the cmd.exe name, puts its directory first on the launch PATH, and drops `PIPELINE_BD_CMD`
+and the stub seams that are a second door onto the same corpus. Every invocation is refused
+within a hard character bound, naming the snapshotted issue and nothing else, and the write
+brief carries the module's own wording so the explanation and the shim cannot drift apart. The
+shim directory sits outside the author worktree, so the boundary audit above still sees only
+the one suite. It travels in the environment because the Codex author argv is pinned byte for
+byte by an already-frozen suite; Claude closes the same door through its `--disallowedTools`
+`Bash(bd *)` grant and is unchanged. The second half is the exit code: a provider that exits
+zero has ended its process, not necessarily its turn. A Codex session launches with `--json`,
+so its structured stream is guaranteed, and the session counts as complete only when an
+`item.completed` `agent_message` is *followed* by a `turn.completed` record — an unfinished
+stream, a failed turn, or a `turn.completed` belonging to an earlier turn are all incomplete,
+and an incomplete session never reaches the green probe. Claude's author argv asks for no
+structured envelope, so its prose stays honoured; an explicit `{"type":"result", …}` envelope
+it does emit is held to the same standard.
+
 **The stale guard, and the receipt** (change-log rows `stale-guard-design`, `receipt-design`).
 Two more things the gate says, both added after twelve stuck tasks in one fortnight were
 traced to frozen suites no implementation could pass. First: a test file that declares
@@ -2950,6 +2972,32 @@ resolution is Claude at every stage and the launches are byte-for-byte what they
 For Codex implementation workers, `codexAuth` is independently closed to
 `chatgpt | api-key`. The checked-in template declares dormant `chatgpt` without changing
 its canonical Claude/opus launch defaults; absence retains the legacy API-key contract.
+
+**The specification planner is its own lane, explicitly selected.** `scripts/specify-proposal.js`
+is a Codex-only controller authenticated by a saved ChatGPT session, so it can never take its
+model from the chain above: on a proposal-supervisor run configured for Claude implementation,
+`cfg.model` resolves to a Claude alias and the launch becomes `codex exec --model opus`.
+`run.config.<project>.json` therefore carries a fifth model field, `specificationModel`,
+validated by the same bounded alias rule as `model` / `testAuthorModel` / `testProbeModel` and
+refused by its own name. Its default is the constant `DEFAULT_SPECIFICATION_MODEL` — a Codex
+alias, resolved in `runner/config.js` after the defaults spread and **never derived from any
+other lane**, explicit or defaulted, so a config written before this field cannot silently
+fall back to the implementation model. `runner/proposal-supervisor.js` reports the resolved
+value on `adapters.specification.model` and on both the top-level and per-proposal `status`
+surfaces (and in `formatHumanStatus`), so an operator reads the model specification would
+actually launch rather than the one implementation will.
+
+**That lane's prerequisite is admitted before ownership, not discovered mid-run.**
+`scripts/proposal-supervisor.js` runs one bounded `codex login status` probe for the commands
+that can launch specification — `start`, `run`, `resume`, `tick` — after the config resolves
+and before the supervisor opens ownership, touches durable intake state, takes a lock, creates
+a worktree, reaches Docker or launches a model. `CODEX_API_KEY` and `OPENAI_API_KEY` are
+stripped from that probe: neither is a fallback for a saved login, so a host that happens to
+carry one cannot make an unauthenticated lane look ready, and a Claude credential is not a
+fallback either. It is deliberately *not* in `runner/prerequisites.js`'s roster: that gate
+serves preparation, and a preparation-only all-Claude workflow must not acquire a Codex
+dependency merely because the same config could also drive the conveyor (change-log row
+`repo-djf-41-specification-lane`).
 
 **One adapter constructs every host launch.** `runner/agent-provider.js` owns the provider
 vocabulary, the credential names, the required `codex exec` capability roster and the launch
