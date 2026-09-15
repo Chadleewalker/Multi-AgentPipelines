@@ -58,7 +58,7 @@ function readJournal(file) {
   return events;
 }
 function assertTransition(from, to) {
-  if (!STAGES.includes(to) || (from !== null && !(NEXT[from] || new Set()).has(to))) {
+  if (!STAGES.includes(to) || (from === null ? to !== 'queued' : !(NEXT[from] || new Set()).has(to))) {
     throw new Error(`proposal supervisor: invalid transition ${from || '(none)'} -> ${to}`);
   }
 }
@@ -110,7 +110,10 @@ function fold(events) {
       p.stage = event.stage; p.history.push(event);
     } else if (event.type === 'answer.accepted') {
       p.answer = event.answer; p.history.push(event); p.specification = null;
-    } else if (event.type === 'specification.completed') p.specification = event.result;
+      p.specificationCompleted = false;
+    } else if (event.type === 'specification.completed') {
+      p.specification = event.result; p.specificationCompleted = true;
+    }
     else if (event.type === 'preparation.granted') p.preparationGrant = event.grant;
     else if (event.type === 'preparation.started') p.preparationOperation = event.operation;
     else if (event.type === 'preparation.observed') p.preparationObserved = event.evidence;
@@ -348,10 +351,13 @@ function createProductionSupervisor(options = {}) {
       .map(([id]) => ({ kind: 'review', id, key: `review:${id}` }));
     if (found.length) return choose(found, 'review');
     found = rows.filter(([, p]) => !current.closed
-      && (p.stage === 'queued' || (p.stage === 'needs-input' && p.answer)))
+      && (p.stage === 'queued' || p.stage === 'specifying'
+        || (p.stage === 'needs-input' && p.answer)))
       .map(([id]) => ({ kind: 'specify', id, key: 'specification-launch' }));
     if (found.length) return choose(found, 'specification');
-    found = rows.filter(([, p]) => !current.closed && p.stage === 'criticizing'
+    found = rows.filter(([, p]) => adapters.authority
+      && typeof adapters.authority.grant === 'function'
+      && !current.closed && p.stage === 'criticizing'
       && !p.preparationGrant).map(([id]) => ({ kind: 'grant-preparation', id, key: `prep-grant:${id}` }));
     if (found.length) return choose(found, 'preparation');
     found = rows.filter(([, p]) => !current.closed && p.stage === 'criticizing'
@@ -375,9 +381,12 @@ function createProductionSupervisor(options = {}) {
     const current = state();
     const p = action.id ? current.proposals.get(action.id) : null;
     if (action.kind === 'specify') {
-      stage(action.id, 'specifying');
-      const result = await adapters.specification.execute(p.record);
-      append('specification.completed', { proposalId: action.id, result });
+      if (p.stage !== 'specifying') stage(action.id, 'specifying');
+      let result = p.specification;
+      if (!p.specificationCompleted) {
+        result = await adapters.specification.execute(p.record);
+        append('specification.completed', { proposalId: action.id, result });
+      }
       if (result && result.status === 'ready') { stage(action.id, 'criticizing'); crashAfter('beads-issue'); }
       else if (result && result.status === 'needs-input') stage(action.id, 'needs-input');
       else stage(action.id, 'failed');
