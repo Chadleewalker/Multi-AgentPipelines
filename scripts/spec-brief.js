@@ -44,6 +44,7 @@ const { failureText } = require('../runner/process');
 const { suiteHash: hashSuite, treeEntries } = require('../runner/suite-hash');
 const { generatedGodotUid } = require('./protected-tree');
 const { BRIEF_NOTICE } = require('../runner/author-containment');
+const authorEvidence = require('../runner/author-evidence');
 
 const EXIT_OK = 0;
 const EXIT_USAGE = 2;
@@ -225,7 +226,20 @@ function classifyBranch(cfg, id) {
   return { ok: true, state: 'local' };
 }
 
-function classifyLocal(cfg, canonicalId, requestedId, folder) {
+// Durable author-generation evidence for a suite directory that is about to be called `freeze`.
+// `seams.evidence(suiteId)` overrides the default lookup; both may answer `null`, which means
+// nothing on record contradicts the files on disk and the historical answer stands.
+function suiteEvidence(cfg, suiteId, folder, seams = {}) {
+  try {
+    if (typeof seams.evidence === 'function') return seams.evidence(suiteId);
+    return authorEvidence.forSuite(cfg, suiteId, { folderDir: folder && folder.dir });
+  } catch { return null; }
+}
+
+// A suite directory is not evidence that its suite was finished. When the durable record says the
+// author-proof attempt that wrote it never completed, the honest local state is `write` — resume
+// authoring — not `freeze`, whose whole meaning is "there is nothing left to write".
+function classifyLocal(cfg, canonicalId, requestedId, folder, seams = {}) {
   const candidates = suiteCandidates(canonicalId, requestedId);
   // Nothing on the branch. The working tree decides between "write them" and "freeze what is
   // already written" — a distinction no branch-side check can make, and the state a planning
@@ -247,6 +261,10 @@ function classifyLocal(cfg, canonicalId, requestedId, folder) {
   if (!present.length) return { ok: true, state: 'write', local: null, suiteId: canonicalId };
   const selected = present[0];
   if (!selected.files.length) return { ok: true, state: 'write', local: 'empty', suiteId: selected.id };
+  const evidence = suiteEvidence(cfg, selected.id, folder, seams);
+  if (evidence && evidence.state === authorEvidence.STATES.INTERRUPTED_PARTIAL) {
+    return { ok: true, state: 'write', local: 'interrupted-partial', suiteId: selected.id };
+  }
   return { ok: true, state: 'freeze', local: selected.files, suiteId: selected.id };
 }
 
@@ -651,6 +669,13 @@ function writeBrief(ctx) {
     lines.push('test files" for all three attempts. Fill it.');
     lines.push('');
   }
+  if (state.local === 'interrupted-partial') {
+    lines.push(`NOTE: tests/acceptance/${suiteId}/ already holds files, but the durable preparation`);
+    lines.push('record says the session that wrote them was interrupted before it finished. Treat');
+    lines.push('them as a partial draft, not as a finished suite: read what is there, keep what is');
+    lines.push('right, and complete the suite. Nothing has been deleted for you.');
+    lines.push('');
+  }
   lines.push(...setupLines(cfg));
   lines.push(...criteriaLines(data));
 
@@ -866,6 +891,7 @@ module.exports = {
   writeBrief,
   parseArgs,
   classify,
+  classifyLocal,
   exampleSuite,
   worktrees,
   envLines,

@@ -12,6 +12,7 @@ const path = require('path');
 const { loadConfig } = require('../runner/config');
 const AGENT = require('../runner/agent-provider');
 const CONTAINMENT = require('../runner/author-containment');
+const AUTHOR_EVIDENCE = require('../runner/author-evidence');
 const { runSync, failureText } = require('../runner/process');
 const { acquire, release } = require('../runner/lock');
 const { buildBrief, verifyCommandError } = require('./spec-brief');
@@ -120,6 +121,21 @@ function quote(value) {
 function nextStep(id, configPath, probe) {
   const green = probe ? ` --probe ${quote(probe)}` : '';
   return `Human approval is mandatory. Review the suite and proof report; only then run: node scripts/freeze.js commit ${id} --config ${quote(configPath)}${green}`;
+}
+
+// The freeze command is an invitation to a human to approve something. Offering it for a suite
+// whose durable record says its author session never finished is the defect repo-djf.42 exists
+// to close: the files look complete, and only the preparation record knows they are not.
+function resumeStep(id, configPath, evidence) {
+  const state = (evidence && evidence.state) || 'unknown';
+  const reason = evidence && evidence.reason ? ` (${evidence.reason})` : '';
+  return [
+    `Author-generation evidence: ${state}${reason}.`,
+    'No freeze command is offered: suite files alone are not evidence that authoring finished,',
+    'and nothing has been deleted, moved or archived — the partial bytes are left exactly as they',
+    'are for the next session to continue from.',
+    `Next human step: re-run this exact command to resume in the same worktree: node scripts/author-tests.js ${id} --config ${quote(configPath)}`,
+  ].join('\n');
 }
 
 function failureStep() {
@@ -306,7 +322,11 @@ function main(argv, io = {}, seams = {}) {
     if (built.state !== 'write') {
       out(`Worktree: ${built.folder.dir}`);
       out(`Outcome: no launch — state is ${built.state}; writing tests is unnecessary.`);
-      out(nextStep(built.suiteId || opts.id, configPath));
+      const evidence = (seams.authorEvidence || AUTHOR_EVIDENCE.forBrief)(built);
+      const evidenceState = (evidence && evidence.state) || AUTHOR_EVIDENCE.STATES.AUTHORED_UNPROVEN;
+      out(AUTHOR_EVIDENCE.mayPrintFreezeCommand(evidenceState)
+        ? nextStep(built.suiteId || opts.id, configPath)
+        : resumeStep(opts.id, configPath, evidence));
       return EXIT_OK;
     }
     const made = ensureWorktree(built, seams.runSync || runSync);
@@ -338,7 +358,7 @@ function main(argv, io = {}, seams = {}) {
 if (require.main === module) process.exit(main(process.argv.slice(2)));
 
 module.exports = {
-  main, parseArgs, ensureWorktree, launchAuthor, nextStep, failureStep, auditAuthorTree, statusPaths,
+  main, parseArgs, ensureWorktree, launchAuthor, nextStep, resumeStep, failureStep, auditAuthorTree, statusPaths,
   authorIssue,
   AUTHOR_TOOLS, DENIED_TOOLS, EXIT_USAGE, EXIT_SETUP, EXIT_AGENT, EXIT_PROBE,
 };

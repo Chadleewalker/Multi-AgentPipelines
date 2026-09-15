@@ -281,6 +281,42 @@ and an incomplete session never reaches the green probe. Claude's author argv as
 structured envelope, so its prose stays honoured; an explicit `{"type":"result", …}` envelope
 it does emit is held to the same standard.
 
+**A suite directory is not evidence that its suite was finished** (change-log row
+`repo-djf-42-author-evidence`). The exit-code half above closes one door and opens the view onto
+the next: an author killed between its first file and its terminal result leaves a directory that
+is byte-indistinguishable from a finished one, so every reader that asked "does the directory hold
+files?" answered `freeze`, skipped both the author and the proof, and printed the freeze command
+for a half-written suite. The authority is therefore the durable preparation record, which lives
+under the host's preparation root and never inside the model-editable worktree — the partial bytes
+and the diagnostics that explain them are in two different trees, and interruption at any point
+leaves both intact. `runner/author-evidence.js` reads that record into one of six states — `absent`,
+`authoring`, `interrupted-partial`, `authored-unproven`, `proven`, `frozen` — and `frozen` wins
+outright. An `author-proof` attempt with no result is `authoring` while its recorded worker
+identity is still live and `interrupted-partial` once it is not; one whose outcome says the
+authoring half never completed (`agent-failed`, `agent-incomplete`, `boundary-violation`,
+`interrupted`, `setup-failed`, `abandoned`, `invalid`, `usage-limit`) is `interrupted-partial`
+**regardless of how many suite files exist**, which is the whole rule. A standalone `proof`
+attempt only exists once authoring has completed, so interrupting it says nothing about the suite
+bytes and leaves the suite `authored-unproven` — the state repo-djf.17's completed-unproven
+recovery already targets. `mayPrintFreezeCommand` is true for exactly the three states in which
+the files are what they appear to be, and it gates the *offer* of the freeze step, never the
+freeze: human approval remains the sole boundary and is unchanged.
+
+Recovery is one explicit bounded path per launcher rather than a new automatic one, because
+`tests/unit/` pins the existing bare-`retry` refusal and that refusal is correct. The solo
+launcher's resume is simply re-running the same invocation — it always continues in the same
+existing worktree — so it prints that command instead of the freeze command. The batch
+coordinator's is `retry --resume-partial`, accepted only by `retry`, and it applies only to an
+acknowledged `author-proof` interruption whose durable evidence still says the authoring half
+never completed; a bare `retry`, any other acknowledged phase, and an issue disqualified for any
+other reason all behave exactly as before. It relaunches authoring in the **existing** worktree —
+one Beads read, no second worktree, one new worker generation, one model launch — and deletes,
+moves and archives nothing, so the partial bytes are what the resumed author continues from. A
+concurrent second resume meets the same target lock as any other coordinator and is refused with
+nothing launched. Re-resolving design provenance is skipped for that recovery alone: the attempt
+being recovered was already admitted through that gate at its own snapshot, and an issue edited
+since then is still refused by the criteria-fingerprint check beside it.
+
 **The stale guard, and the receipt** (change-log rows `stale-guard-design`, `receipt-design`).
 Two more things the gate says, both added after twelve stuck tasks in one fortnight were
 traced to frozen suites no implementation could pass. First: a test file that declares

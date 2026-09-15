@@ -23,6 +23,7 @@ const prepState = require('../runner/preparation-state');
 const prerequisites = require('../runner/prerequisites');
 const writeProtection = require('./write-protection-policy');
 const designRef = require('../runner/design-ref');
+const authorEvidence = require('../runner/author-evidence');
 
 const ROOT = path.resolve(__dirname, '..');
 const WORKER = path.join(__dirname, 'prepare-batch-worker.js');
@@ -44,12 +45,13 @@ const USAGE = [
   `  node scripts/prepare-batch.js start <batch> --config <path> --issue <id> [--issue <id> ...] [--author-concurrency 1..${MAX_CONCURRENCY}]`,
   '  node scripts/prepare-batch.js resume <batch>',
   '  node scripts/prepare-batch.js status <batch> [--json]',
-  '  node scripts/prepare-batch.js retry <batch> <id> [<id> ...]',
+  '  node scripts/prepare-batch.js retry <batch> <id> [<id> ...] [--resume-partial]',
   '  node scripts/prepare-batch.js acknowledge-interrupted <batch> <id> [<id> ...]',
 ].join('\n');
 
 function parseArgs(argv) {
-  const answer = { mode: argv[0] || null, batch: argv[1] || null, issues: [], concurrency: DEFAULT_CONCURRENCY };
+  const answer = { mode: argv[0] || null, batch: argv[1] || null, issues: [],
+    concurrency: DEFAULT_CONCURRENCY, resumePartial: false };
   const modes = new Set(['start', 'resume', 'status', 'retry', 'acknowledge-interrupted']);
   if (!modes.has(answer.mode)) return { error: `unknown mode ${JSON.stringify(answer.mode)}` };
   for (let i = 2; i < argv.length; i += 1) {
@@ -61,7 +63,13 @@ function parseArgs(argv) {
       else if (arg === '--issue') answer.issues.push(value);
       else answer.concurrency = Number(value);
     } else if (arg === '--json') answer.json = true;
-    else if (arg.startsWith('--')) return { error: `unknown option ${JSON.stringify(arg)}` };
+    else if (arg === '--resume-partial') {
+      // Bounded on purpose: the one explicit opt-in that lets a recorded, acknowledged
+      // author-proof interruption resume authoring instead of being refused. A bare `retry`
+      // keeps refusing exactly as it does today.
+      if (answer.mode !== 'retry') return { error: '--resume-partial is accepted only by retry' };
+      answer.resumePartial = true;
+    } else if (arg.startsWith('--')) return { error: `unknown option ${JSON.stringify(arg)}` };
     else if (answer.mode === 'retry' || answer.mode === 'acknowledge-interrupted') answer.issues.push(arg);
     else return { error: `unexpected argument ${JSON.stringify(arg)}` };
   }
@@ -127,7 +135,11 @@ function sameConfigIdentity(expected, actual) {
   } catch { return false; }
 }
 
-function classifyBuilt(id, built) {
+// `evidence` is optional and additive: every existing two-argument caller keeps today's
+// selection byte for byte. When durable author-generation evidence IS supplied and says the
+// authoring half never completed, a suite directory that merely has files no longer selects
+// proof-only — file existence alone is exactly the signal this refuses to trust.
+function classifyBuilt(id, built, evidence = null) {
   if (!built || !built.ok) {
     const collision = built && built.kind === 'collision';
     return { id, outcome: collision ? 'collision' : 'attention', error: built && built.error };
@@ -143,6 +155,9 @@ function classifyBuilt(id, built) {
   if (!built.folder) return { id, outcome: 'collision', built, error: 'issue has no unambiguous worktree' };
   if (built.state === 'write') return { id, outcome: 'author-proof', action: 'author-proof', built };
   if (built.state === 'freeze' || built.state === 're-gate') {
+    if (evidence && evidence.state === authorEvidence.STATES.INTERRUPTED_PARTIAL) {
+      return { id, outcome: 'author-proof', action: 'author-proof', built, evidence };
+    }
     return { id, outcome: 'proof', action: 'proof', built };
   }
   return { id, outcome: 'attention', built, error: `unsupported brief state ${built.state}` };
@@ -781,6 +796,38 @@ function acknowledgedPhases(state, root, batch) {
   return found;
 }
 
+// The phase a durably acknowledged interruption was stopped in, for the latest attempt of each
+// named issue. Read from the append-only event log first and from the acknowledgement's own
+// worker result second — the same pair the retry path below already trusts.
+function acknowledgedInterruptions(state, root, batch, ids) {
+  const phases = acknowledgedPhases(state, root, batch);
+  const found = new Map();
+  for (const id of ids || []) {
+    let prior;
+    try { prior = latestAttempt(state.readWorkerRecords(root, batch, id)); }
+    catch { continue; }
+    if (!prior.started || !prior.result) continue;
+    const phase = phases.get(`${id}\0${prior.started.nonce || ''}`)
+      || (prior.result.data && prior.result.data.acknowledgedInterrupted
+        ? prior.result.data.interruptedPhase : null);
+    if (phase) found.set(id, phase);
+  }
+  return found;
+}
+
+// Durable author-generation evidence for one snapshot item: what the preparation records say
+// about the attempt that produced whatever is in the issue worktree right now.
+function suiteEvidence(item, prior, seams = {}) {
+  const built = item.built || {};
+  const suiteId = built.suiteId || item.id;
+  return authorEvidence.classify({
+    frozen: built.state === 'ready',
+    suiteFiles: authorEvidence.suiteFileNames(built.folder && built.folder.dir, suiteId),
+    latest: prior,
+    isLive: seams.isLive || lock.isHolderLive,
+  });
+}
+
 function strayIssues(cfg, ids, seams = {}) {
   const queued = (seams.readyQueue || readyQueue)(cfg);
   if (!queued.ok) return { ok: false, error: queued.error || 'ready queue could not be read', ids: [] };
@@ -952,11 +999,19 @@ async function execute(opts, io = {}, seams = {}) {
     if (!integration.ok) { err(`prepare-batch: ${integration.error}`); return EXIT_ATTENTION; }
     const baseHead = integration.head;
     const resolveDesign = seams.resolveDesign || designRef.resolveIssue;
+    // Recovering a durably acknowledged interruption is not new preparation work: the attempt
+    // being recovered was already admitted through this gate at its own snapshot, its worktree
+    // and partial suite already exist, and an issue edited since then is separately refused by
+    // the criteria-fingerprint check below. Re-resolving provenance here would refuse the
+    // recovery for a reason that has nothing to do with the interruption.
+    const recovering = opts.mode === 'retry'
+      ? acknowledgedInterruptions(state, root, opts.batch, ids) : new Map();
     for (const item of snapshots) {
       // A suite that already crossed the publication boundary keeps its established result.
       // New preparation work is judged against the pinned integration commit before a
       // worktree or worker exists.
       if (!item.built || item.outcome === 'already-frozen') continue;
+      if (recovering.has(item.id)) continue;
       const resolution = resolveDesign(item.issue || item.built.issue, {
         repoPath: cfg.targetRepoPath, commit: baseHead,
       });
@@ -1040,9 +1095,26 @@ async function execute(opts, io = {}, seams = {}) {
             || (prior.result.data && prior.result.data.acknowledgedInterrupted
               ? prior.result.data.interruptedPhase : null);
           if (interruptedPhase && item.action !== interruptedPhase) {
-            const nextPhase = item.action || 'no runnable phase';
-            item.outcome = 'attention'; delete item.action;
-            item.error = `acknowledged ${interruptedPhase} attempt now classifies as ${nextPhase}; inspect or remove the partial suite before retry`;
+            // One explicit, bounded resume path. `--resume-partial` is not a blanket bypass: it
+            // applies only to an acknowledged AUTHOR-PROOF interruption whose durable evidence
+            // still says the authoring half never completed, and only where nothing else already
+            // disqualified the issue. It resumes the same worktree and the same partial bytes —
+            // nothing is deleted, moved or archived — and it launches exactly one new generation.
+            const evidence = suiteEvidence(item, prior, seams);
+            const resumable = opts.resumePartial === true
+              && interruptedPhase === 'author-proof'
+              && evidence.state === authorEvidence.STATES.INTERRUPTED_PARTIAL
+              && !['collision', 'needs-criteria', 'already-frozen'].includes(item.outcome);
+            if (resumable) {
+              item.action = 'author-proof';
+              item.outcome = 'author-proof';
+              item.evidence = evidence;
+              delete item.error;
+            } else {
+              const nextPhase = item.action || 'no runnable phase';
+              item.outcome = 'attention'; delete item.action;
+              item.error = `acknowledged ${interruptedPhase} attempt now classifies as ${nextPhase}; inspect or remove the partial suite before retry`;
+            }
           }
         }
       }
@@ -1120,7 +1192,8 @@ module.exports = {
   runPool, runPoolUntilUsageLimit, runWorker, parseWorkerResult, parseWorkerEnvelope, latestAttempt, pidAlive, statusReport,
   workerEnv, hostEnvSecrets, scrubSecrets, integrationHead, snapshotFingerprints,
   inspectIntegration, strayIssues, settleEmptyTakeover, unresolvedWorkers, acknowledgeInterrupted,
-  acknowledgedPhases, shouldCheckPrerequisites, canonicalUsageLimit, activeUsagePause, hasUsageLimitHistory,
+  acknowledgedPhases, acknowledgedInterruptions, suiteEvidence,
+  shouldCheckPrerequisites, canonicalUsageLimit, activeUsagePause, hasUsageLimitHistory,
   retainedPaths, usageLimitStatus, createUsageLimitPreparation,
   attemptPhase, sameConfigIdentity, SECRET_MARKER,
   DEFAULT_CONCURRENCY, MAX_CONCURRENCY, MAX_WORKER_OUTPUT, STAGE_PREFIX,
