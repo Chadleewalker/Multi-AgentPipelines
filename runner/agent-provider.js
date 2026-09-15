@@ -286,6 +286,51 @@ function normalizeOutput(provider, raw, configuredModel) {
     : normalizeClaude(raw, configuredModel);
 }
 
+// ---- terminal completed result (§4.3) -------------------------------------------------
+//
+// A zero exit says the CLI process ended, not that the agent finished its turn. The two come
+// apart routinely: a provider that gave up mid-turn, lost its stream, or answered nothing at
+// all still exits zero, and a stage that reads the exit alone calls that a successful session.
+//
+// Codex always launches with `--json`, so its structured JSONL is guaranteed and the rule is
+// exact: an `item.completed` record carrying an `agent_message` with string text, FOLLOWED BY
+// a `turn.completed` record later in the same stream. Order is load-bearing — a
+// `turn.completed` that precedes the final agent_message belongs to an earlier turn.
+//
+// Claude's author argv requests no structured envelope, so its plain `-p` prose is only ever
+// written after the process has already completed and carries no ordering to police: prose is
+// honoured. But an explicit `{"type":"result", ...}` envelope that Claude does emit is held to
+// the same standard as Codex's — a result object with no string `result` is malformed, and a
+// malformed terminal record is not a completed one.
+function terminalCodexResult(raw) {
+  const events = objectLines(raw);
+  let message = -1;
+  let completedTurn = -1;
+  events.forEach(({ value }, index) => {
+    const item = value.item && typeof value.item === 'object' ? value.item : null;
+    if (value.type === 'item.completed' && item && item.type === 'agent_message'
+        && typeof item.text === 'string') {
+      message = index;
+    } else if (value.type === 'turn.completed' && index > message) {
+      completedTurn = index;
+    }
+  });
+  return message >= 0 && completedTurn > message;
+}
+
+function terminalClaudeResult(raw) {
+  const envelopes = objectLines(raw).filter(({ value }) => value.type === 'result');
+  // No envelope at all is the historical Claude author session, which stays accepted.
+  if (!envelopes.length) return true;
+  return envelopes.some(({ value }) => typeof value.result === 'string');
+}
+
+function terminalResult(provider, raw) {
+  return normalizeProvider(provider) === 'codex'
+    ? terminalCodexResult(raw)
+    : terminalClaudeResult(raw);
+}
+
 function usageLimitFromLaunch(provider, launched, configuredModel) {
   const normalized = normalizeOutput(provider,
     `${launched && launched.stdout || ''}\n${launched && launched.stderr || ''}`, configuredModel);
@@ -362,5 +407,5 @@ module.exports = {
   normalizeProvider, normalizeReasoningEffort, validProvider, validReasoningEffort,
   providerFor, reasoningEffortFor, credentialNameFor, providerForCredentialName, executableFor,
   codexExecArgs, buildLaunch, launch,
-  missingCodexCapabilities, normalizeOutput, usageLimitFromLaunch, preflightProvider,
+  missingCodexCapabilities, normalizeOutput, terminalResult, usageLimitFromLaunch, preflightProvider,
 };

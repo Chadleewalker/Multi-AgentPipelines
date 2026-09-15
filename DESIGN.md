@@ -259,6 +259,28 @@ promote the exact suite and receipt. Freeze refuses unrelated staged paths, buil
 a private immutable index, and pushes that exact object under a remote lease before the runner's
 own readback, only then removing the owned clones.
 
+**The author's setup context is bounded, and its exit is not its outcome** (change-log row
+`repo-7a0`). The coordinator reads Beads once and embeds the issue in an immutable brief, but a
+Codex author session reaches its own shell, and one `bd prime` there reloads the target
+project's entire memory corpus into a context that was deliberately bounded — two attempts on
+one issue consumed 231 memories each and exited having written no suite. So containment is
+mechanical: `runner/author-containment.js` writes a `bd` interception shim under both the POSIX
+and the cmd.exe name, puts its directory first on the launch PATH, and drops `PIPELINE_BD_CMD`
+and the stub seams that are a second door onto the same corpus. Every invocation is refused
+within a hard character bound, naming the snapshotted issue and nothing else, and the write
+brief carries the module's own wording so the explanation and the shim cannot drift apart. The
+shim directory sits outside the author worktree, so the boundary audit above still sees only
+the one suite. It travels in the environment because the Codex author argv is pinned byte for
+byte by an already-frozen suite; Claude closes the same door through its `--disallowedTools`
+`Bash(bd *)` grant and is unchanged. The second half is the exit code: a provider that exits
+zero has ended its process, not necessarily its turn. A Codex session launches with `--json`,
+so its structured stream is guaranteed, and the session counts as complete only when an
+`item.completed` `agent_message` is *followed* by a `turn.completed` record — an unfinished
+stream, a failed turn, or a `turn.completed` belonging to an earlier turn are all incomplete,
+and an incomplete session never reaches the green probe. Claude's author argv asks for no
+structured envelope, so its prose stays honoured; an explicit `{"type":"result", …}` envelope
+it does emit is held to the same standard.
+
 **The stale guard, and the receipt** (change-log rows `stale-guard-design`, `receipt-design`).
 Two more things the gate says, both added after twelve stuck tasks in one fortnight were
 traced to frozen suites no implementation could pass. First: a test file that declares
