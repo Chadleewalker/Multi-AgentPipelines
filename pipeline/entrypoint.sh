@@ -204,6 +204,50 @@ remove_new_workspace_paths() { # remove_new_workspace_paths <snapshot>
 
 DOCS_ROOT=""
 DOCS_WORKTREE=""
+# Which identity actually runs the docs agent. `run_agent` drops to the image's unprivileged
+# user on the managed-auth path, and an explicit PIPELINE_AGENT_CMD may do the same, so the
+# process that ALLOCATES the disposable workspace is routinely not the process that has to
+# enter it. `mktemp -d` returns mode 0700 owned by the allocator, which on that path is root:
+# three consecutive runs lost their documentation phase to exactly that root-owned 0700
+# parent. The mode is therefore opened for traversal (not for reading or writing) and, when
+# we are privileged enough to do it, the whole disposable tree is handed to that identity.
+DOCS_IDENTITY="${PIPELINE_DOCS_USER:-node}"
+
+docs_identity_applies() {
+  [ -n "$DOCS_IDENTITY" ] || return 1
+  [ "$(id -u 2>/dev/null)" = "0" ] || return 1
+  command -v runuser >/dev/null 2>&1 || return 1
+  id -u "$DOCS_IDENTITY" >/dev/null 2>&1
+}
+
+# Scoped to the allocated root by construction: it names $DOCS_ROOT and nothing else — not the
+# temporary directory it sits in, not the task checkout, not credential storage. 0711 grants
+# traversal without granting a listing, which is all a docs identity needs from the parent.
+grant_docs_workspace() {
+  chmod 0711 "$DOCS_ROOT" || return 1
+  docs_identity_applies || return 0
+  chown -R "$DOCS_IDENTITY" "$DOCS_ROOT" || return 1
+}
+
+# Prove the docs identity can enter and use the checkout, and name the path that refused when
+# it cannot. Printed path + exit 0 means REFUSED; exit non-zero means nothing blocks (or that
+# there is no separate identity to prove anything about). A phase that silently could not
+# start is what turned a blocked docs run into an unqualified success in the first place.
+docs_entry_refusal() {
+  docs_identity_applies || return 1
+  runuser -u "$DOCS_IDENTITY" -- sh -c '
+    probe=$1
+    dir=$probe
+    while [ -n "$dir" ] && [ "$dir" != "/" ] && [ "$dir" != "." ]; do
+      [ -x "$dir" ] || { printf %s "$dir"; exit 0; }
+      dir=$(dirname "$dir")
+    done
+    cd "$probe" 2>/dev/null || { printf %s "$probe"; exit 0; }
+    { [ -r . ] && [ -w . ] && [ -r .git ]; } || { printf %s "$probe"; exit 0; }
+    exit 1
+  ' sh "$DOCS_WORKTREE" 2>/dev/null
+}
+
 cleanup_docs_workspace() {
   trap - EXIT
   [ -n "$DOCS_ROOT" ] || return 0
@@ -335,10 +379,12 @@ while :; do
   case "$VRC" in
     0)
       node "$PIPE/status.js" append pass
+      IMPLEMENTATION_COMMITTED=0
       git add -A || die30 "could not stage verified implementation"
       if ! git diff --cached --quiet; then
         git commit -qm "Task $ISSUE_ID: implementation (verified on attempt $N)" \
           || die30 "could not commit verified implementation"
+        IMPLEMENTATION_COMMITTED=1
       fi
       VERIFIED_HEAD=$(git rev-parse HEAD) || die30 "could not identify verified implementation"
       VERIFIED_RESULT_PRESENT=0
@@ -346,6 +392,15 @@ while :; do
       if [ -f "$RUN/verify.json" ]; then
         VERIFIED_RESULT=$(cat "$RUN/verify.json") || die30 "could not preserve verifier evidence"
         VERIFIED_RESULT_PRESENT=1
+      fi
+      # Seed the change summary from the agent that did the verified work, so the record of
+      # what shipped exists before another agent is given the chance to overwrite it. Seeded
+      # only when this attempt actually committed an implementation: a change summary
+      # describes what changed, and an attempt that committed nothing has nothing of its own
+      # to describe. Non-fatal, like every other status write on this path; an agent log with
+      # no message leaves the field unset rather than blank (status.js declines empty text).
+      if [ "$IMPLEMENTATION_COMMITTED" -eq 1 ]; then
+        node "$PIPE/status.js" summary "$RUN/agent-$N.log" || true
       fi
       # ---- docs phase (§4.3, T9): one agent invocation, non-fatal after success ----
       # Phase boundary (§4.11), non-fatal, and — like the code phase — written BEFORE
@@ -382,6 +437,23 @@ while :; do
         trap - EXIT
         node "$PIPE/status.js" set docsPhaseError \
           "docs workspace could not be created; verified implementation success stands"
+        exit 0
+      fi
+      # Ownership and mode are settled AFTER the checkout exists, because that is what creates
+      # the worktree directory and its .git pointer, and then the result is PROVED by entering
+      # it as the docs identity rather than inferred from an exit status.
+      if ! grant_docs_workspace; then
+        cleanup_docs_workspace
+        trap - EXIT
+        node "$PIPE/status.js" set docsPhaseError \
+          "docs workspace could not be prepared for the docs identity; verified implementation success stands"
+        exit 0
+      fi
+      if DOCS_REFUSED=$(docs_entry_refusal); then
+        cleanup_docs_workspace
+        trap - EXIT
+        node "$PIPE/status.js" set docsPhaseError \
+          "docs identity could not enter its disposable workspace ($DOCS_REFUSED refused $DOCS_IDENTITY); verified implementation success stands"
         exit 0
       fi
       if (cd "$DOCS_WORKTREE" && run_docs_agent < "$RUN/prompt-docs.md" > "$RUN/docs-out.txt" 2> "$RUN/docs-err.txt"); then
@@ -454,7 +526,6 @@ while :; do
         fi
 
         node "$PIPE/status.js" set phase docs 2>/dev/null
-        node "$PIPE/status.js" summary "$RUN/docs-out.txt" || true
         # The verifier must leave the exact transferred tree and index intact. Its own
         # tracked side effects are not documentation and never enter the publication commit.
         if ! git diff --quiet "$DOCS_HEAD" -- || ! git diff --cached --quiet "$DOCS_HEAD" --; then
@@ -470,6 +541,20 @@ while :; do
               "docs delta could not be committed and was discarded; verified implementation success stands"
             exit 0
           fi
+        fi
+        # Last, and only here: every path above discards the delta, and a discarded delta must
+        # not leave its prose behind. The docs summary supersedes the seeded implementation
+        # summary only when the docs phase actually delivered documentation. A zero-exit docs
+        # invocation that authored nothing — because it was blocked, or because it answered
+        # with prose asking for a permission fix — has no account of the change to offer, and
+        # the observed failure was exactly that: a request to restore traverse permission
+        # became the product change summary of a task reported as plainly done. Where nothing
+        # was seeded, the docs summary is the only account there is and still stands.
+        if [ "$DOCS_HEAD" != "$VERIFIED_HEAD" ] || [ "$IMPLEMENTATION_COMMITTED" -eq 0 ]; then
+          node "$PIPE/status.js" summary "$RUN/docs-out.txt" || true
+        else
+          node "$PIPE/status.js" set docsPhaseError \
+            "docs phase produced no documentation change; the verified implementation summary stands"
         fi
       else
         cleanup_docs_workspace

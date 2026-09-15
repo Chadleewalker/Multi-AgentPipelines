@@ -1056,7 +1056,23 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
    docs execution, boundary inspection, transfer, final verification or commit fails, the verified
    implementation and its preserved verifier evidence remain the recovery point and success stands
    with `docsPhaseError` as evidence (change-log rows `final-verification-boundary` and
-   `repo-djf-32-docs-isolation`). Phases of
+   `repo-djf-32-docs-isolation`).
+   The disposable workspace is *allocated* by the entrypoint and *entered* by the docs agent,
+   and those are routinely not the same identity: under managed ChatGPT authentication the
+   entrypoint is root while the agent runs unprivileged, and `mktemp -d` returns mode 0700 owned
+   by the allocator. The allocated root is therefore opened to traversal only — 0711, never a
+   listing and never a broadening of the temporary directory it sits in, the task checkout or
+   credential storage — and, where the entrypoint is privileged enough to do it, the whole
+   disposable tree is handed to that identity. The result is then **proved by entering the
+   checkout as that identity**, not inferred from a `chown` exit status: a refusal names the path
+   that denied it, records `docsPhaseError`, and leaves the verified implementation standing.
+   The change summary is **seeded from the implementation agent** once an attempt commits an
+   implementation, and the docs agent's own summary supersedes it only when the docs phase
+   delivered documentation that reached the branch tip. A zero-exit docs invocation that authored
+   nothing has no account of the change to offer, and the state it leaves is recorded rather than
+   settled silently. Where nothing was seeded — a verified attempt that committed nothing of its
+   own — the docs summary remains the only account there is (change-log row
+   `repo-djf-39-docs-workspace-traversal`). Phases of
    a task are scaffolding, not an LLM decision. No leader agent inside. **Agent output is a contract artifact, so it is
    read structurally, never scraped.** When the entrypoint owns the invocation (no
    `PIPELINE_AGENT_CMD`) both agent phases request `--output-format json`, and the
@@ -1144,7 +1160,11 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
    tampered, and failed branches are linked from the run report and the issue instead.
    The container holds no git credentials (a test asserts `git push` from inside fails).
    The PR body is assembled by the host from the issue spec, the change summary in the
-   status file, and `verify.json` — nothing parses free-form agent prose.
+   status file, and `verify.json` — nothing parses free-form agent prose. When the status file
+   carries a `docsPhaseError` the run manifest carries it too, and both the PR body and the run
+   report state it **above the change summary**: the docs phase is non-fatal, so it qualifies an
+   outcome and never changes one, and a reviewer who learns after reading the summary that the
+   summary is the implementation's own and that no documentation shipped has learned it too late.
    Immediately before every push, the credentialed host scans **every Git object introduced
    since the immutable fork point**: commits, trees and blobs, including objects that are no
    longer reachable from the branch tip's file tree. It rejects the exact subscription

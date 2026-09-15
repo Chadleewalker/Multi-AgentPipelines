@@ -596,6 +596,13 @@ async function runOneTask(cfg, issue, log, token, gate, ownership) {
       },
     } : {}),
     ...(artifacts.status && artifacts.status.stuckState ? { stuckState: artifacts.status.stuckState } : {}),
+    // §4.3: the docs phase is non-fatal after a verified implementation, so its failure
+    // qualifies this row's outcome and never changes it. Copied explicitly rather than left
+    // in the container's status file, because the manifest is what the report and the PR
+    // body are rendered from — a docs failure that reaches neither settles as an
+    // unqualified `done` and reads exactly like a task that needed no documentation.
+    ...(artifacts.status && artifacts.status.docsPhaseError
+      ? { docsPhaseError: artifacts.status.docsPhaseError } : {}),
     // §3.7: the agent's "this spec is wrong" channel. Carried onto the manifest so the
     // report and the PR body can surface it — evidence only, and deliberately NOT part of
     // `scrutinyKey`, because a concern that could reorder the report would be a gate (§3.5).
