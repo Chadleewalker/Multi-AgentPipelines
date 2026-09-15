@@ -106,6 +106,10 @@
             "items": { "type": "string" }
           },
           "stuckState": { "type": "string" },
+          "docsPhaseError": {
+            "description": "Verbatim copy of the container's status-file docsPhaseError (DESIGN.md 4.3, 4.11). The docs phase is non-fatal after a verified implementation, so this QUALIFIES an outcome rather than changing one: the task is done and its documentation phase is not. Carried so the report and the PR body can say so, because a blocked docs phase that settles as an unqualified 'done' is indistinguishable from a task whose documentation was never needed. Optional: absent whenever the docs phase completed normally.",
+            "type": "string"
+          },
           "specConcerns": {
             "description": "Verbatim copy of the container's status-file specConcerns (DESIGN.md 3.7), carried so the report and PR body can surface them. Same bounds as status.schema.json. Evidence only (3.5): present or absent, it never affects outcome or scrutiny order.",
             "type": "array",

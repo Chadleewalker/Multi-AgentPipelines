@@ -54,6 +54,23 @@ function buildPrBody({ issueMarkdown, status, verify, outcome, branch, runId }) 
       lines.push('');
     }
   }
+  // §4.3/§4.11: a docs-phase failure qualifies a verified outcome and never changes one, so
+  // this PR is still open and still publishable. It goes ABOVE the change summary for the
+  // same reason a spec concern does: the summary below is then the IMPLEMENTATION agent's,
+  // not the docs agent's, and nothing in this PR updates the project's documentation. A
+  // reviewer who learns that after the summary has already been read has learned it too late.
+  const docsError = status && typeof status.docsPhaseError === 'string'
+    ? status.docsPhaseError.trim() : '';
+  if (docsError) {
+    lines.push('## ⚠ Documentation phase warning');
+    lines.push('');
+    lines.push('The implementation is verified and publishable, but the documentation phase '
+      + 'did not complete: this branch carries no documentation change, and the change '
+      + 'summary below is the implementation\'s own. The container reported:');
+    lines.push('');
+    lines.push('> ' + docsError.split('\n').join('\n> '));
+    lines.push('');
+  }
   lines.push('## Change summary');
   lines.push('');
   lines.push(((status && status.changeSummary) || '(no change summary produced)').trim());

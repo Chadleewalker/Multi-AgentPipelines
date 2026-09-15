@@ -191,6 +191,19 @@ function renderReport(manifest) {
       }
     }
 
+    // §4.3/§4.11, ABOVE "what changed" and for the same reason §3.7's block sits there: the
+    // docs phase is non-fatal, so this row keeps its outcome — but the summary underneath is
+    // then the implementation agent's and nothing in this task updated the documentation.
+    // Bold, never `## `: scripts/test-report.sh reads task order with `grep -o '^## …'`.
+    if (t.docsPhaseError) {
+      L.push('**⚠ Documentation phase warning** — the implementation is verified and the '
+        + 'outcome above stands, but the documentation phase did not complete: no '
+        + 'documentation change is included and the summary below is the implementation\'s own.');
+      L.push('');
+      L.push('> ' + String(t.docsPhaseError).trim().split('\n').join('\n> '));
+      L.push('');
+    }
+
     L.push('**What changed**');
     L.push('');
     L.push(t.changeSummary ? t.changeSummary.trim() : '_(no change summary produced)_');
