@@ -15,10 +15,19 @@
 // there is no second door onto the same corpus. Claude closes Beads a different way — its
 // `--disallowedTools` already carries `Bash(bd *)` — and keeps doing so unchanged.
 //
+// The shim is disposable state, not a cache. One root is created per launch, it is needed only
+// for the lifetime of a synchronous provider process, and a conveyor of ideas would otherwise
+// accumulate one ignored directory per author session forever. So every root this module creates
+// carries an ownership marker holding a fresh per-launch nonce, `prepare` hands back an opaque
+// handle naming the exact roots it created, and `dispose` removes those literal paths and nothing
+// else: no parent is ever enumerated, so two concurrent launches are independent by construction
+// and a foreign directory that merely looks like ours is refused rather than swept.
+//
 // Node built-ins only, synchronous, and free of any repository require, so the author stage
 // can build a launch environment without loading config, Beads or a container engine.
 'use strict';
 
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -36,6 +45,15 @@ const REFUSAL_EXIT = 78;
 // stub seams the Docker-free suites use answer on the other three; a contained session that
 // inherited any of them would route around the shim entirely.
 const BD_OVERRIDE_NAMES = Object.freeze(['PIPELINE_BD_CMD', 'BD_ARGS_LOG', 'BD_STUB_OUT', 'BD_STUB_EXIT']);
+
+// Written into every root this module creates, before any other content, and holding that
+// launch's nonce. Ownership is therefore proven by something only this process wrote — never by
+// a directory's name, its prefix or the fact that it sits under a root we also use.
+const OWNERSHIP_MARKER_NAME = '.author-containment-owner';
+
+// A cleanup failure reaches an operator's terminal and a run report, so it names the ROLES that
+// could not be removed and nothing else: no host path, no OS error text, no provider output.
+const CLEANUP_ERROR_MAX_CHARS = 200;
 
 // What the author is told in the brief, so containment is an explained boundary rather than a
 // tool that mysteriously fails. The module owns this wording; scripts/spec-brief.js emits it.
@@ -76,31 +94,55 @@ function realDir(target, mode) {
   if (!stat) fs.mkdirSync(target, { recursive: true, mode });
 }
 
+// The one shared parent every shim root is created directly beneath. It is a durable, mode-0700
+// cache root: launches create and remove children of it, never the root itself.
+function containmentParent() {
+  const root = path.join(os.tmpdir(), 'multi-agent-author-containment');
+  realDir(root, 0o700);
+  return root;
+}
+
+// Where an executable shim can be staged when the temp mount itself refuses execution. Both are
+// durable parents shared by every launch, so — like the shim parent — they are created and left
+// alone; only the per-launch child beneath them is ever removed.
+function defaultFallbackParents() {
+  const parents = [path.resolve(__dirname, '..', 'runs', 'author-containment')];
+  const cache = process.env.LOCALAPPDATA
+    || process.env.XDG_CACHE_HOME
+    || (os.homedir() ? path.join(os.homedir(), '.cache') : null);
+  if (cache) parents.push(path.join(cache, 'multi-agent-pipelines', 'author-containment'));
+  return parents;
+}
+
 // Outside the author's worktree by construction: anything written inside it would show up in
-// the boundary audit as an edit the author may not make.
+// the boundary audit as an edit the author may not make. FRESH on every call, including two
+// launches of the same issue id — a shared per-issue directory cannot be disposed by either of
+// two concurrent authors without breaking the other.
 function containmentDir(issueId) {
   const id = safeIssueId(issueId);
   if (!id) throw new Error(`author containment needs a safe issue id, got ${JSON.stringify(issueId)}`);
-  const root = path.join(os.tmpdir(), 'multi-agent-author-containment');
-  realDir(root, 0o700);
-  const dir = path.join(root, id);
-  realDir(dir, 0o700);
-  return dir;
+  return fs.mkdtempSync(path.join(containmentParent(), `${id}-`));
 }
 
-// Write the interception shim into `dir` under both names, so it wins PATH lookup from a POSIX
+// Execution usability without spawning anything. A noexec mount is exactly what `access(X_OK)`
+// reports on: the kernel refuses the execute bit for a regular file there, so this answers the
+// noexec question that matters while a hardened verifier's restricted tmpfs — where spawning a
+// freshly written temp file may fail for reasons that have nothing to do with the mount — stays
+// out of the decision entirely.
+function defaultSelfTest(candidate) {
+  try {
+    fs.accessSync(path.join(candidate, process.platform === 'win32' ? 'bd.cmd' : 'bd'), fs.constants.X_OK);
+    return true;
+  } catch { return false; }
+}
+
+// Write the interception shim into `root` under both names, so it wins PATH lookup from a POSIX
 // shell (`bd`, mode 0755) and from cmd.exe (`bd.cmd`, found through PATHEXT) alike. Every
 // invocation — with any subcommand or none — exits non-zero and says the same bounded thing.
-function prepare(dir, options = {}) {
-  const id = safeIssueId(options && options.issueId);
-  if (!id) throw new Error(`author containment needs a safe issue id, got ${JSON.stringify(options && options.issueId)}`);
-  if (typeof dir !== 'string' || !dir.trim()) throw new Error('author containment needs a directory');
-  const target = path.resolve(dir);
-  realDir(target, 0o700);
-
+function writeShims(root, id) {
   const message = refusalText(id);
-  const posix = path.join(target, 'bd');
-  const windows = path.join(target, 'bd.cmd');
+  const posix = path.join(root, 'bd');
+  const windows = path.join(root, 'bd.cmd');
   // printf with a literal format and the message as an argument: no expansion of anything the
   // issue id could carry, and exactly one trailing newline on stderr.
   fs.writeFileSync(posix, [
@@ -119,8 +161,92 @@ function prepare(dir, options = {}) {
     `exit /b ${REFUSAL_EXIT}`,
     '',
   ].join('\r\n'));
+}
 
-  return { ok: true, dir: target, issueId: id, names: ['bd', 'bd.cmd'] };
+// The marker goes down BEFORE the shim: a root that carries shim content but no marker is one
+// this module cannot prove it owns, and it would rather leak that root than delete it.
+function claimRoot(root, nonce) {
+  realDir(root, 0o700);
+  fs.writeFileSync(path.join(root, OWNERSHIP_MARKER_NAME), `${nonce}\n`, { mode: 0o600 });
+}
+
+// A fresh child of one shared fallback parent. The parent is created when absent and is never
+// tracked for rollback or disposal — it is shared, durable, and not this launch's to remove.
+function stageCandidate(parent, id, nonce) {
+  const parentDir = path.resolve(String(parent));
+  fs.mkdirSync(parentDir, { recursive: true, mode: 0o700 });
+  const candidate = fs.mkdtempSync(path.join(parentDir, `${id}-`));
+  claimRoot(candidate, nonce);
+  return candidate;
+}
+
+function bounded(text) {
+  const line = String(text == null ? '' : text).replace(/\s+/g, ' ').trim();
+  return line.length > CLEANUP_ERROR_MAX_CHARS ? `${line.slice(0, CLEANUP_ERROR_MAX_CHARS - 1)}…` : line;
+}
+
+// Remove roots created during one failed prepare(). The caller's original error is what a human
+// needs; a failure here is reported beside it, in role terms, never in place of it.
+function rollback(roots) {
+  const failed = [];
+  for (let i = roots.length - 1; i >= 0; i -= 1) {
+    try { fs.rmSync(roots[i], { recursive: true, force: true }); }
+    catch { failed.push(i === 0 ? 'shim' : `fallback[${i - 1}]`); }
+  }
+  return failed.length
+    ? bounded(`author-containment rollback could not remove: ${failed.reverse().join(', ')}`)
+    : null;
+}
+
+// Build one launch's containment. `dir` is tried first; when it fails its own execution
+// self-test — a noexec temp mount is the real case — a candidate is staged under each fallback
+// parent in turn until one is usable. Every root actually created is recorded in the returned
+// handle, including a candidate that failed, so disposal can reach all of them later. If nothing
+// is usable, every root created during this call is rolled back and no handle is returned.
+function prepare(dir, options = {}) {
+  const created = [];
+  const fallbackRoots = [];
+  try {
+    const id = safeIssueId(options && options.issueId);
+    if (!id) throw new Error(`author containment needs a safe issue id, got ${JSON.stringify(options && options.issueId)}`);
+    if (typeof dir !== 'string' || !dir.trim()) throw new Error('author containment needs a directory');
+    const opts = options || {};
+    const selfTest = typeof opts.selfTest === 'function' ? opts.selfTest : defaultSelfTest;
+    const parents = Array.isArray(opts.fallbackParents) ? opts.fallbackParents : defaultFallbackParents();
+    const nonce = crypto.randomBytes(16).toString('hex');
+
+    const shimRoot = path.resolve(dir);
+    claimRoot(shimRoot, nonce);
+    created.push(shimRoot);
+    writeShims(shimRoot, id);
+    let usable = selfTest(shimRoot) ? shimRoot : null;
+
+    for (const parent of parents) {
+      if (usable) break;
+      const candidate = stageCandidate(parent, id, nonce);
+      created.push(candidate);
+      fallbackRoots.push(candidate);
+      writeShims(candidate, id);
+      if (selfTest(candidate)) usable = candidate;
+    }
+    if (!usable) {
+      throw new Error(`no author containment root is executable: ${created.length} candidate(s) failed the execution self-test`);
+    }
+    return {
+      ok: true,
+      dir: usable,
+      issueId: id,
+      names: ['bd', 'bd.cmd'],
+      handle: { issueId: id, nonce, shimRoot, fallbackRoots },
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: bounded((error && error.message) || String(error)),
+      rollbackError: rollback(created),
+      handle: null,
+    };
+  }
 }
 
 // A NEW environment in which the shim leads PATH and the host bd overrides are gone. Everything
@@ -152,13 +278,112 @@ function applyEnv(baseEnv, prepared) {
   return env;
 }
 
-// The one call the author stage makes: prepare the shim for this issue and return the launch
-// environment that closes Beads around it.
+// Everything a handle has to be before dispose() will look at the filesystem at all. A path, a
+// string, a `{ dir }` from some other launcher or a partially-shaped object is refused outright.
+function isHandle(handle) {
+  return !!handle && typeof handle === 'object' && !Array.isArray(handle)
+    && typeof handle.nonce === 'string' && handle.nonce.length > 0
+    && typeof handle.shimRoot === 'string' && handle.shimRoot.length > 0
+    && typeof handle.issueId === 'string' && handle.issueId.length > 0
+    && Array.isArray(handle.fallbackRoots)
+    && handle.fallbackRoots.every((root) => typeof root === 'string' && root.length > 0);
+}
+
+// Remove one owned root, or refuse it. Ownership is four separate questions, and a no to any of
+// them means the directory stays exactly as it is: it must be a real directory rather than a
+// symlink or reparse point (which would make removal reach into someone else's tree), it must sit
+// directly under a parent the caller declared safe, and it must carry our marker holding THIS
+// launch's nonce. A root that is already gone was already disposed, which is success.
+function removeOwned(root, parents, nonce) {
+  let stat = null;
+  try { stat = fs.lstatSync(root); }
+  catch (error) { return error && error.code === 'ENOENT'; }
+  if (stat.isSymbolicLink() || !stat.isDirectory()) return false;
+  if (!parents.includes(path.dirname(root))) return false;
+  let marker = null;
+  try { marker = fs.readFileSync(path.join(root, OWNERSHIP_MARKER_NAME), 'utf8'); }
+  catch { return false; }
+  if (marker.trim() !== nonce) return false;
+  // Only this literal path, and only its own contents: the parent is never read.
+  try { fs.rmSync(root, { recursive: true, force: true }); }
+  catch { return false; }
+  try { fs.lstatSync(root); return false; }
+  catch (error) { return !!error && error.code === 'ENOENT'; }
+}
+
+// Dispose one launch's containment. Every owned root is attempted even when an earlier one
+// fails, and the single bounded error names only the failed roles.
+function dispose(handle, options = {}) {
+  if (!isHandle(handle)) {
+    return { ok: false, error: 'author-containment dispose refused: not a launch handle' };
+  }
+  const opts = options || {};
+  const shimParents = typeof opts.shimParent === 'string' && opts.shimParent.trim()
+    ? [path.resolve(opts.shimParent)] : [];
+  const fallbackParents = (Array.isArray(opts.fallbackParents) ? opts.fallbackParents : defaultFallbackParents())
+    .filter((parent) => typeof parent === 'string' && parent.trim())
+    .map((parent) => path.resolve(parent));
+
+  // The shim root first, then the fallbacks longest path first, so a nested root can never be
+  // orphaned by the removal of something above it.
+  const targets = [{ role: 'shim', root: path.resolve(handle.shimRoot), parents: shimParents }];
+  handle.fallbackRoots
+    .map((root, index) => ({ role: `fallback[${index}]`, root: path.resolve(root), parents: fallbackParents }))
+    .sort((a, b) => b.root.length - a.root.length)
+    .forEach((target) => targets.push(target));
+
+  const failed = [];
+  for (const target of targets) {
+    if (!removeOwned(target.root, target.parents, handle.nonce)) failed.push(target.role);
+  }
+  return failed.length
+    ? { ok: false, error: bounded(`author-containment dispose failed for: ${failed.join(', ')}`) }
+    : { ok: true };
+}
+
+// The one call the author stage makes before the provider: build this launch's containment and
+// hand back both the launch environment and the host-owned session the caller disposes after the
+// provider settles. The session never reaches the child — only `env` does.
+function beginLaunch(baseEnv, issueId, options = {}) {
+  const opts = options || {};
+  const fallbackParents = Array.isArray(opts.fallbackParents) ? opts.fallbackParents : defaultFallbackParents();
+  let dir = null;
+  let shimParent = null;
+  try {
+    dir = containmentDir(issueId);
+    shimParent = path.dirname(path.resolve(dir));
+  } catch (error) {
+    return { ok: false, error: bounded((error && error.message) || String(error)) };
+  }
+  const prepared = prepare(dir, { issueId, fallbackParents, selfTest: opts.selfTest });
+  if (!prepared.ok) {
+    return { ok: false, error: prepared.error, rollbackError: prepared.rollbackError || null };
+  }
+  return {
+    ok: true,
+    env: applyEnv(baseEnv, prepared),
+    handle: prepared.handle,
+    shimParent,
+    fallbackParents,
+  };
+}
+
+// The mirror of beginLaunch, called once the provider process has settled or thrown.
+function endLaunch(session) {
+  if (!session || !session.ok) return { ok: false, error: 'author-containment dispose refused: no launch session' };
+  return dispose(session.handle, { shimParent: session.shimParent, fallbackParents: session.fallbackParents });
+}
+
+// Backward-compatible one-shot: containment with no disposal handle returned to the caller.
+// Prefer beginLaunch/endLaunch, which is what lets a launch clean up after itself.
 function containEnv(baseEnv, issueId) {
-  return applyEnv(baseEnv, prepare(containmentDir(issueId), { issueId }));
+  const prepared = prepare(containmentDir(issueId), { issueId });
+  if (!prepared.ok) throw new Error(prepared.error);
+  return applyEnv(baseEnv, prepared);
 }
 
 module.exports = {
-  REFUSAL_MAX_CHARS, REFUSAL_EXIT, BRIEF_NOTICE, BD_OVERRIDE_NAMES,
-  refusalText, containmentDir, prepare, applyEnv, containEnv,
+  REFUSAL_MAX_CHARS, REFUSAL_EXIT, BRIEF_NOTICE, BD_OVERRIDE_NAMES, OWNERSHIP_MARKER_NAME,
+  refusalText, containmentDir, containmentParent, defaultFallbackParents,
+  prepare, dispose, applyEnv, containEnv, beginLaunch, endLaunch,
 };

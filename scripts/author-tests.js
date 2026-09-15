@@ -91,8 +91,16 @@ function launchAuthor(built, model, run = runSync) {
   // unless `bd` is closed mechanically. The argv is pinned byte for byte by
   // tests/acceptance/repo-45g, so containment travels in the environment or not at all. Claude
   // closes the same door through `--disallowedTools Bash(bd *)` and is left unchanged.
-  if (provider === 'codex') env = CONTAINMENT.containEnv(env, built.suiteId || built.id);
-  return AGENT.launch({
+  let session = null;
+  if (provider === 'codex') {
+    session = CONTAINMENT.beginLaunch(env, built.suiteId || built.id);
+    if (!session.ok) {
+      return { status: EXIT_SETUP, stdout: '',
+        stderr: `author containment could not be prepared: ${session.error}` };
+    }
+    env = session.env;
+  }
+  const launch = () => AGENT.launch({
     provider,
     model,
     reasoningEffort: AGENT.reasoningEffortFor(built.cfg, 'test-author'),
@@ -111,6 +119,40 @@ function launchAuthor(built, model, run = runSync) {
       env,
     },
   }, run);
+  // Claude closes Beads through its own tool policy and stages nothing to clean up.
+  if (!session) return launch();
+
+  // The shim leads PATH for the whole provider call, so ONLY that call is wrapped: containment
+  // is disposed once the synchronous provider process has settled or thrown, never before it and
+  // never twice. The provider's own result — or its own error — travels back untouched; the
+  // cleanup outcome is added beside it so a caller can report it without it masking anything.
+  let result = null;
+  let thrown = null;
+  let cleanup = null;
+  try {
+    result = launch();
+  } catch (error) {
+    thrown = error;
+  } finally {
+    cleanup = CONTAINMENT.endLaunch(session);
+  }
+  if (thrown) throw withCleanup(thrown, cleanup);
+  return result && typeof result === 'object' ? { ...result, containmentCleanup: cleanup } : result;
+}
+
+// Attach the bounded cleanup outcome to the provider's own error without altering its message.
+// A frozen or otherwise unextendable error is wrapped in the narrowest thing that can carry the
+// outcome while keeping the original reachable as the primary cause.
+function withCleanup(error, cleanup) {
+  try {
+    error.containmentCleanup = cleanup;
+    if (error.containmentCleanup === cleanup) return error;
+  } catch { /* frozen, sealed, or a non-object throw value */ }
+  const message = (error && error.message) || String(error);
+  const aggregate = new AggregateError([error], message);
+  aggregate.cause = error;
+  aggregate.containmentCleanup = cleanup;
+  return aggregate;
 }
 
 function quote(value) {
@@ -224,6 +266,21 @@ function authorIssue(built, configPath, io = {}, seams = {}) {
     err(`Outcome: test-author session incomplete — ${error}`);
     err(failureStep());
     return { ok: false, outcome: 'agent-incomplete', kind: 'incomplete', error,
+      provider: authorProvider, agentStatus: r.status, exitCode: EXIT_AGENT };
+  }
+
+  // Containment cleanup is judged last, and only for a session the provider itself completed: a
+  // nonzero exit, a usage limit or a mid-turn ending is already the truthful outcome and stays
+  // the reported one. A completed session whose shim could not be removed is not a failed
+  // session, but it is not a session to prove and freeze either — the host is in a state a human
+  // has to look at, so proof does not start and no freeze command is offered.
+  const cleanup = r.containmentCleanup;
+  if (cleanup && cleanup.ok === false) {
+    const error = 'the test-author session completed but its containment shim could not be removed: '
+      + `${cleanup.error || 'no detail'}`;
+    err(`Outcome: test-author containment cleanup failed — ${error}`);
+    err('Do not freeze this suite. Remove the leftover containment root by hand, then rerun author-tests.');
+    return { ok: false, outcome: 'cleanup-failed', kind: 'containment-cleanup', error,
       provider: authorProvider, agentStatus: r.status, exitCode: EXIT_AGENT };
   }
 

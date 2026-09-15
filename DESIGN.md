@@ -272,7 +272,23 @@ brief carries the module's own wording so the explanation and the shim cannot dr
 shim directory sits outside the author worktree, so the boundary audit above still sees only
 the one suite. It travels in the environment because the Codex author argv is pinned byte for
 byte by an already-frozen suite; Claude closes the same door through its `--disallowedTools`
-`Bash(bd *)` grant and is unchanged. The second half is the exit code: a provider that exits
+`Bash(bd *)` grant and is unchanged.
+
+The shim is per-launch, disposable state rather than a cache (change-log row
+`repo-djf-40-containment-disposal`). Every root the module creates — the PATH shim root, and any
+executable staged elsewhere when the temp mount refuses execution — carries an ownership marker
+holding that launch's own nonce, written before any other content, and `prepare` returns a
+host-owned handle naming those exact roots. Only the provider call is wrapped in `try`/`finally`,
+so the shim is usable for the whole provider lifetime and is removed once that synchronous
+process has settled or thrown. Disposal removes literal paths from the handle and nothing else:
+no parent directory is ever enumerated, so concurrent authors are independent by construction,
+and a root that is a symlink, sits under an undeclared parent, or carries no matching marker is
+left alone rather than swept. A cleanup failure is explicit and bounded to the roles that failed —
+never a host path, never provider output — and it is additive: the provider's own result or
+thrown error is preserved unchanged, and a nonzero, usage-limited or incomplete session still
+reports its own truthful outcome. Only a session the provider completed is gated on cleanup, and
+then it neither proves nor offers a freeze command, because a host holding a shim it could not
+remove is a state a human has to look at. The second half is the exit code: a provider that exits
 zero has ended its process, not necessarily its turn. A Codex session launches with `--json`,
 so its structured stream is guaranteed, and the session counts as complete only when an
 `item.completed` `agent_message` is *followed* by a `turn.completed` record — an unfinished
