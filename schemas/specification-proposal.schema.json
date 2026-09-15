@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://multi-agent-pipelines.invalid/schemas/specification-proposal.schema.json",
+  "title": "Specification planner wire response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "spec",
+    "acceptanceCriteria",
+    "designReferences",
+    "difficulty",
+    "status",
+    "question"
+  ],
+  "properties": {
+    "spec": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32768
+    },
+    "acceptanceCriteria": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4096
+      }
+    },
+    "designReferences": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": {
+        "type": "string",
+        "minLength": 3,
+        "maxLength": 1024,
+        "pattern": "^[^\\s:#][^\\r\\n]*#[^\\r\\n#]+$"
+      }
+    },
+    "difficulty": {
+      "type": "string",
+      "enum": ["trivial", "medium", "hard"]
+    },
+    "status": {
+      "type": "string",
+      "enum": ["ready", "needs-input"]
+    },
+    "question": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "maxLength": 4096
+    }
+  }
+}
