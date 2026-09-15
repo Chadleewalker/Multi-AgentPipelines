@@ -10,6 +10,10 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { spawnSync } = require('child_process');
+// The specification lane's model vocabulary is owned by the config loader (§6.5). This
+// controller is Codex-only, so it reads `specificationModel` and its constant default and
+// never `cfg.model` — the implementation lane's alias belongs to a different provider.
+const { DEFAULT_SPECIFICATION_MODEL } = require('../runner/config');
 
 const MAX_MODEL_BYTES = 64 * 1024;
 const MAX_TEXT = 32 * 1024;
@@ -147,7 +151,7 @@ function promptFor(kickoff, intent, answer, questionEvidenceHash, designReferenc
 }
 
 function plannerPlan(options, checkout, kickoff, intent, answerRecord, designReferenceCandidates) {
-  const model = options.planningModel || 'gpt-5.6-terra';
+  const model = options.planningModel || DEFAULT_SPECIFICATION_MODEL;
   const effort = options.reasoningEffort || 'medium';
   const args = ['exec', '--model', model, '-c', `model_reasoning_effort=${effort}`,
     '--sandbox', 'read-only', '--ephemeral', '--ignore-user-config', '--ignore-rules',
@@ -349,7 +353,10 @@ function productionAdapters(options, deps = {}) {
     .replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-').replace(/-+/g, '-');
 
   const adapters = {
-    planningModel: options.planningModel || cfg.model,
+    // NEVER `cfg.model`: that is the implementation lane's alias, and on a Claude
+    // implementation run it is a Claude alias this Codex controller cannot launch. A config
+    // that predates `specificationModel` resolves to the constant, not to the other lane.
+    planningModel: options.planningModel || cfg.specificationModel || DEFAULT_SPECIFICATION_MODEL,
     reasoningEffort: options.reasoningEffort || cfg.reasoningEffort,
     sha256, now: () => new Date().toISOString(), crash: async () => {},
     async readKickoff(id) {

@@ -2931,6 +2931,32 @@ For Codex implementation workers, `codexAuth` is independently closed to
 `chatgpt | api-key`. The checked-in template declares dormant `chatgpt` without changing
 its canonical Claude/opus launch defaults; absence retains the legacy API-key contract.
 
+**The specification planner is its own lane, explicitly selected.** `scripts/specify-proposal.js`
+is a Codex-only controller authenticated by a saved ChatGPT session, so it can never take its
+model from the chain above: on a proposal-supervisor run configured for Claude implementation,
+`cfg.model` resolves to a Claude alias and the launch becomes `codex exec --model opus`.
+`run.config.<project>.json` therefore carries a fifth model field, `specificationModel`,
+validated by the same bounded alias rule as `model` / `testAuthorModel` / `testProbeModel` and
+refused by its own name. Its default is the constant `DEFAULT_SPECIFICATION_MODEL` — a Codex
+alias, resolved in `runner/config.js` after the defaults spread and **never derived from any
+other lane**, explicit or defaulted, so a config written before this field cannot silently
+fall back to the implementation model. `runner/proposal-supervisor.js` reports the resolved
+value on `adapters.specification.model` and on both the top-level and per-proposal `status`
+surfaces (and in `formatHumanStatus`), so an operator reads the model specification would
+actually launch rather than the one implementation will.
+
+**That lane's prerequisite is admitted before ownership, not discovered mid-run.**
+`scripts/proposal-supervisor.js` runs one bounded `codex login status` probe for the commands
+that can launch specification — `start`, `run`, `resume`, `tick` — after the config resolves
+and before the supervisor opens ownership, touches durable intake state, takes a lock, creates
+a worktree, reaches Docker or launches a model. `CODEX_API_KEY` and `OPENAI_API_KEY` are
+stripped from that probe: neither is a fallback for a saved login, so a host that happens to
+carry one cannot make an unauthenticated lane look ready, and a Claude credential is not a
+fallback either. It is deliberately *not* in `runner/prerequisites.js`'s roster: that gate
+serves preparation, and a preparation-only all-Claude workflow must not acquire a Codex
+dependency merely because the same config could also drive the conveyor (change-log row
+`repo-djf-41-specification-lane`).
+
 **One adapter constructs every host launch.** `runner/agent-provider.js` owns the provider
 vocabulary, the credential names, the required `codex exec` capability roster and the launch
 construction; `scripts/author-tests.js` and `scripts/prove-tests.js` hand it the Claude argv

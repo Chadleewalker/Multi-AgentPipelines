@@ -151,6 +151,18 @@ function operationValue(answer, label) {
   return answer.operation;
 }
 
+// Which model the specification lane would actually launch for this run config (§6.5).
+// Resolved from the SAME loader the launch itself uses, so `status` reports the planner
+// lane rather than the implementation model it is now independent of. A config this
+// process cannot read is reported as the constant default rather than thrown: status must
+// stay answerable on a broken config, and the launch still refuses on the real error.
+function specificationModelFor(configPath) {
+  const { loadConfig, DEFAULT_SPECIFICATION_MODEL } = require('./config');
+  if (!configPath) return DEFAULT_SPECIFICATION_MODEL;
+  try { return loadConfig(configPath).specificationModel || DEFAULT_SPECIFICATION_MODEL; }
+  catch { return DEFAULT_SPECIFICATION_MODEL; }
+}
+
 function productionAdapters(repoRoot, options = {}) {
   const kickoff = require('../scripts/kickoff');
   const specify = require('../scripts/specify-proposal');
@@ -175,6 +187,7 @@ function productionAdapters(repoRoot, options = {}) {
       list({ project }) { return kickoff.readAll(kickoff.statePathsFor(project)); },
     },
     specification: {
+      model: specificationModelFor(configPath),
       async execute(record) {
         const adapters = specify.productionAdapters({ configPath, proposalId: record.id });
         return specify.execute({ configPath, proposalId: record.id }, {}, adapters);
@@ -306,6 +319,10 @@ function createProductionSupervisor(options = {}) {
       crashed = true; throw new Error(`proposal supervisor: injected crash after ${name}`);
     }
   }
+  // The planner lane an operator is actually being served by. Read from the adapter that
+  // owns the launch, so a status line cannot claim a model the launch would not use.
+  const specificationModel = () =>
+    (adapters.specification && adapters.specification.model) || null;
   const batchId = id => `proposal-${id}`;
   const feedId = generation => `proposal-feed-${digest(project).slice(0, 20)}-${String(generation).padStart(6, '0')}`;
 
@@ -606,7 +623,8 @@ function createProductionSupervisor(options = {}) {
       stage: p.stage, waitTimeMs: Math.max(0, (activeStart || currentTime) - submitted),
       activeTimeMs: activeStart ? Math.max(0, activeEnd - activeStart) : 0,
       attempts: Array.isArray(task.attempts) ? task.attempts : [],
-      model: result.model || null, tokens: result.tokens || null,
+      model: result.model || null, specificationModel: specificationModel(),
+      tokens: result.tokens || null,
       availableTokens: availableTokens(), kickoffHash: p.record.hash,
       specHash: receipt.specHash || result.specHash || null,
       spec: result.status === 'ready' ? { ...proposal, kickoffHash: receipt.kickoffHash || p.record.hash,
@@ -624,6 +642,7 @@ function createProductionSupervisor(options = {}) {
     const current = state();
     if (id) return proposalStatus(id, current);
     return { project, closed: current.closed, drained: drained(current),
+      specificationModel: specificationModel(),
       scheduler: { active: { ...active }, limits: { global: globalLimit, ...stageLimits } },
       proposals: current.order.map(proposalId => proposalStatus(proposalId, current)) };
   }
@@ -657,7 +676,7 @@ function formatHumanStatus(status) {
   return rows.filter(Boolean).map(row => [
     `${row.proposalId} stage=${row.stage} queue=${row.queuePosition}`,
     `waitTimeMs=${row.waitTimeMs} activeTimeMs=${row.activeTimeMs}`,
-    `attempts=${JSON.stringify(row.attempts)} model=${row.model} tokens=${JSON.stringify(row.tokens)}`,
+    `attempts=${JSON.stringify(row.attempts)} model=${row.model} specificationModel=${row.specificationModel} tokens=${JSON.stringify(row.tokens)}`,
     `availableTokens=${JSON.stringify(row.availableTokens)} kickoffHash=${row.kickoffHash} specHash=${row.specHash}`,
     `issueId=${row.issueId} freezeReceipt=${row.freezeReceipt} runId=${row.runId}`,
     `branch=${row.branch} prUrl=${row.prUrl} reviewItemId=${row.reviewItemId} verdict=${row.verdict}`,

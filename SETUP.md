@@ -82,6 +82,12 @@ same way (`npm install -g @openai/codex`, matching the pin in `docker/base/Docke
 either run `codex login` for managed subscription authentication or supply `CODEX_API_KEY`
 at B2 for explicit API-key authentication.
 
+One lane is Codex whatever `provider` says: the proposal conveyor's specification planner
+(`scripts/specify-proposal.js`, driven by `scripts/proposal-supervisor.js`). If you intend to
+use durable kickoff intake, install the Codex CLI and run `codex login` for a saved ChatGPT
+session even on an all-Claude config — an API key is not a substitute, and the supervisor
+refuses up front without it. Skip this only if you never run the conveyor.
+
 ### A4. Let Claude Code install the rest
 
 Start `claude` anywhere — you do not need the clone yet — and give it this:
