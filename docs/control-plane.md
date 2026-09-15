@@ -112,6 +112,18 @@ at every stage and every launch is byte-for-byte what it was before.** An out-of
 value is refused by its own field name before a worktree, a Beads read, a network or a
 container exists.
 
+The specification planner is a fifth, independently resolved lane. `specificationModel` names
+the model `scripts/specify-proposal.js` hands to Codex; it is validated by the same bounded
+alias rule, refused by its own name, and defaults to a Codex constant that is **never derived
+from `model`** — otherwise a Claude implementation run would pass a Claude alias to
+`codex exec --model`. `proposal-supervisor status` reports the resolved value at the top level
+and per proposal. The commands that can launch specification (`start`, `run`, `resume`,
+`tick`) first run one bounded `codex login status` probe with `CODEX_API_KEY` and
+`OPENAI_API_KEY` stripped, before ownership, durable intake, locks, worktrees, Docker or any
+model launch; neither key nor a Claude credential is a fallback for the saved ChatGPT session.
+`runner/prerequisites.js` is unchanged: a preparation-only all-Claude workflow still passes
+without Codex being installed or logged in.
+
 `provider` selects only the vendor. The `model`, `testAuthorModel` and `testProbeModel`
 fields still name the model, and a Codex run needs a model id that provider understands —
 the example config's Claude aliases are not one. `codexAuth` explicitly selects `chatgpt`
