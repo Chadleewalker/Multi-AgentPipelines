@@ -2,9 +2,9 @@
   "gateVersion": 1,
   "verdict": "red",
   "probeSupplied": true,
-  "suiteHash": "570b7959ce8296f7541893d6361652af3245eb3e9bab54d7f01eca3736e63dfa",
-  "gateHead": "6806de89cd1665710ee7cee0ce23bed105c82c45",
+  "suiteHash": "47d49e7bcf61eae404d07e6fa7cca4d1dcba55cc6e385e258f7ed4f2811dcfa0",
+  "gateHead": "0693d8597182506c6d4366ef1b4ca0ffefc0e9b5",
   "guards": null,
   "brittleness": 0,
-  "writtenAt": "2026-09-15T18:48:17.385Z"
+  "writtenAt": "2026-09-15T19:10:55.558Z"
 }
