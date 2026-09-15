@@ -31,6 +31,16 @@ const REASONING_EFFORT_FIELDS = [
   'reasoningEffort', 'testAuthorReasoningEffort', 'testProbeReasoningEffort',
 ];
 const CODEX_AUTH_MODES = ['chatgpt', 'api-key'];
+// The specification planner lane (§6.5). `scripts/specify-proposal.js` is a Codex-only
+// controller authenticated by a saved ChatGPT session, so its model is a FIFTH explicit
+// selection and never a link in the `model` chain: a Claude implementation run resolving
+// `opus` would otherwise hand a Claude alias to `codex exec --model`, and the mixed run
+// would fail at the model endpoint after durable intake had already begun. The default is
+// therefore a Codex alias and a constant — not `DEFAULTS.model`, and not derived from it.
+// Deliberately NOT in contracts/control-plane.json's configDefaults: that object is the
+// spread applied to `raw`, and putting this there would make `cfg.specificationModel`
+// indistinguishable from a field the operator wrote.
+const DEFAULT_SPECIFICATION_MODEL = 'gpt-5.6-terra';
 
 function sameHostPath(left, right) {
   const a = path.resolve(left); const b = path.resolve(right);
@@ -252,7 +262,9 @@ function loadConfig(file) {
   // silently unpin the session or make spawn reject its argument list late, after planning has
   // already created a worktree. testAuthorModel is deliberately separate from the autonomous
   // implementation model; when absent, the planning launcher falls back to model.
-  for (const k of ['model', 'testAuthorModel', 'testProbeModel']) {
+  // specificationModel is validated by the SAME rule and falls back to NOTHING — see
+  // DEFAULT_SPECIFICATION_MODEL above.
+  for (const k of ['model', 'testAuthorModel', 'testProbeModel', 'specificationModel']) {
     if (raw[k] !== undefined && raw[k] !== null
         && (typeof raw[k] !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(raw[k].trim()))) {
       throw new Error(`run.config.json: '${k}' must be null or a non-empty model alias`);
@@ -298,6 +310,9 @@ function loadConfig(file) {
   cfg.provider = normalizeProvider(raw.provider);
   cfg.testAuthorProvider = normalizeProvider(raw.testAuthorProvider || cfg.provider);
   cfg.testProbeProvider = normalizeProvider(raw.testProbeProvider || cfg.provider);
+  // The specification lane resolves from its own field or the constant, in EVERY case —
+  // explicit or defaulted — so no reading of this line can reach `cfg.model`.
+  cfg.specificationModel = raw.specificationModel || DEFAULT_SPECIFICATION_MODEL;
   cfg.reasoningEffort = normalizeReasoningEffort(raw.reasoningEffort);
   cfg.testAuthorReasoningEffort = normalizeReasoningEffort(raw.testAuthorReasoningEffort || cfg.reasoningEffort);
   cfg.testProbeReasoningEffort = normalizeReasoningEffort(raw.testProbeReasoningEffort || cfg.reasoningEffort);
@@ -351,5 +366,5 @@ function loadToken(repoRoot) {
 
 module.exports = {
   loadConfig, loadToken, loadProviderCredential, missingCredentialDiagnostic,
-  deriveNames, DEFAULTS, MAX_CONCURRENCY,
+  deriveNames, DEFAULTS, MAX_CONCURRENCY, DEFAULT_SPECIFICATION_MODEL,
 };

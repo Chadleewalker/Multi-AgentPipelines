@@ -150,4 +150,7 @@ reviewable; and nothing needed lives only on this disk — the container clones 
 **remote**, so unpushed work does not exist as far as a run is concerned (§4.2).
 
 Confirm host prerequisites once, since they block the image step: Docker Desktop running,
-`gh` authenticated, the pipeline base image built.
+`gh` authenticated, the pipeline base image built. If this target will take ideas through
+durable kickoff intake, also confirm a saved ChatGPT session (`codex login status`): the
+specification planner is Codex-only regardless of the implementation provider, and the
+proposal supervisor refuses `start`, `run`, `resume` and `tick` without it.

@@ -112,6 +112,18 @@ at every stage and every launch is byte-for-byte what it was before.** An out-of
 value is refused by its own field name before a worktree, a Beads read, a network or a
 container exists.
 
+The specification planner is a fifth, independently resolved lane. `specificationModel` names
+the model `scripts/specify-proposal.js` hands to Codex; it is validated by the same bounded
+alias rule, refused by its own name, and defaults to a Codex constant that is **never derived
+from `model`** — otherwise a Claude implementation run would pass a Claude alias to
+`codex exec --model`. `proposal-supervisor status` reports the resolved value at the top level
+and per proposal. The commands that can launch specification (`start`, `run`, `resume`,
+`tick`) first run one bounded `codex login status` probe with `CODEX_API_KEY` and
+`OPENAI_API_KEY` stripped, before ownership, durable intake, locks, worktrees, Docker or any
+model launch; neither key nor a Claude credential is a fallback for the saved ChatGPT session.
+`runner/prerequisites.js` is unchanged: a preparation-only all-Claude workflow still passes
+without Codex being installed or logged in.
+
 `provider` selects only the vendor. The `model`, `testAuthorModel` and `testProbeModel`
 fields still name the model, and a Codex run needs a model id that provider understands —
 the example config's Claude aliases are not one. `codexAuth` explicitly selects `chatgpt`
@@ -241,7 +253,10 @@ it settles the original grant or leaves attention in place, but never starts a c
 normal stop sentinel.
 
 `scripts/proposal-supervisor.js start --config <run.config.json> [--proposal <kp-id>]`
-enters the unattended proposal conveyor. The process acquires the project supervisor lease,
+enters the unattended proposal conveyor. `start`, `run`, `resume` and `tick` first admit the
+specification lane with one bounded `codex login status`, before the lease, durable intake,
+locks, worktrees, Docker or any model launch; `status` and `stop` launch no planner and are
+ungated. The process acquires the project supervisor lease,
 discovers durable kickoff records, and remains alive across pending specification,
 preparation, implementation, and review evidence. It retires a drained implementation feed
 before assigning later prepared work to a uniquely named successor. The `stop` command
@@ -255,7 +270,8 @@ recovery commands described above.
 Both are positive whole-number host configuration, validated before supervisor authority is
 acquired. Ready implementation work is admitted ahead of newly queued specification work.
 `status [--proposal <kp-id>] [--json]` reports queue position, current stage, wait and active
-time, attempts, selected model, recorded and currently available token counts, kickoff/spec,
+time, attempts, selected model, the resolved specification planner model, recorded and
+currently available token counts, kickoff/spec,
 issue/freeze/run/branch/PR/review identities, history, and the smallest next action. The human
 form is a rendering of the same durable facts.
 
