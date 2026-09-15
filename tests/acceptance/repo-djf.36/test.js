@@ -29,14 +29,14 @@ function record(id, target) {
 }
 // This injected authority represents runner/lock's Windows result without pretending that
 // the POSIX test host has Windows path semantics. Every listed spelling is one repository.
-const WINDOWS_TARGET = 'c:\\work\\mixed\\project';
+const WINDOWS_TARGET = 'c:\\tmp\\mixed\\project';
 const windowsSpellings = [
-  'C:\\Work\\Mixed\\Project', 'c:/work/mixed/project/',
-  'C:\\Work\\Mixed\\.\\Project', 'C:\\Work\\Mixed\\scratch\\..\\Project', '.\\Project',
+  'C:\\tmp\\Mixed\\Project', 'c:/tmp/mixed/project/',
+  'C:\\tmp\\Mixed\\.\\Project', 'C:\\tmp\\Mixed\\scratch\\..\\Project', '.\\Project',
 ];
 function windowsCanonical(value) {
   if (windowsSpellings.includes(value) || value === WINDOWS_TARGET) return WINDOWS_TARGET;
-  if (value === 'D:\\Elsewhere\\Project') return 'd:\\elsewhere\\project';
+  if (value === 'D:\\tmp\\Elsewhere\\Project') return 'd:\\tmp\\elsewhere\\project';
   throw new Error(`unexpected Windows spelling: ${value}`);
 }
 function journalEvents(dir) {
@@ -49,7 +49,7 @@ test('C1+C6 production kickoff verification accepts every injected Windows-equiv
   try {
     const stateDir = path.join(root, 'state');
     const production = api.productionAdapters(ROOT);
-    const verified = record('kp-windows-identity', 'C:\\Work\\Mixed\\Project');
+    const verified = record('kp-windows-identity', 'C:\\tmp\\Mixed\\Project');
     // This is the actual immutable kickoff verifier, not a replacement test adapter.
     assert.deepStrictEqual(production.kickoff.verify(verified), kickoff.verifyRecord(verified, verified.id, verified.target));
     const supervisor = api.createProductionSupervisor({ project: windowsSpellings[0], stateDir,
@@ -93,10 +93,10 @@ test('C3 a genuinely different canonical target is refused before journal mutati
     const supervisor = api.createProductionSupervisor({ project: windowsSpellings[0], stateDir,
       adapters: { ...production, kickoff: { verify: production.kickoff.verify, list: async () => [] } },
       canonicalTarget: windowsCanonical, testingSentinel: api.TESTING_SENTINEL });
-    await assert.rejects(() => supervisor.submit(record('kp-other', 'D:\\Elsewhere\\Project')), /kickoff verification failed/i);
+    await assert.rejects(() => supervisor.submit(record('kp-other', 'D:\\tmp\\Elsewhere\\Project')), /kickoff verification failed/i);
     assert.deepStrictEqual(journalEvents(stateDir), before);
     const env = { PIPELINE_STATE_DIR: path.join(root, 'durable') };
-    assert.notStrictEqual(api.supervisorStateDirFor(windowsSpellings[0], env, windowsCanonical), api.supervisorStateDirFor('D:\\Elsewhere\\Project', env, windowsCanonical));
+    assert.notStrictEqual(api.supervisorStateDirFor(windowsSpellings[0], env, windowsCanonical), api.supervisorStateDirFor('D:\\tmp\\Elsewhere\\Project', env, windowsCanonical));
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -105,7 +105,7 @@ test('C5+C6 production restart through an equivalent spelling reuses one journal
   try {
     const env = { PIPELINE_STATE_DIR: path.join(root, 'durable') };
     const stateDir = api.supervisorStateDirFor(windowsSpellings[0], env, windowsCanonical);
-    const receipt = record('kp-restart-receipt', 'C:\\Work\\Mixed\\Project');
+    const receipt = record('kp-restart-receipt', 'C:\\tmp\\Mixed\\Project');
     const production = api.productionAdapters(ROOT);
     const adapters = { ...production, kickoff: { verify: production.kickoff.verify, list: async () => [receipt] },
       specification: { execute: async () => ({ status: 'needs-input', question: 'fixture pause', evidenceHash: 'fixture' }) } };
