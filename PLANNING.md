@@ -319,6 +319,16 @@ Nothing is deleted, moved or archived — the partial bytes stay exactly as they
 diagnostics that explain them live in the separate preparation record, and human approval
 remains the only freeze boundary.
 
+A Codex author session runs inside host-owned containment directories that the launcher builds
+before it and removes after it. If any part of that construction fails — the ownership marker,
+either shim, or the executability self-test — the launcher rolls back every directory that
+launch created and reports a setup failure rather than starting a half-contained session, so a
+failed launch leaves nothing on the host to clean up. If the session itself completed but its
+containment could not be removed afterwards, the launcher says so explicitly, runs no green proof
+and prints no freeze command: inspect the host before approving anything that launch built.
+Containment messages name only roles (`shim`, `fallback[0]`), never a host path or provider
+output.
+
 The launcher does not treat a successful test-author exit as completion. It first refuses any
 worktree change outside that issue's suite, then creates two independent disposable clones at
 the author's exact HEAD and overlays the suite byte-for-byte into both. One remains the red

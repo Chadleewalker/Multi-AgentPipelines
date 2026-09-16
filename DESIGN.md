@@ -272,7 +272,42 @@ brief carries the module's own wording so the explanation and the shim cannot dr
 shim directory sits outside the author worktree, so the boundary audit above still sees only
 the one suite. It travels in the environment because the Codex author argv is pinned byte for
 byte by an already-frozen suite; Claude closes the same door through its `--disallowedTools`
-`Bash(bd *)` grant and is unchanged. The second half is the exit code: a provider that exits
+`Bash(bd *)` grant and is unchanged.
+
+The shim is per-launch, owned, disposable state, and a launch that cannot finish building it
+leaves nothing behind (change-log row `repo-djf-43-containment-rollback`). Every launch gets a
+fresh shim root — `mkdtemp` under one shared parent, never a per-issue path, because two author
+sessions for the same issue may run at once — plus, when that filesystem cannot carry an
+executable, a candidate under a declared fallback parent. Ownership is proved by a marker holding
+that launch's own nonce: a name, a prefix or a shared parent is matched equally by a concurrent
+author, a foreign lookalike and a directory re-created at a once-owned path, so none of them is
+evidence. `prepare` returns a host-owned handle naming those exact roots; only `prepared.dir`
+reaches `applyEnv`, so neither the nonce nor the root list can travel into the author's prompt or
+child environment. Order is the contract: the directory is created, **registered in the handle**,
+and only then self-tested, marked and written. Registration therefore precedes the first byte of
+ownership initialization, so a candidate that dies part-way — its marker write, either shim write,
+or a self-test that throws instead of answering — is still a path the same call can name and
+remove exactly. Construction failure rolls back every root that call created, attempts them all
+even after one refuses, preserves the original preparation error, and reports any rollback trouble
+beside it rather than on top of it; `scripts/author-tests.js` turns that into a setup failure with
+no root to name, because there is none left. A self-test answering `false` is a different thing
+entirely — the root is fine, the *filesystem* cannot run the shim — so that candidate is marked
+and retained for ordinary disposal.
+
+Disposal removes literal paths from the handle and nothing else: no parent is ever enumerated or
+swept, so concurrent authors are independent by construction. A root that is a symlink or reparse
+point, sits under an undeclared parent, or carries a mismatched marker is left alone; once
+ownership initialization has completed a missing marker is refused too, since removal would then
+be a guess. An already-absent root counts as disposed, every root is attempted even after one
+fails, and the single error names roles (`shim`, `fallback[0]`) within a hard bound — never a host
+path, an errno string, or provider output. Only the provider call is wrapped, so the shim stays
+usable for the whole session and is removed once that synchronous process has settled or thrown;
+the provider's own result or thrown error is preserved unchanged and cleanup is added beside it.
+A nonzero, usage-limited or incomplete session keeps its own truthful outcome, but a session the
+provider *completed* whose cleanup failed neither proves nor offers a freeze command, because a
+host still holding a root it could not remove is a state a human has to look at.
+
+The second half is the exit code: a provider that exits
 zero has ended its process, not necessarily its turn. A Codex session launches with `--json`,
 so its structured stream is guaranteed, and the session counts as complete only when an
 `item.completed` `agent_message` is *followed* by a `turn.completed` record — an unfinished
