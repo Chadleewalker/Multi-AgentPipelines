@@ -323,6 +323,17 @@ applies only where the durable evidence still says authoring never completed, la
 worker generation in the existing worktree, and deletes nothing; a bare `retry` refuses as before,
 and human approval remains the sole freeze boundary.
 
+The launcher's own Codex containment is gated on both sides of the session. `scripts/author-tests.js`
+builds one per-launch `bd`-interception root before the provider starts, and a construction failure
+whose rollback refuses — an ownership marker missing or naming another launch, or a root replaced by
+a symlink or reparse point — fails preparation outright instead of recovering through a later usable
+fallback candidate, leaving that unaccountable root on the host as evidence while every other root
+it created is still removed. After a session the provider completed, a containment root that could
+not be disposed is reported as `cleanup-failed`, which blocks the green proof and the freeze command
+exactly as the evidence states above do. Both reports are bounded and name roles only (`shim`,
+`fallback[0]`) — never a host path, errno string or provider output (change-log row
+`repo-djf-44-containment-rollback-refusal`).
+
 Preparation also resolves each not-yet-frozen issue's structured `design-ref` from the exact
 integration HEAD recorded in its immutable manifest. It never consults an operator-local file
 or a newer working-tree copy. Approved text that is not committed is published through the
