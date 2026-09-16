@@ -281,6 +281,46 @@ and an incomplete session never reaches the green probe. Claude's author argv as
 structured envelope, so its prose stays honoured; an explicit `{"type":"result", …}` envelope
 it does emit is held to the same standard.
 
+**A containment root is owned, per-launch state, and an unaccountable one stops the launch**
+(change-log row `repo-djf-44-containment-rollback-refusal`). Every launch gets a fresh `mkdtemp`
+shim root under one shared parent — never a per-issue path, because two author sessions for the
+same issue may run at once — plus, when that filesystem cannot carry an executable, a candidate
+under a declared fallback parent. Ownership is proved by a marker holding that launch's own
+nonce: a name, a prefix or a shared parent is matched equally by a concurrent author, a foreign
+lookalike and a directory re-created at a once-owned path, so none of them is evidence.
+`prepare` returns a host-owned handle naming those exact roots, and only `prepared.dir` reaches
+`applyEnv`, so neither the nonce nor the root list travels into the author's prompt or child
+environment. Order is the contract: create the directory, **register it in the handle**, then
+self-test, mark and write it. Registration precedes the first byte of ownership initialization,
+so a candidate that dies part-way — its marker write, either shim write, or a self-test that
+throws instead of answering — is still a path the same call can name and remove exactly. Both
+shim names are reserved by exclusive creation before either carries content, because a root that
+already holds a `bd` this call did not write is not a root we own and overwriting it would be the
+guess removal refuses to make. Removal — during construction and afterwards — names literal paths
+only: no parent is ever enumerated or swept, since a concurrent launch's root lives in that same
+shared parent and enumerating it is the one mistake that would let either launch delete the
+other's live containment. A symlink or reparse point, a root under an undeclared parent, a
+mismatched marker, and a missing marker once ownership initialization has completed are all
+refused and left standing; a self-test answering `false` is a different thing entirely — the root
+is fine, the *filesystem* cannot run the shim — so that candidate is marked and retained for
+ordinary disposal.
+
+What that buys is a rule about recovery: **a rollback that refuses or errors ends the whole
+preparation**, even when the next fallback candidate is perfectly usable. Recovering there would
+start a contained session while a directory this call created, and cannot account for, still
+stands under its authority — its marker gone, naming someone else, or the root swapped for a
+reparse point — and from the outside "safely cleaned up" and "someone else's data now sits where
+our shim used to be" are the same picture. So the search stops, every remaining owned root is
+still attempted, the primary construction error survives, and the rollback failures are reported
+beside it as bounded role-only text (`shim`, `fallback[0]`) carrying no host path, errno string
+or provider output. The refused root is deliberately left as evidence for the human who now has
+to look at the host. `scripts/author-tests.js` turns that into a setup failure and never launches
+the provider; a launch that did start is wrapped only around the provider call, so the shim stays
+usable for the whole session and is disposed once it has settled or thrown, with the provider's
+own result or error preserved unchanged and cleanup added beside it. A nonzero, usage-limited or
+incomplete session keeps its own truthful outcome, but a session the provider *completed* whose
+cleanup failed neither proves nor offers a freeze command.
+
 **A suite directory is not evidence that its suite was finished** (change-log row
 `repo-djf-42-author-evidence`). The exit-code half above closes one door and opens the view onto
 the next: an author killed between its first file and its terminal result leaves a directory that
