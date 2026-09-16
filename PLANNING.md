@@ -319,6 +319,21 @@ Nothing is deleted, moved or archived — the partial bytes stay exactly as they
 diagnostics that explain them live in the separate preparation record, and human approval
 remains the only freeze boundary.
 
+**A Codex author session runs inside a containment root the launcher owns for exactly that one
+launch.** Before the provider starts, the launcher builds a fresh per-launch `bd`-interception
+root, falling back to a declared parent when the first filesystem cannot carry an executable; if
+that cannot be completed the run is a setup failure and the provider is never launched
+(`runner/author-containment.js`, change-log row `repo-djf-44-containment-rollback-refusal`). A
+construction failure whose own rollback then refuses — the root's ownership marker gone or naming
+someone else, or the root swapped for a symlink or reparse point — ends the whole preparation
+rather than recovering through a later usable candidate, and that one root is deliberately left
+standing as evidence for the human who now has to look at the host. Every other root the call
+created is still removed, and both halves of the report name roles (`shim`, `fallback[0]`) and
+nothing else — no host path, errno or provider output. After the session settles, the same handle
+disposes those exact roots; a session the provider *completed* whose cleanup failed is reported as
+`cleanup-failed` and is neither proven nor offered the freeze command, because a launcher that
+cannot clean up after a session has no business asking a human to approve what it built.
+
 The launcher does not treat a successful test-author exit as completion. It first refuses any
 worktree change outside that issue's suite, then creates two independent disposable clones at
 the author's exact HEAD and overlays the suite byte-for-byte into both. One remains the red

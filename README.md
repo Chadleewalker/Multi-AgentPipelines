@@ -80,6 +80,11 @@ author is reported as interrupted rather than freeze-ready, and recovery is one 
 `node scripts/prepare-batch.js retry <batch> <id>... --resume-partial` in a batch — that resumes
 authoring in the existing worktree without deleting the partial work.
 
+The launcher holds itself to the same standard. A Codex author session whose containment directory
+cannot be built is a setup failure that never starts the provider, and one whose directory cannot be
+removed afterwards is reported instead of being offered the freeze step, so a containment directory
+left behind on the host is always something a human is told to go and look at.
+
 ```bash
 # 1. put your model credential where the runner can find it
 #    (git-ignored; get a Claude one with `claude setup-token`)

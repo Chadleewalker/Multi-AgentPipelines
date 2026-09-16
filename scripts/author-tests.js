@@ -92,8 +92,23 @@ function launchAuthor(built, model, run = runSync) {
   // unless `bd` is closed mechanically. The argv is pinned byte for byte by
   // tests/acceptance/repo-45g, so containment travels in the environment or not at all. Claude
   // closes the same door through `--disallowedTools Bash(bd *)` and is left unchanged.
-  if (provider === 'codex') env = CONTAINMENT.containEnv(env, built.suiteId || built.id);
-  return AGENT.launch({
+  let contained = null;
+  if (provider === 'codex') {
+    contained = CONTAINMENT.beginLaunch(env, built.suiteId || built.id);
+    // A containment root that could not be built is a setup failure, not a contained launch, so
+    // the provider is never started. Construction attempted to roll back every root it created;
+    // `rollbackError` is the case where one of those roots could not be accounted for and was
+    // deliberately left standing as evidence, which is exactly why no later fallback candidate
+    // was allowed to turn this into a success. Both halves are reported, and both stay bounded
+    // and role-only for the same reason cleanup does: a host path or an errno is not ours to
+    // repeat here.
+    if (!contained.ok) {
+      const rollback = contained.rollbackError ? `; ${contained.rollbackError}` : '';
+      return { status: EXIT_SETUP, stdout: '', stderr: `${contained.error}${rollback}` };
+    }
+    env = contained.env;
+  }
+  const spec = {
     provider,
     model,
     reasoningEffort: AGENT.reasoningEffortFor(built.cfg, 'test-author'),
@@ -111,7 +126,47 @@ function launchAuthor(built, model, run = runSync) {
       label: `${provider} test-author session`, maxBuffer: MAX_BUFFER,
       env,
     },
-  }, run);
+  };
+  if (!contained) return AGENT.launch(spec, run);
+  // Only the provider call is wrapped: the shim has to stay present and usable for the whole
+  // session, and disposal happens exactly once after it has settled or thrown — never before,
+  // never concurrently with it. The provider's own result, or its error, is preserved
+  // unchanged; the cleanup outcome is added beside it.
+  let result;
+  try {
+    result = AGENT.launch(spec, run);
+  } catch (error) {
+    throw withCleanupError(error, CONTAINMENT.endLaunch(contained));
+  }
+  return withCleanupResult(result, CONTAINMENT.endLaunch(contained));
+}
+
+// Additive: the same object, plus one bounded field. A provider result that refuses the
+// assignment (frozen, or not an object at all) is copied rather than reported differently.
+function withCleanupResult(result, cleanup) {
+  if (!result || typeof result !== 'object') {
+    return { status: null, stdout: '', stderr: '', containmentCleanup: cleanup };
+  }
+  try {
+    result.containmentCleanup = cleanup;
+    if (result.containmentCleanup === cleanup) return result;
+  } catch { /* frozen or exotic; fall through to a copy */ }
+  return { ...result, containmentCleanup: cleanup };
+}
+
+// A thrown launch error keeps its original message and is rethrown carrying the cleanup
+// outcome. When it cannot be extended at all, the aggregate that replaces it keeps the original
+// as its primary cause, so nothing about the failure is lost to the reporting of cleanup.
+function withCleanupError(error, cleanup) {
+  try {
+    error.containmentCleanup = cleanup;
+    if (error.containmentCleanup === cleanup) return error;
+  } catch { /* frozen, sealed, or a primitive */ }
+  const message = (error && error.message) || String(error);
+  const aggregate = new AggregateError([error], message);
+  aggregate.cause = error;
+  aggregate.containmentCleanup = cleanup;
+  return aggregate;
 }
 
 function quote(value) {
@@ -241,6 +296,23 @@ function authorIssue(built, configPath, io = {}, seams = {}) {
     err(failureStep());
     return { ok: false, outcome: 'agent-incomplete', kind: 'incomplete', error,
       provider: authorProvider, agentStatus: r.status, exitCode: EXIT_AGENT };
+  }
+
+  // The provider itself completed, so the only thing that can still be wrong is our own
+  // containment: a root that outlived the session it contained. That is reported explicitly and
+  // separately, and it blocks the green proof and the freeze invitation — a launcher that
+  // cannot clean up after a session has no business asking a human to approve it. A nonzero,
+  // usage-limited or incomplete session keeps its own truthful outcome above, because cleanup
+  // is not the interesting failure in any of those.
+  const cleanup = r.containmentCleanup;
+  if (cleanup && cleanup.ok === false) {
+    const error = `author containment cleanup failed after a completed session: ${cleanup.error || 'unknown'}`;
+    err(`Outcome: test-author containment cleanup failed — ${error}`);
+    err('Do not freeze this suite. The contained session finished, but a containment root it owned'
+      + ' could not be removed; inspect the host before approving anything built by it.');
+    err(failureStep());
+    return { ok: false, outcome: 'cleanup-failed', kind: 'cleanup', error,
+      agentStatus: r.status, exitCode: EXIT_AGENT };
   }
 
   out('Test-author agent exited successfully. Starting the isolated two-direction green proof.');
