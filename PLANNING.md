@@ -298,6 +298,27 @@ write the tests, freeze a suite the working tree already holds, or re-gate one t
 branch without a readable receipt. The last two need no drafting at all, and a report that does
 not separate them makes a nearly-finished task look like an untouched one.
 
+**A suite directory is not evidence that its suite was finished.** An author killed after
+writing some of its files but before a terminal result leaves a directory indistinguishable
+from a finished one, so the choice above is decided by the durable preparation record — kept
+under the host preparation root, outside the model-editable worktree — and never by file
+existence alone (`runner/author-evidence.js`, change-log row `repo-djf-42-author-evidence`).
+That record reads as `absent`, `authoring`, `interrupted-partial`, `authored-unproven`,
+`proven` or `frozen`. An `author-proof` attempt that recorded no result and whose worker is no
+longer live, or one whose outcome says its authoring half never completed, is
+`interrupted-partial` however many files are on disk; an interrupted standalone `proof` leaves
+the suite `authored-unproven`, because authoring had already finished before it started. Only
+`authored-unproven`, `proven` and `frozen` may be offered the freeze command, and a suite with
+no recorded attempt at all is still read exactly as it always was.
+
+For `interrupted-partial` the launcher prints that state and its reason and offers one bounded
+recovery instead of the freeze step: re-run the same `node scripts/author-tests.js <issue-id>
+--config <path>` invocation. It continues in the same existing worktree, and the brief tells
+the author that the files already there are a partial draft to read, keep and complete.
+Nothing is deleted, moved or archived — the partial bytes stay exactly as they are, the
+diagnostics that explain them live in the separate preparation record, and human approval
+remains the only freeze boundary.
+
 The launcher does not treat a successful test-author exit as completion. It first refuses any
 worktree change outside that issue's suite, then creates two independent disposable clones at
 the author's exact HEAD and overlays the suite byte-for-byte into both. One remains the red
@@ -406,7 +427,19 @@ identities with the target lock's reboot- and PID-recycle-safe liveness rule: a 
 is no longer live and has no matching result becomes `interrupted-unknown`. That state blocks new
 preparation. Stop the recorded worker and any descendants, then record that human check with
 `acknowledge-interrupted <batch> <id>...`; only after that may `retry <batch> <id>...` start a new
-attempt. A successful item means **proven at the recorded integration base**. The coordinator
+attempt. A bare `retry` still refuses an acknowledged attempt whose phase has since changed, and
+still names the partial suite for a human to inspect. `retry <batch> <id>... --resume-partial` is
+the one explicit, bounded exception: for an acknowledged `author-proof` interruption whose durable
+evidence still says the authoring half never completed, it resumes authoring in the **existing**
+worktree — one Beads read, one new worker generation, one model launch — and deletes, moves and
+archives nothing, so the resumed author continues from the partial bytes. Any other acknowledged
+phase, an issue already disqualified for another reason, and the flag on any mode other than
+`retry` are all refused exactly as before, and a concurrent second resume meets the same
+target-global lock with nothing launched. Retrying a durably acknowledged interruption skips
+re-resolving design provenance, because the attempt being recovered was already admitted through
+that gate at its own snapshot; an issue edited since then is still refused by the
+criteria-fingerprint check beside it.
+A successful item means **proven at the recorded integration base**. The coordinator
 never freezes, commits, merges, pushes, changes Beads, or turns blocked
 implementation dependencies into test-author dependencies: specs may be prepared together, then
 the ordinary Beads-ready runner releases their implementation waves in dependency order.
