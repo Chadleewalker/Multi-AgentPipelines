@@ -323,6 +323,18 @@ applies only where the durable evidence still says authoring never completed, la
 worker generation in the existing worktree, and deletes nothing; a bare `retry` refuses as before,
 and human approval remains the sole freeze boundary.
 
+A Codex test-author launch is contained by per-launch directories the host owns and removes:
+`runner/author-containment.js` creates a fresh shim root, plus a fallback candidate when that
+filesystem cannot carry an executable, and registers each one in its construction handle before
+writing that root's ownership marker or shims. A failure anywhere in that initialization removes
+every root the launch created and reports a setup failure, so no owned containment directory is
+left behind; removal names exact paths only, never enumerating the shared parent, and refuses a
+symlink or reparse point, an undeclared parent, or a marker that is not this launch's. Every
+containment failure — construction, rollback, or post-session cleanup — is reported as bounded
+role text (`shim`, `fallback[0]`) with no host path or provider output. Cleanup that fails after
+an otherwise complete session blocks the green proof and prints no freeze command; a nonzero,
+usage-limited or incomplete session keeps its own outcome instead.
+
 Preparation also resolves each not-yet-frozen issue's structured `design-ref` from the exact
 integration HEAD recorded in its immutable manifest. It never consults an operator-local file
 or a newer working-tree copy. Approved text that is not committed is published through the
