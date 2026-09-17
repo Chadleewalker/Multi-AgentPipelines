@@ -17,7 +17,7 @@ const path = require('path');
 const { loadConfig } = require('../runner/config');
 const AGENT = require('../runner/agent-provider');
 const { runSync, failureText } = require('../runner/process');
-const { acquire, release } = require('../runner/lock');
+const { acquire, release, canonicalTarget } = require('../runner/lock');
 const { compareSuites } = require('./freeze-gate');
 const {
   protectedManifest, manifestHash, manifestDifference, normalizedManagedManifest, gitFileHashes,
@@ -46,6 +46,35 @@ function validIssueId(id) {
 }
 
 function suiteIdOf(built) { return built && (built.suiteId || built.id); }
+
+// The repository a proof was cloned from is part of that proof's identity, and a path string is
+// not: a config edited between attempts, a redundant or differently-cased spelling, and a
+// junction or symlink retargeted underneath a stable literal path all reach resumeProbe() with
+// the same author worktree and the same issue id. Bind to the identity runner/lock.js already
+// computes for target ownership so one authority answers "the same repository?" for the lock and
+// for a retained proof, rather than two rules free to drift apart.
+function targetIdentityOf(built) {
+  const identity = canonicalTarget(built && built.cfg ? built.cfg.targetRepoPath : undefined);
+  if (typeof identity !== 'string' || !identity) throw new Error('canonical target identity is empty');
+  return identity;
+}
+
+// A missing or malformed recorded identity is refused rather than waved through: an unbound
+// container is no evidence at all about which repository its clones came from, so there is
+// nothing for this resume to be judged against.
+function targetIdentityRefusal(built, marker) {
+  const recorded = marker ? marker.targetIdentity : undefined;
+  if (typeof recorded !== 'string' || !recorded.trim()) {
+    return 'retained probe records no canonical target repository identity';
+  }
+  let current;
+  try { current = targetIdentityOf(built); }
+  catch (e) { return `this proof names no canonical target repository: ${(e && e.message) || String(e)}`; }
+  if (current !== recorded) {
+    return `retained probe was prepared from target repository ${recorded}, not ${current}`;
+  }
+  return null;
+}
 
 
 function suiteDifference(source, candidate) {
@@ -345,6 +374,11 @@ function prepareProbe(built, model, run = runSync, tempRoot = os.tmpdir()) {
   if (!fs.existsSync(sourceSuite) || !fs.statSync(sourceSuite).isDirectory()) {
     return { ok: false, error: `the authored suite does not exist at ${sourceSuite}` };
   }
+  // Resolved before anything is created: a target that cannot be canonicalized can never be
+  // re-proven the same way later, so there is no probe worth building for it.
+  let targetIdentity;
+  try { targetIdentity = targetIdentityOf(built); }
+  catch (e) { return { ok: false, error: `cannot canonicalize the target repository: ${(e && e.message) || String(e)}` }; }
   // A verifier may run under a different host identity than the planning worker. A shared
   // mode-0700 root in the OS temp directory would then strand every later proof behind the
   // first identity that created it. Give each preparation a private namespace while retaining
@@ -371,7 +405,8 @@ function prepareProbe(built, model, run = runSync, tempRoot = os.tmpdir()) {
   fs.writeFileSync(markerPath, `${JSON.stringify({
     kind: 'multi-agent-green-probe', version: 1, issue: suiteId,
     requestedIssue: built.id, model,
-    sourceWorktree: path.resolve(built.folder.dir), createdAt: new Date().toISOString(),
+    sourceWorktree: path.resolve(built.folder.dir), targetIdentity,
+    createdAt: new Date().toISOString(),
     ...ownership,
   }, null, 2)}\n`);
 
@@ -432,6 +467,11 @@ function resumeProbe(built, probePath, run = runSync) {
   if (!managed) return { ok: false, error: 'retained probe has missing or invalid ownership evidence' };
   const suiteId = suiteIdOf(built);
   const { marker, container, baseline, probe } = managed;
+  // Asked first, and answered from the marker already in hand: a refusal here must not launch
+  // anything, run the gate, rewrite the marker or sweep a tree, so it precedes every step below
+  // that reads or writes the retained container's contents.
+  const crossedRepository = targetIdentityRefusal(built, marker);
+  if (crossedRepository) return { ok: false, error: crossedRepository };
   const sourceSuite = path.join(built.folder.dir, 'tests', 'acceptance', suiteId);
   const baselineSuite = path.join(baseline, 'tests', 'acceptance', suiteId);
   const probeSuite = path.join(probe, 'tests', 'acceptance', suiteId);
