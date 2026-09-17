@@ -85,8 +85,11 @@ function proofStructured(built, seams, retainedProbe = null) {
   const probeSeams = { ...(seams.probeSeams || {}) };
   if (retainedProbe) probeSeams.retainedProbe = retainedProbe;
   if (typeof seams.onStage === 'function' && typeof probeSeams.onStage !== 'function') probeSeams.onStage = seams.onStage;
-  const result = (seams.proveTests || proof.proveTests)(built, model, probeSeams);
-  if (result && result.outcome === 'usage-limit' && result.rateLimit) return { ...result };
+  const answered = (seams.proveTests || proof.proveTests)(built, model, probeSeams);
+  // A proof that answered with nothing object-shaped is a malformed result, not a verdict: read
+  // no field off it rather than throwing out of the worker body.
+  const result = answered && typeof answered === 'object' && !Array.isArray(answered) ? answered : {};
+  if (result.outcome === 'usage-limit' && result.rateLimit) return { ...result };
   return result.ok
     ? { ok: true, outcome: 'proven-at-base', probe: result.probe, attempt: result.attempt,
       evidence: limited(result.evidence), agentOutput: limited(result.agentOutput) }
@@ -94,13 +97,47 @@ function proofStructured(built, seams, retainedProbe = null) {
       error: result.error, evidence: limited(result.evidence) };
 }
 
+// The one proof outcome a later attempt may resume, filtered from the broader `retained` flag
+// `prove-tests` sets. Usage-limit parks and post-preparation interruptions also report
+// `retained: true`, and every refusal that leaves a container behind still reports `probe` for
+// inspection; neither is authority to reuse a container as a proof in progress. So: ordinary
+// attempt exhaustion only, and the claimed path is re-read on disk here rather than echoed —
+// it must still be an owned managed container for THIS job's suite whose durable marker says
+// `unfinished`. Anything else publishes nothing.
+function resumableProbeFrom(result, built, seams = {}) {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return null;
+  if (result.ok !== false || result.kind !== 'unproven' || result.retained !== true) return null;
+  if (result.outcome !== undefined && result.outcome !== 'unproven') return null;
+  const probe = result.probe;
+  if (typeof probe !== 'string' || !probe.length) return null;
+  const suiteId = built && (built.suiteId || built.id);
+  if (!proof.validIssueId(suiteId)) return null;
+  let managed = null;
+  try { managed = (seams.readManagedProbe || proof.readManagedProbe)(probe); }
+  catch { return null; }
+  if (!managed || !managed.marker || managed.marker.issue !== suiteId
+      || managed.marker.status !== 'unfinished') return null;
+  return probe;
+}
+
 function execute(job, seams = {}) {
   const invalid = validateJob(job);
   if (invalid) return { ok: false, outcome: 'invalid', error: invalid };
   const log = [];
+  // Both job shapes reach the proof through this one seam, and only the proof's own result
+  // carries the `retained` decision the filter above needs — the structured answers below have
+  // already flattened it away. Observe it here so `proof` and `author-proof` publish the
+  // dedicated path under identical terms.
+  const observedProofs = [];
+  const innerProveTests = seams.proveTests || proof.proveTests;
+  const proofSeams = { ...seams, proveTests: (...args) => {
+    const value = innerProveTests(...args);
+    observedProofs.push(value);
+    return value;
+  } };
   let answer = job.action === 'author-proof'
-    ? authorStructured(job.built, job.configPath, seams, log)
-    : proofStructured(job.built, seams, job.retainedProbe);
+    ? authorStructured(job.built, job.configPath, proofSeams, log)
+    : proofStructured(job.built, proofSeams, job.retainedProbe);
   answer = answer && typeof answer === 'object' ? { ...answer } : { ok: false, outcome: 'unproven', error: 'worker returned no result' };
   if (answer.ok) answer.outcome = 'proven-at-base';
   else if (!answer.outcome) answer.outcome = 'unproven';
@@ -121,6 +158,10 @@ function execute(job, seams = {}) {
         attempts: checked.marker.attempts,
       };
     }
+  }
+  if (answer.ok === false) {
+    const resumable = resumableProbeFrom(observedProofs[observedProofs.length - 1], job.built, seams);
+    if (resumable) answer.resumableProbe = resumable;
   }
   if (log.length) answer.log = limited(log.filter(Boolean).join('\n'));
   return answer;
@@ -166,4 +207,7 @@ async function main() {
 
 if (require.main === module) main().then((code) => { process.exitCode = code; });
 
-module.exports = { execute, validateJob, readJob, limited, currentHead, MAX_INPUT, MAX_TEXT, STAGE_PREFIX };
+module.exports = {
+  execute, validateJob, readJob, limited, currentHead, resumableProbeFrom,
+  MAX_INPUT, MAX_TEXT, STAGE_PREFIX,
+};
