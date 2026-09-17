@@ -116,7 +116,7 @@ function cleanupTemps() {
 
 function initGitRepo(root) {
   spawnSync('git', ['init', '-q', '--initial-branch', 'main', '.'], { cwd: root });
-  spawnSync('git', ['config', 'user.email', 'fixture@repo-djf49.test'], { cwd: root });
+  spawnSync('git', ['config', 'user.email', 'fixture@example.invalid'], { cwd: root });
   spawnSync('git', ['config', 'user.name', 'fixture'], { cwd: root });
   spawnSync('git', ['add', '-A'], { cwd: root });
   spawnSync('git', ['commit', '-qm', 'fixture'], { cwd: root });
