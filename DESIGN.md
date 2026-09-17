@@ -2126,6 +2126,33 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     progress reporting is observational and can neither manufacture success nor suppress a proof
     failure. Operators can now distinguish a live expensive gate from a stalled integrity scan.
 
+    **An owned proof that ran out of attempts, or was interrupted after preparation, is kept
+    rather than swept** (change-log row `repo-djf-49-retained-proof`). Usage-limit parking already
+    kept such a container; ordinary exhaustion and a recoverable non-usage-limit fault did not, so
+    the two expensive clones of the most common failure were discarded and the next move was a
+    full rebuild. At that decision the controller re-reads ownership out of band — never a value
+    carried from preparation time, because a sandboxed model has had the container in between —
+    and only an intact owner record plus an intact marker authorizes it to rewrite the marker to
+    the distinct state `unfinished` and report `retained: true`. `unfinished` is neither `proven`
+    (which only a successful gate ever writes) nor the absent status the usage-limit park leaves.
+    A missing, mismatched, malformed or symlinked container answers false: no marker byte moves,
+    no reparse point is followed, and nothing recursive is removed. Tampering is excluded from
+    retention outright and reports `retained: false` — ownership may be perfectly intact, but the
+    tree the proof would resume from is no longer the tree that was prepared. A marker write that
+    cannot be read back reports `retained: false` too, because a retention claim is a claim about
+    what is on disk. The field is an explicit boolean on every result, never left absent: an
+    unstated retention reads as "not retained" to one caller and "unknown" to the next.
+
+    Resuming one is a standalone verb rather than batch-only machinery. `prove-tests
+    --resume-probe <dir>` runs under the same target lock, the same `buildBrief` read and the same
+    exit codes as the plain command, and reaches the existing six-dimension resume validation —
+    issue, source worktree, suite bytes, author HEAD, baseline manifest and ownership, each
+    refusing on its own — before any agent launch or gate. `--skip-agent` adds re-gating without a
+    model: no RED is rebuilt and no session is launched, and the protected-tree invariants still
+    run before and after exactly one two-direction gate, which remains the only thing that can
+    write `proven`. Both flags are additive; an invocation naming neither is the command it
+    always was. Refusal diagnostics are bounded and name the reason rather than quoting the host.
+
     The strongest batch result is deliberately **proven-at-base**. A proof is bound to the exact
     integration HEAD and issue-independent protected-tree base manifest, including every receipt
     byte that commit carries, so freezing one suite makes every other old
