@@ -2178,6 +2178,26 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     mismatched-phase, inspection-only and non-resumable records all take the path retry takes
     today — one worker, no retention — and `probe` alone never fabricates it.
 
+    **A retained proof belongs to one repository, and a path string is not which one** (change-log
+    row `repo-djf-51-proof-target-identity`). Resume validated the issue, the author worktree, the
+    suite bytes, the author HEAD, the baseline manifest and ownership, and every one of those can
+    be byte-identical across two genuinely different repositories: `cfg.targetRepoPath` is the
+    argument the clones were taken from, and nothing compared it. A config edited or swapped
+    between attempts, an equivalent spelling that resolves elsewhere, and a junction or symlink
+    retargeted underneath a stable literal path all reach the same retained container and were all
+    accepted. So preparation now records `targetIdentity` in the ownership marker, and resume
+    recomputes it and refuses unless the two agree. The value is `runner/lock.js`'s
+    `canonicalTarget` — the same authority §4.12's host-global lock uses to decide that two
+    spellings name one project — rather than a lexical `path.resolve`, so one rule answers "the
+    same repository?" for ownership and for a retained proof instead of two rules free to drift
+    apart. Its `realpath` step is what makes an alias agree with the real path and a retargeted
+    reparse point disagree with it; the Windows case and separator folding comes along for free.
+    A missing or malformed recorded identity is refused as well: an unbound container is no
+    evidence about which repository its clones came from, so there is nothing to judge a resume
+    against. Every one of those refusals is decided from the marker already in hand, before any
+    agent launch, gate run, marker rewrite or cleanup, which leaves the container byte-identical
+    and never follows the swapped-in path it just refused.
+
     The strongest batch result is deliberately **proven-at-base**. A proof is bound to the exact
     integration HEAD and issue-independent protected-tree base manifest, including every receipt
     byte that commit carries, so freezing one suite makes every other old
