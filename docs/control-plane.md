@@ -333,11 +333,22 @@ marker, follows no reparse point and authorizes no recursive cleanup; tamper and
 that cannot be read back report `retained: false` too, and only a successful gate ever writes
 `proven`. Recovery is the standalone `node scripts/prove-tests.js <issue-id> --config <path>
 --resume-probe <dir> [--skip-agent]`, which holds the same target lock and returns the same exit
-codes as the plain command and validates issue, source worktree, suite bytes, author HEAD, baseline
-manifest and ownership — each refusing on its own, with a bounded diagnostic — before any agent
-launch or gate. `--skip-agent` re-gates without a model launch and without rebuilding RED, running
-the protected-tree invariants before and after exactly one two-direction gate, and is refused
-unless `--resume-probe` names the retained container.
+codes as the plain command and validates canonical target repository identity, issue, source
+worktree, suite bytes, author HEAD, baseline manifest and ownership — each refusing on its own, with
+a bounded diagnostic — before any agent launch or gate. `--skip-agent` re-gates without a model
+launch and without rebuilding RED, running the protected-tree invariants before and after exactly
+one two-direction gate, and is refused unless `--resume-probe` names the retained container.
+
+Repository identity is the first of those checks and is canonical rather than lexical. Preparation
+resolves `runner/lock.js`'s `canonicalTarget` for the configured target before creating anything and
+records it in the ownership marker as `targetIdentity`; resume recomputes it and refuses unless the
+recorded value is a non-empty string equal to it. The same repository reached through an equivalent
+path spelling still resumes, because that shared authority folds redundant segments and, on Windows,
+case and separator direction; a different repository, a junction or symlink retargeted underneath the
+same literal path, and a missing or malformed recorded identity are refused. The refusal is decided
+from the marker already in hand, before any agent launch, gate, marker mutation or cleanup, so the
+retained container is left byte-identical and the swapped-in path is neither followed nor deleted. A
+target that cannot be canonicalized fails preparation instead of yielding an unbindable probe.
 
 In the batch path that retention keeps a dedicated identity rather than being flattened into the
 generic `probe` field an agent failure, a tamper refusal and a setup fault all carry for

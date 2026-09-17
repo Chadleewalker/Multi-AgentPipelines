@@ -375,10 +375,26 @@ node scripts/prove-tests.js <issue-id> --config run.config.<project>.json \
 ```
 
 It takes the same target lock, reads the same brief and returns the same exit codes as the plain
-invocation, and validates the retained container on six independent dimensions — issue, source
-worktree, suite bytes, author HEAD, baseline manifest and ownership — before any agent launch or
-gate. Each one refuses on its own, and the refusal is a bounded diagnostic that names the reason
-rather than quoting an unbounded host error over it. `--skip-agent` re-gates without a model: no
+invocation, and validates the retained container on seven independent dimensions — canonical target
+repository identity, issue, source worktree, suite bytes, author HEAD, baseline manifest and
+ownership — before any agent launch or gate. Each one refuses on its own, and the refusal is a
+bounded diagnostic that names the reason rather than quoting an unbounded host error over it.
+
+Repository identity is asked first, and it is a canonical identity rather than a path string
+(change-log row `repo-djf-51-proof-target-identity`). The other six dimensions can all be
+byte-identical across two genuinely different repositories, because the target the clones were
+actually taken from was the one thing never compared: a config edited or swapped between attempts,
+an equivalent spelling that resolves elsewhere, and a junction or symlink retargeted underneath a
+stable literal path all reached the same retained container. Preparation now records
+`targetIdentity` in the ownership marker — `runner/lock.js`'s `canonicalTarget`, the same authority
+the host-global target lock uses to decide that two spellings name one project, so ownership and a
+retained proof answer "the same repository?" with one rule — and resume recomputes it and refuses
+unless the two agree. An equivalent spelling of the same repository still resumes; a different
+repository, a retargeted reparse point at the same literal path, and a missing or malformed
+recorded identity are refused. That refusal is decided from the marker already in hand, ahead of
+every other check, so nothing is launched, no gate runs, no marker byte moves and nothing is swept:
+the container stays byte-identical and the swapped-in path is neither followed nor removed. A target
+that cannot be canonicalized fails preparation rather than producing an unbindable probe. `--skip-agent` re-gates without a model: no
 RED is rebuilt and no session is launched, and the protected-tree invariants still run before and
 after exactly one two-direction gate, which remains the only thing that can write `proven`. It is
 refused without `--resume-probe`, because a freshly prepared probe nobody has edited is not
