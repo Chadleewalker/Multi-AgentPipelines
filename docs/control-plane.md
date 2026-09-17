@@ -323,6 +323,22 @@ applies only where the durable evidence still says authoring never completed, la
 worker generation in the existing worktree, and deletes nothing; a bare `retry` refuses as before,
 and human approval remains the sole freeze boundary.
 
+A green proof that exhausts its bounded attempts, or that is interrupted by a recoverable
+non-usage-limit fault after preparation, is retained on the same terms rather than swept.
+`scripts/prove-tests.js` re-reads the container's ownership out of band at that decision, and only
+an intact owner record and marker authorize it to rewrite the marker to the distinct state
+`unfinished` and report an explicit boolean `retained: true`, preserving the red baseline and the
+probe. Missing, mismatched, malformed or symlinked ownership reports `retained: false`, rewrites no
+marker, follows no reparse point and authorizes no recursive cleanup; tamper and a marker write
+that cannot be read back report `retained: false` too, and only a successful gate ever writes
+`proven`. Recovery is the standalone `node scripts/prove-tests.js <issue-id> --config <path>
+--resume-probe <dir> [--skip-agent]`, which holds the same target lock and returns the same exit
+codes as the plain command and validates issue, source worktree, suite bytes, author HEAD, baseline
+manifest and ownership — each refusing on its own, with a bounded diagnostic — before any agent
+launch or gate. `--skip-agent` re-gates without a model launch and without rebuilding RED, running
+the protected-tree invariants before and after exactly one two-direction gate, and is refused
+unless `--resume-probe` names the retained container.
+
 Preparation also resolves each not-yet-frozen issue's structured `design-ref` from the exact
 integration HEAD recorded in its immutable manifest. It never consults an operator-local file
 or a newer working-tree copy. Approved text that is not committed is published through the

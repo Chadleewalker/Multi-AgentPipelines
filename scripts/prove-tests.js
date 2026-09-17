@@ -284,6 +284,28 @@ function markProven(prepared, attempt, evidence) {
   fs.writeFileSync(markerPath, `${JSON.stringify(marker, null, 2)}\n`);
 }
 
+// An interrupted or exhausted proof is worth keeping only while we can still prove the container
+// is ours. Ownership is re-read here rather than carried from preparation time: the container has
+// been writable by a sandboxed model in between, and a marker, an owner record or the directory
+// itself may have been removed, forged, corrupted or swapped for a reparse point since. A false
+// answer authorizes nothing — no marker rewrite, no traversal, and no cleanup.
+function retainUnfinished(prepared) {
+  const container = prepared && prepared.container;
+  if (typeof container !== 'string' || !container || !ownedContainer(container)) return false;
+  const markerPath = path.join(container, MARKER);
+  try {
+    const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
+    // Only a successful gate ever writes "proven"; an unfinished state may never overwrite one.
+    if (marker.status === 'proven') return false;
+    marker.status = 'unfinished';
+    marker.unfinishedAt = new Date().toISOString();
+    fs.writeFileSync(markerPath, `${JSON.stringify(marker, null, 2)}\n`);
+    // A claim of retention is a claim about what is on disk, so read the state back before making
+    // it. A write that cannot durably land reports no retention at all.
+    return JSON.parse(fs.readFileSync(markerPath, 'utf8')).status === 'unfinished';
+  } catch { return false; }
+}
+
 function validStageEvent(event) {
   return !!event && typeof event === 'object' && PROOF_STAGES.has(event.stage)
     && ['start', 'done'].includes(event.phase)
@@ -514,66 +536,107 @@ function proveTests(built, model, seams = {}) {
     () => seams.retainedProbe
       ? (seams.resumeProbe || resumeProbe)(built, seams.retainedProbe, run)
       : (seams.prepareProbe || prepareProbe)(built, model, run, seams.tempRoot || os.tmpdir()));
-  if (!prepared.ok) return { ok: false, kind: 'setup', error: prepared.error };
-  const attempts = Math.max(1, Number(built.cfg.testProbeAttempts) || 3);
+  if (!prepared.ok) return { ok: false, kind: 'setup', retained: false, error: prepared.error };
+  // Skipping the agent is meaningful only when resuming an already-built probe: there is nothing
+  // to re-gate otherwise, and RED is never rebuilt here either way.
+  const skipAgent = seams.skipAgent === true && !!seams.retainedProbe;
+  const attempts = skipAgent ? 1 : Math.max(1, Number(built.cfg.testProbeAttempts) || 3);
   let evidence = '';
   let keepBaseline = false;
   try {
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
-      const launched = runStage(seams, 'probe-agent', attempt,
-        () => (seams.launchProbe || launchProbe)(built, prepared, model, evidence, run));
+      const launched = skipAgent
+        ? { status: 0, stdout: '' }
+        : runStage(seams, 'probe-agent', attempt,
+          () => (seams.launchProbe || launchProbe)(built, prepared, model, evidence, run));
       if (launched.status !== 0) {
         const provider = AGENT.providerFor(built.cfg, 'test-probe');
         const limited = AGENT.usageLimitFromLaunch(provider, launched, model);
         if (limited) {
           keepBaseline = true;
-          return { ...limited, kind: 'usage-limit', attempt, probe: prepared.probe };
+          return { ...limited, kind: 'usage-limit', attempt, probe: prepared.probe, retained: true };
         }
-        return { ok: false, kind: 'agent', attempt, probe: prepared.probe,
+        return { ok: false, kind: 'agent', attempt, probe: prepared.probe, retained: false,
           error: failureText(launched, 'green-probe agent failed') };
       }
       const before = runStage(seams, 'protected-check-before', attempt,
         () => (seams.invariantErrors || invariantErrors)(built, prepared));
-      if (before.length) return { ok: false, kind: 'tamper', attempt, probe: prepared.probe, error: before.join('; ') };
+      // Tampering is never resumable, however intact the container's ownership still looks: the
+      // tree the proof would resume from is no longer the tree that was prepared.
+      if (before.length) {
+        return { ok: false, kind: 'tamper', attempt, probe: prepared.probe, retained: false,
+          error: before.join('; ') };
+      }
 
       const gated = runStage(seams, 'gate', attempt,
         () => (seams.runGate || runGate)(built, prepared, run));
       evidence = `${gated.stdout || ''}${gated.stderr || ''}`.trim();
       const after = runStage(seams, 'protected-check-after', attempt,
         () => (seams.invariantErrors || invariantErrors)(built, prepared));
-      if (after.length) return { ok: false, kind: 'tamper', attempt, probe: prepared.probe, error: after.join('; '), evidence };
+      if (after.length) {
+        return { ok: false, kind: 'tamper', attempt, probe: prepared.probe, retained: false,
+          error: after.join('; '), evidence };
+      }
       if (gated.status === 0) {
         runStage(seams, 'marker-write', attempt,
           () => (seams.markProven || markProven)(prepared, attempt, evidence));
         keepBaseline = true;
         return { ok: true, attempt, probe: prepared.probe, container: prepared.container, evidence,
-          agentOutput: String(launched.stdout || '').trim() };
+          retained: true, agentOutput: String(launched.stdout || '').trim() };
       }
       if (attempt === attempts) {
-        return { ok: false, kind: 'unproven', attempt, probe: prepared.probe,
+        const retained = retainUnfinished(prepared);
+        keepBaseline = true;
+        return { ok: false, kind: 'unproven', attempt, probe: prepared.probe, retained,
           error: `the green probe did not pass after ${attempts} attempt(s)`, evidence };
       }
     }
-    return { ok: false, kind: 'unproven', probe: prepared.probe, error: 'green probe ended without a verdict' };
+    const retained = retainUnfinished(prepared);
+    keepBaseline = true;
+    return { ok: false, kind: 'unproven', probe: prepared.probe, retained,
+      error: 'green probe ended without a verdict' };
   } catch (e) {
-    return { ok: false, kind: 'setup', probe: prepared.probe, error: (e && e.message) || String(e) };
+    // A recoverable fault after preparation is an interruption, not a verdict. It is retained on
+    // exactly the same fresh-ownership terms as ordinary exhaustion.
+    const retained = retainUnfinished(prepared);
+    keepBaseline = true;
+    return { ok: false, kind: 'setup', probe: prepared.probe, retained,
+      error: (e && e.message) || String(e) };
   } finally {
+    // Reaching a retention decision is what sets keepBaseline above, whichever way that decision
+    // went: a successful retention must survive, and a refused one proved nothing about who owns
+    // the container, so neither authorizes a sweep here.
     if (!keepBaseline) {
       try { removeOwnedPath(prepared.container, prepared.baseline); } catch { /* probe remains for inspection */ }
     }
   }
 }
 
-const USAGE = 'usage: node scripts/prove-tests.js <issue-id> --config run.config.<project>.json';
+// A refusal is diagnostic, not a transcript. Keep the reason, drop anything a wrapped host error
+// may have appended past it, so one unbounded OS message cannot bury the line above it.
+const MAX_DIAGNOSTIC = 300;
+function boundedDiagnostic(text) {
+  const line = String(text === undefined || text === null ? '' : text)
+    .replace(/\s+/g, ' ').trim() || 'no reason was reported';
+  return line.length <= MAX_DIAGNOSTIC ? line : `${line.slice(0, MAX_DIAGNOSTIC - 3)}...`;
+}
+
+const USAGE = 'usage: node scripts/prove-tests.js <issue-id> --config run.config.<project>.json'
+  + ' [--resume-probe <retained probe dir>] [--skip-agent]';
 function parseArgs(argv) {
-  const opts = { id: null, config: null };
+  const opts = { id: null, config: null, resumeProbe: null, skipAgent: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--config') {
       const value = argv[++i];
       if (value === undefined || value.startsWith('--')) return { error: '--config needs a value' };
       opts.config = value;
-    } else if (arg === '-h' || arg === '--help') opts.help = true;
+    } else if (arg === '--resume-probe') {
+      const value = argv[++i];
+      if (value === undefined || value.startsWith('--')) return { error: '--resume-probe needs a value' };
+      opts.resumeProbe = value;
+    } else if (arg === '--skip-agent') opts.skipAgent = true;
+    else if (arg === '-h' || arg === '--help') opts.help = true;
     else if (arg.startsWith('--')) return { error: `unknown option "${arg}"` };
     else if (opts.id) return { error: 'only one issue id may be proven at a time' };
     else opts.id = arg;
@@ -586,6 +649,11 @@ function main(argv, out = console.log, err = console.error, seams = {}) {
   if (opts.help) { out(USAGE); return 0; }
   if (opts.error || !opts.id || !opts.config || !validIssueId(opts.id)) {
     err(`prove-tests: ${opts.error || 'a safe issue id and --config are required'}`); err(USAGE); return 2;
+  }
+  // Re-gating without an agent only makes sense against an already-built retained probe. Refuse
+  // rather than quietly preparing a fresh pair of clones and gating a probe nobody edited.
+  if (opts.skipAgent && !opts.resumeProbe) {
+    err('prove-tests: --skip-agent only applies to a retained probe named by --resume-probe'); err(USAGE); return 2;
   }
   const configPath = path.resolve(opts.config);
   let lockCfg;
@@ -623,14 +691,21 @@ function main(argv, out = console.log, err = console.error, seams = {}) {
     const model = String(built.cfg.testProbeModel || built.cfg.testAuthorModel || built.cfg.model || '').trim();
     if (!model) { err('prove-tests: no probe model is configured'); return 3; }
     const probeSeams = { ...(seams.probeSeams || {}) };
+    // Additive, exactly like onStage below: a caller's own launchProbe/runGate stubs still apply,
+    // and an invocation naming neither flag is byte-for-byte the command it has always been.
+    if (opts.resumeProbe) probeSeams.retainedProbe = path.resolve(opts.resumeProbe);
+    if (opts.skipAgent) probeSeams.skipAgent = true;
     if (typeof probeSeams.onStage !== 'function') probeSeams.onStage = (event) => {
       const line = proofStageLine(event); if (line) err(`prove-tests: ${line}`);
     };
     const proof = (seams.proveTests || proveTests)(built, model, probeSeams);
     if (proof.evidence) out(proof.evidence);
     if (!proof.ok) {
-      err(`prove-tests: ${proof.error}`);
+      err(`prove-tests: ${boundedDiagnostic(proof.error)}`);
       if (proof.probe) err(`probe retained for inspection: ${proof.probe}`);
+      if (proof.retained === true) {
+        err(`prove-tests: the unfinished proof is resumable: re-run with --resume-probe (add --skip-agent to re-gate ${opts.id} without another model launch).`);
+      }
       return 4;
     }
     out(`fully proven on attempt ${proof.attempt}; retained probe: ${proof.probe}`);
@@ -648,7 +723,7 @@ module.exports = {
   invariantErrors, suiteDifference, validIssueId,
   suiteIdOf,
   ownerRecordPath, ownedContainer, removeOwnedPath, removeOwnedContainer, readManagedProbe, validateManagedProbe,
-  resumeProbe,
+  resumeProbe, retainUnfinished,
   promoteManagedSuite, rollbackManagedPromotion, finalizeManagedPromotion, markProven, policyAt,
   validStageEvent, proofStageLine, runStage, PROOF_STAGES,
   PROBE_TOOLS, PROBE_DENIED, PROBE_PREFIX, PROBE_ROOT_NAME, MARKER,

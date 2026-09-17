@@ -353,6 +353,38 @@ have resource limits and deterministic cleanup by an owned name/CID; clone owner
 outside the model-editable tree. Managed clones are removed only after freeze has pushed and the
 runner has read the result back as dispatchable.
 
+**A proof that did not finish is kept, not swept.** A provider usage limit already preserved its
+container; ordinary attempt exhaustion and a recoverable non-usage-limit fault or interruption
+after preparation now do the same (change-log row `repo-djf-49-retained-proof`). At that decision
+the controller re-reads the container's ownership out of band rather than trusting a value carried
+from preparation time, because a sandboxed probe agent has had the tree in between. Only an intact
+owner record and marker authorize it to rewrite the marker to the distinct state `unfinished` and
+report an explicit `retained: true`, keeping both the red baseline and the probe. Missing,
+mismatched, malformed or symlinked ownership answers false and authorizes nothing: no marker byte
+moves, no reparse point is followed, and nothing recursive is removed. Tampering is excluded from
+retention outright — ownership may be perfectly intact, but the tree the proof would resume from
+is no longer the tree that was prepared — and a marker write that cannot be read back claims no
+retention either, because a retention claim is a claim about what is on disk. `proven` stays
+something only a successful gate ever writes.
+
+Resume or re-gate a retained proof as its own command, rather than paying for both clones again:
+
+```bash
+node scripts/prove-tests.js <issue-id> --config run.config.<project>.json \
+  --resume-probe <retained probe dir> [--skip-agent]
+```
+
+It takes the same target lock, reads the same brief and returns the same exit codes as the plain
+invocation, and validates the retained container on six independent dimensions — issue, source
+worktree, suite bytes, author HEAD, baseline manifest and ownership — before any agent launch or
+gate. Each one refuses on its own, and the refusal is a bounded diagnostic that names the reason
+rather than quoting an unbounded host error over it. `--skip-agent` re-gates without a model: no
+RED is rebuilt and no session is launched, and the protected-tree invariants still run before and
+after exactly one two-direction gate, which remains the only thing that can write `proven`. It is
+refused without `--resume-probe`, because a freshly prepared probe nobody has edited is not
+something to re-gate. Both flags are additive; an invocation naming neither is the command it has
+always been.
+
 **Prepare a dependency-shaped backlog as one resumable planning batch.** Repeating the
 single-issue launcher by hand is unnecessary when several approved specs are waiting. Name the
 batch and its complete issue set once:
