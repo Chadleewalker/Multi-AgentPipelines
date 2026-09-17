@@ -339,6 +339,22 @@ launch or gate. `--skip-agent` re-gates without a model launch and without rebui
 the protected-tree invariants before and after exactly one two-direction gate, and is refused
 unless `--resume-probe` names the retained container.
 
+In the batch path that retention keeps a dedicated identity rather than being flattened into the
+generic `probe` field an agent failure, a tamper refusal and a setup fault all carry for
+inspection. `scripts/prepare-batch-worker.js` reports `resumableProbe` beside that unchanged
+inspection path, for `proof` and `author-proof` alike, and only for an ordinary validated
+unfinished proof whose path still reads back on disk as an owned managed container for that job's
+suite with an `unfinished` marker; usage-limit parks keep their existing resume wiring, and setup,
+agent, tamper, config and malformed results gain nothing. One authorization rule — not `ok`,
+`outcome` and `kind` both `unproven`, and a non-empty path string — is applied where
+`scripts/prepare-batch.js` parses the worker envelope, so an unauthorized claim never reaches
+durable state, and again on the durable record's own recorded content when `retry <batch> <id>...`
+reads it back. A selected path must still exist and the relaunched phase must still be `proof`;
+retry then passes that exact recorded string to the next proof worker, which resumes that container
+instead of building a new red baseline or author session. Missing, stale, mismatched-phase,
+inspection-only and non-resumable records take retry's existing path, and `probe` alone never
+fabricates retention.
+
 Preparation also resolves each not-yet-frozen issue's structured `design-ref` from the exact
 integration HEAD recorded in its immutable manifest. It never consults an operator-local file
 or a newer working-tree copy. Approved text that is not committed is published through the

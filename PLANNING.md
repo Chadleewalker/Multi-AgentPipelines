@@ -385,6 +385,28 @@ refused without `--resume-probe`, because a freshly prepared probe nobody has ed
 something to re-gate. Both flags are additive; an invocation naming neither is the command it has
 always been.
 
+Inside a preparation batch, that retention now survives the worker that decided it (change-log row
+`repo-djf-50-resumable-proof-identity`). The batch worker used to flatten every unsuccessful proof
+into one generic `probe` path — the same field an agent failure, a tamper refusal and a setup
+fault carry for inspection — so the durable record could not tell a proof in progress from a
+corpse kept to look at. It now reports a second, dedicated `resumableProbe` beside that unchanged
+inspection path, for `proof` and `author-proof` alike, and only for ordinary validated attempt
+exhaustion whose path still reads back on disk as an owned managed container for that job's suite
+with an `unfinished` marker. The path is re-read there rather than echoed, because a result claiming
+retention is not evidence of it. Usage-limit parks keep their existing resume wiring, and setup,
+agent, tamper, config and malformed results gain nothing.
+
+One authorization rule — not `ok`, `outcome` and `kind` both `unproven`, and a non-empty path
+string — decides that field wherever it is read, and it is applied twice on purpose: as the worker
+envelope is parsed, so an unauthorized or forged claim never enters durable state, and again on the
+durable record's own recorded content when `retry` reads it back, so a row written by another
+writer or before this rule existed proves nothing by carrying the key. A selected path must still
+exist and the phase being relaunched must still be `proof`; retry then hands that exact recorded
+string to the next proof worker, which resumes that container instead of cloning a fresh red
+baseline and, where the earlier attempt authored first, without a second author session. Missing,
+stale, mismatched-phase, inspection-only and non-resumable records take the path retry already
+takes, and `probe` alone never fabricates retention.
+
 **Prepare a dependency-shaped backlog as one resumable planning batch.** Repeating the
 single-issue launcher by hand is unnecessary when several approved specs are waiting. Name the
 batch and its complete issue set once:
@@ -470,7 +492,10 @@ phase, an issue already disqualified for another reason, and the flag on any mod
 target-global lock with nothing launched. Retrying a durably acknowledged interruption skips
 re-resolving design provenance, because the attempt being recovered was already admitted through
 that gate at its own snapshot; an issue edited since then is still refused by the
-criteria-fingerprint check beside it.
+criteria-fingerprint check beside it. A retried `proof` phase needs no flag to reuse a retained
+container: where the durable record carries an authorized, still-present resumable proof, retry
+passes that exact path to the relaunched worker as described above, and otherwise launches
+precisely as it does today.
 A successful item means **proven at the recorded integration base**. The coordinator
 never freezes, commits, merges, pushes, changes Beads, or turns blocked
 implementation dependencies into test-author dependencies: specs may be prepared together, then

@@ -2153,6 +2153,31 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     write `proven`. Both flags are additive; an invocation naming neither is the command it
     always was. Refusal diagnostics are bounded and name the reason rather than quoting the host.
 
+    **A retained proof keeps its own identity all the way to the next attempt** (change-log row
+    `repo-djf-50-resumable-proof-identity`). Retention was reported only to the process that
+    decided it: the batch worker flattened every non-`ok` proof into one generic `probe` path,
+    which an agent failure, a tamper refusal and a setup fault all carry too, so durable state
+    could not tell a proof in progress from a corpse kept for inspection and `retry` rebuilt a
+    baseline — and, after an `author-proof` attempt, a whole author session — that was already on
+    disk. The worker therefore publishes a second, dedicated `resumableProbe` alongside the
+    unchanged inspection path, for `proof` and `author-proof` alike, and only for ordinary
+    validated attempt exhaustion: `retained: true` on a `kind: 'unproven'` result whose path still
+    reads back on disk as an owned managed container for that job's suite whose marker says
+    `unfinished`. The path is re-validated there rather than echoed, because the result claiming
+    retention is not evidence of it. Usage-limit parks keep their existing `probe`-based resume
+    wiring untouched, and setup, agent, tamper, config and malformed results gain nothing.
+
+    One rule authorizes that field wherever it is read — `ok === false`, `outcome` and `kind` both
+    `unproven`, and a non-empty path string — and it is applied twice on purpose. The worker
+    envelope is judged as it is parsed, so an unauthorized or forged claim never reaches durable
+    state at all; the durable record is judged again on its own recorded content when `retry`
+    reads it back, so a row written by another writer, or before this rule existed, proves nothing
+    by merely carrying the key. A selected path must still exist, and the phase being relaunched
+    must still be `proof`; retry then hands that exact recorded string to the next worker through
+    the `retainedProbe` wiring the usage-limit resume path already uses. Missing, stale,
+    mismatched-phase, inspection-only and non-resumable records all take the path retry takes
+    today — one worker, no retention — and `probe` alone never fabricates it.
+
     The strongest batch result is deliberately **proven-at-base**. A proof is bound to the exact
     integration HEAD and issue-independent protected-tree base manifest, including every receipt
     byte that commit carries, so freezing one suite makes every other old

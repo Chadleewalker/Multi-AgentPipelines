@@ -264,9 +264,17 @@ function parseWorkerEnvelope(stdout) {
     const verified = value && typeof value === 'object' && !Array.isArray(value)
       && typeof value.ok === 'boolean' && typeof value.outcome === 'string'
       && (value.outcome !== 'usage-limit' || canonicalUsageLimit(value));
-    return verified
-      ? { verified: true, result: value }
-      : { verified: false, result: { ok: false, outcome: 'invalid', error: 'worker result is not a protocol object' } };
+    if (!verified) {
+      return { verified: false, result: { ok: false, outcome: 'invalid', error: 'worker result is not a protocol object' } };
+    }
+    // A resumable proof path is an authority claim, not data: it tells a later retry it may reuse
+    // a container instead of building one. Strip an unauthorized claim here, where the envelope
+    // is first read, so nothing downstream — durable state included — has to re-derive the rule.
+    if (value.resumableProbe !== undefined && !authorizedResumableProbe(value)) {
+      const { resumableProbe, ...rest } = value;
+      return { verified: true, result: rest };
+    }
+    return { verified: true, result: value };
   } catch (e) {
     return { verified: false,
       result: { ok: false, outcome: 'invalid', error: `worker returned invalid JSON: ${e.message}` } };
@@ -283,6 +291,17 @@ function canonicalUsageLimit(result) {
     && typeof limit.resetAt === 'string' && Number.isFinite(Date.parse(limit.resetAt))
     && new Date(limit.resetAt).toISOString() === limit.resetAt
     && typeof limit.evidence === 'string' && limit.evidence.length > 0);
+}
+
+// The single authorization rule for a recorded resumable proof, applied both where a worker
+// envelope enters durable state and where a later retry reads that record back. A record is
+// judged on its own recorded content — one written by another writer, or before this rule
+// existed, proves nothing by merely carrying the key — and `probe` alone never satisfies it.
+function authorizedResumableProbe(value) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    && value.ok === false && value.outcome === 'unproven' && value.kind === 'unproven'
+    && typeof value.resumableProbe === 'string' && value.resumableProbe.length
+    ? value.resumableProbe : null;
 }
 
 function retainedPaths(value) {
@@ -1117,6 +1136,15 @@ async function execute(opts, io = {}, seams = {}) {
             }
           }
         }
+        // A durably recorded retained proof is the one thing a relaunched proof worker may reuse:
+        // it resumes that exact container instead of cloning a fresh red baseline, and — where the
+        // attempt that produced it authored first — without a second author session. Authorization
+        // is re-read from the record itself, the path must still be on disk, and the phase being
+        // relaunched must still be `proof`; anything else launches exactly as retry does today.
+        if (item.action === 'proof' && prior.result) {
+          const retained = authorizedResumableProbe(prior.result.data);
+          if (retained && fs.existsSync(retained)) item.retainedProbe = retained;
+        }
       }
       state.appendEvent(root, opts.batch, 'issue.snapshotted', scrubSecrets({
         issueId: item.id, state: item.outcome, action: item.action || null,
@@ -1193,7 +1221,7 @@ module.exports = {
   workerEnv, hostEnvSecrets, scrubSecrets, integrationHead, snapshotFingerprints,
   inspectIntegration, strayIssues, settleEmptyTakeover, unresolvedWorkers, acknowledgeInterrupted,
   acknowledgedPhases, acknowledgedInterruptions, suiteEvidence,
-  shouldCheckPrerequisites, canonicalUsageLimit, activeUsagePause, hasUsageLimitHistory,
+  shouldCheckPrerequisites, canonicalUsageLimit, authorizedResumableProbe, activeUsagePause, hasUsageLimitHistory,
   retainedPaths, usageLimitStatus, createUsageLimitPreparation,
   attemptPhase, sameConfigIdentity, SECRET_MARKER,
   DEFAULT_CONCURRENCY, MAX_CONCURRENCY, MAX_WORKER_OUTPUT, STAGE_PREFIX,
