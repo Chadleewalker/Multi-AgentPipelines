@@ -47,6 +47,7 @@ const {
   readyQueue, partitionByFreeze, resolveBranch, gitSpawnOptions, REFUSAL, RECEIPT_VERDICTS,
 } = require('../runner/queue');
 const { suiteHash, treeEntries } = require('../runner/suite-hash');
+const { resolveSuites } = require('../runner/suite-supersession');
 const writeProtection = require('./write-protection-policy');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -566,6 +567,19 @@ function commit(opts, out, err) {
   }
   const cfg = loaded.cfg;
 
+  // ---- the acceptance roster, before the first mutation of any kind ------------------------
+  // Publication is a one-way door. The integration checkout's own retirement contract is
+  // resolved — and reported to whoever is publishing — before the gate writes a receipt into a
+  // suite and before anything is promoted, staged, committed or pushed. A contract this command
+  // cannot resolve is a roster nobody can be held to, so it stops the freeze here or not at all.
+  const roster = resolveSuites({ root: cfg.targetRepoPath });
+  if (!roster.ok) {
+    err(`freeze: the acceptance retirement roster could not be resolved — ${roster.error}`);
+    err('        nothing has been gated, promoted, staged, committed or pushed.');
+    return EXIT_REFUSED;
+  }
+  for (const line of roster.report) out(line);
+
   const mapped = managedProbeMap(opts, ids);
   if (!mapped.ok) {
     err(`freeze: ${mapped.error}`);
@@ -956,7 +970,10 @@ function main(argv, out = console.log, err = console.error) {
 
 if (require.main === module) process.exit(main(process.argv.slice(2)));
 
+// The roster is exported as the RESOLVER ITSELF — the same function object the sweep
+// coordinator exports — so the acceptance roster has exactly one implementation.
 module.exports = { main, parseArgs, GATE_VERDICT, PROCEEDS, currentHead,
+  resolveAcceptanceRoster: resolveSuites,
   indexIsClean, stagedFreezePaths, rollbackFreezePreparation, normalizeGitPath,
   validateTreeSnapshot, prepareFreezeSnapshot, makeFreezeCommit, pushFreezeCommit, removeSnapshot,
   managedProbeMap, outsideProtectedManifest, managedArtifactsIntact,

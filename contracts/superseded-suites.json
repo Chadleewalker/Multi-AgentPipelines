@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "supersessions": [
+    {
+      "suite": "repo-7a0",
+      "supersededBy": "repo-djf.40",
+      "replacementSuite": "repo-djf.40",
+      "rationale": "Per-launch disposal replaces post-launch persistence: the author-containment shim is now disposed once the provider call settles, so the older assertions that it still refuses bd after launchAuthor() returns contradict the shipped behaviour.",
+      "integrationCommit": "derive:freeze-commit"
+    }
+  ]
+}

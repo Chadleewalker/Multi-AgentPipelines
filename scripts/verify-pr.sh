@@ -108,7 +108,38 @@ base_worktree() {
   echo "$BASE_WT"
 }
 
-for d in tests/acceptance/*/; do
+# --- 3a. WHICH siblings. A frozen suite an explicit retirement contract has superseded is not
+#         re-run here: it is REPORTED, with its replacement and the rationale, where a reviewer
+#         reads it — "ALREADY red at the fork point" is the silence that contract exists to end.
+#         That roster has exactly one implementation, and this script cannot import anything, so
+#         it asks the resolver in the checkout under review through its command line. A roster
+#         that cannot be resolved is not a pass: the set of live suites is then unknown.
+ACTIVE_SUITES=""
+if [ -f runner/suite-supersession.js ]; then
+  ROSTER_LOG="${TMPDIR:-/tmp}/vp-roster.$$"
+  # `--repo .` and not "$WT": the worktree IS the current directory here, and a POSIX temp path
+  # handed to a Windows node.exe is a path that binary cannot open. A relative root is resolved
+  # by the resolver against its own cwd, which is the checkout under review either way.
+  if node runner/suite-supersession.js plan --repo . >"$ROSTER_LOG" 2>&1; then
+    pass "acceptance roster resolved from the supersession contract"
+    sed 's/^/        /' "$ROSTER_LOG"
+    ACTIVE_SUITES="$(node runner/suite-supersession.js active --repo . 2>/dev/null)"
+  else
+    fail "the acceptance retirement roster could not be resolved — which sibling suites are live is unknown"
+    sed 's/^/        /' "$ROSTER_LOG"
+  fi
+  rm -f "$ROSTER_LOG"
+else
+  # A checkout from before the contract existed still gets the historical enumeration.
+  for d in tests/acceptance/*/; do
+    [ -d "$d" ] || continue
+    case "$d" in */_control/) continue ;; esac
+    ACTIVE_SUITES="$ACTIVE_SUITES $(basename "$d")"
+  done
+fi
+
+for id in $ACTIVE_SUITES; do
+  d="tests/acceptance/$id/"
   case "$d" in
     "$ACCEPT"|"${ACCEPT%/}/") continue ;;   # already run above
     */_control/) continue ;;                # harness check, run by the freeze gate
