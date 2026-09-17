@@ -1,0 +1,18 @@
+{
+  "issueId": "repo-djf.51",
+  "attempts": [
+    {
+      "number": 1,
+      "verifierResult": "pass",
+      "timestamp": "2026-09-17T17:23:54.922Z"
+    }
+  ],
+  "phase": "docs",
+  "memoryNotes": [
+    "repo-djf.51: a retained green proof's six existing resume dimensions (issue, author worktree, suite bytes, author HEAD, baseline manifest, ownership) are ALL byte-identical across two different repositories — cfg.targetRepoPath, the argument prepareProbe actually clones from, was never compared. The binding uses runner/lock.js canonicalTarget (marker field targetIdentity), never path.resolve: only realpath separates 'an alias of the same repo' from 'a junction retargeted at another repo', and re",
+    "repo-djf.51 verification recipe: to prove a fixture red-without-the-work against a frozen suite you cannot edit, build a throwaway root of symlinks to the repo entries, replace only the one file you mutate, and run node with BOTH --preserve-symlinks AND --preserve-symlinks-main. Without the -main flag Node realpaths the entry module, so the suite's path.resolve(__dirname,'..','..','..') ROOT lands back on the real checkout and the mutated copy is never loaded — the run then looks fully green and",
+    "Retained-proof resume validation is enumerated in prose in three living docs at once: DESIGN.md 3.10, PLANNING.md's resume section (which states an explicit dimension *count* — was 'six independent dimensions', now seven), and docs/control-plane.md's prove-tests paragraph. Adding or removing a resume check means updating that count and both lists, not just DESIGN.md. Only scripts/test-changelog.sh covers docs in the CI roster, and it checks citation form and row shape only — it cannot catch a st"
+  ],
+  "model": "claude-opus-5",
+  "changeSummary": "`scripts/prove-tests.js` now binds a retained green proof to the canonical identity of the repository it was cloned from rather than to a path string: `prepareProbe` resolves `runner/lock.js`'s `canonicalTarget(cfg.targetRepoPath)` before creating anything and records it as `targetIdentity` in the ownership marker, failing preparation outright if the target cannot be canonicalized. `resumeProbe` recomputes that identity and refuses unless the recorded value is a non-empty string equal to it, so an equivalent path spelling of the same repository still resumes while a different repository, a junction or symlink retargeted underneath the same literal path, and a missing or malformed recorded identity are all rejected. The check is answered from the marker already in hand and runs ahead of every other resume validation, so a refusal launches no agent, runs no gate, moves no marker byte and sweeps nothing — the retained container stays byte-identical and the swapped-in path is neither followed nor deleted. Documentation was updated alongside: `DESIGN.md` 3.10 and change-log row `repo-djf-51-proof-target-identity` in the implementation commit, plus the resume-validation descriptions in `PLANNING.md` and `docs/control-plane.md`, which now list target repository identity as the first of seven dimensions."
+}

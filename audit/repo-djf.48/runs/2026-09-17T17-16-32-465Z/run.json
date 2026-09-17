@@ -1,0 +1,45 @@
+{
+  "runId": "2026-09-17T17-16-32-465Z",
+  "startedAt": "2026-09-17T17:16:32.466Z",
+  "finishedAt": "2026-09-17T17:26:38.385Z",
+  "targetRepo": "https://github.com/Chadleewalker/Multi-AgentPipelines.git",
+  "concurrency": 1,
+  "allowHalfProven": false,
+  "feed": {
+    "enabled": false,
+    "idleGraceMinutes": 0,
+    "polls": 0,
+    "ending": "drained"
+  },
+  "queue": {
+    "ready": 1,
+    "dispatched": 1,
+    "refused": 0
+  },
+  "tasks": [
+    {
+      "issueId": "repo-djf.51",
+      "title": "Bind retained proofs to canonical target repository identity",
+      "outcome": "done",
+      "exitCode": 0,
+      "branch": "task/repo-djf.51",
+      "pushed": true,
+      "prUrl": "https://github.com/Chadleewalker/Multi-AgentPipelines/pull/156",
+      "attempts": 1,
+      "pauses": 0,
+      "activeSeconds": 579,
+      "diffLines": 110,
+      "changeSummary": "`scripts/prove-tests.js` now binds a retained green proof to the canonical identity of the repository it was cloned from rather than to a path string: `prepareProbe` resolves `runner/lock.js`'s `canonicalTarget(cfg.targetRepoPath)` before creating anything and records it as `targetIdentity` in the ownership marker, failing preparation outright if the target cannot be canonicalized. `resumeProbe` recomputes that identity and refuses unless the recorded value is a non-empty string equal to it, so an equivalent path spelling of the same repository still resumes while a different repository, a junction or symlink retargeted underneath the same literal path, and a missing or malformed recorded identity are all rejected. The check is answered from the marker already in hand and runs ahead of every other resume validation, so a refusal launches no agent, runs no gate, moves no marker byte and sweeps nothing — the retained container stays byte-identical and the swapped-in path is neither followed nor deleted. Documentation was updated alongside: `DESIGN.md` 3.10 and change-log row `repo-djf-51-proof-target-identity` in the implementation commit, plus the resume-validation descriptions in `PLANNING.md` and `docs/control-plane.md`, which now list target repository identity as the first of seven dimensions.",
+      "model": "claude-opus-5",
+      "verification": {
+        "acceptance": "pass",
+        "regressions": "pass",
+        "evidence": "resume of the identical real path succeeds\n[test] PASS T2 C2,C4(same-repository alias) resume through an equivalent (non-real, redundant-segment) spelling of the same real target repository succeeds\n[test] PASS T3 C2,C3,C4(different repository) resume refuses a genuinely different repository at the same config field, before touching the retained container\n[test] PASS T4 C2,C3,C4(retargeted junction/symlink) resume refuses a junction/symlink retargeted to a different repository at the same literal path, without following or deleting the swapped-in decoy\n[test] SKIP T5: host is not the case-insensitive, backslash-native platform this check exercises\n[test] PASS T5 C2,C4(case and normalization) resume through a differently-cased, differently-slashed spelling of the same real target repository succeeds on a case-insensitive host filesystem\n[test] PASS T6 C2,C3(missing/malformed canonical identity) resume refuses a retained marker whose canonical identity is missing or malformed, before touching the retained container\n[test] PASS T7 C3 identity refusal at the proveTests() level happens before any agent launch, gate run, or marker mutation, and leaves the retained container byte-identical\n[test] PASS T8 C5 the existing frozen tests/acceptance/repo-os9/test.js (target-lock) and tests/acceptance/repo-djf.14/test.js (probe ownership and freeze) still pass in full once canonical target identity binding is built\n[test] PASS 8/8 focused checks\nPASS: tests/acceptance/repo-djf.51//test.js\n"
+      },
+      "attemptNotes": [
+        "run 2026-09-17T17-16-32-465Z: outcome done\n  attempt 1: pass at 2026-09-17T17:23:54.922Z\n  memory notes: 3\n  memory in: 285",
+        "PR: https://github.com/Chadleewalker/Multi-AgentPipelines/pull/156"
+      ]
+    }
+  ]
+}

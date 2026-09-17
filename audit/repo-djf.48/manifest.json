@@ -1,0 +1,141 @@
+{
+  "version": "repo-djf.48-audit-export/1",
+  "branchBase": "ab691d130f0b0e0c10086adad11c58d374034f45",
+  "policy": {
+    "included": [
+      "supervisor events.jsonl",
+      "run.json",
+      "events.jsonl",
+      "report.md",
+      "task status.json",
+      "task verify.json"
+    ],
+    "excluded": [
+      "model memory",
+      "agent logs",
+      "container logs",
+      "issue prompt copies",
+      "documentation phase output"
+    ],
+    "redactions": [
+      "credential values",
+      "private keys",
+      "authority/lease/nonce/token fields",
+      "machine-local host paths"
+    ]
+  },
+  "files": [
+    {
+      "path": "runs/2026-09-17T13-14-50-110Z/events.jsonl",
+      "sourceSha256": "4dbe97dec354153a5995598109c21c34f7bde8e784a65d0bc261772c9db11b0d",
+      "exportedSha256": "0c05879f9c33b11132eaebbddafd79154fbd231285ce8dfa638becfc1c903af8",
+      "sourceBytes": 9233,
+      "exportedBytes": 8807
+    },
+    {
+      "path": "runs/2026-09-17T13-14-50-110Z/report.md",
+      "sourceSha256": "4f7f1cea1083c1d896721d57c453a44d3630cca6af654ce6a8fba88234ce69a1",
+      "exportedSha256": "17723c36acb757c5316627a3308a633a061b3ec20ce0a0ecffc429548d8df7d0",
+      "sourceBytes": 5693,
+      "exportedBytes": 5611
+    },
+    {
+      "path": "runs/2026-09-17T13-14-50-110Z/run.json",
+      "sourceSha256": "b7c0511360caa63e9975e971822c02bd618477a6084ec9ffdda1c43a3e2d518e",
+      "exportedSha256": "c44f162118782255b6b8a530647fdc9d15b006ebd21f68ed2eb8f1e7ce4b8d9a",
+      "sourceBytes": 5622,
+      "exportedBytes": 5528
+    },
+    {
+      "path": "runs/2026-09-17T13-14-50-110Z/tasks/repo-djf.49/status.json",
+      "sourceSha256": "f98019df1f6e64d995c70c9dd190514eddc9aa3c32fa0122e4663a8677c8a091",
+      "exportedSha256": "f98019df1f6e64d995c70c9dd190514eddc9aa3c32fa0122e4663a8677c8a091",
+      "sourceBytes": 4776,
+      "exportedBytes": 4776
+    },
+    {
+      "path": "runs/2026-09-17T13-14-50-110Z/tasks/repo-djf.49/verify.json",
+      "sourceSha256": "319aa232128b46faa8327019e78a35fca58c1aba8bb4b703fbe8467d35d9be31",
+      "exportedSha256": "319aa232128b46faa8327019e78a35fca58c1aba8bb4b703fbe8467d35d9be31",
+      "sourceBytes": 5708,
+      "exportedBytes": 5708
+    },
+    {
+      "path": "runs/2026-09-17T15-19-32-343Z/events.jsonl",
+      "sourceSha256": "b760b203a1a7f668e243b8e0d117f592e9f915165a83a8f2c32fe9196fee27e0",
+      "exportedSha256": "8faf51de33560749faff403347ee91a1ee4e473bf4bab5eaffd493811b05f4db",
+      "sourceBytes": 8034,
+      "exportedBytes": 7703
+    },
+    {
+      "path": "runs/2026-09-17T15-19-32-343Z/report.md",
+      "sourceSha256": "6e0ed3c432e1d20c5190cb503dbf9b4ffa73c1b2743c5663dfdb1617cbce01e1",
+      "exportedSha256": "6e0ed3c432e1d20c5190cb503dbf9b4ffa73c1b2743c5663dfdb1617cbce01e1",
+      "sourceBytes": 3882,
+      "exportedBytes": 3882
+    },
+    {
+      "path": "runs/2026-09-17T15-19-32-343Z/run.json",
+      "sourceSha256": "a35ef47c1699c5732d8a5c4c987d183f969164d365aac2c4178138ed0ece2410",
+      "exportedSha256": "a35ef47c1699c5732d8a5c4c987d183f969164d365aac2c4178138ed0ece2410",
+      "sourceBytes": 4034,
+      "exportedBytes": 4034
+    },
+    {
+      "path": "runs/2026-09-17T15-19-32-343Z/tasks/repo-djf.50/status.json",
+      "sourceSha256": "05780524dc11ed8ae7802c3e30df7ff77543c9797db7a1211bd058a04b2ab6f4",
+      "exportedSha256": "05780524dc11ed8ae7802c3e30df7ff77543c9797db7a1211bd058a04b2ab6f4",
+      "sourceBytes": 4446,
+      "exportedBytes": 4446
+    },
+    {
+      "path": "runs/2026-09-17T15-19-32-343Z/tasks/repo-djf.50/verify.json",
+      "sourceSha256": "b93934ca0dccaf7e449a483b8ab6416b25623cc9ef0ee6e58c4bb446b160c073",
+      "exportedSha256": "b93934ca0dccaf7e449a483b8ab6416b25623cc9ef0ee6e58c4bb446b160c073",
+      "sourceBytes": 5215,
+      "exportedBytes": 5215
+    },
+    {
+      "path": "runs/2026-09-17T17-16-32-465Z/events.jsonl",
+      "sourceSha256": "8364853102c6af08355a093335685d45d0860a52a46be8e70895ba2eabde1b60",
+      "exportedSha256": "27c0dd83141fcf01f85f0f9e9d0415385eee5a3bb85263bfe365d7982e03b1a5",
+      "sourceBytes": 8040,
+      "exportedBytes": 7709
+    },
+    {
+      "path": "runs/2026-09-17T17-16-32-465Z/report.md",
+      "sourceSha256": "0b402123d3664a5fd69eea7baa470d0a366ced02d231a28af9b1d0fd9559a108",
+      "exportedSha256": "0b402123d3664a5fd69eea7baa470d0a366ced02d231a28af9b1d0fd9559a108",
+      "sourceBytes": 3951,
+      "exportedBytes": 3951
+    },
+    {
+      "path": "runs/2026-09-17T17-16-32-465Z/run.json",
+      "sourceSha256": "f3678ae76d8c0b558498048ba48ce7d49b230e6977aabac8e3920653722365f0",
+      "exportedSha256": "f3678ae76d8c0b558498048ba48ce7d49b230e6977aabac8e3920653722365f0",
+      "sourceBytes": 4103,
+      "exportedBytes": 4103
+    },
+    {
+      "path": "runs/2026-09-17T17-16-32-465Z/tasks/repo-djf.51/status.json",
+      "sourceSha256": "a43735347f746ab5f44f06dcc0cfea18937d590337d78c92b15fefc2432d5d8b",
+      "exportedSha256": "a43735347f746ab5f44f06dcc0cfea18937d590337d78c92b15fefc2432d5d8b",
+      "sourceBytes": 3105,
+      "exportedBytes": 3105
+    },
+    {
+      "path": "runs/2026-09-17T17-16-32-465Z/tasks/repo-djf.51/verify.json",
+      "sourceSha256": "869644a82b1eec04577697ed921bdf475e3d17c518b9cde2336cc73c25183432",
+      "exportedSha256": "869644a82b1eec04577697ed921bdf475e3d17c518b9cde2336cc73c25183432",
+      "sourceBytes": 4305,
+      "exportedBytes": 4305
+    },
+    {
+      "path": "supervisor/events.sanitized.jsonl",
+      "sourceSha256": "dea2a30f0f790369512b8ee02b31306618ce2282023e665f8bd0c233c69f432d",
+      "exportedSha256": "40232fe36af0dc3fe132d32bf2d34bed91e4749e615d56bd17b93a477c08c535",
+      "sourceBytes": 9166,
+      "exportedBytes": 9073
+    }
+  ]
+}
