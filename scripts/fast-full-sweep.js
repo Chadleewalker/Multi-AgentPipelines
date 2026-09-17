@@ -9,9 +9,15 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { resolveHostShell } = require('../runner/host-shell');
+const { resolveSuites } = require('../runner/suite-supersession');
 
+// The refusal has to survive the exit that follows it. stderr is a pipe for every caller that
+// reads this coordinator's verdict, and pipe writes are asynchronous on Windows, so
+// `process.stderr.write` followed by `process.exit` is free to drop the message that says why
+// the sweep refused. Write the reason to fd 2 synchronously first, then leave.
 function fail(message, code = 1) {
-  process.stderr.write(`FAIL  fast full sweep: ${message}\n`);
+  try { fs.writeSync(2, `FAIL  fast full sweep: ${message}\n`); }
+  catch { process.stderr.write(`FAIL  fast full sweep: ${message}\n`); }
   process.exit(code);
 }
 
@@ -102,6 +108,17 @@ function main() {
   const args = process.argv.slice(2);
   if (args.length !== 2 || args[0] !== '--repo') fail('usage: fast-full-sweep.js --repo <git-checkout>', 2);
   const root = path.resolve(args[1]);
+
+  // The acceptance roster, resolved through the shared contract BEFORE a single profile starts.
+  // A sweep that runs the mandatory profile first and reads the roster afterwards has already
+  // spent the run it was supposed to refuse, and a retirement nobody prints is a retirement
+  // nobody sees — which is the silence this resolution exists to end.
+  const roster = resolveSuites({ root });
+  if (!roster.ok) fail(`the acceptance retirement roster could not be resolved: ${roster.error}`);
+  // Synchronously, for the same reason `fail` is: a later profile can end this process abruptly,
+  // and a retirement nobody prints is a retirement nobody sees.
+  for (const line of roster.report) fs.writeSync(1, `${line}\n`);
+
   const hostShell = resolveHostShell(null);
   if (!hostShell.ok) fail(hostShell.reason);
   const shell = hostShell.command;
@@ -149,4 +166,8 @@ function main() {
   process.stdout.write(`elapsed time: ${(elapsed / 1000).toFixed(1)}s\n`);
 }
 
-main();
+if (require.main === module) main();
+
+// The roster is exported as the RESOLVER ITSELF, never a copy or a wrapper: one function object
+// means one implementation of "which suites are live", shared with every other consumer.
+module.exports = { main, resolveAcceptanceRoster: resolveSuites };
