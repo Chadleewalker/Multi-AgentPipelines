@@ -105,13 +105,13 @@ check('C3 [guard] launchAuthor still launches Claude with its exact legacy argv 
 // ── G2 / C3 guard: the author-containment env contract still closes Beads ─────────────────────
 check('C3 [guard] containEnv still leads PATH with a bd/bd.cmd shim directory and strips the host bd overrides, and applyEnv still exposes only prepared.dir', () => {
   const baseEnv = { PATH: `${path.join('x', 'bin')}${path.delimiter}${path.join('y', 'bin')}`,
-    PIPELINE_BD_CMD: '/host/bd', BD_ARGS_LOG: '/tmp/log', HOME: '/home/fixture' };
+    PIPELINE_BD_CMD: '/host/bd', BD_ARGS_LOG: '/tmp/log', HOME: '/tmp/fixture-home' };
   const env = CONTAIN.containEnv(baseEnv, ISSUE);
   assert.deepStrictEqual(pathKeys(env), ['PATH'], `containEnv must leave exactly one PATH key, got ${JSON.stringify(pathKeys(env))}`);
   const first = String(env.PATH).split(path.delimiter)[0];
   for (const n of ['bd', 'bd.cmd']) assert(fs.existsSync(path.join(first, n)), `the leading PATH directory is missing the ${n} shim`);
   for (const name of CONTAIN.BD_OVERRIDE_NAMES) assert(!(name in env), `containEnv left the host bd override ${name} in the child environment`);
-  assert.strictEqual(env.HOME, '/home/fixture', 'containEnv altered an unrelated environment variable');
+  assert.strictEqual(env.HOME, '/tmp/fixture-home', 'containEnv altered an unrelated environment variable');
 
   const applied = CONTAIN.applyEnv(baseEnv, { dir: first });
   assert.strictEqual(String(applied.PATH).split(path.delimiter)[0], path.resolve(first),
