@@ -56,7 +56,7 @@ const cliSeams = (extra = {}) => ({
   ...extra,
 });
 
-check('A1 ordinary issue ids are accepted', P.validIssueId('Junkstronaut_Final-pyx'));
+check('A1 ordinary issue ids are accepted', P.validIssueId('Fixture_Project-abc'));
 for (const bad of ['..', 'app..7', '../x', 'a/b', 'a\\b', 'a b', 'x)', 'x,', 'x&y', '-option', 'CON', 'app.']) {
   check(`A2 unsafe issue id is rejected: ${bad}`, !P.validIssueId(bad));
 }

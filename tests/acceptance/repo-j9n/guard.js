@@ -14,7 +14,7 @@
 //           limited to ONBOARDING.md" — the house merge-base CONTENT diff (the shape
 //           `tests/acceptance/repo-yk4/guard.js` and, before it, `repo-1cy` use), over the
 //           whole tree rather than a list typed here;
-//         * "the existing Harness_Pipeline pipeline-onboard/scaffold entrypoints continue to
+//         * "the existing host pipeline-onboard/scaffold entrypoints continue to
 //           read central ONBOARDING.md dynamically" — as much of it as is observable from
 //           inside this repository; see the DEFECT note below for what that is and is not;
 //         * "runner/config.js still defaults concurrency to 1" — asked of `loadConfig` and

@@ -52,7 +52,7 @@ const linkDirectory = (target, link) => fs.symlinkSync(target, link, process.pla
     check(`unsafe batch id is refused: ${JSON.stringify(bad)}`, throws(() => S.validateBatchId(bad)));
     check(`unsafe issue id is refused: ${JSON.stringify(bad)}`, throws(() => S.validateIssueId(bad)));
   }
-  check('safe hyphenated issue ids are accepted', S.validateIssueId('Junkstronaut_Final-pyx') === 'Junkstronaut_Final-pyx');
+  check('safe hyphenated issue ids are accepted', S.validateIssueId('Fixture_Project-abc') === 'Fixture_Project-abc');
   check('safePath refuses traversal even when called independently',
     throws(() => S.safePath(tmp, '..', 'outside'), /escapes/));
 
