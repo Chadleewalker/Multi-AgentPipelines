@@ -281,6 +281,31 @@ and an incomplete session never reaches the green probe. Claude's author argv as
 structured envelope, so its prose stays honoured; an explicit `{"type":"result", …}` envelope
 it does emit is held to the same standard.
 
+**Each contained launch owns its roots, disposes them exactly once, and reports a cleanup
+failure without ever losing the primary outcome** (change-log row `repo-7nc`). A Codex author
+launch builds fresh per-launch containment roots and records every created fallback candidate in
+a host-owned handle carrying a per-launch ownership nonce; the handle never enters the prompt or
+the child environment. Each candidate is registered before ownership initialization can fail, so a
+thrown self-test, marker-write or shim-write fault rolls that exact root back and only a refused
+rollback ends the search — a self-test that merely answers `false` is an unusable filesystem, and
+that root is retained for disposal while a fallback is tried. Disposal removes only recorded,
+marker-matched roots one exact path at a time, attempts every root despite an individual failure,
+is idempotent, and leaves shared parents, sibling launches, foreign roots and substituted reparse
+points untouched. The shim stays usable for the whole provider call and is disposed once after it
+settles or throws; the provider's own status, output and error/cause are preserved and the cleanup
+outcome is added *beside* them, never over them. That additive rule is carried all the way to the
+public consumer boundary: a failing provider outcome (agent failure, canonical usage-limit with its
+reset identity intact, incomplete completion) keeps its authoritative primary outcome and gains the
+simultaneous cleanup-failure evidence; a completed provider whose cleanup failed is one distinct
+`cleanup-failed` outcome that starts no proof and prints no freeze command; `authorIssue` preserves
+a thrown launch exception while reporting the failed cleanup; and the batch worker's terminal
+exception envelope keeps its existing `invalid` outcome and primary message with an additive bounded
+cleanup diagnostic. Cleanup and rollback diagnostics stay within the same bounded, role-only
+disclosure contract the refusal text obeys — a failed role is named, a host path, the ownership
+nonce, an OS errno string and any copied provider output are not — and the raw in-process exception
+cause is never serialized into a new public field: cause preservation is in-process, durable cleanup
+evidence is separate.
+
 **A suite directory is not evidence that its suite was finished** (change-log row
 `repo-djf-42-author-evidence`). The exit-code half above closes one door and opens the view onto
 the next: an author killed between its first file and its terminal result leaves a directory that

@@ -323,6 +323,21 @@ applies only where the durable evidence still says authoring never completed, la
 worker generation in the existing worktree, and deletes nothing; a bare `retry` refuses as before,
 and human approval remains the sole freeze boundary.
 
+A contained Codex author launch owns fresh per-launch containment roots and disposes them exactly
+once after the provider settles or throws, and a cleanup that fails is reported *beside* the
+primary outcome, never over it (change-log row `repo-7nc`). A failing provider outcome — agent
+failure, a canonical usage-limit response with its reset instant and evidence intact, or an
+incomplete completion — stays authoritative with its parking and retry timing unchanged while
+carrying the simultaneous cleanup-failure evidence; a completed provider whose cleanup failed is
+one distinct `cleanup-failed` outcome that starts no proof and prints no freeze command, so
+successful completion with successful cleanup is still the only path that proofs normally.
+`authorIssue` preserves a thrown launch exception while reporting the failed cleanup, and
+`scripts/prepare-batch-worker.js`'s terminal exception envelope keeps its existing `invalid`
+outcome and primary message with an additive bounded cleanup diagnostic and no serialized
+exception cause. Every cleanup and rollback diagnostic stays within the same bounded, role-only
+disclosure contract the refusal text obeys — a failed role is named; a host path, the ownership
+nonce, an OS errno string and any copied provider output are not.
+
 A green proof that exhausts its bounded attempts, or that is interrupted by a recoverable
 non-usage-limit fault after preparation, is retained on the same terms rather than swept.
 `scripts/prove-tests.js` re-reads the container's ownership out of band at that decision, and only

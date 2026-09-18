@@ -120,6 +120,24 @@ function resumableProbeFrom(result, built, seams = {}) {
   return probe;
 }
 
+// Serialize an exception that escaped the author/proof body into the worker's existing terminal
+// invalid envelope. The primary message survives; a bounded, role-only containment-cleanup
+// outcome is added additively when the exception carried one. The raw exception cause is never
+// serialized into a public field — cause preservation stays in-process.
+function terminalException(thrown, log = []) {
+  const message = (thrown && thrown.message) || String(thrown);
+  const envelope = { ok: false, outcome: 'invalid', error: limited(message) };
+  const cleanup = thrown && typeof thrown === 'object' ? thrown.containmentCleanup : null;
+  if (cleanup && typeof cleanup === 'object') {
+    envelope.containmentCleanup = {
+      ok: cleanup.ok === true,
+      error: cleanup.error === undefined || cleanup.error === null ? null : limited(String(cleanup.error)),
+    };
+  }
+  if (log && log.length) envelope.log = limited(log.filter(Boolean).join('\n'));
+  return envelope;
+}
+
 function execute(job, seams = {}) {
   const invalid = validateJob(job);
   if (invalid) return { ok: false, outcome: 'invalid', error: invalid };
@@ -135,9 +153,20 @@ function execute(job, seams = {}) {
     observedProofs.push(value);
     return value;
   } };
-  let answer = job.action === 'author-proof'
-    ? authorStructured(job.built, job.configPath, proofSeams, log)
-    : proofStructured(job.built, proofSeams, job.retainedProbe);
+  let answer;
+  try {
+    answer = job.action === 'author-proof'
+      ? authorStructured(job.built, job.configPath, proofSeams, log)
+      : proofStructured(job.built, proofSeams, job.retainedProbe);
+  } catch (thrown) {
+    // A launch/author exception that escaped authorIssue is serialized into the worker's
+    // EXISTING terminal invalid envelope rather than crashing the worker: its primary message is
+    // preserved, and a bounded containment-cleanup outcome the exception carried is added
+    // additively as a role-only diagnostic. The raw in-process cause is deliberately NOT
+    // serialized into any new public field — in-process cause preservation and durable cleanup
+    // evidence are separate requirements, so the envelope carries the cleanup role only.
+    return terminalException(thrown, log);
+  }
   answer = answer && typeof answer === 'object' ? { ...answer } : { ok: false, outcome: 'unproven', error: 'worker returned no result' };
   if (answer.ok) answer.outcome = 'proven-at-base';
   else if (!answer.outcome) answer.outcome = 'unproven';
