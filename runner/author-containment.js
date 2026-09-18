@@ -123,6 +123,14 @@ function fallbackParentDirs() {
 // restricted sandbox answers EPERM — a spawn-based probe would read either as "this root is
 // unusable" and fall back forever. The probe file is transient and removed before the ownership
 // marker becomes the root's first retained content.
+//
+// Two outcomes, and only two. A probe whose exec bit did NOT survive returns `false`: the root
+// is fine, this FILESYSTEM cannot carry an executable, so the candidate is retained for disposal
+// and fallback is permitted. But a probe whose write, chmod, or stat itself FAILS is not a
+// usability answer at all — a failed observation must never be reported as "usable". Such an
+// error is left to propagate so prepare()'s construction-failure handling rolls this exact root
+// back and, only once that succeeds, tries the next candidate; returning `true` here would assert
+// a candidate is runnable on the strength of a probe that never completed.
 function defaultSelfTest(root) {
   if (process.platform === 'win32') return true;
   const probe = path.join(root, `.exec-probe-${process.pid}`);
@@ -130,10 +138,6 @@ function defaultSelfTest(root) {
     fs.writeFileSync(probe, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
     fs.chmodSync(probe, 0o755);
     return (fs.statSync(probe).mode & 0o100) !== 0;
-  } catch {
-    // An unreadable mode is not evidence of a stripped executable bit; the historical
-    // no-fallback behaviour is the safe answer.
-    return true;
   } finally {
     try { fs.rmSync(probe, { force: true }); } catch { /* best effort */ }
   }
