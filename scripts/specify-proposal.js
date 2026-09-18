@@ -431,8 +431,13 @@ function productionAdapters(options, deps = {}) {
       const parsed = designApi.parse(`design-ref: ${ref}`);
       if (!parsed.ok || parsed.refs.length !== 1 || parsed.refs[0].local) return { ok: false };
       const item = parsed.refs[0];
+      // Read the pinned object from the stable target repository, never the owned planning
+      // checkout: `execute` disposes that worktree before it validates references, so a cwd of
+      // `adapters.checkoutPath` would spawn `git show` against a deleted directory and wrongly
+      // reject a reference the pinned commit still carries. `git show <commit>:<path>` reads the
+      // object database keyed by the commit, which the target repository shares with its worktree.
       const result = invoke('git', ['show', `${commit}:${item.path}`],
-        { ...gitOptions(), cwd: adapters.checkoutPath || cfg.targetRepoPath });
+        { ...gitOptions(), cwd: cfg.targetRepoPath });
       const markdownSlugMatch = String(result.stdout || '').split(/\r?\n/).some(line => {
         const heading = /^#{1,6}\s+(.+?)\s*#*\s*$/.exec(line);
         return heading && headingSlug(heading[1]) === headingSlug(item.anchor);
