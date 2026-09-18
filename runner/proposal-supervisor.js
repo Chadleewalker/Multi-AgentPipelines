@@ -199,7 +199,7 @@ function specificationModelFor(configPath) {
 function observePublication(configPath, request = {}) {
   const QUEUE = require('./queue');
   const CONFIG = require('./config');
-  const cp = require('child_process');
+  const IDENTITY = require('./repo-identity');
   const issueId = request.issueId;
   let target;
   try { target = LOCK.canonicalTarget(request.project); }
@@ -209,26 +209,24 @@ function observePublication(configPath, request = {}) {
   try { cfg = CONFIG.loadConfig(configPath); }
   catch (e) { return { ok: false, published: false, available: false, target, issueId,
     error: `publication observer: cannot read the run config: ${(e && e.message) || e}` }; }
-  // The configured target must be the proposal's own target, and the fetch remote must be that
-  // path's origin — path and remote are independent config keys the runner never relates, so a
-  // remote-only swap would otherwise let repository B's receipt authorize A (§4.12).
+  // The configured target must be the proposal's own target — path and remote are independent
+  // config keys the runner never relates, so binding the proposal to its canonical target path
+  // is what keeps a target swap from letting repository B's receipt authorize A (§4.12).
   let configTarget = null;
   try { configTarget = LOCK.canonicalTarget(cfg.targetRepoPath); } catch { configTarget = null; }
   if (configTarget !== target) {
     return { ok: false, published: false, available: false, target, issueId,
       error: `publication observer: configured target ${configTarget || '(none)'} is not the proposal target ${target}` };
   }
-  let originCanon = null;
-  try {
-    const r = cp.spawnSync('git', ['-C', cfg.targetRepoPath, 'remote', 'get-url', 'origin'],
-      { encoding: 'utf8', timeout: cfg.gitTimeoutMs || 120000, windowsHide: true });
-    if (r.status === 0) originCanon = LOCK.canonicalTarget(String(r.stdout || '').trim());
-  } catch { originCanon = null; }
-  let remoteCanon = null;
-  try { remoteCanon = LOCK.canonicalTarget(cfg.targetRepoRemote); } catch { remoteCanon = null; }
-  if (!originCanon || !remoteCanon || originCanon !== remoteCanon) {
+  // The configured fetch remote must identify the same repository the target path fetches from.
+  // Reuse the canonical repository-identity verifier rather than duplicating a stricter rule of
+  // our own: it expands equivalent SSH/HTTPS locators to one identity and matches any named fetch
+  // remote, exactly as the runner does when it admits this same configuration for dispatch. A
+  // remote-only swap to a different repository still mismatches and is refused as unavailable.
+  const identity = IDENTITY.verifyRepoIdentity(cfg);
+  if (!identity.ok) {
     return { ok: false, published: false, available: false, target, issueId,
-      error: `publication observer: configured remote ${cfg.targetRepoRemote || '(none)'} is not the origin of ${cfg.targetRepoPath}` };
+      error: `publication observer: ${identity.reason}` };
   }
   let answer;
   try { answer = QUEUE.partitionByFreeze(cfg, [{ id: issueId }]); }
