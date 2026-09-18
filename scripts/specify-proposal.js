@@ -446,7 +446,13 @@ function productionAdapters(options, deps = {}) {
         && (designApi.hasAnchor(result.stdout, item.anchor) || markdownSlugMatch) };
     },
     async beadsFind(externalRef) {
-      const result = bdJson(cfg, ['search', '--external-contains', externalRef]);
+      // Installed bd 1.1.2 refuses a queryless search, pages the default result set at 50 rows, and
+      // hides closed issues unless every status is requested. So pair the external-reference filter
+      // with a non-empty title query that matches any title (SQL LIKE `%`), ask for every status,
+      // and lift the 50-row default (`--limit 0`), then keep the exact case-sensitive
+      // external_ref/externalRef identity match the adapter already performs.
+      const result = bdJson(cfg, ['search', '%', '--external-contains', externalRef,
+        '--status', 'all', '--limit', '0']);
       if (!result.ok || !Array.isArray(result.data)) throw new Error(result.error || 'Beads search failed');
       return result.data.find(row => row && (row.external_ref === externalRef || row.externalRef === externalRef)) || null;
     },
