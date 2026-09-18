@@ -104,6 +104,15 @@ function anchorKey(anchor) {
   return String(anchor || '').trim().replace(/^[#§]+/, '').trim();
 }
 
+// GitHub-style Markdown heading slug — the SAME derivation the specification generator
+// (scripts/specify-proposal.js headingSlug) uses to emit design-ref anchors and its validator
+// accepts. The shared resolver aliases the same slug so the reference a real beadsCreate serializes
+// resolves at the pinned commit, without disturbing literal-title, section-prefix or HTML matching.
+function headingSlug(value) {
+  return String(value || '').trim().toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-').replace(/-+/g, '-');
+}
+
 function hasAnchor(text, anchor) {
   if (anchor === null || anchor === undefined) return true;
   const wanted = anchorKey(anchor);
@@ -113,6 +122,7 @@ function hasAnchor(text, anchor) {
     if (heading) {
       const title = heading[1].trim();
       if (title === wanted || title.startsWith(`${wanted} `) || title.startsWith(`${wanted}\t`)) return true;
+      if (headingSlug(title) === wanted) return true;
     }
     const tag = /<a\s+[^>]*(?:id|name)\s*=\s*["']([^"']+)["'][^>]*>/ig;
     let match;
