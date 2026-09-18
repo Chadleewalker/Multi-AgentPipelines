@@ -1023,6 +1023,30 @@ owned grant, and only then releases exactly the parent lease. A crash does none 
 cleanup by inference: outstanding grants remain evidence for the explicit recovery paths
 above.
 
+**A proposal's stage follows its own issue, and readiness follows a published freeze, not a
+completed proof** (change-log row `repo-6ma`). The supervisor consumes `preparation-state`
+the way its writer produces it: each proposal moves on its *own* issue's per-issue
+`deriveState` state — `authoring` to `authoring-tests`, `proving` to `proving`, a successful
+`proven-at-base` to `freezing` — never a synthetic top-level `preparation.stage` the
+operation manager does not emit. An absent issue, another issue's result, or an adverse,
+interrupted or unavailable state advances nothing; each holds the last valid nonterminal
+stage and is surfaced with its recovery action instead. A green proof therefore lands at
+`freezing`, where status names the one human action that can move it: approve and publish
+the frozen acceptance suite and its receipt to the integration branch. The supervisor never
+approves, freezes, commits, pushes, or manufactures a receipt because a proof completed; a
+preparation payload that merely claims a receipt never becomes the freeze. Only once the
+issue has left preparation does the supervisor observe the published freeze through the
+canonical `runner/queue.js` `partitionByFreeze` gate — asking about the *exact* issue against
+the configured target, and refusing as unavailable when config path, fetch remote and its
+origin do not name one canonical repository, so repository B's receipt cannot authorize A.
+The gate's own refusal reason appears in status verbatim; a read failure is explicit
+unavailable evidence. Readiness is admitted only when a valid publication, a completed and
+idempotently acknowledged settlement (owned by the operation manager, never settled twice),
+and a `proven-at-base` issue all agree, and the journal pins the target, issue, integration
+branch, admitted `suiteHash`, receipt `gateVersion` and `verdict` from that same admission —
+paths alone are insufficient. The proposal then passes through `ready` into one shared-feed
+assignment; the implementation runner keeps its independent dispatch admission.
+
 The conveyor's proposal history is append-only and uses a closed host-owned graph:
 `queued` through `specifying`, `criticizing`, `authoring-tests`, `proving`, `freezing`,
 `ready`, `implementing`, `publishing`, and `review`, with `needs-input`, `failed`, and
