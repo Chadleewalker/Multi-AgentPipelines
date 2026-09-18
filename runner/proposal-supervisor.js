@@ -30,6 +30,28 @@ const NEXT = {
 };
 const CRASH_BOUNDARIES = new Set(['beads-issue', 'freeze', 'branch', 'pr']);
 
+// The consumer of `preparation-state.deriveState`: a proposal's stage follows its OWN issue's
+// per-issue state, never a synthetic top-level `preparation.stage` the operation manager does
+// not produce (§3.10). Only these three states move the proposal forward; every other state —
+// pending, an adverse worker outcome, interrupted, absent or unavailable — holds the last valid
+// nonterminal stage and is surfaced for recovery instead.
+const STATE_TO_STAGE = {
+  authoring: 'authoring-tests',
+  proving: 'proving',
+  'proven-at-base': 'freezing',
+};
+// Issue states that mean preparation is still working. Publication is observed only once the
+// issue has left this set, so an in-flight proof does not trigger integration fetches.
+const IN_PROGRESS = new Set(['pending', 'authoring', 'proving']);
+// The per-issue state of THIS proposal's own issue, or the two out-of-band answers a supervisor
+// must be able to give: `unavailable` when the durable record cannot be read, `absent` when the
+// batch manifest never carried this issue at all.
+function issueStateFrom(evidence, issueId) {
+  if (!evidence || evidence.ok === false || !Array.isArray(evidence.issues)) return 'unavailable';
+  const row = evidence.issues.find(item => item && item.id === issueId);
+  return row ? row.state : 'absent';
+}
+
 const digest = value => crypto.createHash('sha256').update(String(value)).digest('hex');
 function inside(parent, child) {
   const rel = path.relative(path.resolve(parent), path.resolve(child));
@@ -116,9 +138,14 @@ function fold(events) {
     }
     else if (event.type === 'preparation.granted') p.preparationGrant = event.grant;
     else if (event.type === 'preparation.started') p.preparationOperation = event.operation;
-    else if (event.type === 'preparation.observed') p.preparationObserved = event.evidence;
+    else if (event.type === 'preparation.observed') {
+      p.preparationObserved = { evidence: event.evidence,
+        operationState: event.operationState === undefined ? null : event.operationState,
+        attention: event.attention === undefined ? null : event.attention };
+    }
     else if (event.type === 'preparation.completed') p.preparationEvidence = event.evidence;
     else if (event.type === 'preparation.settled') p.preparationSettled = true;
+    else if (event.type === 'publication.observed') p.publication = event.evidence;
     else if (event.type === 'proposal.assigned') {
       p.feedId = event.feedId; p.runId = event.runId || null;
     } else if (event.type === 'implementation.observed') p.task = event.task;
@@ -161,6 +188,67 @@ function specificationModelFor(configPath) {
   if (!configPath) return DEFAULT_SPECIFICATION_MODEL;
   try { return loadConfig(configPath).specificationModel || DEFAULT_SPECIFICATION_MODEL; }
   catch { return DEFAULT_SPECIFICATION_MODEL; }
+}
+
+// The production publication observer (§3.10). It asks the canonical freeze-admission gate —
+// `runner/queue.js` `partitionByFreeze` — about ONE issue against the configured target, and
+// reports its answer verbatim. It never parses a receipt, hashes a suite or resolves a branch
+// a second time; the gate already did all three. Bound to the proposal's canonical target: a
+// config whose path names a different repository, or whose fetch remote is not that path's own
+// origin, is refused as unavailable rather than allowed to admit another repository's receipt.
+function observePublication(configPath, request = {}) {
+  const QUEUE = require('./queue');
+  const CONFIG = require('./config');
+  const IDENTITY = require('./repo-identity');
+  const issueId = request.issueId;
+  let target;
+  try { target = LOCK.canonicalTarget(request.project); }
+  catch (e) { return { ok: false, published: false, available: false, issueId,
+    error: `publication observer: ${(e && e.message) || e}` }; }
+  let cfg;
+  try { cfg = CONFIG.loadConfig(configPath); }
+  catch (e) { return { ok: false, published: false, available: false, target, issueId,
+    error: `publication observer: cannot read the run config: ${(e && e.message) || e}` }; }
+  // The configured target must be the proposal's own target — path and remote are independent
+  // config keys the runner never relates, so binding the proposal to its canonical target path
+  // is what keeps a target swap from letting repository B's receipt authorize A (§4.12).
+  let configTarget = null;
+  try { configTarget = LOCK.canonicalTarget(cfg.targetRepoPath); } catch { configTarget = null; }
+  if (configTarget !== target) {
+    return { ok: false, published: false, available: false, target, issueId,
+      error: `publication observer: configured target ${configTarget || '(none)'} is not the proposal target ${target}` };
+  }
+  // The configured fetch remote must identify the same repository the target path fetches from.
+  // Reuse the canonical repository-identity verifier rather than duplicating a stricter rule of
+  // our own: it expands equivalent SSH/HTTPS locators to one identity and matches any named fetch
+  // remote, exactly as the runner does when it admits this same configuration for dispatch. A
+  // remote-only swap to a different repository still mismatches and is refused as unavailable.
+  const identity = IDENTITY.verifyRepoIdentity(cfg);
+  if (!identity.ok) {
+    return { ok: false, published: false, available: false, target, issueId,
+      error: `publication observer: ${identity.reason}` };
+  }
+  let answer;
+  try { answer = QUEUE.partitionByFreeze(cfg, [{ id: issueId }]); }
+  catch (e) { return { ok: false, published: false, available: false, target, issueId,
+    error: `publication observer: ${(e && e.message) || e}` }; }
+  if (!answer || answer.ok === false) {
+    return { ok: false, published: false, available: false, target, issueId,
+      error: (answer && answer.error) || 'publication observer: the freeze gate could not read the branch' };
+  }
+  const branch = answer.branch;
+  const refused = (answer.undispatchable || []).find(row => row && row.issue && row.issue.id === issueId);
+  if (refused) {
+    return { ok: true, published: false, refusal: refused.refusal, reason: refused.reason,
+      target, issueId, branch };
+  }
+  const row = (answer.admitted || []).find(entry => entry && entry.id === issueId);
+  if (!row) {
+    return { ok: false, published: false, available: false, target, issueId, branch,
+      error: 'publication observer: the freeze gate neither admitted nor refused the issue' };
+  }
+  return { ok: true, published: true, target, issueId, branch,
+    suiteHash: row.suiteHash, gateVersion: row.gateVersion, verdict: row.verdict };
 }
 
 function productionAdapters(repoRoot, options = {}) {
@@ -233,6 +321,9 @@ function productionAdapters(repoRoot, options = {}) {
       },
     },
     operations,
+    publication: {
+      observe(request) { return observePublication(configPath, request); },
+    },
     review: {
       evidence({ proposalId, issueId, runId, task }) {
         if (!task || !task.prUrl) return null;
@@ -351,46 +442,67 @@ function createProductionSupervisor(options = {}) {
   }
   function actions(current, attempted) {
     const rows = current.order.map(id => [id, current.proposals.get(id)]);
-    const choose = (items, stageName) => items.filter(a => !attempted.has(a.key)).slice(0,
+    // Every category is chosen only from its un-attempted candidates, capped by its stage
+    // ceiling. A category that has candidates but they are all attempted this tick FALLS THROUGH
+    // to the next category rather than ending the tick — so a small preparation cap cannot stop
+    // an implementation feed from being polled, and vice versa.
+    const pick = (items, stageName) => items.filter(a => !attempted.has(a.key)).slice(0,
       Math.min(globalLimit, stageName ? stageLimits[stageName] : globalLimit));
-    let found = rows.filter(([, p]) => p.stage === 'freezing' && p.preparationEvidence
-      && !p.preparationSettled).map(([id]) => ({ kind: 'settle-preparation', id, key: `settle:${id}` }));
-    if (found.length) return choose(found, 'preparation');
     // A terminal feed can never accept another proposal. Retire its grant first; the next
     // ready proposal will then receive the deterministic successor generation.
-    if (current.feed && current.feed.completed) return [{ kind: 'settle-feed', key: 'settle-feed' }];
-    found = rows.filter(([, p]) => p.stage === 'ready' && !p.feedId);
-    if (!current.closed && found.length && !current.feedGrant) return [{ kind: 'grant-feed', key: 'grant-feed' }];
-    if (!current.closed && found.length && current.feedGrant && !current.feed) return [{ kind: 'start-feed', key: 'start-feed' }];
-    if (!current.closed && found.length && current.feed) return found.map(([id]) => ({ kind: 'assign', id, key: `assign:${id}` }));
-    found = rows.filter(([, p]) => p.stage === 'publishing' && p.task && p.task.prUrl
+    if (current.feed && current.feed.completed && !attempted.has('settle-feed')) {
+      return [{ kind: 'settle-feed', key: 'settle-feed' }];
+    }
+    // A proposal assigned to the feed but not yet transitioned (a crash between the durable
+    // assignment and the `implementing` stage) only needs its stage completed, once.
+    let chosen = pick(rows.filter(([, p]) => p.stage === 'ready' && p.feedId)
+      .map(([id]) => ({ kind: 'mark-implementing', id, key: `impl:${id}` })));
+    if (chosen.length) return chosen;
+    const ready = rows.filter(([, p]) => p.stage === 'ready' && !p.feedId);
+    if (!current.closed && ready.length && !current.feedGrant && !attempted.has('grant-feed')) {
+      return [{ kind: 'grant-feed', key: 'grant-feed' }];
+    }
+    if (!current.closed && ready.length && current.feedGrant && !current.feed && !attempted.has('start-feed')) {
+      return [{ kind: 'start-feed', key: 'start-feed' }];
+    }
+    if (!current.closed && ready.length && current.feed) {
+      chosen = pick(ready.map(([id]) => ({ kind: 'assign', id, key: `assign:${id}` })));
+      if (chosen.length) return chosen;
+    }
+    chosen = pick(rows.filter(([, p]) => p.stage === 'publishing' && p.task && p.task.prUrl
       && (p.task.state === 'done' || p.task.outcome === 'done') && !p.review)
-      .map(([id]) => ({ kind: 'review', id, key: `review:${id}` }));
-    if (found.length) return choose(found, 'review');
-    found = rows.filter(([, p]) => !current.closed
+      .map(([id]) => ({ kind: 'review', id, key: `review:${id}` })), 'review');
+    if (chosen.length) return chosen;
+    chosen = pick(rows.filter(([, p]) => !current.closed
       && (p.stage === 'queued' || p.stage === 'specifying'
         || (p.stage === 'needs-input' && p.answer)))
-      .map(([id]) => ({ kind: 'specify', id, key: 'specification-launch' }));
-    if (found.length) return choose(found, 'specification');
-    found = rows.filter(([, p]) => adapters.authority
+      .map(([id]) => ({ kind: 'specify', id, key: 'specification-launch' })), 'specification');
+    if (chosen.length) return chosen;
+    chosen = pick(rows.filter(([, p]) => adapters.authority
       && typeof adapters.authority.grant === 'function'
       && !current.closed && p.stage === 'criticizing'
-      && !p.preparationGrant).map(([id]) => ({ kind: 'grant-preparation', id, key: `prep-grant:${id}` }));
-    if (found.length) return choose(found, 'preparation');
-    found = rows.filter(([, p]) => !current.closed && p.stage === 'criticizing'
+      && !p.preparationGrant).map(([id]) => ({ kind: 'grant-preparation', id, key: `prep-grant:${id}` })), 'preparation');
+    if (chosen.length) return chosen;
+    chosen = pick(rows.filter(([, p]) => !current.closed && p.stage === 'criticizing'
       && p.preparationGrant && !p.preparationOperation)
-      .map(([id]) => ({ kind: 'start-preparation', id, key: 'preparation-launch' }));
-    if (found.length) return choose(found, 'preparation');
-    found = rows.filter(([, p]) => p.preparationOperation && !p.preparationEvidence
-      && !['needs-input', 'failed', 'rejected'].includes(p.stage))
-      .map(([id]) => ({ kind: 'poll-preparation', id, key: `prep-poll:${id}` }));
-    if (found.length) return choose(found, 'preparation');
+      .map(([id]) => ({ kind: 'start-preparation', id, key: 'preparation-launch' })), 'preparation');
+    if (chosen.length) return chosen;
+    // Observe the real preparation record and the published freeze while the proposal is being
+    // prepared or is waiting at `freezing`. The consumer reads the per-issue state, never a
+    // synthetic top-level stage, so a completion event advances the proposal instead of
+    // stranding it at `criticizing`.
+    chosen = pick(rows.filter(([, p]) => p.preparationOperation
+      && ['criticizing', 'authoring-tests', 'proving', 'freezing'].includes(p.stage))
+      .map(([id]) => ({ kind: 'poll-preparation', id, key: `prep-poll:${id}` })), 'preparation');
+    if (chosen.length) return chosen;
     if (current.closed) {
-      found = rows.filter(([, p]) => p.preparationGrant && !p.preparationOperation
-        && !p.preparationSettled).map(([id]) => ({ kind: 'release-preparation', id, key: `prep-release:${id}` }));
-      if (found.length) return choose(found, 'preparation');
+      chosen = pick(rows.filter(([, p]) => p.preparationGrant && !p.preparationOperation
+        && !p.preparationSettled).map(([id]) => ({ kind: 'release-preparation', id, key: `prep-release:${id}` })), 'preparation');
+      if (chosen.length) return chosen;
     }
-    if (current.feed) return [{ kind: 'poll-feed', key: `poll-feed:${current.feed.id}` }];
+    if (current.feed && !attempted.has(`poll-feed:${current.feed.id}`)) {
+      return [{ kind: 'poll-feed', key: `poll-feed:${current.feed.id}` }];
+    }
     return [];
   }
 
@@ -423,24 +535,77 @@ function createProductionSupervisor(options = {}) {
         operation: operationValue(answer, 'preparation') }); return true;
     }
     if (action.kind === 'poll-preparation') {
+      const issueId = p.specification && p.specification.issueId;
       const answer = await adapters.operations.status({ project, id: p.preparationOperation.id });
-      if (!answer || !answer.ok || !answer.preparation) return false;
-      const observed = answer.preparation;
-      const projected = observed.stage;
-      const advanced = advancePreparationStage(action.id, projected);
-      append('preparation.observed', { proposalId: action.id, evidence: observed });
-      if (answer.state === 'completed') {
-        append('preparation.completed', { proposalId: action.id, evidence: observed });
-        crashAfter('freeze');
+      let evidence = null;
+      let operationState = null;
+      let attention = null;
+      let issueState;
+      if (!answer || answer.ok === false || !answer.preparation) {
+        operationState = 'unavailable';
+        attention = (answer && answer.error) || 'preparation status is unavailable';
+        issueState = 'unavailable';
+      } else {
+        evidence = answer.preparation;
+        operationState = answer.state || null;
+        attention = answer.attention || null;
+        issueState = issueStateFrom(evidence, issueId);
       }
-      return answer.state === 'completed' || advanced;
+      let changed = false;
+      // Record the observation only when the evidence actually moved, so a settled proposal
+      // waiting for publication does not append an identical line every tick.
+      const prior = state().proposals.get(action.id).preparationObserved;
+      const seen = { evidence, operationState, attention };
+      const priorSeen = prior
+        ? { evidence: prior.evidence, operationState: prior.operationState, attention: prior.attention }
+        : null;
+      if (!priorSeen || JSON.stringify(priorSeen) !== JSON.stringify(seen)) {
+        append('preparation.observed', { proposalId: action.id, ...seen });
+        changed = true;
+      }
+      // The proposal's stage follows its own issue's per-issue state (§3.10). Adverse and
+      // interrupted states are not in the forward map and hold the last valid nonterminal stage.
+      const targetStage = STATE_TO_STAGE[issueState];
+      if (targetStage && advancePreparationStage(action.id, targetStage)) changed = true;
+      // A successfully completed operation is settled by the operation manager itself during the
+      // status read above; the supervisor records completion and acknowledges the settlement once.
+      if (operationState === 'completed') {
+        if (!state().proposals.get(action.id).preparationEvidence) {
+          append('preparation.completed', { proposalId: action.id, evidence });
+          crashAfter('freeze'); changed = true;
+        }
+        if (!state().proposals.get(action.id).preparationSettled) {
+          append('preparation.settled', { proposalId: action.id, outcome: 'complete' });
+          changed = true;
+        }
+      }
+      // Observe the published freeze once the issue has left preparation — including when it is
+      // stuck absent, unavailable or adverse, so status can report the publication it is not using.
+      if (!IN_PROGRESS.has(issueState) && adapters.publication
+          && typeof adapters.publication.observe === 'function') {
+        const publication = await adapters.publication.observe({ project, issueId });
+        const priorPub = state().proposals.get(action.id).publication;
+        if (!priorPub || JSON.stringify(priorPub) !== JSON.stringify(publication)) {
+          append('publication.observed', { proposalId: action.id, evidence: publication });
+          changed = true;
+        }
+        // Only a valid published freeze, over a genuinely proven and settled preparation, admits
+        // the proposal into the shared implementation feed. The publication line is fsynced before
+        // the readiness it implies, so a crash between them leaves the freeze durable and readiness
+        // to be re-derived, never a half-made assignment.
+        const after = state().proposals.get(action.id);
+        if (after.stage === 'freezing' && publication && publication.published === true
+            && operationState === 'completed' && issueState === 'proven-at-base'
+            && after.preparationSettled) {
+          stage(action.id, 'ready'); changed = true;
+        }
+      }
+      return changed;
     }
-    if (action.kind === 'settle-preparation' || action.kind === 'release-preparation') {
-      const outcome = action.kind === 'release-preparation' ? 'released' : 'complete';
-      const answer = await adapters.authority.settle(p.preparationGrant, outcome);
+    if (action.kind === 'release-preparation') {
+      const answer = await adapters.authority.settle(p.preparationGrant, 'released');
       if (!answer || answer.ok === false) throw new Error(answer && answer.error || 'preparation settlement failed');
-      append('preparation.settled', { proposalId: action.id, outcome });
-      if (outcome === 'complete') stage(action.id, 'ready');
+      append('preparation.settled', { proposalId: action.id, outcome: 'released' });
       return true;
     }
     if (action.kind === 'grant-feed') {
@@ -459,6 +624,12 @@ function createProductionSupervisor(options = {}) {
     if (action.kind === 'assign') {
       append('proposal.assigned', { proposalId: action.id, feedId: current.feed.id,
         runId: current.feed.runId || null }); stage(action.id, 'implementing'); return true;
+    }
+    if (action.kind === 'mark-implementing') {
+      // The durable assignment already exists (a crash interrupted the pair). Complete only the
+      // stage transition it implies; never a second assignment or feed.
+      if (p.stage === 'ready') stage(action.id, 'implementing');
+      return true;
     }
     if (action.kind === 'poll-feed') {
       const answer = await adapters.operations.status({ project, id: current.feed.id });
@@ -502,7 +673,13 @@ function createProductionSupervisor(options = {}) {
   async function doTick() {
     await ingest();
     const attempted = new Set();
-    for (let round = 0; round < 128; round += 1) {
+    // Bounded generously by the number of proposals: every candidate is either progressed or
+    // marked attempted, so the loop terminates when `actions` runs dry. The cap is only a
+    // backstop against a logic error, never the normal exit — a no-progress round does NOT end
+    // the tick, so a stage cap smaller than the queue still visits every waiting proposal
+    // across rounds rather than starving the ones past the cap.
+    const maxRounds = Math.max(256, state().order.length * 8);
+    for (let round = 0; round < maxRounds; round += 1) {
       const batch = actions(state(), attempted).slice(0, globalLimit);
       if (!batch.length) break;
       const results = await Promise.all(batch.map(runAction));
@@ -516,7 +693,6 @@ function createProductionSupervisor(options = {}) {
       if (batch.some(action => action.kind === 'specify')) {
         attempted.add('specification-launch');
       }
-      if (!results.some(Boolean)) break;
     }
     return { ok: true };
   }
@@ -596,7 +772,30 @@ function createProductionSupervisor(options = {}) {
       title: `${p.record.hash}#/title`, spec: `${receipt.specHash || ''}#/spec`,
       acceptanceCriteria: `${receipt.specHash || ''}#/acceptanceCriteria`,
     };
-    const prep = p.preparationEvidence || p.preparationObserved || {};
+    const obs = p.preparationObserved || null;
+    const prepEvidence = p.preparationEvidence
+      || (obs && obs.evidence) || {};
+    const issueId = result.issueId || receipt.issueId
+      || (p.specification && p.specification.issueId) || null;
+    const publication = p.publication || null;
+    // The preparation summary a person and the scheduler both read: the operation's own id and
+    // batch, this proposal's exact issue, that issue's per-issue `deriveState` state, the
+    // operation manager's own state and its attention sentence.
+    let preparation = null;
+    if (p.preparationOperation) {
+      const prepIssueState = obs
+        ? issueStateFrom(obs.evidence, issueId)
+        : (p.preparationEvidence ? issueStateFrom(p.preparationEvidence, issueId) : 'pending');
+      preparation = {
+        operationId: p.preparationOperation.id,
+        batchId: p.preparationOperation.batchId || p.preparationOperation.id,
+        issueId: issueId || null,
+        state: prepIssueState,
+        operationState: obs ? obs.operationState
+          : (p.preparationEvidence ? 'completed' : 'running'),
+        attention: obs ? (obs.attention || null) : null,
+      };
+    }
     const task = p.task || {};
     const review = p.review || {};
     const firstActive = p.history.find(event => event.stage === 'specifying');
@@ -614,10 +813,20 @@ function createProductionSupervisor(options = {}) {
     const verdictValue = p.verdict || review.verdict || null;
     const question = result.status === 'needs-input'
       ? { text: result.question, evidenceHash: result.evidenceHash } : null;
-    const nextAction = p.stage === 'needs-input' ? 'answer the concrete question'
-      : p.stage === 'review' && verdictValue === 'pending' ? 'record review verdict'
-        : ['failed', 'rejected'].includes(p.stage) ? 'inspect terminal evidence'
-          : current.closed ? 'wait for owned work to settle' : `advance ${p.stage}`;
+    const ADVERSE_PREPARATION = new Set(['unproven', 'agent-failed', 'usage-limit',
+      'interrupted-unknown', 'unavailable', 'absent']);
+    let nextAction;
+    if (p.stage === 'needs-input') nextAction = 'answer the concrete question';
+    else if (p.stage === 'review' && verdictValue === 'pending') nextAction = 'record review verdict';
+    else if (['failed', 'rejected'].includes(p.stage)) nextAction = 'inspect terminal evidence';
+    else if (preparation && preparation.operationState === 'attention') {
+      nextAction = 'inspect the preparation operation attention and recover it before the conveyor can proceed';
+    } else if (preparation && ADVERSE_PREPARATION.has(preparation.state)) {
+      nextAction = `inspect the ${preparation.state} preparation evidence and re-prove the suite after an authorized recovery`;
+    } else if (p.stage === 'freezing') {
+      nextAction = 'have a person approve and publish the frozen acceptance suite and its receipt to the integration branch';
+    } else if (current.closed) nextAction = 'wait for owned work to settle';
+    else nextAction = `advance ${p.stage}`;
     return {
       proposalId: id, queuePosition: queueIndex < 0 ? null : queueIndex + 1,
       stage: p.stage, waitTimeMs: Math.max(0, (activeStart || currentTime) - submitted),
@@ -629,9 +838,12 @@ function createProductionSupervisor(options = {}) {
       specHash: receipt.specHash || result.specHash || null,
       spec: result.status === 'ready' ? { ...proposal, kickoffHash: receipt.kickoffHash || p.record.hash,
         specHash: receipt.specHash || null, fieldIntentRefs } : null,
-      question, issueId: result.issueId || receipt.issueId || null,
-      testBrief: prep.testBrief || null,
-      freezeReceipt: freezeReceiptOf(prep, result.issueId || receipt.issueId) || null,
+      question, issueId,
+      testBrief: prepEvidence.testBrief || null,
+      // A published freeze is the only receipt production trusts; a preparation payload that
+      // merely claims one never becomes the freeze (§3.10, criterion 6). Null until publication.
+      freezeReceipt: publication && publication.published === true ? publication.suiteHash : null,
+      preparation, publication,
       runId: p.runId || null, branch: task.branch || review.branch || null,
       prUrl: task.prUrl || review.prUrl || null,
       reviewItemId: review.reviewItemId || null, verdict: verdictValue,

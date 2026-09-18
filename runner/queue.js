@@ -311,7 +311,8 @@ function judge(cfg, probe, issue, branch) {
         + 'implementation can turn it green, and this run does not admit half-proven suites',
     };
   }
-  return { dispatch: true, suiteTree, suiteHash: hashed.hash };
+  return { dispatch: true, suiteTree, suiteHash: hashed.hash,
+    gateVersion: parsed.receipt.gateVersion, verdict: parsed.receipt.verdict };
 }
 
 // Split the candidates into what may be dispatched and what may not. LAZY at the caller:
@@ -325,11 +326,19 @@ function partitionByFreeze(cfg, candidates) {
   if (!probe.ok) return { ok: false, error: probe.error };
   try {
     const issues = [];
+    const admitted = [];
     const undispatchable = [];
     for (const issue of candidates) {
       const answer = judge(cfg, probe, issue, branch);
       if (answer.abort) return { ok: false, error: answer.abort };
-      if (answer.dispatch) issues.push(issue);
+      if (answer.dispatch) {
+        issues.push(issue);
+        // The admitted facts a publication observer pins — suite hash, gate version and
+        // verdict — captured from THIS admission so a later metadata read cannot replace
+        // them (§3.10). `issues` stays the untouched candidate list every other consumer reads.
+        admitted.push({ id: issue.id, suiteHash: answer.suiteHash,
+          gateVersion: answer.gateVersion, verdict: answer.verdict, branch });
+      }
       // The KIND travels beside the reason from here on: through the feed's live refusal map,
       // onto the manifest row, and into the report's heading and remedy. A reason is prose a
       // human reads; the kind is what every consumer downstream branches on.
@@ -339,7 +348,7 @@ function partitionByFreeze(cfg, candidates) {
         ...(answer.suiteHash ? { suiteHash: answer.suiteHash } : {}),
       });
     }
-    return { ok: true, issues, undispatchable, branch };
+    return { ok: true, issues, admitted, undispatchable, branch };
   } finally {
     probe.cleanup();
   }
