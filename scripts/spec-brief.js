@@ -45,6 +45,9 @@ const { suiteHash: hashSuite, treeEntries } = require('../runner/suite-hash');
 const { generatedGodotUid } = require('./protected-tree');
 const { BRIEF_NOTICE } = require('../runner/author-containment');
 const authorEvidence = require('../runner/author-evidence');
+// The immutable-intent / documentation-scope contract, one source shared with the host export
+// and the publication backstop, so the brief cannot judge the metadata by a different rule.
+const docsScope = require('../runner/docs-scope');
 
 const EXIT_OK = 0;
 const EXIT_USAGE = 2;
@@ -199,6 +202,8 @@ function issue(cfg, id) {
   if (!res.ok) return { ok: false, error: res.error };
   const data = Array.isArray(res.data) ? res.data[0] : res.data;
   if (!data || typeof data !== 'object') return { ok: false, error: `bd returned no issue for ${id}` };
+  const scope = docsScope.readScopeMetadata(data.metadata);
+  if (scope.format === 'invalid') return { ok: false, error: `issue ${id} ${scope.error}` };
   return { ok: true, issue: data };
 }
 
@@ -656,6 +661,39 @@ function criteriaLines(data) {
   ];
 }
 
+// The verified original kickoff intent, rendered into the immutable brief the author actually
+// consumes (repo-062 review correction 3). The planner-generated criteria above can omit or
+// contradict the original constraints, nonGoals, exact documentation directive and kickoff hash;
+// the brief must still carry the immutable originals so the author writes tests against what the
+// kickoff really asked for. Malformed new metadata refuses preparation rather than silently
+// producing a planner-only brief. Legacy records leave the brief byte-identical to its prior form.
+function originalIntentLines(data) {
+  const parsed = docsScope.readScopeMetadata(data && data.metadata);
+  if (parsed.format === 'invalid') throw new Error(`invalid kickoff metadata: ${parsed.error}`);
+  if (parsed.format === 'legacy') return [];
+  const intent = parsed.intentObj;
+  const out = [
+    'THE ORIGINAL KICKOFF INTENT (immutable, hash-bound — the planner cannot relax it). These are',
+    'the exact constraints and non-goals the kickoff recorded; where the criteria above disagree,',
+    'these still hold, and a documentation directive here binds the documentation surface:',
+    '',
+    `    kickoff hash: ${parsed.kickoffHash}`,
+  ];
+  const list = (label, arr) => {
+    if (!Array.isArray(arr) || arr.length === 0) return;
+    out.push(`    ${label}:`);
+    for (const item of arr) out.push(`      - ${item}`);
+  };
+  list('Constraints', intent.constraints);
+  list('Non-goals', intent.nonGoals);
+  if (docsScope.isPreserve(parsed.scope)) {
+    out.push('    Documentation scope: preserve — do not add or change documentation for this task '
+      + `(directive: ${parsed.scope.directive}).`);
+  }
+  out.push('');
+  return out;
+}
+
 function writeBrief(ctx) {
   const { cfg, id, suiteId, data, folder, branch, policy, example, repoRoot, state } = ctx;
   const lines = header(cfg, id, data, folder, branch);
@@ -678,6 +716,7 @@ function writeBrief(ctx) {
   }
   lines.push(...setupLines(cfg));
   lines.push(...criteriaLines(data));
+  lines.push(...originalIntentLines(data));
 
   // The criteria above are the whole of this task's context, and the author stage enforces
   // that mechanically. runner/author-containment.js owns the wording so the notice and the
@@ -889,6 +928,8 @@ module.exports = {
   main,
   buildBrief,
   writeBrief,
+  criteriaLines,
+  originalIntentLines,
   parseArgs,
   classify,
   classifyLocal,

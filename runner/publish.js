@@ -10,6 +10,9 @@ const { scanIntroducedObjects } = require('./credential-scan');
 const { commandFor } = require('./host-shell');
 const { runSync, failureText } = require('./process');
 const CONTROL_PLANE = require('./control-plane');
+// Host publication backstop for a documentation-prohibited task: refuse any protected
+// Markdown-surface delta before push/PR (repo-062). One source for the surface and derivation.
+const docsScope = require('./docs-scope');
 
 const PR_ELIGIBLE_OUTCOMES = new Set(CONTROL_PLANE.publication.prEligibleOutcomes);
 
@@ -32,7 +35,7 @@ function pushBranch(dir, branch, log, traceId, cfg) {
 // The PR body is assembled by the HOST from structured artifacts only — the issue spec,
 // the docs-phase change summary, and the verifier evidence. No free-form agent prose is
 // parsed (§4.5, §4.11).
-function buildPrBody({ issueMarkdown, status, verify, outcome, branch, runId }) {
+function buildPrBody({ issueMarkdown, status, verify, outcome, branch, runId, scope }) {
   const lines = [];
   lines.push('## Spec');
   lines.push('');
@@ -69,6 +72,18 @@ function buildPrBody({ issueMarkdown, status, verify, outcome, branch, runId }) 
       + 'summary below is the implementation\'s own. The container reported:');
     lines.push('');
     lines.push('> ' + docsError.split('\n').join('\n> '));
+    lines.push('');
+  }
+  // repo-062: a documentation-prohibited task never ran the docs phase, so this is a bounded,
+  // explicit INTENTIONAL-omission note — deliberately distinct in wording from the
+  // "Documentation phase warning" a docs FAILURE renders (§4.3). It carries no error vocabulary,
+  // so a reviewer reads it as a scope decision rather than a defect.
+  if (docsScope.isPreserve(scope) && !docsError) {
+    lines.push('## Documentation');
+    lines.push('');
+    lines.push('Documentation was intentionally omitted for this task under its '
+      + 'preserve-documentation scope; this branch carries no documentation change and the '
+      + 'change summary below is the implementation\'s own.');
     lines.push('');
   }
   lines.push('## Change summary');
@@ -141,7 +156,7 @@ function openPr(dir, { branch, title, body, baseBranch, log, traceId, hostShell,
 // Full publish step for one finished task.
 function publish(cfg, ctx, log, traceId) {
   const {
-    ws, outcome, hasCommits, issueMarkdown, status, verify, issue, runId, secrets = [],
+    ws, outcome, hasCommits, issueMarkdown, status, verify, issue, runId, secrets = [], scope,
   } = ctx;
   // `ok` is the settlement boundary consumed by run.js. `pushed: false` alone is
   // ambiguous: it is the correct no-op for a branch with no commits, but it is a
@@ -164,6 +179,41 @@ function publish(cfg, ctx, log, traceId) {
   if (!hasCommits) {
     log.info(traceId, 'no commits on the branch — nothing to push, no PR');
     return result;
+  }
+
+  // repo-062 publication backstop. For a documentation-prohibited task, inspect the final
+  // candidate delta against its pinned integration baseline BEFORE any push or PR, using
+  // byte-safe Git path handling (`-z`, `-M` exposes renames). A prohibited addition,
+  // modification, deletion, mode change or rename into/out of the protected Markdown surface —
+  // and a Git inspection that cannot succeed — refuses fail-closed: zero push, zero PR, the
+  // recoverable workspace retained through the existing failure path (run.js keeps the workspace
+  // whenever `ok` is false). The host-owned scope snapshot is carried in from the canonical
+  // export; a container-editable issue file or environment artifact cannot relax it.
+  if (docsScope.isPreserve(scope)) {
+    // `--no-replace-objects` binds the inspection to the ACTUAL pinned Git objects. A
+    // container-writable `refs/replace/<oid>` can substitute the host-held fork point with a
+    // commit whose tree matches HEAD, so an ordinary `git diff` reports an empty delta while a
+    // prohibited README.md change is still present; ignoring replacement objects retains the real
+    // change and refuses it (repo-062 review correction 1). The option precedes the subcommand
+    // because it is a top-level Git option.
+    const delta = git(cfg, ws.dir,
+      ['--no-replace-objects', 'diff', '--name-status', '-M', '-z', ws.forkPoint, 'HEAD']);
+    // Fail closed on ANY inspection failure, including a non-timeout host-process error (ENOBUFS,
+    // a killed child) that surfaces `error` alongside status 0 and truncated stdout: an errored
+    // read must never be parsed as a clean delta and published (repo-062 review correction 5).
+    if (delta.status !== 0 || delta.error) {
+      result.ok = false;
+      result.error = `documentation-scope delta inspection could not read ${ws.branch} against its baseline`;
+      log.error(traceId, `${result.error}; branch retained locally and not pushed`);
+      return result;
+    }
+    const hits = docsScope.protectedMarkdownPaths(delta.stdout);
+    if (hits.length) {
+      result.ok = false;
+      result.error = `documentation-prohibited task altered the protected Markdown surface (${hits.join(', ')})`;
+      log.error(traceId, `${result.error}; ${ws.branch} is retained locally and will not be published`);
+      return result;
+    }
   }
 
   // The credentialed host is an exfiltration boundary: scan the complete introduced Git
@@ -197,7 +247,7 @@ function publish(cfg, ctx, log, traceId) {
   }
 
   const title = `${issue.id}: ${issue.title || 'pipeline task'}${outcome.status === 'partial' ? ' [PARTIAL]' : ''}`;
-  const body = buildPrBody({ issueMarkdown, status, verify, outcome, branch: ws.branch, runId });
+  const body = buildPrBody({ issueMarkdown, status, verify, outcome, branch: ws.branch, runId, scope });
   const pr = openPr(ws.dir, {
     branch: ws.branch, title, body, baseBranch: ws.defaultBranch, log, traceId,
     hostShell: commandFor(cfg, 'sh'), cfg,

@@ -23,6 +23,9 @@ const {
 // and the failure would be a whole batch refused for a reason nobody could reproduce, or a
 // changed suite admitted.
 const { suiteHash, treeEntries, RECEIPT_NAME } = require('./suite-hash');
+// The host reads the immutable original intent and derives its own documentation scope snapshot
+// from canonical issue data, failing closed on tampered new metadata (repo-062).
+const docsScope = require('./docs-scope');
 
 // §4.11 outcome contract: exit code -> {report status, Beads status}. 'killed' is the
 // host-observed wall-clock kill, which produces no exit code.
@@ -594,6 +597,22 @@ function exportIssue(cfg, issueId) {
   if (!res.ok) return { ok: false, error: res.error };
   const i = Array.isArray(res.data) ? res.data[0] : res.data;
   if (!i) return { ok: false, error: `issue ${issueId} not found` };
+
+  // Host-owned scope binding (repo-062). One shared reader (runner/docs-scope.js) judges the
+  // record: a legacy record with no new metadata keeps prior behaviour; a record that presents
+  // itself as new but is incomplete, malformed, hash-inconsistent, structurally not a canonical
+  // kickoff intent, or carrying a stored scope that disagrees with the host's re-derivation fails
+  // closed. `null` intent text, `constraints` as a string and `nonGoals: null` are all structural
+  // failures the canonical-intent gate rejects even when JSON-parseable and hash-consistent
+  // (repo-062 review correction 4).
+  const parsedMeta = docsScope.readScopeMetadata(i.metadata);
+  if (parsedMeta.format === 'invalid') {
+    return { ok: false, error: `issue ${issueId} ${parsedMeta.error}` };
+  }
+  const scope = parsedMeta.format === 'scoped' ? parsedMeta.scope : null;
+  const intentObj = parsedMeta.format === 'scoped' ? parsedMeta.intentObj : null;
+  const kickoffHash = parsedMeta.format === 'scoped' ? parsedMeta.kickoffHash : null;
+
   const md = [
     `# ${i.id}: ${i.title || ''}`,
     '',
@@ -605,8 +624,25 @@ function exportIssue(cfg, issueId) {
     '## Design reference',
     i.design || '(none recorded)',
     '',
-  ].join('\n');
-  return { ok: true, markdown: md, issue: i };
+  ];
+  // The mounted task text — the implementation input — carries the immutable original intent so
+  // the author and implementation see the exact original constraints, nonGoals and kickoff hash
+  // even when the planner omitted or contradicted them (repo-062 C1).
+  if (intentObj) {
+    md.push('## Original kickoff intent (immutable)', '');
+    md.push(`kickoff hash: ${kickoffHash}`, '');
+    const list = (label, arr) => {
+      if (!Array.isArray(arr) || arr.length === 0) return;
+      md.push(`${label}:`);
+      for (const item of arr) md.push(`- ${item}`);
+      md.push('');
+    };
+    list('Constraints', intentObj.constraints);
+    list('Non-goals', intentObj.nonGoals);
+  }
+  const out = { ok: true, markdown: md.join('\n'), issue: i };
+  if (scope) out.scope = scope;
+  return out;
 }
 
 // Terminal write-back after a container exits (§4.10: notes travel via the status file).
