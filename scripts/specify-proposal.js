@@ -392,7 +392,9 @@ function productionAdapters(options, deps = {}) {
       for (const file of files) {
         const shown = invoke('git', ['show', `${commit}:${file}`],
           gitOptions({ maxBuffer: MAX_DESIGN_FILE_BYTES }));
-        if (shown.status !== 0) throw new Error('could not read pinned design file');
+        // spawnSync leaves status === 0 on a maxBuffer overflow (it sets error === ENOBUFS
+        // instead), so the per-design-file byte ceiling only binds if we also refuse on error.
+        if (shown.status !== 0 || shown.error) throw new Error('could not read pinned design file');
         for (const line of String(shown.stdout || '').split(/\r?\n/)) {
           const heading = /^#{1,6}\s+(.+?)\s*#*\s*$/.exec(line);
           if (!heading) continue;
