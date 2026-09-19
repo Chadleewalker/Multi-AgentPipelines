@@ -29,8 +29,21 @@ function finalResponse(provider, launched) {
     return (AGENT.normalizeOutput(provider, raw) || {}).finalText || null;
   }
   if (provider !== 'claude') failure('unsupported result provider');
-  // Claude -p normally returns only final prose. If a structured provider envelope is present,
-  // require its result event; an assistant/tool event is not a terminal response.
+  // Managed Claude proofs explicitly request one JSON result object. Never fall back to
+  // stdout, a tool event or a transcript if that terminal envelope is absent or malformed.
+  if (launched.probeResponseFormat === 'claude-json') {
+    let result;
+    try { result = JSON.parse(raw); }
+    catch { failure('Claude probe did not return one JSON result object'); }
+    if (!result || Array.isArray(result) || result.type !== 'result'
+        || result.subtype !== 'success' || result.is_error !== false
+        || typeof result.result !== 'string') {
+      failure('Claude probe did not return a successful terminal result');
+    }
+    return result.result;
+  }
+  // Legacy direct callers and injected launch seams retain their plain-text behavior.
+  // If they supply provider events, only the successful terminal result has authority.
   const events = raw.split(/\r?\n/).flatMap((line) => {
     try { const value = JSON.parse(line); return value && typeof value.type === 'string' ? [value] : []; }
     catch { return []; }
@@ -73,7 +86,27 @@ function parseRequest(text) {
   return request;
 }
 
-function requestFromLaunch(provider, launched) { return parseRequest(finalResponse(provider, launched)); }
+function requestFromLaunch(provider, launched) {
+  let terminal = null;
+  try {
+    terminal = finalResponse(provider, launched);
+    return parseRequest(terminal);
+  } catch (error) {
+    const raw = String(launched && launched.stdout || '');
+    // Keep a bounded, escaped preview of only the selected terminal answer. Raw stdout and
+    // stderr may contain tool output, so retain only stdout size/hash when framing failed.
+    const diagnostic = { provider, format: launched && launched.probeResponseFormat || 'legacy',
+      stdoutBytes: Buffer.byteLength(raw, 'utf8'), stdoutSha256: sha(raw) };
+    if (terminal !== null) {
+      const bytes = Buffer.from(terminal, 'utf8');
+      diagnostic.finalResponse = { bytes: bytes.length, sha256: sha(bytes),
+        headerOffset: terminal.indexOf(HEADER),
+        preview: bytes.subarray(0, 512).toString('utf8'), truncated: bytes.length > 512 };
+    }
+    error.modeIntentEvidence = `PROBE_MODE_INTENT_DIAGNOSTIC ${JSON.stringify(diagnostic)}`;
+    throw error;
+  }
+}
 
 function checkedFile(root, rel, policy) {
   if (classify(rel, { policy }) !== 'product') failure('requested path is not an allowed product file');

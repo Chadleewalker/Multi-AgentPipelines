@@ -515,17 +515,19 @@ function probePrompt(built, previous = '') {
     MODE_INTENT.HEADER,
     '{"version":1,"changes":[{"path":"src/example.sh","mode":"100755"}]}',
     'The example is a format only: name only files whose mode you explicitly intend to change.',
+    'Do not wrap a mode request in Markdown fences or add prose before or after it.',
     'If no mode changes are needed, finish with your ordinary response; no request file is needed.',
     previous ? `\nPREVIOUS HOST GATE EVIDENCE:\n${previous}` : '',
   ].filter(Boolean).join('\n');
 }
 
-function launchProbe(built, prepared, model, previous = '', run = runSync) {
+function launchProbe(built, prepared, model, previous = '', run = runSync, options = {}) {
   const timeoutMs = Math.max(1, Number(built.cfg.wallClockMinutes) || 240) * 60 * 1000;
-  // One adapter builds this launch too. With no provider selected the Claude argv below is
-  // returned unchanged, so the historical shell-free probe is byte-for-byte what it was.
+  // Direct legacy callers retain their exact argv. The managed proof explicitly requests
+  // Claude's terminal JSON envelope so stdout chatter cannot become a mode request.
   const provider = AGENT.providerFor(built.cfg, 'test-probe');
-  return AGENT.launch({
+  const structuredClaude = provider === 'claude' && options.structuredResult === true;
+  const launched = AGENT.launch({
     provider,
     model,
     reasoningEffort: AGENT.reasoningEffortFor(built.cfg, 'test-probe'),
@@ -537,6 +539,7 @@ function launchProbe(built, prepared, model, previous = '', run = runSync) {
       '--allowedTools', PROBE_TOOLS,
       '--disallowedTools', PROBE_DENIED,
       '--no-session-persistence',
+      ...(structuredClaude ? ['--output-format', 'json'] : []),
     ],
     runOptions: {
       cfg: built.cfg, cwd: prepared.probe, input: `${probePrompt(built, previous)}\n`, timeoutMs,
@@ -546,6 +549,8 @@ function launchProbe(built, prepared, model, previous = '', run = runSync) {
       env: { ...process.env },
     },
   }, run);
+  // This format marker is assigned by the host, never read from model output.
+  return structuredClaude ? { ...launched, probeResponseFormat: 'claude-json' } : launched;
 }
 
 function runGate(built, prepared, run = runSync) {
@@ -599,7 +604,8 @@ function proveTests(built, model, seams = {}) {
       const launched = skipAgent
         ? { status: 0, stdout: '' }
         : runStage(seams, 'probe-agent', attempt,
-          () => (seams.launchProbe || launchProbe)(built, prepared, model, evidence, run));
+          () => (seams.launchProbe || launchProbe)(built, prepared, model, evidence, run,
+            { structuredResult: true }));
       if (launched.status !== 0) {
         const provider = AGENT.providerFor(built.cfg, 'test-probe');
         const limited = AGENT.usageLimitFromLaunch(provider, launched, model);
@@ -663,7 +669,8 @@ function proveTests(built, model, seams = {}) {
     const retained = retainUnfinished(prepared);
     keepBaseline = true;
     return { ok: false, kind: 'setup', probe: prepared.probe, retained,
-      error: (e && e.message) || String(e) };
+      error: (e && e.message) || String(e),
+      ...(e && typeof e.modeIntentEvidence === 'string' ? { evidence: e.modeIntentEvidence } : {}) };
   } finally {
     // Reaching a retention decision is what sets keepBaseline above, whichever way that decision
     // went: a successful retention must survive, and a refused one proved nothing about who owns
