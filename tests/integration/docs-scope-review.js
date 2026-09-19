@@ -46,7 +46,10 @@ const specBrief = require(path.join(ROOT, 'scripts', 'spec-brief.js'));
 
 const DIRECTIVE_ALIAS = docsScope.DIRECTIVE_ALIAS;
 const DIRECTIVE_DEMO = docsScope.DIRECTIVE_DEMO;
-const onLinux = process.platform !== 'win32';
+const { resolveHostShell } = require(path.join(ROOT, 'runner', 'host-shell.js'));
+const resolvedShell = resolveHostShell();
+assert(resolvedShell.ok, resolvedShell.reason);
+const hostShell = resolvedShell.command;
 
 const temps = [];
 function tmp(tag) {
@@ -58,6 +61,32 @@ function run(cmd, args, options = {}) {
   return spawnSync(cmd, args, { encoding: 'utf8', timeout: 120000, windowsHide: true, ...options });
 }
 const git = (dir, ...args) => run('git', ['-c', 'safe.directory=*', '-c', 'commit.gpgsign=false', ...args], { cwd: dir });
+function gitInput(dir, args, input = '') {
+  const result = run('git', ['-c', 'safe.directory=*', '-c', 'commit.gpgsign=false', ...args], { cwd: dir, input });
+  assert(result.status === 0 && !result.error, JSON.stringify({ args, status: result.status, error: String(result.error || ''), stderr: result.stderr }));
+  return result.stdout;
+}
+function addLiteralRootBlob(ws, name) {
+  assert(!name.includes('/'), 'fixture must add a literal root filename');
+  const blob = gitInput(ws.dir, ['hash-object', '-w', '--stdin'], 'root markdown\n').trim();
+  const listing = gitInput(ws.dir, ['ls-tree', '-z', 'HEAD']);
+  const tree = gitInput(ws.dir, ['mktree', '-z'], listing + '100644 blob ' + blob + '\t' + name + '\0').trim();
+  const parent = gitInput(ws.dir, ['rev-parse', 'HEAD']).trim();
+  const head = gitInput(ws.dir, ['commit-tree', tree, '-p', parent, '-m', 'literal root Markdown']).trim();
+  gitInput(ws.dir, ['update-ref', 'refs/heads/' + ws.branch, head, parent]);
+  assert.strictEqual(gitInput(ws.dir, ['rev-parse', 'HEAD']).trim(), head);
+}
+const shellQuote = value => "'" + String(value).replace(/\\/g, '/').replace(/'/g, "'\\''") + "'";
+function ghFixture(base) {
+  const calls = path.join(base, 'gh-calls.jsonl');
+  const helper = path.join(base, 'gh-fixture.js');
+  fs.writeFileSync(calls, '');
+  fs.writeFileSync(helper, 'const fs = require("fs"); fs.appendFileSync(' + JSON.stringify(calls)
+    + ', JSON.stringify({branch:process.env.PR_BRANCH,body:process.env.PR_BODY}) + "\\n");'
+    + 'fs.writeSync(1,"https://example.test/pr/1\\n");');
+  return { command: shellQuote(process.execPath) + ' ' + shellQuote(helper),
+    read: () => fs.readFileSync(calls, 'utf8').trim().split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line)) };
+}
 const silentLog = () => ({ info() {}, error() {}, event() {} });
 
 const tests = [];
@@ -100,9 +129,8 @@ function makeRemote(base) {
 // the gh seam. Returns { out, gh, onRemote }.
 function publishPreserve(ws, cfg, publish = publishMod.publish) {
   const savedGh = process.env.PIPELINE_GH_CMD;
-  const ghCalls = `${ws.dir}.gh`;
-  fs.writeFileSync(ghCalls, '');
-  process.env.PIPELINE_GH_CMD = `printf called >> ${ghCalls.split(path.sep).join('/')}; printf 'https://example.test/pr/1\\n'`;
+  const gh = ghFixture(tmp('gh'));
+  process.env.PIPELINE_GH_CMD = gh.command;
   try {
     const out = publish(cfg, {
       ws, outcome: { status: 'done' }, hasCommits: true,
@@ -111,7 +139,7 @@ function publishPreserve(ws, cfg, publish = publishMod.publish) {
       issue: { id: 'bd-scoped', title: 'scoped' }, runId: 'run-1', secrets: ['tok'],
       scope: { documentation: 'preserve', directive: DIRECTIVE_ALIAS },
     }, silentLog(), 'tr');
-    return { out, gh: fs.readFileSync(ghCalls, 'utf8') };
+    return { out, gh: gh.read() };
   } finally {
     if (savedGh === undefined) delete process.env.PIPELINE_GH_CMD; else process.env.PIPELINE_GH_CMD = savedGh;
   }
@@ -124,16 +152,16 @@ test('correction 2: a root-level blob literally named `src\\README.md` is protec
   const base = tmp('c2');
   const remote = makeRemote(base);
 
-  // A real Git delta that adds a root file whose name literally contains a backslash. On Linux a
-  // backslash is a valid filename character, so this is a single root-level component, not a
-  // `src/` directory. `git diff -z` emits it verbatim (no quoting, POSIX `/` separators only).
+  // Build the invalid-on-Windows filename directly in a real Git tree; never ask the host
+  // filesystem or index to interpret its literal backslash. Keep every existing tree entry.
   const backslashName = 'src\\README.md';
   const ws = makeWorkspace(base, remote, { 'keep.txt': 'x\n' }, (d) => {
-    fs.writeFileSync(path.join(d, backslashName), 'root markdown with a backslash in its name\n');
     fs.mkdirSync(path.join(d, 'src'), { recursive: true });
     fs.writeFileSync(path.join(d, 'src', 'README.md'), 'nested src readme (allowed)\n');
   });
-  const z = String(git(ws.dir, 'diff', '--name-status', '-M', '-z', ws.forkPoint, 'HEAD').stdout || '');
+  addLiteralRootBlob(ws, backslashName);
+  const z = gitInput(ws.dir, ['diff', '--name-status', '-M', '-z', ws.forkPoint, 'HEAD']);
+  assert(z.split('\0').includes(backslashName), 'actual Git delta omitted the literal root filename');
   const hits = docsScope.protectedMarkdownPaths(z);
   assert(hits.includes(backslashName),
     `the backslash-bearing root Markdown blob was not protected: ${JSON.stringify({ z, hits })}`);
@@ -148,26 +176,26 @@ test('correction 2: a root-level blob literally named `src\\README.md` is protec
 
   // And through the real publication backstop: adding the protected backslash file under a
   // preserve scope refuses; adding only the allowed nested file publishes.
-  const cfg = { targetRepoPath: base, gitTimeoutMs: 60000, defaultBranch: 'main' };
-  const wsBackslash = makeWorkspace(base, remote, { 'keep.txt': 'x\n' },
-    (d) => fs.writeFileSync(path.join(d, backslashName), 'root md\n'));
+  const cfg = { targetRepoPath: base, gitTimeoutMs: 60000, defaultBranch: 'main', hostShell };
+  const wsBackslash = ws;
   const refused = publishPreserve(wsBackslash, cfg);
   assert(refused.out && refused.out.ok === false && refused.out.pushed === false && !refused.out.prUrl,
     `the protected backslash-named blob was not refused: ${JSON.stringify(refused.out)}`);
-  assert.strictEqual(refused.gh, '', 'a PR was opened despite the refusal');
+  assert.strictEqual(refused.gh.length, 0, 'a PR was opened despite the refusal');
 
   const wsNested = makeWorkspace(base, remote, { 'keep.txt': 'x\n' },
     (d) => { fs.mkdirSync(path.join(d, 'src'), { recursive: true }); fs.writeFileSync(path.join(d, 'src', 'README.md'), 'nested\n'); });
   const allowed = publishPreserve(wsNested, cfg);
   assert(allowed.out && allowed.out.ok === true && allowed.out.pushed === true && allowed.out.prUrl,
     `an allowed nested src/README.md was wrongly refused: ${JSON.stringify(allowed.out)}`);
+  assert.strictEqual(allowed.gh.length, 1, 'the positive control did not reach the GH seam');
 });
 
 // ── Correction 1: bind the delta inspection to actual pinned Git objects ─────────────────────
 test('correction 1: a refs/replace baseline that masks a prohibited README.md change under an ordinary diff is still refused because publication reads --no-replace-objects', () => {
   const base = tmp('c1');
   const remote = makeRemote(base);
-  const cfg = { targetRepoPath: base, gitTimeoutMs: 60000, defaultBranch: 'main' };
+  const cfg = { targetRepoPath: base, gitTimeoutMs: 60000, defaultBranch: 'main', hostShell };
 
   // Fork point A carries README.md='baseline'; the task branch changes it to 'changed' (a
   // prohibited protected-surface modification under a preserve scope).
@@ -196,7 +224,7 @@ test('correction 1: a refs/replace baseline that masks a prohibited README.md ch
   const res = publishPreserve(ws, cfg);
   assert(res.out && res.out.ok === false && res.out.pushed === false && !res.out.prUrl,
     `publication did not refuse a replace-masked protected change: ${JSON.stringify(res.out)}`);
-  assert.strictEqual(res.gh, '', 'a PR was opened despite the refusal');
+  assert.strictEqual(res.gh.length, 0, 'a PR was opened despite the refusal');
   const onRemote = run('git', ['--git-dir', remote, 'rev-parse', '--verify', `refs/heads/${ws.branch}`]);
   assert.notStrictEqual(onRemote.status, 0, 'the refused branch reached the remote');
   assert(fs.existsSync(ws.dir), 'the recoverable workspace was discarded');
@@ -206,7 +234,7 @@ test('correction 1: a refs/replace baseline that masks a prohibited README.md ch
 test('correction 5: a Git inspection that returns a non-timeout error (ENOBUFS-shaped) alongside status 0 and truncated stdout refuses publication before any push or PR', () => {
   const base = tmp('c5');
   const remote = makeRemote(base);
-  const cfg = { targetRepoPath: base, gitTimeoutMs: 60000, defaultBranch: 'main' };
+  const cfg = { targetRepoPath: base, gitTimeoutMs: 60000, defaultBranch: 'main', hostShell };
   // A product-only delta: absent the fix, an errored-but-status-0 diff parses to no protected
   // hits and the branch publishes. The fix must refuse on the error itself.
   const ws = makeWorkspace(base, remote, { 'README.md': 'r\n', 'src/app.js': 'code\n' },
@@ -243,7 +271,7 @@ test('correction 5: a Git inspection that returns a non-timeout error (ENOBUFS-s
   }
   assert(res.out && res.out.ok === false && res.out.pushed === false && !res.out.prUrl,
     `an errored-but-status-0 Git inspection did not fail closed: ${JSON.stringify(res.out)}`);
-  assert.strictEqual(res.gh, '', 'a PR was opened despite the failed inspection');
+  assert.strictEqual(res.gh.length, 0, 'a PR was opened despite the failed inspection');
   const onRemote = run('git', ['--git-dir', remote, 'rev-parse', '--verify', `refs/heads/${ws.branch}`]);
   assert.notStrictEqual(onRemote.status, 0, 'the branch reached the remote after a failed inspection');
 });
@@ -274,6 +302,14 @@ test('correction 4: the shared reader accepts a canonical scoped intent lossless
     'nonGoals: null': canonicalIntent({ nonGoals: null }),
     'wrong version': canonicalIntent({ version: 'kickoff-intake/2' }),
     'array intent': '[]',
+    'empty title': canonicalIntent({ title: '' }),
+    'missing canonical fields': JSON.stringify({ version: docsScope.INTENT_VERSION, title: 't', constraints: [], nonGoals: [] }),
+    'invalid description': canonicalIntent({ description: 7 }),
+    'invalid priority': canonicalIntent({ priority: 99 }),
+    'invalid relation': canonicalIntent({ relations: [{ kind: 'blocks' }] }),
+    'invalid origin': canonicalIntent({ origin: { kind: 'review' } }),
+    'unknown field': canonicalIntent({ unexpected: true }),
+    'missing examples': canonicalIntent({ examples: undefined }),
   };
   for (const [label, intent] of Object.entries(malformed)) {
     const meta = { intent, kickoffHash: docsScope.hashOf(intent), scope: { documentation: 'normal', directive: null } };
@@ -314,30 +350,48 @@ test('correction 4: the shared reader accepts a canonical scoped intent lossless
 });
 
 // ── Correction 3: carry the verified original intent into the author brief renderer ──────────
-test('correction 3: the acceptance-author brief renderer carries the exact original constraints, nonGoals, docs directive and kickoff hash; a legacy record leaves the brief unchanged', () => {
-  const intent = canonicalIntent({
-    constraints: [DIRECTIVE_ALIAS, 'Keep the public input contract stable.'],
-    nonGoals: ['Do not introduce new runtime dependencies.'],
-  });
+test('correction 3: real writeBrief and author-launch input retain original intent; malformed preparation refuses and legacy remains unchanged', async () => {
+  const intent = canonicalIntent({ constraints: [DIRECTIVE_ALIAS, 'Keep the public input contract stable.'],
+    nonGoals: ['Do not introduce new runtime dependencies.'] });
   const kickoffHash = docsScope.hashOf(intent);
-  const scopedIssue = { id: 'bd-x', title: 't', metadata: { intent, kickoffHash, scope: docsScope.deriveScope(JSON.parse(intent)) } };
-
-  const lines = specBrief.originalIntentLines(scopedIssue).join('\n');
-  assert(lines.includes(kickoffHash), 'the brief renderer dropped the immutable kickoff hash');
-  for (const c of ['Keep the public input contract stable.', 'Do not introduce new runtime dependencies.', DIRECTIVE_ALIAS]) {
-    assert(lines.includes(c), `the brief renderer dropped the original intent item ${JSON.stringify(c)}`);
+  const data = { id: 'bd-x', title: 't', acceptance_criteria: '1. Planner omitted original intent.',
+    metadata: { intent, kickoffHash, scope: docsScope.deriveScope(JSON.parse(intent)) } };
+  const ctx = { cfg: { targetRepoPath: '/fixture', provider: 'claude', testAuthorProvider: 'claude', hostShell },
+    id: data.id, suiteId: data.id, data, folder: { dir: '/fixture-author', branch: 'author', exists: true },
+    branch: 'main', policy: { verifyCommand: 'node verify.js', frozenPaths: [] }, example: null,
+    repoRoot: ROOT, state: { state: 'write', local: null } };
+  const text = specBrief.writeBrief(ctx).join('\n');
+  const author = require(path.join(ROOT, 'scripts', 'author-tests.js'));
+  const calls = [];
+  author.launchAuthor({ ...ctx, text }, 'claude-opus-4-8', (command, args, options) => {
+    calls.push({ command, args, input: options.input });
+    return { status: 0, stdout: '', stderr: '' };
+  });
+  assert.strictEqual(calls.length, 1, 'external model boundary was not reached exactly once');
+  assert.strictEqual(calls[0].input, text + '\n');
+  for (const value of [kickoffHash, DIRECTIVE_ALIAS, 'Keep the public input contract stable.',
+    'Do not introduce new runtime dependencies.', 'Planner omitted original intent.']) {
+    assert(calls[0].input.includes(value), 'author input lost ' + JSON.stringify(value));
   }
-  assert(/preserve/i.test(lines), 'the brief renderer did not record the preserve documentation scope');
-
-  // Legacy record: nothing new to render, brief unchanged.
-  assert.deepStrictEqual(specBrief.originalIntentLines({ id: 'bd-y', title: 't', metadata: {} }), []);
-  assert.deepStrictEqual(specBrief.originalIntentLines({ id: 'bd-z', title: 't' }), []);
-  // A malformed/tampered record contributes nothing rather than leaking a wrong intent.
-  assert.deepStrictEqual(specBrief.originalIntentLines({ metadata: { intent: 'null', kickoffHash: docsScope.hashOf('null'), scope: { documentation: 'normal', directive: null } } }), []);
-
-  // The renderer is wired into the real writeBrief output through the same call.
-  assert(/lines\.push\(\.\.\.originalIntentLines\(data\)\)/.test(fs.readFileSync(path.join(ROOT, 'scripts', 'spec-brief.js'), 'utf8')),
-    'originalIntentLines is not invoked by writeBrief');
+  const denied = calls[0].args[calls[0].args.indexOf('--disallowedTools') + 1];
+  assert(denied.includes('Bash(bd *)') && denied.includes('Bash(git push*)'), 'author containment changed');
+  const legacy = { ...data, metadata: {} };
+  const absent = { ...data }; delete absent.metadata;
+  assert.deepStrictEqual(specBrief.writeBrief({ ...ctx, data: legacy }), specBrief.writeBrief({ ...ctx, data: absent }));
+  const invalid = { ...data, metadata: { intent: 'null', kickoffHash: docsScope.hashOf('null'), scope: { documentation: 'normal', directive: null } } };
+  assert.throws(() => specBrief.writeBrief({ ...ctx, data: invalid }), /invalid kickoff metadata/);
+  await withBd(({ store }) => {
+    const base = tmp('invalid-brief');
+    const { remote, seed } = seedRunRepo(base, invalid.id);
+    fs.writeFileSync(store, JSON.stringify({ records: [invalid] }));
+    const config = path.join(base, 'config.json');
+    fs.writeFileSync(config, JSON.stringify({ targetRepoPath: seed, targetRepoRemote: remote,
+      image: 'unused:local', hostShell }));
+    const built = specBrief.buildBrief({ id: invalid.id, config });
+    assert.strictEqual(built.ok, false, 'malformed metadata produced an author-ready brief');
+    assert.strictEqual(built.kind, 'issue');
+    assert(/canonical kickoff intent/.test(built.error), built.error);
+  });
 });
 
 // ── Correction 6: keep the omission log truthful for unsuccessful work ────────────────────────
@@ -416,10 +470,12 @@ async function runScopedOutcome(tag, stubBody) {
     const saved = {};
     const set = (k, v) => { saved[k] = process.env[k]; process.env[k] = v; };
     set('PIPELINE_EXEC_STUB', stub);
+    const gh = ghFixture(base);
+    set('PIPELINE_GH_CMD', gh.command);
     const savedKeep = process.env.PIPELINE_KEEP_WORKSPACE; delete process.env.PIPELINE_KEEP_WORKSPACE;
     const log = logmod.startRun(path.join(base, 'runs-root'), `ir-${tag}`);
     const cfg = { targetRepoPath: seed, targetRepoRemote: remote, image: 'unused:local',
-      wallClockMinutes: 60, maxAttempts: 1, concurrency: 1, gitTimeoutMs: 60000, bdTimeoutMs: 30000, lifecycleTimeoutMs: 120000 };
+      wallClockMinutes: 60, maxAttempts: 1, concurrency: 1, gitTimeoutMs: 60000, bdTimeoutMs: 30000, lifecycleTimeoutMs: 120000, hostShell };
     const gate = { admit: async () => true, reportLimit: async () => ({ resumed: false }) };
     let row = null; let threw = null;
     try { row = await runmod.runOneTask(cfg, { id: issueId, title: 'scoped', priority: 1 }, log, 'tok', gate); }
@@ -429,7 +485,7 @@ async function runScopedOutcome(tag, stubBody) {
       if (savedKeep === undefined) delete process.env.PIPELINE_KEEP_WORKSPACE; else process.env.PIPELINE_KEEP_WORKSPACE = savedKeep;
     }
     const logText = fs.existsSync(log.logFile) ? fs.readFileSync(log.logFile, 'utf8') : '';
-    return { row, threw, logText };
+    return { row, threw, logText, gh: gh.read() };
   });
 }
 
@@ -446,6 +502,7 @@ test('correction 6: a FAILED documentation-prohibited outcome records a neutral 
   const failed = await runScopedOutcome('fail', failStub);
   assert.strictEqual(failed.threw, null, `runOneTask threw: ${failed.threw && failed.threw.stack}`);
   assert(failed.row && failed.row.outcome === 'failed', `expected a failed outcome: ${JSON.stringify(failed.row)}`);
+  assert.strictEqual(failed.gh.length, 0, 'failed control reached PR creation');
   const omissionLines = failed.logText.split(/\r?\n/).filter((l) => /document/i.test(l) && /(omit|skip|preserv|prohibit)/i.test(l));
   assert(omissionLines.length >= 1, `no documentation-omission line was recorded on failure: ${JSON.stringify(omissionLines)}`);
   assert(!omissionLines.some((l) => /verified implementation summary is retained/i.test(l)),
@@ -469,14 +526,15 @@ test('correction 6: a FAILED documentation-prohibited outcome records a neutral 
   ].join('\n');
   const ok = await runScopedOutcome('pass', passStub);
   assert.strictEqual(ok.threw, null, `runOneTask threw: ${ok.threw && ok.threw.stack}`);
-  if (ok.row && ok.row.outcome === 'done') {
-    const retained = ok.logText.split(/\r?\n/).filter((l) => /verified implementation summary is retained/i.test(l));
-    assert(retained.length >= 1, `a verified success dropped the retained claim: ${JSON.stringify(ok.row)}`);
-  } else {
-    // Artifact-schema validation of a hand-written status file can vary by environment; the
-    // negative (failed) case above is the discriminating one for correction 6.
-    console.log(`  (note) correction 6 positive control did not reach a done outcome in this environment: ${JSON.stringify(ok.row && ok.row.outcome)}`);
-  }
+  assert(ok.row && ok.row.outcome === 'done', 'positive control never reached done: ' + JSON.stringify(ok.row));
+  assert.strictEqual(ok.row.error, undefined, JSON.stringify(ok.row));
+  assert.strictEqual(ok.row.recoveryWorkspace, undefined, JSON.stringify(ok.row));
+  assert.strictEqual(ok.row.pushed, true);
+  assert.strictEqual(ok.row.prUrl, 'https://example.test/pr/1');
+  assert.strictEqual(ok.gh.length, 1, 'positive control must reach exactly one substituted PR call');
+  assert.strictEqual(ok.row.changeSummary, 'the verified implementation summary');
+  const retained = ok.logText.split(/\r?\n/).filter(l => /verified implementation summary is retained/i.test(l));
+  assert(retained.length >= 1, 'successful control dropped the retained-summary claim');
 });
 
 (async () => {
@@ -488,7 +546,6 @@ test('correction 6: a FAILED documentation-prohibited outcome records a neutral 
   for (const dir of temps.splice(0)) {
     try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch { /* disposable */ }
   }
-  if (!onLinux) console.log('  (note) authored for the canonical Linux gate; some delta kinds are Linux-authoritative');
   process.exit(failed);
 })().catch((error) => {
   console.log(`FAIL - harness — ${error && error.stack ? error.stack : error}`);

@@ -10,6 +10,8 @@
 // any of them cannot drift silently.
 'use strict';
 const crypto = require('crypto');
+const { isDeepStrictEqual } = require('util');
+const { canonicalPacket, VERSION: INTENT_VERSION } = require('../scripts/kickoff');
 
 // The two — and only two — exact directive strings. Documentation preservation activates only
 // when an ENTIRE element of the original `constraints` or `nonGoals` array equals one of these.
@@ -40,21 +42,14 @@ function deriveScope(intent) {
 
 const isPreserve = (scope) => !!scope && scope.documentation === 'preserve';
 
-// The canonical kickoff-intent contract (scripts/kickoff.js `canonicalPacket`), validated to the
-// depth the scope derivation and the acceptance-author brief actually read: the exact version
-// tag, a string title, and `constraints`/`nonGoals` (and, when present, `examples`) as arrays of
-// strings. This is the structural gate JSON syntax and hash equality alone cannot provide — it
-// rejects a hash-consistent intent of `null`, an object with `constraints` as a string, and a
-// `nonGoals: null`, none of which is a real kickoff intent (repo-062 review correction 4).
-const INTENT_VERSION = 'kickoff-intake/1';
-const isStringArray = (v) => Array.isArray(v) && v.every((x) => typeof x === 'string');
+// Intake permits omitted optional fields and supplies their defaults. Persisted intent is the
+// complete canonicalPacket result, so compare decoded structure with that same canonicalizer.
+// This rejects omitted/defaulted fields and malformed values without normalizing the original
+// intent bytes, changing their hash, or maintaining a second field/type contract here.
 function isCanonicalIntent(obj) {
-  return !!obj && typeof obj === 'object' && !Array.isArray(obj)
-    && obj.version === INTENT_VERSION
-    && typeof obj.title === 'string'
-    && isStringArray(obj.constraints)
-    && isStringArray(obj.nonGoals)
-    && (obj.examples === undefined || isStringArray(obj.examples));
+  try {
+    return isDeepStrictEqual(obj, canonicalPacket(Buffer.from(JSON.stringify(obj), 'utf8')));
+  } catch { return false; }
 }
 
 // The single reader of host-owned scope metadata on a Beads issue, shared by the host export

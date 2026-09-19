@@ -202,6 +202,8 @@ function issue(cfg, id) {
   if (!res.ok) return { ok: false, error: res.error };
   const data = Array.isArray(res.data) ? res.data[0] : res.data;
   if (!data || typeof data !== 'object') return { ok: false, error: `bd returned no issue for ${id}` };
+  const scope = docsScope.readScopeMetadata(data.metadata);
+  if (scope.format === 'invalid') return { ok: false, error: `issue ${id} ${scope.error}` };
   return { ok: true, issue: data };
 }
 
@@ -663,12 +665,12 @@ function criteriaLines(data) {
 // consumes (repo-062 review correction 3). The planner-generated criteria above can omit or
 // contradict the original constraints, nonGoals, exact documentation directive and kickoff hash;
 // the brief must still carry the immutable originals so the author writes tests against what the
-// kickoff really asked for. Read through the one shared reader, so a malformed or tampered record
-// contributes nothing and a legacy record (no new metadata) leaves the brief byte-identical to
-// its prior form.
+// kickoff really asked for. Malformed new metadata refuses preparation rather than silently
+// producing a planner-only brief. Legacy records leave the brief byte-identical to its prior form.
 function originalIntentLines(data) {
   const parsed = docsScope.readScopeMetadata(data && data.metadata);
-  if (parsed.format !== 'scoped') return [];
+  if (parsed.format === 'invalid') throw new Error(`invalid kickoff metadata: ${parsed.error}`);
+  if (parsed.format === 'legacy') return [];
   const intent = parsed.intentObj;
   const out = [
     'THE ORIGINAL KICKOFF INTENT (immutable, hash-bound — the planner cannot relax it). These are',
