@@ -31,12 +31,16 @@ const { createPauseGate } = require('./pause');
 const { createFeedSource, fixedSource, ENDINGS } = require('./feed');
 const { fileMemoryNotes, shouldFileMemory } = require('./memory');
 const { withSection } = require('./supervisor');
-const { publish } = require('./publish');
+const { publish, PR_ELIGIBLE_OUTCOMES } = require('./publish');
 const { successfulArtifactFailure } = require('./artifact-schema');
 const { commandFor } = require('./host-shell');
-const { runSync, timeoutFor } = require('./process');
+const { runSync, timeoutFor, failureText } = require('./process');
 const { writeManifest, writeReport } = require('./report');
 const writeProtection = require('../scripts/write-protection-policy');
+// Git-authoritative executable modes (DESIGN.md §4.4, repo-3ec). On the managed mode-untrusted
+// path the verifier materialized the candidate and bound its evidence to the tree; the host must
+// then require that binding rather than treat its absence as "nothing to check".
+const { fileModeUntrusted } = require('../pipeline/materialize.js');
 
 // Diff size on the branch — the report's final tie-breaker (§4.9).
 function diffLines(cfg, dir, forkPoint) {
@@ -49,6 +53,58 @@ function diffLines(cfg, dir, forkPoint) {
 }
 
 const REPO_ROOT = path.join(__dirname, '..');
+
+// Git-authoritative executable modes (DESIGN.md §4.4, repo-3ec). Verification of a
+// mode-untrusted candidate binds its evidence to the exact tree it judged (content + Git modes),
+// written to .run/verified-tree by the verifier. Before a verified-success outcome publishes,
+// the host confirms the tree that will be pushed still matches that binding: a post-verification
+// amend that changed the candidate's content OR its Git modes yields a different tree id, so the
+// prior pass is stale and its verified-success outcome and PR are refused.
+//
+// Correction 2 — fail closed when the binding is REQUIRED. On the managed mode-untrusted path
+// (core.filemode=false: the Windows bind mount the verifier materialized), the binding is not
+// optional: a verified success that lost it — missing, malformed, unreadable, or an
+// uncheckable/failed comparison — must NOT stay publishable, or a mode-untrusted verification
+// could publish changed content/modes with its binding quietly gone. So on that path a broken
+// binding is refused, not skipped. On a faithful worktree (core.filemode trusted) nothing was
+// materialized, no binding is expected, and an absent one legitimately means "not applicable" —
+// which keeps ordinary runs and the legacy/test interfaces unchanged. Returns a diagnostic
+// string when stale or when a required binding is broken, or null when there is nothing to
+// enforce. `dir` is the workspace whose tree will be published.
+function staleEvidence(dir, forkPoint, cfg) {
+  const bindingRequired = fileModeUntrusted(dir);
+  let recorded;
+  try { recorded = fs.readFileSync(path.join(dir, '.run', 'verified-tree'), 'utf8').trim(); }
+  catch (e) {
+    if (bindingRequired) {
+      return 'verified evidence binding is required on this mode-untrusted candidate but could '
+        + `not be read (${e && e.message ? e.message : e}) — refusing the verified-success `
+        + 'outcome and PR';
+    }
+    return null;
+  }
+  if (!/^[0-9a-f]{40,64}$/.test(recorded)) {
+    if (bindingRequired) {
+      return 'verified evidence binding is required on this mode-untrusted candidate but is '
+        + `malformed (${recorded ? recorded.slice(0, 24) : 'empty'}) — refusing the `
+        + 'verified-success outcome and PR';
+    }
+    return null;
+  }
+  const r = runSync('git', ['rev-parse', 'HEAD^{tree}'], {
+    cfg, kind: 'git', cwd: dir, label: 'git rev-parse candidate tree',
+  });
+  const current = String(r.stdout || '').trim();
+  if (r.status !== 0 || !/^[0-9a-f]{40,64}$/.test(current)) {
+    return `verified evidence binding could not be checked: ${failureText(r, 'git rev-parse HEAD^{tree} failed')}`;
+  }
+  if (current !== recorded) {
+    return 'verified evidence is stale: the publishable candidate changed after verification '
+      + `(verified tree ${recorded.slice(0, 12)}, current ${current.slice(0, 12)}) — `
+      + 'refusing the verified-success outcome and PR';
+  }
+  return null;
+}
 
 function parseArgs(argv) {
   const out = { config: null, dryRun: false };
@@ -494,7 +550,7 @@ async function runOneTask(cfg, issue, log, token, gate, ownership) {
   // the run directory as evidence but cannot close an issue or reach a PR body.
   const artifactError = successfulArtifactFailure(exec.exitCode, artifacts.contracts);
   if (artifactError) log.error(tr, artifactError);
-  const outcome = artifactError
+  let outcome = artifactError
     ? { status: 'failed', beads: 'blocked' }
     : outcomeFor(exec.exitCode, artifacts.verify);
   let commits = false;
@@ -505,6 +561,20 @@ async function runOneTask(cfg, issue, log, token, gate, ownership) {
   } catch (e) {
     commitCheckError = `publication precheck incomplete: ${e && e.message ? e.message : e}`;
     log.error(tr, `${commitCheckError}; workspace retained and Beads stays in_progress`);
+  }
+
+  // Stale-evidence gate (§4.4, repo-3ec). A verified pass is only publishable while it still
+  // describes the candidate on the branch. Checked only when a verified-success outcome would
+  // publish something — a mode-untrusted verification wrote the binding, a later amend may have
+  // invalidated it. The branch may still be pushed as recoverable evidence; only the
+  // verified-success outcome and its PR are withdrawn.
+  let staleError = null;
+  if (!artifactError && !commitCheckError && commits && PR_ELIGIBLE_OUTCOMES.has(outcome.status)) {
+    staleError = staleEvidence(ws.dir, ws.forkPoint, cfg);
+    if (staleError) {
+      log.error(tr, staleError);
+      outcome = { status: 'failed', beads: 'blocked' };
+    }
   }
 
   // ---- memory out-channel (§3.6): file the agent's proposed notes, host as sole
@@ -573,7 +643,7 @@ async function runOneTask(cfg, issue, log, token, gate, ownership) {
   if (completionError) log.error(tr, finishedMessage, finishedMeta);
   else log.info(tr, finishedMessage, finishedMeta);
   const v = artifacts.verify;
-  const rowError = [artifactError, completionError].filter(Boolean).join('; ') || null;
+  const rowError = [artifactError, staleError, completionError].filter(Boolean).join('; ') || null;
   const row = {
     issueId: issue.id,
     title: issue.title || '',
@@ -907,4 +977,8 @@ if (require.main === module) {
 // planted status object reaches all of them in a few lines and none of them needs a clone.
 module.exports = {
   drainQueue, executeTask, runOneTask, logAttempts, logConcerns, cleanupOwnedLifecycle,
+  // Exported for repo-3ec correction-2 regression coverage (tests/integration/mode-review.js):
+  // the fail-closed verified-evidence binding check is a production decision worth exercising
+  // directly, independent of the full runOneTask publication path the frozen suite already drives.
+  staleEvidence,
 };
