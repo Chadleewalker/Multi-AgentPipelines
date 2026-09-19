@@ -16,6 +16,22 @@ const HEADER = 'PROBE_MODE_INTENT_V1';
 const MAX_REQUEST_BYTES = 16384;
 const MAX_CHANGES = 64;
 const MAX_PATH_BYTES = 1024;
+// Claude's schema channel is a typed request only; the host still applies every path,
+// byte, ownership and mode check below. Empty changes explicitly request no mode edits.
+const STRUCTURED_FORMAT = 'claude-mode-intent-v1';
+const RESPONSE_SCHEMA_JSON = JSON.stringify({
+  type: 'object', additionalProperties: false, required: ['version', 'changes'],
+  properties: {
+    version: { type: 'integer', const: 1 },
+    changes: { type: 'array', maxItems: MAX_CHANGES, items: {
+      type: 'object', additionalProperties: false, required: ['path', 'mode'],
+      properties: {
+        path: { type: 'string', minLength: 1, maxLength: MAX_PATH_BYTES },
+        mode: { type: 'string', enum: ['100644', '100755'] },
+      },
+    } },
+  },
+});
 const sha = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 const failure = (message) => { throw new Error(`probe mode intent: ${message}`); };
 const sameKeys = (obj, keys) => obj && typeof obj === 'object' && !Array.isArray(obj)
@@ -29,8 +45,27 @@ function finalResponse(provider, launched) {
     return (AGENT.normalizeOutput(provider, raw) || {}).finalText || null;
   }
   if (provider !== 'claude') failure('unsupported result provider');
-  // Claude -p normally returns only final prose. If a structured provider envelope is present,
-  // require its result event; an assistant/tool event is not a terminal response.
+  // Managed Claude proofs explicitly request one JSON result object. Never fall back to
+  // stdout, a tool event or a transcript if that terminal envelope is absent or malformed.
+  const structured = launched.probeResponseFormat === STRUCTURED_FORMAT;
+  if (structured || launched.probeResponseFormat === 'claude-json') {
+    let result;
+    try { result = JSON.parse(raw); }
+    catch { failure('Claude probe did not return one JSON result object'); }
+    if (!result || Array.isArray(result) || result.type !== 'result'
+        || result.subtype !== 'success' || result.is_error !== false) {
+      failure('Claude probe did not return a successful terminal result');
+    }
+    if (structured) {
+      if (!Object.hasOwn(result, 'structured_output')) failure('Claude probe returned no structured mode intent');
+      // Never recover a request from result prose or a tool event when schema output is absent.
+      return JSON.stringify(result.structured_output);
+    }
+    if (typeof result.result !== 'string') failure('Claude probe did not return a successful terminal result');
+    return result.result;
+  }
+  // Legacy direct callers and injected launch seams retain their plain-text behavior.
+  // If they supply provider events, only the successful terminal result has authority.
   const events = raw.split(/\r?\n/).flatMap((line) => {
     try { const value = JSON.parse(line); return value && typeof value.type === 'string' ? [value] : []; }
     catch { return []; }
@@ -73,7 +108,35 @@ function parseRequest(text) {
   return request;
 }
 
-function requestFromLaunch(provider, launched) { return parseRequest(finalResponse(provider, launched)); }
+function requestFromLaunch(provider, launched) {
+  let terminal = null;
+  try {
+    terminal = finalResponse(provider, launched);
+    if (terminal !== null && launched.probeResponseFormat === STRUCTURED_FORMAT) {
+      const request = JSON.parse(terminal);
+      if (sameKeys(request, ['version', 'changes']) && request.version === 1
+          && Array.isArray(request.changes) && request.changes.length === 0) return null;
+      // Canonical serialization, not prose extraction, feeds the unchanged strict validator.
+      return parseRequest(`${HEADER}\n${terminal}`);
+    }
+    return parseRequest(terminal);
+  } catch (error) {
+    const raw = String(launched && launched.stdout || '');
+    // Keep a bounded, escaped preview of only the selected terminal answer. Raw stdout and
+    // stderr may contain tool output, so retain only stdout size/hash when framing failed.
+    const diagnostic = { provider, format: launched && launched.probeResponseFormat || 'legacy',
+      stdoutBytes: Buffer.byteLength(raw, 'utf8'), stdoutSha256: sha(raw) };
+    if (terminal !== null) {
+      const bytes = Buffer.from(terminal, 'utf8');
+      diagnostic.finalResponse = { bytes: bytes.length, sha256: sha(bytes),
+        field: launched.probeResponseFormat === STRUCTURED_FORMAT ? 'structured_output' : 'result',
+        headerOffset: terminal.indexOf(HEADER),
+        preview: bytes.subarray(0, 512).toString('utf8'), truncated: bytes.length > 512 };
+    }
+    error.modeIntentEvidence = `PROBE_MODE_INTENT_DIAGNOSTIC ${JSON.stringify(diagnostic)}`;
+    throw error;
+  }
+}
 
 function checkedFile(root, rel, policy) {
   if (classify(rel, { policy }) !== 'product') failure('requested path is not an allowed product file');
@@ -255,5 +318,5 @@ function verifyApplied(built, prepared, audit, readManagedProbe) {
   } finally { try { fs.rmSync(scratch, { recursive: true, force: true }); } catch { /* observation cleanup is best effort */ } }
 }
 
-module.exports = { HEADER, MAX_REQUEST_BYTES, MAX_CHANGES, MAX_PATH_BYTES,
+module.exports = { HEADER, MAX_REQUEST_BYTES, MAX_CHANGES, MAX_PATH_BYTES, STRUCTURED_FORMAT, RESPONSE_SCHEMA_JSON,
   finalResponse, parseRequest, requestFromLaunch, applyRequest, verifyApplied, localGitEnv };

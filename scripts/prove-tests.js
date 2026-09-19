@@ -494,8 +494,23 @@ function resumeProbe(built, probePath, run = runSync) {
   } catch (e) { return { ok: false, error: e.message }; }
 }
 
-function probePrompt(built, previous = '') {
+function probePrompt(built, previous = '', options = {}) {
   const suite = `tests/acceptance/${suiteIdOf(built)}/`;
+  const modeInstructions = options.structuredResult === true ? [
+    'Complete the workflow with the structured output required by the supplied JSON schema.',
+    'Return version 1 and a changes array naming only existing product files whose Git mode',
+    'you explicitly intend to change. Use only modes 100644 and 100755 and literal relative paths.',
+    'Use an empty changes array when no mode changes are needed. Do not put the request in',
+    'ordinary response prose or a Markdown fence; the host reads only structured output.',
+  ] : [
+    'For a mode request, your entire final response must be the following header and one JSON',
+    'object (at most 64 changes). Use only modes 100644 and 100755 and literal relative paths:',
+    MODE_INTENT.HEADER,
+    '{"version":1,"changes":[{"path":"src/example.sh","mode":"100755"}]}',
+    'The example is a format only: name only files whose mode you explicitly intend to change.',
+    'Do not wrap a mode request in Markdown fences or add prose before or after it.',
+    'If no mode changes are needed, finish with your ordinary response; no request file is needed.',
+  ];
   return [
     `You are building a disposable GREEN PROBE for ${built.id}.`,
     `Make every check in ${suite} pass by editing PRODUCT CODE in this disposable clone.`,
@@ -510,22 +525,18 @@ function probePrompt(built, previous = '') {
     'If a product file needs an explicit Git executable-mode change, request it in your FINAL',
     'response without using Git or a shell. The host accepts only existing regular product files',
     'inside this probe, refuses protected paths, and runs the unchanged native gate afterward.',
-    'For a mode request, your entire final response must be the following header and one JSON',
-    'object (at most 64 changes). Use only modes 100644 and 100755 and literal relative paths:',
-    MODE_INTENT.HEADER,
-    '{"version":1,"changes":[{"path":"src/example.sh","mode":"100755"}]}',
-    'The example is a format only: name only files whose mode you explicitly intend to change.',
-    'If no mode changes are needed, finish with your ordinary response; no request file is needed.',
+    ...modeInstructions,
     previous ? `\nPREVIOUS HOST GATE EVIDENCE:\n${previous}` : '',
   ].filter(Boolean).join('\n');
 }
 
-function launchProbe(built, prepared, model, previous = '', run = runSync) {
+function launchProbe(built, prepared, model, previous = '', run = runSync, options = {}) {
   const timeoutMs = Math.max(1, Number(built.cfg.wallClockMinutes) || 240) * 60 * 1000;
-  // One adapter builds this launch too. With no provider selected the Claude argv below is
-  // returned unchanged, so the historical shell-free probe is byte-for-byte what it was.
+  // Direct legacy callers retain their exact argv. The managed proof explicitly requests
+  // Claude's typed final output so neither stdout chatter nor final prose becomes a request.
   const provider = AGENT.providerFor(built.cfg, 'test-probe');
-  return AGENT.launch({
+  const structuredClaude = provider === 'claude' && options.structuredResult === true;
+  const launched = AGENT.launch({
     provider,
     model,
     reasoningEffort: AGENT.reasoningEffortFor(built.cfg, 'test-probe'),
@@ -537,15 +548,19 @@ function launchProbe(built, prepared, model, previous = '', run = runSync) {
       '--allowedTools', PROBE_TOOLS,
       '--disallowedTools', PROBE_DENIED,
       '--no-session-persistence',
+      ...(structuredClaude ? ['--output-format', 'json', '--json-schema', MODE_INTENT.RESPONSE_SCHEMA_JSON] : []),
     ],
     runOptions: {
-      cfg: built.cfg, cwd: prepared.probe, input: `${probePrompt(built, previous)}\n`, timeoutMs,
+      cfg: built.cfg, cwd: prepared.probe,
+      input: `${probePrompt(built, previous, { structuredResult: structuredClaude })}\n`, timeoutMs,
       label: `${provider} green-probe session`, maxBuffer: MAX_BUFFER,
       // hostEnv belongs only to the host verifier below. It must not alter the agent's
       // executable, module loader, Git behavior, or permission configuration.
       env: { ...process.env },
     },
   }, run);
+  // This format marker is assigned by the host, never read from model output.
+  return structuredClaude ? { ...launched, probeResponseFormat: MODE_INTENT.STRUCTURED_FORMAT } : launched;
 }
 
 function runGate(built, prepared, run = runSync) {
@@ -599,7 +614,8 @@ function proveTests(built, model, seams = {}) {
       const launched = skipAgent
         ? { status: 0, stdout: '' }
         : runStage(seams, 'probe-agent', attempt,
-          () => (seams.launchProbe || launchProbe)(built, prepared, model, evidence, run));
+          () => (seams.launchProbe || launchProbe)(built, prepared, model, evidence, run,
+            { structuredResult: true }));
       if (launched.status !== 0) {
         const provider = AGENT.providerFor(built.cfg, 'test-probe');
         const limited = AGENT.usageLimitFromLaunch(provider, launched, model);
@@ -663,7 +679,8 @@ function proveTests(built, model, seams = {}) {
     const retained = retainUnfinished(prepared);
     keepBaseline = true;
     return { ok: false, kind: 'setup', probe: prepared.probe, retained,
-      error: (e && e.message) || String(e) };
+      error: (e && e.message) || String(e),
+      ...(e && typeof e.modeIntentEvidence === 'string' ? { evidence: e.modeIntentEvidence } : {}) };
   } finally {
     // Reaching a retention decision is what sets keepBaseline above, whichever way that decision
     // went: a successful retention must survive, and a refused one proved nothing about who owns

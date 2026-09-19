@@ -10,6 +10,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const P = require('../../scripts/prove-tests');
 const M = require('../../scripts/probe-mode-intent');
+const W = require('../../scripts/prepare-batch-worker');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-mode-intent-test-'));
 const originalEnv = { ...process.env };
 let sequence = 0;
@@ -96,6 +97,136 @@ try {
     ].map(JSON.stringify).join('\n') }), expected);
     assert.strictEqual(M.requestFromLaunch('codex', { status: 0,
       stdout: JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text } }) }), null);
+  });
+  check('managed Claude envelopes accept only one successful terminal result, including multiline JSON', () => {
+    const text = requestText([{ path: 'src/new.sh', mode: '100755' }]);
+    const launched = (stdout) => ({ status: 0, stdout, probeResponseFormat: 'claude-json' });
+    const result = { type: 'result', subtype: 'success', is_error: false, result: text };
+    assert.deepStrictEqual(M.requestFromLaunch('claude', launched(JSON.stringify(result, null, 2))), request('src/new.sh'));
+    assert.strictEqual(M.requestFromLaunch('claude', launched(JSON.stringify({ ...result, result: 'Done.',
+      messages: [{ type: 'assistant', text }] }))), null);
+    for (const stdout of [text, `tool output\n${JSON.stringify(result)}`, JSON.stringify([result]),
+      `${JSON.stringify(result)}\n${JSON.stringify(result)}`,
+      JSON.stringify({ type: 'assistant', result: text }),
+      JSON.stringify({ ...result, subtype: 'error_during_execution' }),
+      ...[true, 'true', 1, undefined].map((is_error) => JSON.stringify({ ...result, is_error })),
+      JSON.stringify({ ...result, result: null })]) {
+      assert.throws(() => M.requestFromLaunch('claude', launched(stdout)), /probe mode intent:/);
+    }
+    for (const resultText of [`Finished.\n${text}`, `\`\`\`json\n${text}\n\`\`\``, `${text}\n{}`]) {
+      assert.throws(() => M.requestFromLaunch('claude', launched(JSON.stringify({ ...result, result: resultText }))));
+    }
+    try {
+      M.requestFromLaunch('claude', launched(JSON.stringify({ ...result, result: `${text}${'x'.repeat(20000)}` })));
+      assert.fail('oversized final request was accepted');
+    } catch (error) {
+      assert.match(error.message, /malformed or oversized/);
+      const diagnostic = JSON.parse(error.modeIntentEvidence.split(' ').slice(1).join(' '));
+      assert(diagnostic.finalResponse.truncated);
+      assert(diagnostic.finalResponse.bytes > M.MAX_REQUEST_BYTES);
+      assert(Buffer.byteLength(diagnostic.finalResponse.preview, 'utf8') <= 515);
+      assert(error.modeIntentEvidence.length < 4096);
+    }
+  });
+  check('typed mode output refuses missing, malformed and error payloads without prose fallback', () => {
+    const intent = { version: 1, changes: [{ path: 'src/new.sh', mode: '100755' }] };
+    const text = requestText(intent.changes);
+    const answer = (structured_output, extra = {}) => ({ status: 0, probeResponseFormat: M.STRUCTURED_FORMAT,
+      stdout: JSON.stringify({ type: 'result', subtype: 'success', is_error: false,
+        result: `Explanatory prose\n${text}`, structured_output, ...extra }) });
+    assert.deepStrictEqual(M.requestFromLaunch('claude', answer(intent)), intent);
+    assert.strictEqual(M.requestFromLaunch('claude', answer({ version: 1, changes: [] })), null);
+    for (const payload of [undefined, null, [], text, 1, { ...intent, version: 2 },
+      { ...intent, command: 'git' }, { version: 1, changes: [], extra: true },
+      { version: 1, changes: [{ path: 'src/new.sh', mode: '120000' }] },
+      { version: 1, changes: [{ path: '../outside', mode: '100755' }] },
+      { version: 1, changes: [{ path: '.git/config', mode: '100755' }] },
+      { version: 1, changes: [{ path: 'src/x', mode: '100755' }, { path: 'SRC/X', mode: '100644' }] },
+      { version: 1, changes: Array.from({ length: M.MAX_CHANGES + 1 }, (_, i) => ({ path: `src/${i}`, mode: '100755' })) },
+      { version: 1, changes: [{ path: `src/${'a'.repeat(M.MAX_REQUEST_BYTES)}`, mode: '100755' }] }]) {
+      assert.throws(() => M.requestFromLaunch('claude', answer(payload)), /probe mode intent:/);
+    }
+    for (const extra of [{ type: 'assistant' }, { subtype: 'error_max_structured_output_retries' },
+      { is_error: true }, { is_error: 'false' }]) {
+      assert.throws(() => M.requestFromLaunch('claude', answer(intent, extra)), /successful terminal result/);
+    }
+    assert.throws(() => M.requestFromLaunch('claude', { ...answer(intent),
+      stdout: `${answer(intent).stdout}\n${answer(intent).stdout}` }), /one JSON result object/);
+  });
+  check('actual managed proof launch requests a closed schema and consumes only typed mode intent', () => {
+    for (const useIntent of [false, true]) {
+      const native = fixture(); let launches = 0; let gates = 0;
+      const baselineIndex = fs.readFileSync(path.join(native.prepared.baseline, '.git', 'index'));
+      const text = requestText([{ path: 'src/new.sh', mode: '100755' }]);
+      const outcome = P.proveTests(native.built, 'fixture-model', {
+        prepareProbe: () => native.prepared,
+        runSync: (command, args, opts) => {
+          launches += 1;
+          assert.strictEqual(command, 'claude');
+          assert.strictEqual(args[args.indexOf('--output-format') + 1], 'json');
+          assert.strictEqual(args[args.indexOf('--json-schema') + 1], M.RESPONSE_SCHEMA_JSON);
+          const schema = JSON.parse(args[args.indexOf('--json-schema') + 1]);
+          assert.strictEqual(schema.additionalProperties, false);
+          assert.deepStrictEqual(schema.required, ['version', 'changes']);
+          assert.strictEqual(schema.properties.version.const, 1);
+          assert.strictEqual(schema.properties.changes.maxItems, M.MAX_CHANGES);
+          assert.strictEqual(schema.properties.changes.items.additionalProperties, false);
+          assert.deepStrictEqual(schema.properties.changes.items.properties.mode.enum, ['100644', '100755']);
+          assert(args.includes('--restricted'));
+          assert.strictEqual(args[args.indexOf('--tools') + 1], P.PROBE_TOOLS);
+          assert.strictEqual(args[args.indexOf('--allowedTools') + 1], P.PROBE_TOOLS);
+          assert.strictEqual(args[args.indexOf('--disallowedTools') + 1], P.PROBE_DENIED);
+          assert(opts.input.includes('Use an empty changes array when no mode changes are needed.'));
+          assert(!opts.input.includes(M.HEADER), 'schema prompt still demands incompatible text framing');
+          fs.writeFileSync(path.join(native.prepared.probe, 'src', 'new.sh'), script);
+          return { status: 0, stdout: JSON.stringify({ type: 'result', subtype: 'success', is_error: false,
+            result: `This prose and its request are not authority:\n${text}`,
+            structured_output: { version: 1, changes: useIntent ? [{ path: 'src/new.sh', mode: '100755' }] : [] },
+            messages: [{ type: 'assistant', text }] }), probeResponseFormat: 'untrusted-override' };
+        },
+        runGate: () => {
+          gates += 1;
+          assert.strictEqual(index(native.prepared.probe, 'src/new.sh').startsWith('100755 '), useIntent);
+          return { status: 0, stdout: 'fixture gate passed' };
+        },
+      });
+      assert(outcome.ok, outcome.error);
+      assert.strictEqual(launches, 1); assert.strictEqual(gates, 1);
+      assert(baselineIndex.equals(fs.readFileSync(path.join(native.prepared.baseline, '.git', 'index'))));
+    }
+  });
+  check('invalid typed intent survives actual proof-to-worker failure without retry, mode write or gate', () => {
+    const native = fixture(); let launches = 0; let gates = 0;
+    const idx = path.join(native.prepared.probe, '.git', 'index');
+    const before = fs.readFileSync(idx);
+    native.built.state = 'freeze'; native.built.folder.exists = true;
+    native.built.cfg.model = 'fixture-model'; native.built.cfg.testProbeAttempts = 3;
+    const finalText = requestText([{ path: 'src/new.sh', mode: '100755' }]);
+    const invalid = { version: 1, changes: [{ path: 'src/new.sh', mode: '120000' }] };
+    const outcome = W.execute({ action: 'proof', built: native.built }, { probeSeams: {
+      prepareProbe: () => native.prepared,
+      runSync: (command, args) => {
+        launches += 1;
+        assert.strictEqual(command, 'claude'); assert(args.includes('--output-format'));
+        return { status: 0, stdout: JSON.stringify({ type: 'result', subtype: 'success', is_error: false,
+          result: finalText, structured_output: invalid, transcript: 'RAW_TRANSCRIPT_MUST_NOT_LEAK' }), stderr: 'STDERR_MUST_NOT_LEAK' };
+      },
+      runGate: () => { gates += 1; return { status: 0 }; },
+    } });
+    assert.strictEqual(outcome.ok, false); assert.strictEqual(outcome.kind, 'setup');
+    assert.match(outcome.error, /invalid path\/mode entry/);
+    const diagnostic = JSON.parse(outcome.evidence.split(' ').slice(1).join(' '));
+    assert.strictEqual(diagnostic.format, M.STRUCTURED_FORMAT);
+    assert.strictEqual(diagnostic.finalResponse.field, 'structured_output');
+    assert.strictEqual(diagnostic.finalResponse.preview, JSON.stringify(invalid));
+    assert.strictEqual(diagnostic.finalResponse.headerOffset, -1);
+    assert.match(diagnostic.finalResponse.sha256, /^[a-f0-9]{64}$/);
+    assert(!outcome.evidence.includes('MUST_NOT_LEAK'));
+    assert.strictEqual(launches, 1); assert.strictEqual(gates, 0);
+    assert(before.equals(fs.readFileSync(idx)));
+    assert(!fs.readdirSync(native.prepared.container).some((p) => p.startsWith('.mode-intent-request-')));
+    assert.strictEqual(JSON.parse(fs.readFileSync(path.join(native.prepared.container, P.MARKER))).status, 'unfinished');
+    assert.strictEqual(outcome.resumableProbe, undefined);
   });
   check('bounds, unknown fields, nonregular modes, path syntax and duplicates fail closed', () => {
     for (const name of ['../x', '/tmp/x', 'C:/x', '.git/config', 'src/../x', 'src\\x', '-option', 'src/a\nb']) {
