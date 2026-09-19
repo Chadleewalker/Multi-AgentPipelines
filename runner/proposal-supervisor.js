@@ -10,6 +10,15 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const LOCK = require('./lock');
+const CONTROL = require('./control-plane');
+const PR_OUTCOMES = new Set(CONTROL.publication.prEligibleOutcomes);
+const TASK_OUTCOMES = new Set(CONTROL.outcomes.taskStatuses);
+
+function hasPr(task) {
+  if (!task || typeof task.prUrl !== 'string' || !task.prUrl.trim()) return false;
+  try { return ['http:', 'https:'].includes(new URL(task.prUrl).protocol); }
+  catch { return false; }
+}
 
 const TESTING_SENTINEL = Symbol('proposal-supervisor-test-capability');
 const STAGES = ['queued', 'specifying', 'criticizing', 'authoring-tests', 'proving',
@@ -106,6 +115,7 @@ function fold(events) {
   for (const event of events) {
     if (!event || typeof event !== 'object') throw new Error('proposal supervisor: invalid journal event');
     if (event.type === 'intake.closed') { result.closed = true; continue; }
+    if (event.type === 'intake.opened') { result.closed = false; continue; }
     if (event.type === 'parent.acquired') { result.parentLease = event.lease; continue; }
     if (event.type === 'parent.released') { result.parentReleased = true; continue; }
     if (event.type === 'feed.granted') { result.feedGrant = event.grant; continue; }
@@ -148,8 +158,12 @@ function fold(events) {
     else if (event.type === 'publication.observed') p.publication = event.evidence;
     else if (event.type === 'proposal.assigned') {
       p.feedId = event.feedId; p.runId = event.runId || null;
-    } else if (event.type === 'implementation.observed') p.task = event.task;
+    } else if (event.type === 'implementation.observed') {
+      if (event.task) p.task = event.task;
+      if (event.implementation) p.implementation = event.implementation;
+    }
     else if (event.type === 'review.observed') p.review = event.evidence;
+    else if (event.type === 'review.attention') p.reviewAttention = event.attention;
     else if (event.type === 'review.decided') {
       p.verdict = event.verdict; p.verdictReason = event.reason;
     }
@@ -285,9 +299,23 @@ function productionAdapters(repoRoot, options = {}) {
         return specify.recordAnswer({ configPath, proposalId: request.proposalId,
           previousEvidenceHash: request.evidenceHash, answer: request.text }, adapters);
       },
+      async observeAnswer(request) {
+        const adapters = specify.productionAdapters({ configPath, proposalId: request.proposalId });
+        return specify.observeAnswer(request, adapters);
+      },
     },
     authority: {
       acquire({ project }) { return parent(project); },
+      canReopen({ project }) {
+        const holder = authorityApi.leaseHolder(project);
+        if (!lease || !holder || !holder.live || holder.pid !== process.pid || holder.id !== lease.id) {
+          return { ok: false, error: 'reopening requires the current owning supervisor' };
+        }
+        if (authorityApi.outstanding(project).length) {
+          return { ok: false, error: 'unsettled child authority prevents reopening' };
+        }
+        return { ok: true };
+      },
       grant(request) {
         const parentLease = parent(request.project);
         const made = authorityApi.grant(parentLease, { scope: request.scope,
@@ -328,11 +356,22 @@ function productionAdapters(repoRoot, options = {}) {
       evidence({ proposalId, issueId, runId, task }) {
         if (!task || !task.prUrl) return null;
         const runsRoot = options.runsRoot || path.join(root, 'runs');
-        const run = verdict.readRuns(runsRoot).find(row => row.runId === runId);
-        if (!run) return null;
+        const runs = verdict.readRuns(runsRoot).filter(row => row.runId === runId);
+        const run = runs.length === 1 ? runs[0] : null;
+        if (!run || !run.tasks.some(row => row.issueId === issueId && row.prUrl === task.prUrl)) {
+          return { ok: false, error: 'review run/issue/PR evidence is unavailable or mismatched' };
+        }
         const file = path.join(run.dir, 'tasks', issueId, 'verdict.json');
         let recorded = null;
-        try { recorded = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}
+        try { recorded = JSON.parse(fs.readFileSync(file, 'utf8')); }
+        catch (error) {
+          if (error.code !== 'ENOENT') return { ok: false, error: 'review verdict evidence is unreadable' };
+        }
+        if (recorded && (recorded.issueId !== issueId || recorded.runId !== runId
+            || recorded.prUrl !== task.prUrl || !['merged', 'rejected'].includes(recorded.verdict)
+            || typeof recorded.reason !== 'string' || !recorded.reason.trim())) {
+          return { ok: false, error: 'review verdict evidence is malformed or mismatched' };
+        }
         return { proposalId, issueId, runId, branch: task.branch || null,
           prUrl: task.prUrl, reviewItemId: file,
           verdict: recorded && recorded.verdict || 'pending', evidence: recorded };
@@ -435,7 +474,7 @@ function createProductionSupervisor(options = {}) {
   }
 
   function actionStage(kind) {
-    if (kind === 'specify') return 'specification';
+    if (kind === 'specify' || kind === 'poll-answer') return 'specification';
     if (kind.includes('preparation')) return 'preparation';
     if (kind === 'review') return 'review';
     return null;
@@ -469,9 +508,14 @@ function createProductionSupervisor(options = {}) {
       chosen = pick(ready.map(([id]) => ({ kind: 'assign', id, key: `assign:${id}` })));
       if (chosen.length) return chosen;
     }
-    chosen = pick(rows.filter(([, p]) => p.stage === 'publishing' && p.task && p.task.prUrl
-      && (p.task.state === 'done' || p.task.outcome === 'done') && !p.review)
+    chosen = pick(rows.filter(([, p]) => p.task && p.task.prUrl
+      && ((p.stage === 'publishing' && PR_OUTCOMES.has(p.task.outcome) && hasPr(p.task))
+        || ['review', 'rejected'].includes(p.stage)))
       .map(([id]) => ({ kind: 'review', id, key: `review:${id}` })), 'review');
+    if (chosen.length) return chosen;
+    chosen = pick(rows.filter(([, p]) => !current.closed && p.stage === 'needs-input' && !p.answer
+      && adapters.specification && typeof adapters.specification.observeAnswer === 'function')
+      .map(([id]) => ({ kind: 'poll-answer', id, key: `answer:${id}` })), 'specification');
     if (chosen.length) return chosen;
     chosen = pick(rows.filter(([, p]) => !current.closed
       && (p.stage === 'queued' || p.stage === 'specifying'
@@ -509,6 +553,18 @@ function createProductionSupervisor(options = {}) {
   async function perform(action) {
     const current = state();
     const p = action.id ? current.proposals.get(action.id) : null;
+    if (action.kind === 'poll-answer') {
+      let observed;
+      try {
+        observed = await adapters.specification.observeAnswer({ proposalId: action.id,
+          evidenceHash: p.specification && p.specification.evidenceHash });
+      } catch { return false; }
+      if (!observed || observed.status !== 'answered' || observed.proposalId !== action.id
+          || observed.kickoffHash !== p.record.hash || !observed.answer
+          || observed.answer.evidenceHash !== p.specification.evidenceHash) return false;
+      append('answer.accepted', { proposalId: action.id, answer: observed.answer });
+      return true;
+    }
     if (action.kind === 'specify') {
       if (p.stage !== 'specifying') stage(action.id, 'specifying');
       let result = p.specification;
@@ -621,45 +677,126 @@ function createProductionSupervisor(options = {}) {
       append('feed.started', { generation: grantEvent.generation,
         operation: operationValue(answer, 'implementation feed') }); return true;
     }
-    if (action.kind === 'assign') {
-      append('proposal.assigned', { proposalId: action.id, feedId: current.feed.id,
-        runId: current.feed.runId || null }); stage(action.id, 'implementing'); return true;
-    }
     if (action.kind === 'mark-implementing') {
       // The durable assignment already exists (a crash interrupted the pair). Complete only the
       // stage transition it implies; never a second assignment or feed.
       if (p.stage === 'ready') stage(action.id, 'implementing');
       return true;
     }
-    if (action.kind === 'poll-feed') {
-      const answer = await adapters.operations.status({ project, id: current.feed.id });
-      if (!answer || !answer.ok || !answer.manifest || !Array.isArray(answer.manifest.tasks)) return false;
+    if (action.kind === 'poll-feed' || action.kind === 'assign') {
+      // Assignment needs a fresh operation read of its own. An earlier healthy poll
+      // can become stale while specification/preparation advances another proposal.
+      // Observe a completed predecessor before binding any newly ready work to it.
+      let answer;
+      try { answer = await adapters.operations.status({ project, id: current.feed.id }); }
+      catch (error) { answer = { ok: false, error: error.message }; }
+      const identity = answer && answer.ok && answer.id === current.feed.id
+        && answer.project === project && answer.runId === current.feed.runId;
+      const manifest = identity && answer.manifest;
+      const validManifest = manifest && manifest.runId === current.feed.runId
+        && Array.isArray(manifest.tasks) && (manifest.finishedAt == null
+          || (typeof manifest.finishedAt === 'string' && Number.isFinite(Date.parse(manifest.finishedAt))));
+      const finished = validManifest && typeof manifest.finishedAt === 'string';
+      const settled = identity && answer.state === 'completed'
+        && answer.settlement && answer.settlement.state === 'complete';
+      const completed = settled && finished;
+      let feedAttention = null;
+      if (!identity) feedAttention = answer && answer.error || 'implementation operation identity is unavailable or mismatched';
+      else if (answer.state === 'attention') feedAttention = answer.attention || 'implementation operation requires explicit recovery';
+      else if (!['running', 'completed'].includes(answer.state)) feedAttention = 'implementation operation state is unavailable';
+      else if (manifest && !validManifest) feedAttention = 'implementation manifest is malformed or mismatched';
+      else if (answer.state === 'completed' && !finished) feedAttention = 'completed implementation manifest is unavailable or unfinished';
+      else if (answer.state === 'completed' && !settled) feedAttention = 'implementation authority is not settled; inspect the operation before recovery';
       let changed = false;
+      // The child consumes the canonical ready queue independently of this journal.
+      // It may finish while the parent is delayed before assignment. Bind its exact
+      // issue rows before retirement, preserving even ambiguous rows for inspection.
+      // Ready issues absent from that manifest remain eligible for a successor.
+      if (completed) {
+        for (const id of current.order) {
+          const proposal = state().proposals.get(id);
+          if (proposal.stage !== 'ready' || proposal.feedId || !proposal.specification
+              || !manifest.tasks.some(row => row && row.issueId === proposal.specification.issueId)) continue;
+          append('proposal.assigned', { proposalId: id, feedId: current.feed.id, runId: current.feed.runId });
+          stage(id, 'implementing'); changed = true;
+        }
+      }
       for (const id of current.order) {
         const proposal = state().proposals.get(id);
         if (!proposal || proposal.feedId !== current.feed.id || !proposal.specification) continue;
-        const task = answer.manifest.tasks.find(row => row && row.issueId === proposal.specification.issueId);
-        if (!task || JSON.stringify(task) === JSON.stringify(proposal.task)) continue;
-        if ((task.state === 'publishing' || task.state === 'done' || task.prUrl)
-            && proposal.stage === 'implementing') stage(id, 'publishing');
-        append('implementation.observed', { proposalId: id, task }); changed = true;
-        if (task.prUrl) crashAfter('pr');
-        if (task.branch) crashAfter('branch');
+        const matches = validManifest ? manifest.tasks.filter(row => row
+          && row.issueId === proposal.specification.issueId) : [];
+        const task = matches.length === 1 ? matches[0] : null;
+        const outcome = completed && task && TASK_OUTCOMES.has(task.outcome) ? task.outcome : null;
+        let attention = feedAttention;
+        if (completed && matches.length !== 1) attention = matches.length
+          ? 'completed implementation has duplicate issue rows; inspect the retained manifest'
+          : 'completed implementation has no row for this assigned issue; inspect the retained manifest';
+        else if (completed && !outcome) attention = 'completed implementation outcome is unavailable or unknown';
+        else if (outcome && PR_OUTCOMES.has(outcome) && !hasPr(task)) {
+          attention = 'completed implementation has no valid PR evidence; inspect publication evidence';
+        }
+        const implementation = {
+          operationId: current.feed.id, runId: current.feed.runId, issueId: proposal.specification.issueId,
+          operationState: identity ? answer.state : 'unavailable', settled: !!settled,
+          outcome, reason: task && (task.reason || task.error || task.refusal || task.stuckState
+            || (Array.isArray(task.attemptNotes)
+              ? task.attemptNotes.filter(note => typeof note === 'string' && note.trim()).join('\n') : null)) || null,
+          attention, task: completed && task ? task : null,
+        };
+        if (JSON.stringify(implementation) !== JSON.stringify(proposal.implementation)) {
+          append('implementation.observed', { proposalId: id, implementation,
+            task: completed && task ? task : null }); changed = true;
+        }
+        // Observe first, then derive the transition on every tick. A crash between these
+        // writes cannot leave a permanently stranded proposal with unchanged task bytes.
+        if (outcome && PR_OUTCOMES.has(outcome) && hasPr(task) && proposal.stage === 'implementing') {
+          stage(id, 'publishing'); changed = true;
+        } else if (outcome && !PR_OUTCOMES.has(outcome)
+            && ['implementing', 'publishing'].includes(proposal.stage)) {
+          stage(id, 'failed'); changed = true;
+        }
+        if (completed && task && task.prUrl) crashAfter('pr');
+        if (completed && task && task.branch) crashAfter('branch');
       }
-      if (answer.state === 'completed') {
+      if (completed && !state().feed.completed) {
         append('feed.completed', { operationId: current.feed.id }); changed = true;
+      }
+      if (action.kind === 'assign' && identity && answer.state === 'running'
+          && !feedAttention && !finished && !state().feed.completed
+          && !state().proposals.get(action.id).feedId) {
+        append('proposal.assigned', { proposalId: action.id, feedId: current.feed.id,
+          runId: current.feed.runId });
+        stage(action.id, 'implementing'); changed = true;
       }
       return changed;
     }
     if (action.kind === 'review') {
-      const evidence = await adapters.review.evidence({ proposalId: action.id,
-        issueId: p.specification.issueId, runId: p.runId, task: p.task });
-      if (!evidence) return false;
-      append('review.observed', { proposalId: action.id, evidence }); stage(action.id, 'review'); return true;
+      const observed = await reviewObservation(action.id, p);
+      let changed = false;
+      if (observed.attention !== (p.reviewAttention || null)) {
+        append('review.attention', { proposalId: action.id, attention: observed.attention }); changed = true;
+      }
+      if (observed.evidence && JSON.stringify(observed.evidence) !== JSON.stringify(p.review)) {
+        append('review.observed', { proposalId: action.id, evidence: observed.evidence }); changed = true;
+      }
+      if (observed.evidence) {
+        if (p.stage === 'publishing') { stage(action.id, 'review'); changed = true; }
+        if (!p.verdict && ['merged', 'rejected'].includes(observed.evidence.verdict)) {
+          append('review.decided', { proposalId: action.id, verdict: observed.evidence.verdict,
+            reason: observed.evidence.evidence.reason }); changed = true;
+        }
+      }
+      // Recover a crash after a durable decision even if its source is now unavailable.
+      const decided = state().proposals.get(action.id);
+      if (decided.verdict === 'rejected' && decided.stage === 'review') {
+        stage(action.id, 'rejected'); changed = true;
+      }
+      return changed;
     }
     if (action.kind === 'settle-feed') {
-      const answer = await adapters.authority.settle(current.feedGrant, 'complete');
-      if (!answer || answer.ok === false) throw new Error(answer && answer.error || 'feed settlement failed');
+      // The operation manager alone settles a launched child's grant. Completed was
+      // recorded only after its exact operation reported successful settlement.
       append('feed.settled', { operationId: current.feed.id }); return true;
     }
     return false;
@@ -716,6 +853,7 @@ function createProductionSupervisor(options = {}) {
       return { ok: false, error: 'a review proposal, merged|rejected verdict, and reason are required' };
     }
     if (p.verdict === verdict) return { ok: true, existing: true };
+    if (p.verdict) return { ok: false, error: 'a different review disposition is already accepted' };
     const result = await adapters.review.decide({ proposalId: id,
       issueId: p.specification.issueId, runId: p.runId, verdict, reason });
     if (!result || result.ok === false) return result || { ok: false };
@@ -735,11 +873,23 @@ function createProductionSupervisor(options = {}) {
     return { ok: true };
   }
   function drained(current) {
-    return current.closed && !current.feed && active.global === 0
+    return current.closed && !current.feed && !current.feedGrant && active.global === 0
       && current.order.every(id => {
         const p = current.proposals.get(id);
         return !p.preparationGrant || p.preparationSettled;
       });
+  }
+  function reopen() {
+    const current = state();
+    if (!current.closed) return { ok: true, existing: true };
+    if (!drained(current)) return { ok: false, error: 'the previous stop is still draining' };
+    if (!adapters.authority || typeof adapters.authority.canReopen !== 'function') {
+      return { ok: false, error: 'current owning authority is unavailable' };
+    }
+    const admission = adapters.authority.canReopen({ project });
+    if (!admission || !admission.ok) return admission || { ok: false };
+    append('intake.opened');
+    return { ok: true };
   }
   async function ingest() {
     if (state().closed || !adapters.kickoff.list) return;
@@ -760,6 +910,27 @@ function createProductionSupervisor(options = {}) {
       }
     })();
     return runPromise;
+  }
+
+  async function reviewObservation(id, p) {
+    let evidence;
+    try {
+      evidence = await adapters.review.evidence({ proposalId: id,
+        issueId: p.specification.issueId, runId: p.runId, task: p.task });
+    } catch (error) {
+      return { evidence: null, attention: `review evidence unavailable: ${error.message}` };
+    }
+    if (!evidence || evidence.ok === false) {
+      return { evidence: null, attention: evidence && evidence.error || 'review evidence unavailable' };
+    }
+    // A disappearing record cannot erase an already witnessed decision. Keep the last
+    // valid evidence and report that its canonical source is currently unavailable.
+    if (p.verdict && evidence.verdict === 'pending') {
+      return { evidence: null, attention: 'accepted review evidence is currently unavailable' };
+    }
+    const conflict = p.verdict && evidence.verdict !== p.verdict;
+    return { evidence, attention: conflict
+      ? `review evidence conflict: accepted ${p.verdict}; canonical record now says ${evidence.verdict}` : null };
   }
 
   function proposalStatus(id, current) {
@@ -817,8 +988,13 @@ function createProductionSupervisor(options = {}) {
       'interrupted-unknown', 'unavailable', 'absent']);
     let nextAction;
     if (p.stage === 'needs-input') nextAction = 'answer the concrete question';
+    else if (p.reviewAttention) nextAction = `inspect ${p.reviewAttention}`;
+    else if (p.implementation && p.implementation.attention) nextAction = `inspect ${p.implementation.attention}`;
     else if (p.stage === 'review' && verdictValue === 'pending') nextAction = 'record review verdict';
-    else if (['failed', 'rejected'].includes(p.stage)) nextAction = 'inspect terminal evidence';
+    else if (p.stage === 'failed' && p.implementation && p.implementation.outcome) {
+      nextAction = `inspect ${p.implementation.outcome} evidence and explicitly authorize any recovery`;
+    } else if (['failed', 'rejected'].includes(p.stage)) nextAction = 'inspect terminal evidence';
+    else if (p.implementation && p.implementation.operationState === 'running') nextAction = 'wait for the owned implementation child to finish';
     else if (preparation && preparation.operationState === 'attention') {
       nextAction = 'inspect the preparation operation attention and recover it before the conveyor can proceed';
     } else if (preparation && ADVERSE_PREPARATION.has(preparation.state)) {
@@ -843,22 +1019,41 @@ function createProductionSupervisor(options = {}) {
       // A published freeze is the only receipt production trusts; a preparation payload that
       // merely claims one never becomes the freeze (§3.10, criterion 6). Null until publication.
       freezeReceipt: publication && publication.published === true ? publication.suiteHash : null,
-      preparation, publication,
+      preparation, publication, implementation: p.implementation || null,
       runId: p.runId || null, branch: task.branch || review.branch || null,
       prUrl: task.prUrl || review.prUrl || null,
       reviewItemId: review.reviewItemId || null, verdict: verdictValue,
+      verdictReason: review.evidence && review.verdict === verdictValue
+        ? review.evidence.reason : p.verdictReason || null,
+      reviewEvidence: review.evidence || null, reviewAttention: p.reviewAttention || null,
       nextAction, history: p.history.slice(),
     };
   }
   async function status(id) {
     const current = state();
+    // Status is a read-only projection. Only the owning tick appends decisions, but a
+    // separate operator session can immediately see the canonical command's result.
+    for (const proposalId of (id ? [id] : current.order)) {
+      const p = current.proposals.get(proposalId);
+      if (!p || !p.review || !['review', 'rejected'].includes(p.stage)) continue;
+      const observed = await reviewObservation(proposalId, p);
+      p.reviewAttention = observed.attention;
+      if (observed.evidence) {
+        p.review = observed.evidence;
+        if (!p.verdict && ['merged', 'rejected'].includes(observed.evidence.verdict)) {
+          p.verdict = observed.evidence.verdict;
+          p.verdictReason = observed.evidence.evidence.reason;
+        }
+      }
+      if (p.verdict === 'rejected') p.stage = 'rejected';
+    }
     if (id) return proposalStatus(id, current);
     return { project, closed: current.closed, drained: drained(current),
       specificationModel: specificationModel(),
       scheduler: { active: { ...active }, limits: { global: globalLimit, ...stageLimits } },
       proposals: current.order.map(proposalId => proposalStatus(proposalId, current)) };
   }
-  return { submit, tick, resume, run, stop, answer, decide, status };
+  return { submit, tick, resume, run, stop, answer, decide, status, reopen };
 }
 
 function openProjectSupervisor(options = {}) {
@@ -872,6 +1067,9 @@ function openProjectSupervisor(options = {}) {
   try {
     const supervisor = createProductionSupervisor({ ...options, repoRoot, project,
       stateDir: options.stateDir || supervisorStateDirFor(project), lease: acquired.lease });
+    // Only explicit operator starts may reopen a completed stop. A resume of an
+    // interrupted drain still observes/settles its existing children with intake closed.
+    if (options.reopen === true) supervisor.reopen();
     return { ...acquired, supervisor, async close() {
       if (closed) return { ok: true, existing: true };
       const remaining = authority.outstanding(project);
@@ -892,6 +1090,10 @@ function formatHumanStatus(status) {
     `availableTokens=${JSON.stringify(row.availableTokens)} kickoffHash=${row.kickoffHash} specHash=${row.specHash}`,
     `issueId=${row.issueId} freezeReceipt=${row.freezeReceipt} runId=${row.runId}`,
     `branch=${row.branch} prUrl=${row.prUrl} reviewItemId=${row.reviewItemId} verdict=${row.verdict}`,
+    row.implementation ? `outcome=${row.implementation.outcome || '(not terminal)'} operationState=${row.implementation.operationState}`
+      + ` reason=${JSON.stringify(row.implementation.reason)} attention=${row.implementation.attention || ''}` : '',
+    `verdictReason=${row.verdictReason || ''} reviewAttention=${row.reviewAttention || ''}`,
+    row.reviewEvidence ? `canonicalVerdict=${row.reviewEvidence.verdict} canonicalReason=${row.reviewEvidence.reason}` : '',
     `nextAction=${row.nextAction}`,
   ].join(' | ')).join('\n');
 }

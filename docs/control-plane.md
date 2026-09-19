@@ -286,6 +286,36 @@ currently available token counts, kickoff/spec,
 issue/freeze/run/branch/PR/review identities, history, and the smallest next action. The human
 form is a rendering of the same durable facts.
 
+When a proposal needs input, answer the question through the canonical command printed
+below, using the proposal id and exact question evidence hash from status. The owning
+supervisor observes that saved answer on its next tick and resumes the same proposal.
+Repeated observation or a process restart does not create another issue.
+
+```bash
+node scripts/specify-proposal.js answer --config run.config.<project>.json --proposal kp-… \
+  --evidence sha256:… --answer "the product choice"
+node scripts/verdict.js record <issue-id> <merged|rejected> "the review reason" --run <run-id>
+```
+
+Record a verdict against the exact run that produced the PR. Status reads the canonical
+record; the owning supervisor records the decision once. A merged verdict stays at review,
+and a rejected verdict is terminal. This command records a decision and performs no GitHub
+merge. A later contradictory verdict is shown as an evidence conflict while the accepted
+disposition and terminal history remain intact; it does not reopen work automatically.
+
+Completed, settled implementation feeds retain each proposal's exact task outcome. A
+publishable `partial` result reaches review with its qualification. Completed unsuccessful
+work is terminal at `failed`, with the source outcome and diagnostic still visible;
+`paused` and `undispatchable` remain distinguishable. A live child remains a wait. Missing
+or contradictory evidence reports attention and never causes an automatic replacement run.
+
+After a clean stop has drained children and released ownership, use `start`, `run` or
+`resume` explicitly to reopen intake for the same target. Earlier proposals, decisions and
+operation records remain, and later work receives a successor feed. Merely submitting a
+kickoff, reading status or polling with `tick` does not reopen a stopped conveyor. A live
+owner, unfinished drain or unsettled child still requires the existing ownership/recovery
+path before new work can be admitted.
+
 After sibling task PRs publish, a supervisor can use `runner/batch-merge.js` to coordinate the
 fan without delaying or rewriting either task's product commit. `plan(...)` and
 `renderReport(...)` are read-only and report pairwise merge readiness, shared Markdown paths,

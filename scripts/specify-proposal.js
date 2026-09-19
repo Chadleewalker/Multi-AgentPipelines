@@ -496,6 +496,29 @@ async function recordAnswer(options, adapters) {
   return { status: 'answered', proposalId: options.proposalId, evidenceHash: options.previousEvidenceHash };
 }
 
+// Read the same immutable evidence execute() consumes, without launching a planner or
+// creating an issue. The supervisor also binds it to the question it is waiting on.
+async function observeAnswer(options, adapters) {
+  const hash = adapters.sha256 || sha256;
+  const kickoff = await adapters.readKickoff(options.proposalId);
+  if (!verifyKickoff(kickoff, options.proposalId, hash)) {
+    return refused('kickoff record is missing, malformed, or tampered');
+  }
+  const question = await adapters.readQuestion(kickoff.hash);
+  if (!validQuestionEvidence(question, kickoff.hash, hash)
+      || question.evidenceHash !== options.evidenceHash) {
+    return refused('answer observation does not match the immutable question');
+  }
+  const answer = await adapters.readAnswer(kickoff.hash);
+  if (!answer) return { status: 'waiting' };
+  if (!boundedString(answer.answer, 8192)
+      || answer.previousEvidenceHash !== question.evidenceHash) {
+    return refused('answer evidence does not link to the immutable question');
+  }
+  return { status: 'answered', proposalId: kickoff.id, kickoffHash: kickoff.hash,
+    answer: { evidenceHash: question.evidenceHash, text: answer.answer } };
+}
+
 function parseArgs(argv) {
   const result = { command: null, configPath: null, proposalId: null, planningModel: null,
     reasoningEffort: null, previousEvidenceHash: null, answer: null, json: false };
@@ -556,4 +579,4 @@ async function main(argv, io = {}, deps = {}) {
 
 if (require.main === module) main(process.argv.slice(2)).then(code => { process.exitCode = code; });
 module.exports = { MAX_MODEL_BYTES, validateProposal, parseProposal, execute,
-  productionAdapters, recordAnswer, normalizeCodexOutput, helpText, main };
+  productionAdapters, recordAnswer, observeAnswer, normalizeCodexOutput, helpText, main };

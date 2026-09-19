@@ -111,7 +111,8 @@ async function main(argv, io = {}, deps = {}) {
     writeOut(`${JSON.stringify(result)}\n`); return result;
   }
   const opened = (deps.openProjectSupervisor || openProjectSupervisor)({ ...common,
-    reclaim: args.command === 'resume', supervisorId: `proposal-supervisor-${process.pid}` });
+    reclaim: args.command === 'resume', reopen: ['start', 'run', 'resume'].includes(args.command),
+    supervisorId: `proposal-supervisor-${process.pid}` });
   if (!opened.ok) throw new Error(opened.reason || `project supervisor is held by ${opened.holder && opened.holder.id}`);
   if (args.command === 'tick') return runOwnedLoop(opened, true);
   return runOwnedLoop(opened, false);
