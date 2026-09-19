@@ -402,6 +402,16 @@ while :; do
       if [ "$IMPLEMENTATION_COMMITTED" -eq 1 ]; then
         node "$PIPE/status.js" summary "$RUN/agent-$N.log" || true
       fi
+      # ---- documentation scope (repo-062) ----
+      # A documentation-prohibited task (host-owned scope transported as PIPELINE_DOCS_SCOPE)
+      # runs implementation and its verifier normally but launches NO docs model and creates NO
+      # docs worktree. The verified implementation summary seeded above stands; the intentional
+      # omission is recorded by the host, never as a docsPhaseError — a preserved scope is a
+      # scope decision, not a documentation failure. Every other value (and no value) leaves the
+      # normal docs phase running.
+      if [ "${PIPELINE_DOCS_SCOPE:-}" = "preserve" ]; then
+        exit 0
+      fi
       # ---- docs phase (§4.3, T9): one agent invocation, non-fatal after success ----
       # Phase boundary (§4.11), non-fatal, and — like the code phase — written BEFORE
       # the `{ ... } > "$RUN/prompt-docs.md"` block rather than inside it. A write
