@@ -208,7 +208,9 @@ function dockerVerifyArgs(repoRoot, image, verifyCommand, testDir, identity = nu
     'run', '--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL',
     '--security-opt', 'no-new-privileges', '--pids-limit', '256',
     '--memory', DOCKER_MEMORY, '--memory-swap', DOCKER_MEMORY, '--cpus', DOCKER_CPUS,
-    '--tmpfs', '/tmp:rw,nosuid,nodev,size=256m',
+    // Acceptance fixtures and native candidate materializations must be executable.
+    // Docker otherwise gives this disposable tmpfs an implicit noexec mount.
+    '--tmpfs', '/tmp:rw,nosuid,nodev,exec,size=256m',
     ...ownership,
     '-e', 'HOME=/tmp/home', '-e', 'WORKSPACE=/workspace',
     '-v', `${mount}:/workspace`, '-w', '/workspace', '--entrypoint', 'sh',
