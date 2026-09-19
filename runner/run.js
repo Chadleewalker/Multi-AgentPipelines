@@ -71,13 +71,28 @@ const REPO_ROOT = path.join(__dirname, '..');
 // which keeps ordinary runs and the legacy/test interfaces unchanged. Returns a diagnostic
 // string when stale or when a required binding is broken, or null when there is nothing to
 // enforce. `dir` is the workspace whose tree will be published.
-function staleEvidence(dir, forkPoint, cfg, preparedBindingRequired = false) {
+// The explicit execution-stub interface predates tree bindings and can synthesize successful
+// artifacts without an issue suite. Admit only that legacy shape, proved absent at the immutable
+// fork point before external execution. A failed lookup or a real suite never grants an exception.
+function legacyArtifactStub(dir, forkPoint, issueId, cfg) {
+  if (!process.env.PIPELINE_EXEC_STUB || !/^[0-9a-f]{40,64}$/.test(forkPoint || '')) return false;
+  const r = runSync('git', ['--no-replace-objects', '--literal-pathspecs', 'ls-tree', '-z',
+    forkPoint, '--', `tests/acceptance/${issueId}`], {
+    cfg, kind: 'git', cwd: dir, label: 'git inspect legacy stub issue suite',
+  });
+  return r.status === 0 && !r.error && !r.timedOut && !r.signal && r.stdout === '';
+}
+
+function staleEvidence(dir, forkPoint, cfg, preparedBindingRequired = false, legacyStub = false) {
   // The host captures the original requirement before external execution. A later config
   // change cannot downgrade it; current untrusted state still requires evidence as before.
   const bindingRequired = preparedBindingRequired || fileModeUntrusted(dir);
   let recorded;
   try { recorded = fs.readFileSync(path.join(dir, '.run', 'verified-tree'), 'utf8').trim(); }
   catch (e) {
+    // The captured legacy interface permits an absent binding only; malformed, unreadable or
+    // stale evidence that does exist still follows the normal checks. Direct callers stay strict.
+    if (legacyStub && e && e.code === 'ENOENT') return null;
     if (bindingRequired) {
       return 'verified evidence binding is required on this mode-untrusted candidate but could '
         + `not be read (${e && e.message ? e.message : e}) — refusing the verified-success `
@@ -493,6 +508,7 @@ async function runOneTask(cfg, issue, log, token, gate, ownership) {
   // Capture mode trust while this is still the host-prepared workspace. Keep this host-owned
   // fact across every execution/relaunch: .git/config is mutable after the worker starts.
   const preparedBindingRequired = fileModeUntrusted(ws.dir);
+  const preparedLegacyStub = legacyArtifactStub(ws.dir, ws.forkPoint, issue.id, cfg);
 
   // ---- run the task, pausing and resuming across usage windows (§4.7) ----
   // Active time accumulates across relaunches; paused time never counts (§4.6).
@@ -589,7 +605,7 @@ async function runOneTask(cfg, issue, log, token, gate, ownership) {
   // verified-success outcome and its PR are withdrawn.
   let staleError = null;
   if (!artifactError && !commitCheckError && commits && PR_ELIGIBLE_OUTCOMES.has(outcome.status)) {
-    staleError = staleEvidence(ws.dir, ws.forkPoint, cfg, preparedBindingRequired);
+    staleError = staleEvidence(ws.dir, ws.forkPoint, cfg, preparedBindingRequired, preparedLegacyStub);
     if (staleError) {
       log.error(tr, staleError);
       outcome = { status: 'failed', beads: 'blocked' };
@@ -1020,5 +1036,5 @@ module.exports = {
   // Exported for repo-3ec correction-2 regression coverage (tests/integration/mode-review.js):
   // the fail-closed verified-evidence binding check is a production decision worth exercising
   // directly, independent of the full runOneTask publication path the frozen suite already drives.
-  staleEvidence,
+  staleEvidence, legacyArtifactStub,
 };

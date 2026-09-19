@@ -313,9 +313,43 @@ test('C2 staleEvidence preserves the legacy path: a mode-TRUSTED candidate with 
     'a faithful worktree with no binding must not be refused (ordinary/legacy runs unchanged)');
 });
 
+test('C2 legacy exemption requires an explicit stub and a successful literal lookup at the fork point', () => {
+  const dir = bindingRepo('c2-legacy-lookup', { withBinding: null, filemode: 'false' });
+  const before = checkedGit(dir, 'rev-parse', 'HEAD');
+  const saved = process.env.PIPELINE_EXEC_STUB;
+  try {
+    delete process.env.PIPELINE_EXEC_STUB;
+    assert.strictEqual(runmod.legacyArtifactStub(dir, before, ISSUE, {}), false, 'normal execution never exempts');
+    process.env.PIPELINE_EXEC_STUB = 'explicit-test-stub';
+    assert.strictEqual(runmod.legacyArtifactStub(dir, before, ISSUE, {}), true);
+    const badTree = '0'.repeat(40);
+    assert.notStrictEqual(git(dir, 'ls-tree', badTree).status, 0, 'control must actually fail its Git lookup');
+    const failedLookup = runmod.legacyArtifactStub(dir, badTree, ISSUE, {});
+    assert.strictEqual(failedLookup, false, 'a failed lookup cannot prove absence');
+    assert(/binding.*required|required.*binding/.test(runmod.staleEvidence(dir, before, {}, true, failedLookup)),
+      'lookup failure must leave the binding required');
+    fs.mkdirSync(path.join(dir, 'tests', 'acceptance', ISSUE), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'tests', 'acceptance', ISSUE, 'case.txt'), 'suite\n');
+    checkedGit(dir, 'add', 'tests'); checkedGit(dir, 'commit', '-qm', 'later suite');
+    const after = checkedGit(dir, 'rev-parse', 'HEAD');
+    assert.strictEqual(runmod.legacyArtifactStub(dir, before, ISSUE, {}), true, 'read immutable fork point, not HEAD');
+    assert.strictEqual(runmod.legacyArtifactStub(dir, after, ISSUE, {}), false, 'a suite-bearing stub stays strict');
+    assert.strictEqual(runmod.legacyArtifactStub(dir, after, '*', {}), true, 'issue path must be literal, not a wildcard');
+    assert(/binding.*required|required.*binding/.test(runmod.staleEvidence(dir, before, {})),
+      'the direct staleEvidence interface remains strict even while a stub is configured');
+    fs.writeFileSync(path.join(dir, '.run', 'verified-tree'), 'malformed\n');
+    assert(/malformed/.test(runmod.staleEvidence(dir, before, {}, true, true)),
+      'legacy compatibility must not ignore malformed evidence that exists');
+  } finally {
+    if (saved === undefined) delete process.env.PIPELINE_EXEC_STUB;
+    else process.env.PIPELINE_EXEC_STUB = saved;
+  }
+});
+
 // Host producer/consumer regression. Only external Git setup, Beads, execution, probe and
 // GitHub boundaries are substituted; prepare, verify, status, pause and publication are real.
 async function bindingBoundary(behavior) {
+  const legacy = behavior === 'legacy';
   const world = mkTemp('c2-boundary-' + behavior);
   const seed = path.join(world, 'seed');
   const remote = path.join(world, 'remote.git');
@@ -337,8 +371,10 @@ async function bindingBoundary(behavior) {
     'fs.appendFileSync(process.env.BOUNDARY_TRACE, "verified\\n");',
     'process.exit(fs.readFileSync("product.txt", "utf8") === "verified\\n" ? 0 : 1);',
   ].join('\n'));
-  fs.mkdirSync(path.join(seed, 'tests', 'acceptance', ISSUE), { recursive: true });
-  fs.writeFileSync(path.join(seed, 'tests', 'acceptance', ISSUE, 'case.txt'), 'frozen placeholder\n');
+  if (!legacy) {
+    fs.mkdirSync(path.join(seed, 'tests', 'acceptance', ISSUE), { recursive: true });
+    fs.writeFileSync(path.join(seed, 'tests', 'acceptance', ISSUE, 'case.txt'), 'frozen placeholder\n');
+  }
   checkedGit(seed, 'add', '-A');
   checkedGit(seed, 'commit', '-qm', 'seed');
   checkedGit(seed, 'remote', 'add', 'origin', remote);
@@ -373,19 +409,26 @@ async function bindingBoundary(behavior) {
     'fs.writeFileSync("product.txt","verified\\n"); git("add","product.txt"); git("commit","-qm","verified candidate");',
     'const status=path.join(process.env.BOUNDARY_PIPE,"status.js");',
     'command(process.execPath,[status,"init",process.env.ISSUE_ID]);',
-    'command(process.execPath,[path.join(process.env.BOUNDARY_PIPE,"verify.js")]);',
+    'const legacy=process.env.BOUNDARY_BEHAVIOR === "legacy";',
+    'if (legacy) {',
+    '  fs.writeFileSync(".run/verify.json",JSON.stringify({issueId:process.env.ISSUE_ID,timestamp:new Date().toISOString(),acceptance:"pass",regressions:"pass"}));',
+    '  fs.mkdirSync("tests/acceptance/"+process.env.ISSUE_ID,{recursive:true});',
+    '  fs.writeFileSync("tests/acceptance/"+process.env.ISSUE_ID+"/introduced.txt","introduced after host snapshot\\n");',
+    '  git("add","tests"); git("commit","-qm","introduce suite after legacy snapshot");',
+    '} else command(process.execPath,[path.join(process.env.BOUNDARY_PIPE,"verify.js")]);',
     'command(process.execPath,[status,"append","pass"]);',
     'command(process.execPath,[status,"set","changeSummary","Verified candidate fixture"]);',
     'const before=fs.readFileSync(".run/verify.json","utf8"); assert.strictEqual(JSON.parse(before).acceptance,"pass");',
-    'const binding=fs.readFileSync(".run/verified-tree","utf8").trim();',
-    'const treeBefore=git("rev-parse","HEAD^{tree}"); assert.strictEqual(binding,treeBefore);',
+    'const binding=legacy ? null : fs.readFileSync(".run/verified-tree","utf8").trim();',
+    'const treeBefore=git("rev-parse","HEAD^{tree}"); if (!legacy) assert.strictEqual(binding,treeBefore);',
     'if (process.env.BOUNDARY_BEHAVIOR === "downgrade") {',
     '  fs.unlinkSync(".run/verified-tree"); git("config","core.filemode","true");',
+    '  git("rm","-r","tests/acceptance/"+process.env.ISSUE_ID);',
     '  fs.writeFileSync("product.txt","unverified changed bytes\\n"); git("add","product.txt"); git("commit","--amend","--no-edit","-q");',
     '}',
     'fs.writeFileSync(evidence,JSON.stringify({initialFilemode,binding,treeBefore,treeAfter:git("rev-parse","HEAD^{tree}"),filemodeAfter:git("config","--bool","core.filemode"),bindingPresent:fs.existsSync(".run/verified-tree"),verificationBefore:before,verificationAfter:fs.readFileSync(".run/verify.json","utf8")}));',
     '// A real rate-limit relaunch must retain the host snapshot despite the changed config.',
-    'process.exit(process.env.BOUNDARY_BEHAVIOR === "downgrade" ? 20 : 0);',
+    'process.exit(process.env.BOUNDARY_BEHAVIOR === "downgrade" || legacy ? 20 : 0);',
   ].join('\n'));
   const execution = path.join(world, 'execution.sh');
   fs.writeFileSync(execution, '#!/bin/sh\nexec node "$BOUNDARY_DRIVER"\n');
@@ -443,13 +486,21 @@ async function bindingBoundary(behavior) {
     for (const name of Object.keys(process.env)) delete process.env[name];
     Object.assign(process.env, savedEnv);
   }
-  assert(fs.existsSync(evidencePath), 'the external execution must have completed real verification');
+  assert(fs.existsSync(evidencePath), 'the external execution must have produced its evidence');
   const evidence = JSON.parse(fs.readFileSync(evidencePath, 'utf8'));
   assert.strictEqual(evidence.initialFilemode, 'false');
   assert.strictEqual(evidence.verificationAfter, evidence.verificationBefore, 'passing verifier evidence must not be rewritten');
-  assert.strictEqual(fs.readFileSync(tracePath, 'utf8'), 'verified\n', 'the verifier must run exactly once');
+  if (legacy) assert(!fs.existsSync(tracePath), 'legacy fixture must use the synthetic artifact interface');
+  else assert.strictEqual(fs.readFileSync(tracePath, 'utf8'), 'verified\n', 'the verifier must run exactly once');
   const ghCalls = fs.existsSync(ghPath) ? fs.readFileSync(ghPath, 'utf8').trim().split('\n').length : 0;
-  if (behavior === 'control') {
+  if (legacy) {
+    assert.strictEqual(evidence.bindingPresent, false, 'legacy fixture must never synthesize a binding');
+    assert.strictEqual(evidence.resumed, true, 'legacy classification must survive a real relaunch');
+    assert.strictEqual(evidence.verificationAfterResume, evidence.verificationBefore);
+    assert.strictEqual(row.pauses, 1);
+    assert.strictEqual(row.outcome, 'done', JSON.stringify(row));
+    assert.strictEqual(ghCalls, 1, 'legacy synthetic delivery must reach publication');
+  } else if (behavior === 'control') {
     assert(evidence.bindingPresent, 'control keeps the real binding');
     assert.strictEqual(row.outcome, 'done', JSON.stringify(row));
     assert.strictEqual(ghCalls, 1, 'the positive control must reach real PR creation');
@@ -466,6 +517,8 @@ async function bindingBoundary(behavior) {
     assert.strictEqual(ghCalls, 0, 'missing required binding must never reach PR creation');
   }
 }
+
+test('C2 runOneTask retains legacy synthetic delivery across a relaunch and later suite addition', () => bindingBoundary('legacy'));
 
 test('C2 runOneTask publishes a genuinely verified candidate with its binding intact', () => bindingBoundary('control'));
 test('C2 runOneTask refuses missing binding after config downgrade, tree change and actual relaunch', () => bindingBoundary('downgrade'));
