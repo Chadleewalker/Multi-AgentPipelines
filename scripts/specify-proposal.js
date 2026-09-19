@@ -14,6 +14,9 @@ const { spawnSync } = require('child_process');
 // controller is Codex-only, so it reads `specificationModel` and its constant default and
 // never `cfg.model` — the implementation lane's alias belongs to a different provider.
 const { DEFAULT_SPECIFICATION_MODEL } = require('../runner/config');
+// The immutable-intent-preservation / documentation-scope derivation is owned by one module so
+// the serializer, the host export, and the publication backstop cannot disagree (repo-062).
+const docsScope = require('../runner/docs-scope');
 
 const MAX_MODEL_BYTES = 64 * 1024;
 const MAX_TEXT = 32 * 1024;
@@ -250,6 +253,11 @@ async function execute(options, io = {}, seams) {
     metadata: {
       kickoffId: kickoff.id, kickoffHash: kickoff.hash, specHash,
       integrationCommit: integration.commit,
+      // The immutable kickoff intent survives serialization verbatim and hash-bound, regardless
+      // of what the planner paraphrased or dropped, and the deterministically derived
+      // documentation scope travels with it so the planner cannot relax it (repo-062).
+      intent: kickoff.intent,
+      scope: docsScope.deriveScope(intent),
       fieldIntentRefs: {
         title: `${kickoff.hash}#/title`, priority: `${kickoff.hash}#/priority`,
         description: `${specHash}#/spec`, acceptanceCriteria: `${specHash}#/acceptanceCriteria`,
