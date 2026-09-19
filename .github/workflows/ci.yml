@@ -20,3 +20,10 @@ jobs:
           node-version: 22.23.1
       - name: Run mandatory regression layer
         run: bash scripts/test-ci.sh
+      - name: Run supplemental conveyor regressions
+        shell: bash
+        run: |
+          sh tools/run-acceptance.sh tests/acceptance/repo-djf.61/
+          sh tools/run-acceptance.sh tests/acceptance/repo-djf.62/
+          sh tools/run-acceptance.sh tests/acceptance/repo-3ec/
+          sh tools/run-acceptance.sh tests/acceptance/repo-062/
