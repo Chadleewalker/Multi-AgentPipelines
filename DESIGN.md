@@ -1164,6 +1164,34 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
    implementation and its preserved verifier evidence remain the recovery point and success stands
    with `docsPhaseError` as evidence (change-log rows `final-verification-boundary` and
    `repo-djf-32-docs-isolation`).
+   **A task may prohibit documentation, and that prohibition is host-owned end to end**
+   (change-log row `repo-062`). The immutable kickoff intent — its exact `constraints`,
+   `nonGoals` and byte-exact kickoff hash — survives canonical Beads serialization and host
+   issue export verbatim and hash-bound, regardless of what the planner paraphrased or dropped,
+   so the author and implementation always see the original. From that verified intent the host
+   deterministically derives a documentation scope: preservation activates only when an *entire*
+   element of the original `constraints` or `nonGoals` array exactly equals one of two directive
+   strings — never a substring, casing variant, title, description, example or other
+   planner-supplied field, and never an enforcement of anything but the documentation surface.
+   The two directives, that derivation, the kickoff hash and the protected Markdown surface are
+   owned by one module (`runner/docs-scope.js`) so the serializer, the host export and the
+   publication backstop cannot silently disagree. A record that presents the new intent/scope
+   metadata but is incomplete, whose intent no longer hashes to its recorded hash, or whose
+   stored scope disagrees with the host's re-derivation **fails closed**; a record carrying none
+   of the new fields is legacy data and keeps prior behaviour. The host re-derives from the
+   verified intent rather than trusting the stored scope, so a container-editable issue file or
+   environment artifact cannot relax the snapshot. A preserve-documentation task runs
+   implementation and its verifier normally but launches **no docs model and creates no docs
+   worktree**; the verified implementation summary stands, and the intentional omission is
+   recorded honestly — a bounded explicit line in the run log and an explicit note in the
+   host-assembled PR body, never a `docsPhaseError`, because a scope decision is not a
+   documentation failure. Before any push or PR the host inspects the final candidate delta
+   against its pinned integration baseline with byte-safe Git path handling (`-z`, and `-M` to
+   expose renames) and refuses any addition, modification, deletion, index-mode change or rename
+   into or out of the protected Markdown surface — including uppercase extensions and
+   whitespace-bearing paths — and refuses equally when the Git inspection itself cannot succeed:
+   zero push, zero PR, workspace and evidence retained through the existing failure path. An
+   unrestricted task keeps its normal docs invocation, isolation and final verification unchanged.
    The disposable workspace is *allocated* by the entrypoint and *entered* by the docs agent,
    and those are routinely not the same identity: under managed ChatGPT authentication the
    entrypoint is root while the agent runs unprivileged, and `mktemp -d` returns mode 0700 owned
