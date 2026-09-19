@@ -190,6 +190,17 @@ writer of that file (change-log row `repo-bmd`). It is the live feed §5's dashb
 to tell a task that is working from one that is being judged; the write is non-fatal and
 nothing in the diagram branches on it, so the arrows are unchanged by it.
 
+**A documentation-prohibited task skips the docs phase outright** (change-log row
+`repo-062`). When the host derives a preserve-documentation scope from a task's immutable
+kickoff intent — activated only when an entire element of the original `constraints` or
+`nonGoals` array exactly equals one of two directive strings — it transports that scope
+into the container, and the entrypoint exits `0` immediately after the implementation
+commit: the `DP` docs node above never runs and no docs worktree is created. The verified
+implementation summary stands as the change summary, and the intentional omission is
+recorded honestly — a bounded run-log line and an explicit PR-body note — never as a
+`docsPhaseError`, because a scope decision is not a documentation failure. Every other task
+takes the docs phase exactly as drawn.
+
 Slot 3 is the one that needs building, and the sockets are already in place: the
 `advisories` array exists in `status.schema.json` (typed, and documented as evidence
 that can never change the exit code), advisor definitions would ride in the existing
@@ -480,6 +491,20 @@ The pre-push scan is deliberately a history scan, not a working-tree scan (chang
 the task tip, so historical baseline objects do not block a branch, but an introduced secret
 cannot be hidden by deleting it in a later commit. A refusal crosses the same recoverable
 settlement edge as a rejected push and never includes the matched bytes in logs.
+
+A documentation-prohibited task carries **one extra pre-push gate**, ahead of the
+credential scan (change-log rows `repo-062` and `repo-062-review-corrections`). The host
+inspects the candidate delta against its pinned integration baseline with byte-safe Git
+path handling — `git --no-replace-objects diff --name-status -M -z`, so a container-writable
+`refs/replace` baseline cannot mask a change and paths are taken literally from the `-z`
+bytes — and refuses any addition, modification, deletion, index-mode change or rename into
+or out of the protected Markdown surface (root-level Markdown and Markdown beneath `docs/`,
+case-insensitive extension, whitespace-bearing paths included). An inspection that cannot
+succeed, including a non-timeout Git process error at exit status 0, refuses the same way
+rather than parsing a partial delta. Refusal is zero push and zero PR with the workspace and
+evidence retained, exactly like the credential scan's recoverable settlement edge. The scope
+is the host-owned snapshot derived from canonical exported issue data; no container-editable
+issue file or environment artifact can relax it.
 
 The artifact contract node is a host trust boundary (change-log row
 `runtime-artifact-schema-gate`). Invalid bytes remain evidence on disk, but only a
