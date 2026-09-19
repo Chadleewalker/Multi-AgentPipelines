@@ -99,6 +99,17 @@ outside the target repository. Answers must name the exact question-evidence has
 reuse a verified receipt, while recovery after a successful Beads create searches the exact
 external kickoff reference so Beads remains the only source of issue identity.
 
+Design-reference discovery over the pinned integration commit is bounded by finite capacities
+so a large repository cannot drive an unbounded read. The specifier admits up to 1048576 UTF-8
+bytes per design file, up to 1024 distinct candidate references, and up to 131072 UTF-8 bytes
+of the serialized candidate-array JSON. It still enumerates at most 128 eligible Markdown
+files within 262144 tree-enumeration bytes and accepts at most 1024 bytes per reference, and it
+preserves safe-path filtering, deduplication, empty-slug removal and overlong-reference
+removal. Producer discovery and consumer validation read the same ceilings, so they agree.
+Exceeding any capacity fails closed — discovery refuses before a read-only checkout is created,
+before the planner is launched, and before any Beads mutation — and no eligible document or
+reference is silently truncated or skipped to stay under a limit.
+
 ## Model provider selection
 
 A run selects one model provider from a closed vocabulary — `claude` or `codex`

@@ -19,11 +19,11 @@ const MAX_MODEL_BYTES = 64 * 1024;
 const MAX_TEXT = 32 * 1024;
 const MAX_ITEM = 4096;
 const MAX_ITEMS = 64;
-const MAX_DESIGN_CANDIDATES = 128;
-const MAX_DESIGN_CANDIDATE_BYTES = 32 * 1024;
+const MAX_DESIGN_CANDIDATES = 1024;
+const MAX_DESIGN_CANDIDATE_BYTES = 128 * 1024;
 const MAX_DESIGN_FILES = 128;
 const MAX_DESIGN_TREE_BYTES = 256 * 1024;
-const MAX_DESIGN_FILE_BYTES = 256 * 1024;
+const MAX_DESIGN_FILE_BYTES = 1024 * 1024;
 const HASH_RE = /^sha256:[0-9a-f]{64}$/;
 const COMMIT_RE = /^[0-9a-f]{40}$/;
 const DIFFICULTIES = new Set(['trivial', 'medium', 'hard']);
@@ -392,7 +392,9 @@ function productionAdapters(options, deps = {}) {
       for (const file of files) {
         const shown = invoke('git', ['show', `${commit}:${file}`],
           gitOptions({ maxBuffer: MAX_DESIGN_FILE_BYTES }));
-        if (shown.status !== 0) throw new Error('could not read pinned design file');
+        // spawnSync leaves status === 0 on a maxBuffer overflow (it sets error === ENOBUFS
+        // instead), so the per-design-file byte ceiling only binds if we also refuse on error.
+        if (shown.status !== 0 || shown.error) throw new Error('could not read pinned design file');
         for (const line of String(shown.stdout || '').split(/\r?\n/)) {
           const heading = /^#{1,6}\s+(.+?)\s*#*\s*$/.exec(line);
           if (!heading) continue;
