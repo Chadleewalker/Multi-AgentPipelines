@@ -62,7 +62,7 @@ const REPO_ROOT = path.join(__dirname, '..');
 // prior pass is stale and its verified-success outcome and PR are refused.
 //
 // Correction 2 — fail closed when the binding is REQUIRED. On the managed mode-untrusted path
-// (core.filemode=false: the Windows bind mount the verifier materialized), the binding is not
+// (core.filemode=false when the host prepared it, or still false at publication), the binding is not
 // optional: a verified success that lost it — missing, malformed, unreadable, or an
 // uncheckable/failed comparison — must NOT stay publishable, or a mode-untrusted verification
 // could publish changed content/modes with its binding quietly gone. So on that path a broken
@@ -71,8 +71,10 @@ const REPO_ROOT = path.join(__dirname, '..');
 // which keeps ordinary runs and the legacy/test interfaces unchanged. Returns a diagnostic
 // string when stale or when a required binding is broken, or null when there is nothing to
 // enforce. `dir` is the workspace whose tree will be published.
-function staleEvidence(dir, forkPoint, cfg) {
-  const bindingRequired = fileModeUntrusted(dir);
+function staleEvidence(dir, forkPoint, cfg, preparedBindingRequired = false) {
+  // The host captures the original requirement before external execution. A later config
+  // change cannot downgrade it; current untrusted state still requires evidence as before.
+  const bindingRequired = preparedBindingRequired || fileModeUntrusted(dir);
   let recorded;
   try { recorded = fs.readFileSync(path.join(dir, '.run', 'verified-tree'), 'utf8').trim(); }
   catch (e) {
@@ -475,6 +477,10 @@ async function runOneTask(cfg, issue, log, token, gate, ownership) {
     };
   }
 
+  // Capture mode trust while this is still the host-prepared workspace. Keep this host-owned
+  // fact across every execution/relaunch: .git/config is mutable after the worker starts.
+  const preparedBindingRequired = fileModeUntrusted(ws.dir);
+
   // ---- run the task, pausing and resuming across usage windows (§4.7) ----
   // Active time accumulates across relaunches; paused time never counts (§4.6).
   let exec;
@@ -570,7 +576,7 @@ async function runOneTask(cfg, issue, log, token, gate, ownership) {
   // verified-success outcome and its PR are withdrawn.
   let staleError = null;
   if (!artifactError && !commitCheckError && commits && PR_ELIGIBLE_OUTCOMES.has(outcome.status)) {
-    staleError = staleEvidence(ws.dir, ws.forkPoint, cfg);
+    staleError = staleEvidence(ws.dir, ws.forkPoint, cfg, preparedBindingRequired);
     if (staleError) {
       log.error(tr, staleError);
       outcome = { status: 'failed', beads: 'blocked' };

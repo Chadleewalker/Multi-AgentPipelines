@@ -163,6 +163,64 @@ test('C3 materializeCandidate fails CLOSED with a bounded reason when the candid
   }
 });
 
+function checkedGit(dir, ...args) {
+  const result = git(dir, ...args);
+  assert.strictEqual(result.status, 0, 'git ' + args.join(' ') + ': ' + result.stderr);
+  return String(result.stdout || '').trim();
+}
+
+test('C3 preserves the local integration branch for a task-branch Git-dependent verifier', () => {
+  const dir = initRepo('c3-refs');
+  fs.writeFileSync(path.join(dir, 'base.txt'), 'base\n');
+  checkedGit(dir, 'add', '-A');
+  checkedGit(dir, 'commit', '-qm', 'base');
+  const base = checkedGit(dir, 'rev-parse', 'HEAD');
+  checkedGit(dir, 'checkout', '-qb', 'task/mode-review');
+  fs.writeFileSync(path.join(dir, 'candidate.txt'), 'candidate\n');
+  checkedGit(dir, 'add', '-A');
+  checkedGit(dir, 'commit', '-qm', 'candidate');
+  assert.strictEqual(checkedGit(dir, 'merge-base', 'main', 'HEAD'), base);
+  const mat = materialize.materializeCandidate(dir);
+  try {
+    assert(mat.ok, mat.error);
+    assert.strictEqual(checkedGit(mat.dir, 'merge-base', 'main', 'HEAD'), base,
+      'the same verifier must resolve the same integration fork point in the candidate');
+    assert.strictEqual(checkedGit(mat.dir, 'symbolic-ref', '--short', 'HEAD'), 'task/mode-review');
+  } finally { if (mat.cleanup) mat.cleanup(); }
+});
+
+test('C3 materialization retains raw blob bytes despite checkout conversion attributes', () => {
+  const dir = initRepo('c3-bytes');
+  fs.writeFileSync(path.join(dir, '.gitattributes'),
+    'crlf.txt text eol=crlf\nident.txt ident\nutf16.txt text working-tree-encoding=UTF-16LE\n');
+  fs.writeFileSync(path.join(dir, 'crlf.txt'), 'first\nsecond\n');
+  fs.writeFileSync(path.join(dir, 'ident.txt'), '$Id$\n');
+  fs.writeFileSync(path.join(dir, 'utf16.txt'), Buffer.from('encoded\n', 'utf16le'));
+  checkedGit(dir, 'add', '-A');
+  checkedGit(dir, 'commit', '-qm', 'conversion attributes');
+  const bytes = {};
+  for (const name of ['.gitattributes', 'crlf.txt', 'ident.txt', 'utf16.txt']) {
+    const r = run('git', ['-C', dir, 'cat-file', 'blob', 'HEAD:' + name], { encoding: null });
+    assert.strictEqual(r.status, 0, String(r.stderr));
+    bytes[name] = r.stdout;
+  }
+  // A plain checkout must demonstrably transform this fixture; otherwise the assertion is vacuous.
+  const plain = mkTemp('c3-plain-checkout');
+  checkedGit(dir, 'clone', '--quiet', '--shared', '--no-checkout', dir, plain);
+  checkedGit(plain, 'read-tree', 'HEAD');
+  checkedGit(plain, 'checkout-index', '-a', '-f');
+  assert(!fs.readFileSync(path.join(plain, 'crlf.txt')).equals(bytes['crlf.txt']));
+  const mat = materialize.materializeCandidate(dir);
+  try {
+    assert(mat.ok, mat.error);
+    for (const name of Object.keys(bytes)) {
+      assert(fs.readFileSync(path.join(mat.dir, name)).equals(bytes[name]), name + ' differs from Git blob');
+    }
+    assert(!fs.existsSync(path.join(mat.dir, '.git', 'info', 'attributes')),
+      'the materialization override must not remain active during verification');
+  } finally { if (mat.cleanup) mat.cleanup(); }
+});
+
 // ── C4 · acceptance and regression judge the same native candidate ─────────────────────────────
 test('C4 the real verifier runs a REQUIRED regression executable predicate against the SAME '
   + 'materialized candidate as acceptance: with acceptance passing and bin/tool.sh at Git 100755 '
@@ -255,6 +313,164 @@ test('C2 staleEvidence preserves the legacy path: a mode-TRUSTED candidate with 
     'a faithful worktree with no binding must not be refused (ordinary/legacy runs unchanged)');
 });
 
+// Host producer/consumer regression. Only external Git setup, Beads, execution, probe and
+// GitHub boundaries are substituted; prepare, verify, status, pause and publication are real.
+async function bindingBoundary(behavior) {
+  const world = mkTemp('c2-boundary-' + behavior);
+  const seed = path.join(world, 'seed');
+  const remote = path.join(world, 'remote.git');
+  const evidencePath = path.join(world, 'evidence.json');
+  const tracePath = path.join(world, 'verification-runs.txt');
+  const ghPath = path.join(world, 'gh-calls.txt');
+  fs.mkdirSync(seed);
+  checkedGit(world, 'init', '-q', '--bare', '-b', 'main', remote);
+  checkedGit(seed, 'init', '-q', '-b', 'main');
+  checkedGit(seed, 'config', 'user.name', 'Mode boundary fixture');
+  checkedGit(seed, 'config', 'user.email', 'fixture@example.invalid');
+  checkedGit(seed, 'config', 'core.autocrlf', 'false');
+  fs.writeFileSync(path.join(seed, 'pipeline.config.json'), JSON.stringify({
+    defaultBranch: 'main', verifyCommand: 'node accept.cjs', frozenPaths: [],
+  }) + '\n');
+  fs.writeFileSync(path.join(seed, 'product.txt'), 'initial\n');
+  fs.writeFileSync(path.join(seed, 'accept.cjs'), [
+    'const fs = require("fs");',
+    'fs.appendFileSync(process.env.BOUNDARY_TRACE, "verified\\n");',
+    'process.exit(fs.readFileSync("product.txt", "utf8") === "verified\\n" ? 0 : 1);',
+  ].join('\n'));
+  fs.mkdirSync(path.join(seed, 'tests', 'acceptance', ISSUE), { recursive: true });
+  fs.writeFileSync(path.join(seed, 'tests', 'acceptance', ISSUE, 'case.txt'), 'frozen placeholder\n');
+  checkedGit(seed, 'add', '-A');
+  checkedGit(seed, 'commit', '-qm', 'seed');
+  checkedGit(seed, 'remote', 'add', 'origin', remote);
+  checkedGit(seed, 'push', '-q', 'origin', 'main');
+
+  const bd = path.join(world, 'bd.cjs');
+  fs.writeFileSync(bd, [
+    'const fs = require("fs"), path = require("path");',
+    'const verb = path.basename(process.argv[1] || "");',
+    'if (new Set(["show", "update", "ready", "note", "remember", "export", "create", "close", "list", "memories"]).has(verb)) {',
+    '  fs.writeSync(1, verb === "show" ? JSON.stringify([{ id: process.env.BOUNDARY_ISSUE, title: "mode binding fixture", description: "Keep verified tree binding", acceptance_criteria: "pass", design: "DESIGN.md 4.4" }]) : "[]");',
+    '  process.exit(0);',
+    '}',
+  ].join('\n'));
+  const gh = path.join(world, 'gh.cjs');
+  fs.writeFileSync(gh, 'require("fs").appendFileSync(process.env.BOUNDARY_GH_LOG,"called\\n"); console.log("https://example.test/pr/1");\n');
+  const driver = path.join(world, 'execution.cjs');
+  fs.writeFileSync(driver, [
+    'const fs = require("fs"), path = require("path"), cp = require("child_process"), assert = require("assert");',
+    'function command(exe,args) { const r=cp.spawnSync(exe,args,{encoding:"utf8"}); assert.strictEqual(r.status,0,exe+" "+args.join(" ")+": "+r.stderr); return String(r.stdout||"").trim(); }',
+    'const git=(...args)=>command("git",args);',
+    'const evidence=process.env.BOUNDARY_EVIDENCE;',
+    'if (fs.existsSync(evidence)) {',
+    '  const prior=JSON.parse(fs.readFileSync(evidence,"utf8"));',
+    '  prior.resumed=true; prior.resumeFilemode=git("config","--bool","core.filemode");',
+    '  prior.verificationAfterResume=fs.readFileSync(".run/verify.json","utf8");',
+    '  fs.writeFileSync(evidence,JSON.stringify(prior)); process.exit(0);',
+    '}',
+    'const initialFilemode=git("config","--bool","core.filemode");',
+    'assert.strictEqual(initialFilemode,"false","the real host-prepared clone must already be mode-untrusted before external execution");',
+    'git("config","user.name","Mode boundary fixture"); git("config","user.email","fixture@example.invalid");',
+    'fs.writeFileSync("product.txt","verified\\n"); git("add","product.txt"); git("commit","-qm","verified candidate");',
+    'const status=path.join(process.env.BOUNDARY_PIPE,"status.js");',
+    'command(process.execPath,[status,"init",process.env.ISSUE_ID]);',
+    'command(process.execPath,[path.join(process.env.BOUNDARY_PIPE,"verify.js")]);',
+    'command(process.execPath,[status,"append","pass"]);',
+    'command(process.execPath,[status,"set","changeSummary","Verified candidate fixture"]);',
+    'const before=fs.readFileSync(".run/verify.json","utf8"); assert.strictEqual(JSON.parse(before).acceptance,"pass");',
+    'const binding=fs.readFileSync(".run/verified-tree","utf8").trim();',
+    'const treeBefore=git("rev-parse","HEAD^{tree}"); assert.strictEqual(binding,treeBefore);',
+    'if (process.env.BOUNDARY_BEHAVIOR === "downgrade") {',
+    '  fs.unlinkSync(".run/verified-tree"); git("config","core.filemode","true");',
+    '  fs.writeFileSync("product.txt","unverified changed bytes\\n"); git("add","product.txt"); git("commit","--amend","--no-edit","-q");',
+    '}',
+    'fs.writeFileSync(evidence,JSON.stringify({initialFilemode,binding,treeBefore,treeAfter:git("rev-parse","HEAD^{tree}"),filemodeAfter:git("config","--bool","core.filemode"),bindingPresent:fs.existsSync(".run/verified-tree"),verificationBefore:before,verificationAfter:fs.readFileSync(".run/verify.json","utf8")}));',
+    '// A real rate-limit relaunch must retain the host snapshot despite the changed config.',
+    'process.exit(process.env.BOUNDARY_BEHAVIOR === "downgrade" ? 20 : 0);',
+  ].join('\n'));
+  const execution = path.join(world, 'execution.sh');
+  fs.writeFileSync(execution, '#!/bin/sh\nexec node "$BOUNDARY_DRIVER"\n');
+
+  const env = { ...BASE_ENV };
+  for (const name of ['PIPELINE_CHILD_AUTHORITY', 'PIPELINE_CHATGPT_AUTH', 'PIPELINE_KEEP_WORKSPACE',
+    'PIPELINE_EXEC_STUB', 'WORKSPACE', 'RUN_DIR', 'ISSUE_ID']) delete env[name];
+  const nullConfig = path.join(world, 'empty.gitconfig');
+  fs.writeFileSync(nullConfig, '');
+  Object.assign(env, {
+    GIT_CONFIG_GLOBAL: nullConfig, GIT_CONFIG_SYSTEM: nullConfig,
+    BD_SKIP_AUTO_PUSH: '1', BD_SKIP_AUTO_PULL: '1',
+    PIPELINE_BD_CMD: process.execPath, NODE_OPTIONS: `--require "${posix(bd)}"`,
+    PIPELINE_GH_CMD: `node "${posix(gh)}"`, PIPELINE_EXEC_STUB: execution,
+    PIPELINE_PROBE_CMD: 'exit 0',
+    BOUNDARY_ISSUE: ISSUE, BOUNDARY_BEHAVIOR: behavior,
+    BOUNDARY_DRIVER: driver, BOUNDARY_PIPE: path.join(ROOT, 'pipeline'),
+    BOUNDARY_EVIDENCE: evidencePath, BOUNDARY_TRACE: tracePath, BOUNDARY_GH_LOG: ghPath,
+  });
+  if (POSIX) {
+    // On Windows a fresh real clone naturally has core.filemode=false. On Linux substitute
+    // only the Git process boundary: do the real clone, then establish that host premise
+    // before returning to prepare. Do not modify the host snapshot or its consumer.
+    const realGit = run('sh', ['-c', 'command -v git'], { env }).stdout.trim();
+    assert(path.isAbsolute(realGit), 'resolve a real Git executable before installing the adapter');
+    const bin = path.join(world, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'git'), [
+      '#!/bin/sh',
+      `"${realGit}" "$@"; rc=$?`,
+      '[ "$rc" -eq 0 ] || exit "$rc"',
+      'clone=0; last=""',
+      'for arg do [ "$arg" = clone ] && clone=1; last="$arg"; done',
+      `if [ "$clone" -eq 1 ]; then "${realGit}" -C "$last" config core.filemode false || exit 1; fi`,
+      'exit 0',
+    ].join('\n'), { mode: 0o755 });
+    env.PATH = bin + path.delimiter + env.PATH;
+  }
+  const cfg = {
+    targetRepoPath: seed, targetRepoRemote: remote, image: 'unused:local',
+    wallClockMinutes: 5, maxAttempts: 1, concurrency: 1,
+    probeIntervalMinutes: 0, maxPauseCycles: 2,
+    gitTimeoutMs: 60000, bdTimeoutMs: 60000, lifecycleTimeoutMs: 60000,
+    hostShell: process.platform === 'win32' ? 'C:/Program Files/Git/bin/bash.exe' : 'bash',
+  };
+  const savedEnv = { ...process.env };
+  let row;
+  try {
+    for (const name of Object.keys(process.env)) delete process.env[name];
+    Object.assign(process.env, env);
+    const log = require(path.join(ROOT, 'runner', 'log')).startRun(path.join(world, 'runs'), 'mode-boundary-' + behavior);
+    const gate = require(path.join(ROOT, 'runner', 'pause')).createPauseGate(cfg, log, { token: 'fixture-token' });
+    row = await runmod.runOneTask(cfg, { id: ISSUE, title: 'mode binding fixture', priority: 1 }, log, 'fixture-token', gate);
+  } finally {
+    for (const name of Object.keys(process.env)) delete process.env[name];
+    Object.assign(process.env, savedEnv);
+  }
+  assert(fs.existsSync(evidencePath), 'the external execution must have completed real verification');
+  const evidence = JSON.parse(fs.readFileSync(evidencePath, 'utf8'));
+  assert.strictEqual(evidence.initialFilemode, 'false');
+  assert.strictEqual(evidence.verificationAfter, evidence.verificationBefore, 'passing verifier evidence must not be rewritten');
+  assert.strictEqual(fs.readFileSync(tracePath, 'utf8'), 'verified\n', 'the verifier must run exactly once');
+  const ghCalls = fs.existsSync(ghPath) ? fs.readFileSync(ghPath, 'utf8').trim().split('\n').length : 0;
+  if (behavior === 'control') {
+    assert(evidence.bindingPresent, 'control keeps the real binding');
+    assert.strictEqual(row.outcome, 'done', JSON.stringify(row));
+    assert.strictEqual(ghCalls, 1, 'the positive control must reach real PR creation');
+  } else {
+    assert.strictEqual(evidence.bindingPresent, false);
+    assert.strictEqual(evidence.filemodeAfter, 'true');
+    assert.notStrictEqual(evidence.treeAfter, evidence.treeBefore, 'candidate must change after verification');
+    assert.strictEqual(evidence.resumed, true, 'must traverse the actual pause/relaunch loop');
+    assert.strictEqual(evidence.resumeFilemode, 'true', 'relaunch sees the changed mutable config');
+    assert.strictEqual(evidence.verificationAfterResume, evidence.verificationBefore);
+    assert.strictEqual(row.pauses, 1);
+    assert.strictEqual(row.outcome, 'failed', JSON.stringify(row));
+    assert(/binding.*required|required.*binding/.test(row.error || ''), 'refusal must identify required binding');
+    assert.strictEqual(ghCalls, 0, 'missing required binding must never reach PR creation');
+  }
+}
+
+test('C2 runOneTask publishes a genuinely verified candidate with its binding intact', () => bindingBoundary('control'));
+test('C2 runOneTask refuses missing binding after config downgrade, tree change and actual relaunch', () => bindingBoundary('downgrade'));
+
+
 // ── C1 · the canonical gate materializes IN the container, not on the host ──────────────────────
 function buildGateTree(tag, root, mode, worktreeExec) {
   const dir = path.join(root, tag);
@@ -267,7 +483,9 @@ function buildGateTree(tag, root, mode, worktreeExec) {
   fs.writeFileSync(path.join(dir, 'pipeline.config.json'),
     `${JSON.stringify({ defaultBranch: 'main', verifyCommand: 'sh run-tests.sh', frozenPaths: [] }, null, 2)}\n`);
   fs.writeFileSync(path.join(dir, 'run-tests.sh'),
-    '#!/bin/sh\nd="$1"\nn=0\nfor f in "$d"*.sh; do [ -e "$f" ] || continue; n=$((n+1)); sh "$f" || exit 1; done\n'
+    '#!/bin/sh\ngit merge-base main HEAD >/dev/null 2>&1 || exit 75\n'
+    + 'node -e \'const fs=require("fs"),cp=require("child_process");const r=cp.spawnSync("git",["cat-file","blob","HEAD:payload.txt"]);process.exit(r.status===0&&fs.readFileSync("payload.txt").equals(r.stdout)?0:1)\' || exit 75\n'
+    + 'd="$1"\nn=0\nfor f in "$d"*.sh; do [ -e "$f" ] || continue; n=$((n+1)); sh "$f" || exit 1; done\n'
     + '[ "$n" -gt 0 ] || { echo "no test files in $d" >&2; exit 1; }\nexit 0\n');
   fs.mkdirSync(path.join(dir, 'bin'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'bin', 'tool.sh'), '#!/bin/sh\necho tool\n');
@@ -278,7 +496,12 @@ function buildGateTree(tag, root, mode, worktreeExec) {
     '#!/bin/sh\ntest -x bin/tool.sh\n');
   git(dir, 'add', '-A');
   if (mode === '100755') git(dir, 'update-index', '--chmod=+x', '--', 'bin/tool.sh');
-  git(dir, 'commit', '-qm', 'gate fixture');
+  fs.writeFileSync(path.join(dir, '.gitattributes'), 'payload.txt text eol=crlf\n');
+  fs.writeFileSync(path.join(dir, 'payload.txt'), 'exact Git bytes\n');
+  checkedGit(dir, 'add', '.gitattributes', 'payload.txt');
+  checkedGit(dir, 'commit', '-qm', 'gate fixture');
+  // Real tasks run on task branches: clone must preserve the local main ref as well.
+  checkedGit(dir, 'checkout', '-qb', 'task/gate-review');
   assert.strictEqual(treeMode(dir, 'HEAD', 'bin/tool.sh'), mode, `${tag} did not commit at ${mode}`);
   fs.chmodSync(path.join(dir, 'bin', 'tool.sh'), worktreeExec ? 0o755 : 0o644);
   return dir;

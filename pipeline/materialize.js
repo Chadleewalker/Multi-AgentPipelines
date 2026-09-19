@@ -95,9 +95,9 @@ function materializeCandidate(repoDir, opts = {}) {
     // carried no `.git` for a Git-dependent verifier. It also masked a failed producer — the
     // pipe's exit status is tar's, so a broken `git archive` upstream could still report success.
     //
-    // Instead a `--shared` clone brings real `.git` metadata and every ref (so a verifier's
-    // fork-point / merge-base semantics resolve), then `read-tree` + `checkout-index` lay the
-    // EXACT candidate tree down with git-authoritative modes and symlinks — export attributes are
+    // A shared clone brings real `.git` metadata; copy the source local branch refs explicitly
+    // because clone otherwise keeps only its checked-out branch as a local ref. Then load the
+    // exact candidate tree with Git-authoritative modes and symlinks — export attributes are
     // never consulted, the original workspace and its index are never touched, no file is
     // blanket-chmod'd, and `core.filemode` is left at the fresh clone's native default (never
     // forced true to trust an untrusted worktree bit). Each step's status is checked on its own
@@ -107,9 +107,30 @@ function materializeCandidate(repoDir, opts = {}) {
       { encoding: 'utf8', env });
     if (clone.status !== 0) return fail(`could not clone candidate tree: ${TRIM(clone.stderr) || 'git clone failed'}`);
     const cgit = (args) => spawnSync('git', ['-C', outDir, ...args], { encoding: 'utf8', env });
+    // Preserve local integration refs such as main even when the source HEAD is a task branch.
+    const refs = git(['for-each-ref', '--format=%(objectname) %(refname)', 'refs/heads/']);
+    if (refs.status !== 0) return fail(`could not read candidate branch refs: ${TRIM(refs.stderr) || 'git for-each-ref failed'}`);
+    const refUpdates = refs.stdout.split('\n').filter(Boolean).map((line) => {
+      const space = line.indexOf(' ');
+      return `update ${line.slice(space + 1)} ${line.slice(0, space)}\n`;
+    }).join('');
+    const copyRefs = spawnSync('git', ['-C', outDir, 'update-ref', '--stdin'],
+      { encoding: 'utf8', env, input: refUpdates });
+    if (copyRefs.status !== 0) return fail(`could not preserve candidate branch refs: ${TRIM(copyRefs.stderr) || 'git update-ref failed'}`);
     const rt = cgit(['read-tree', tree]);
     if (rt.status !== 0) return fail(`could not load candidate tree: ${TRIM(rt.stderr) || 'git read-tree failed'}`);
-    const co = cgit(['checkout-index', '-a', '-f']);
+    // Checkout conversion attributes (including eol, ident and encodings) otherwise transform
+    // the recorded blob bytes. This clone-local override has precedence over tracked attributes;
+    // remove it before verification, preserving any template-provided info attributes.
+    const attrsPath = path.join(outDir, '.git', 'info', 'attributes');
+    const attrsBefore = fs.existsSync(attrsPath) ? fs.readFileSync(attrsPath) : null;
+    fs.writeFileSync(attrsPath, '* -text -eol -crlf -ident -filter -working-tree-encoding\n');
+    let co;
+    try { co = cgit(['checkout-index', '-a', '-f']); }
+    finally {
+      if (attrsBefore === null) fs.unlinkSync(attrsPath);
+      else fs.writeFileSync(attrsPath, attrsBefore);
+    }
     if (co.status !== 0) return fail(`could not materialize candidate tree: ${TRIM(co.stderr) || 'git checkout-index failed'}`);
     return { ok: true, dir: outDir, tree, cleanup };
   } catch (e) {
