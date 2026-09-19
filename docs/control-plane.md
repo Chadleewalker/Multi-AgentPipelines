@@ -231,6 +231,17 @@ once, so what the lock used to serialize is now two independent host-global crit
 keyed on (canonical target, section): `beads-write` and `integration-publish`, one child inside
 each at a time.
 
+The preparation unmatched-worker check admits a live sibling only when its host-recorded
+grant nonce links it to the same owning supervisor (change-log row `repo-9eq`). The current
+and sibling grants must be redeemed and unsettled, with matching parent, target and scope.
+Each grant and worker record must match its own manifest batch and issue, and the two children
+must name different batches and issues. Exact OS process-start identities authenticate the
+supervisor, coordinators and worker: Linux `/proc` start ticks or Windows process `StartTime`
+ticks from a bounded query. A live PID alone is insufficient. Missing links, unsupported or
+ambiguous identity, dead or foreign workers, and settled grants remain blockers. Older starts
+without the link must finish or follow the existing explicit recovery path. Classification
+never acknowledges, settles or rewrites another worker.
+
 A grant leaves the outstanding list only when its parent settles it as `complete` or
 `released` — never by expiry, a dead parent or a reclaim — so an interrupted supervisor leaves
 a readable record of what it had in flight. A live parent is never taken over, and a provably
@@ -277,9 +288,17 @@ operations—attention and uncertain settlement still require the explicit opera
 recovery commands described above.
 
 `supervisorGlobalConcurrency` bounds all controller calls together;
-`supervisorStageConcurrency` independently bounds `specification`, `preparation`, and `review`.
-Both are positive whole-number host configuration, validated before supervisor authority is
-acquired. Ready implementation work is admitted ahead of newly queued specification work.
+`supervisorStageConcurrency` independently bounds controller calls in `specification`,
+`preparation`, and `review`. Both are positive whole-number host configuration, validated
+before supervisor authority is acquired. The preparation stage cap additionally reserves
+capacity through each outstanding host preparation grant, across ticks and controller
+reconstruction (change-log row `repo-9eq`). Launching, expired, orphaned and uncertain grants
+all count, including grants absent from the controller journal, until authoritative settlement.
+The controller holds new grants when that cap is full or the authority cannot be read;
+already-granted starts, observation and settlement continue. Existing grants survive a lowered
+cap and consume capacity until settled. This does not make the global controller-call limit
+a lifetime child limit or authorize automatic release, retry or recovery. Ready implementation
+work is admitted ahead of newly queued specification work.
 `status [--proposal <kp-id>] [--json]` reports queue position, current stage, wait and active
 time, attempts, selected model, the resolved specification planner model, recorded and
 currently available token counts, kickoff/spec,
@@ -394,6 +413,20 @@ worktree, suite bytes, author HEAD, baseline manifest and ownership — each ref
 a bounded diagnostic — before any agent launch or gate. `--skip-agent` re-gates without a model
 launch and without rebuilding RED, running the protected-tree invariants before and after exactly
 one two-direction gate, and is refused unless `--resume-probe` names the retained container.
+
+A shell-free green-probe agent can request an explicit executable-mode change in its final
+response (change-log row `repo-lvq`). It names only existing regular product files in its own
+disposable probe and chooses Git mode `100644` or `100755`. The host applies validated requests
+before running the normal native two-direction gate. An executable-looking workspace file,
+extension or shebang does not count as intent, and a mode request is never evidence that the
+tests passed.
+
+Protected paths, Git metadata, links, escaping paths and malformed or oversized requests are
+refused. The baseline and frozen suite remain unchanged. Probe tools and shell restrictions do
+not change, and no Git or credential access is granted to the model. A proof that previously
+stopped for missing executable intent may resume its retained probe normally; the agent must
+provide the explicit request before the host can apply it. `--skip-agent` only re-gates the
+candidate already present and cannot invent missing intent. Human freeze approval remains separate.
 
 Repository identity is the first of those checks and is canonical rather than lexical. Preparation
 resolves `runner/lock.js`'s `canonicalTarget` for the configured target before creating anything and

@@ -37,14 +37,14 @@
 //   (canonical target, section), and they are INDEPENDENT resources — otherwise "two workers
 //   live together" would have no content left, since both workers do both things.
 //
-// Node built-ins only, synchronous, no container engine and no network — the same constraints
-// `runner/lock.js` works under, and for the same reason: this runs inside startup gates and
-// exit paths that cannot await.
+// Synchronous host authority, without a container engine or network. Positive Windows
+// process identity adds one bounded PowerShell query; startup gates and exit paths cannot await.
 'use strict';
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const lock = require('./lock');
+const { runSync } = require('./process');
 
 // The two scopes a child operation can be granted, and the two host-global critical sections
 // an admitted child may enter. Both are closed sets on purpose: a child that could name a
@@ -162,6 +162,7 @@ function leaseRecordFor(id, target, token, ownership, recoveredGrants = []) {
     recoveredGrants,
     startedAt: new Date().toISOString(),
     ...lock.livenessFields(),
+    preparationProcess: preparationProcessIdentity(),
   });
 }
 
@@ -554,6 +555,7 @@ function admit(authority, options = {}) {
   delete body.recordHash;
   writeJson(grantFile(target, nonce), sealed({
     ...body, state: 'redeemed', redeemedAt: new Date(now).toISOString(), redeemedPid: process.pid,
+    ...(scope === 'preparation' ? { redeemedProcess: preparationProcessIdentity() } : {}),
   }));
   return {
     ok: true,
@@ -639,6 +641,85 @@ function childOwnership(admission) {
       parentPid: admission.parent && admission.parent.pid,
     },
   };
+}
+
+// Positive process identity for this admission exception. lock.isHolderLive intentionally
+// treats a same-boot recycled PID as live on Windows/macOS to refuse unsafe takeovers; that
+// conservative answer cannot authorize a sibling. Match an exact OS birth token instead.
+let ownPreparationProcessStart = null;
+function preparationProcessIdentity(pid = process.pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  const identity = lock.livenessFields(pid);
+  // Only this running Node process cannot have recycled its own PID. Refresh the ordinary
+  // liveness fields on every call, and never cache another process's birth identity.
+  if (pid === process.pid && ownPreparationProcessStart) {
+    return { ...identity, processStart: ownPreparationProcessStart };
+  }
+  let processStart = null;
+  if (process.platform === 'linux') {
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+      const state = stat.slice(stat.lastIndexOf(')') + 1).trimStart()[0];
+      if (!/^[RSDTtIWK]$/.test(state || '')) return null; // Zombies/dead processes cannot authorize work.
+      processStart = identity.procStart;
+    } catch { return null; }
+  }
+  else if (process.platform === 'win32') {
+    const r = runSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`], {
+      timeoutMs: 5000, maxBuffer: 32768, label: 'read preparation process start time',
+    });
+    if (r.status !== 0 || r.error || r.signal || r.timedOut) return null;
+    processStart = String(r.stdout || '').trim();
+  }
+  if (!/^[0-9]+$/.test(String(processStart || ''))) return null;
+  if (pid === process.pid) ownPreparationProcessStart = String(processStart);
+  return { ...identity, processStart: String(processStart) };
+}
+
+function samePreparationProcess(identity, pid) {
+  if (!identity || identity.pid !== pid || !Number.isInteger(pid) || pid <= 0
+      || !Number.isFinite(identity.takenAtMs) || identity.takenAtMs <= 0
+      || !Number.isFinite(identity.uptimeSeconds) || identity.uptimeSeconds < 0
+      || typeof identity.processStart !== 'string' || !/^[0-9]+$/.test(identity.processStart)) return false;
+  const current = preparationProcessIdentity(pid);
+  return !!(current && identity.host === current.host && identity.platform === current.platform
+    && identity.processStart === current.processStart && lock.isHolderLive(identity));
+}
+
+// Read-only classification for prepare-batch's unmatched-worker guard. Authority is the
+// redeemed host record, linked by nonce from the actual worker-start producer; PID liveness
+// alone, matching batch names, and an old admission object never grant this exception.
+function isLivePreparationSibling(admission, started) {
+  try {
+    if (!admission || admission.scope !== 'preparation' || !started
+        || !['author-proof', 'proof'].includes(started.phase)) return false;
+    const target = lock.canonicalTarget(admission.target);
+    const lease = readLease(target);
+    if (!lease || !lease.live || !samePreparationProcess(lease.record.preparationProcess, lease.record.pid)) return false;
+    const matchesParent = (record) => record && record.state === 'redeemed'
+      && record.authority.scope === 'preparation'
+      && record.authority.parent.id === lease.record.id
+      && record.authority.parent.pid === lease.record.pid;
+    const current = readGrant(target, String(admission.nonce || ''));
+    if (!matchesParent(current) || current.redeemedPid !== process.pid
+        || !samePreparationProcess(current.redeemedProcess, process.pid)
+        || current.authority.batch !== admission.batch
+        || current.authority.issueId !== admission.issueId
+        || canonical(current.authority.parent) !== canonical(admission.parent)
+        || canonical(admission.sections) !== canonical(SECTIONS)) return false;
+    const link = started.data && started.data.supervisor;
+    if (!link || typeof link.nonce !== 'string' || !/^[a-f0-9]{32,128}$/.test(link.nonce)
+        || link.nonce === admission.nonce || started.batchId === admission.batch
+        || started.issueId === admission.issueId) return false;
+    const sibling = readGrant(target, link.nonce);
+    if (!matchesParent(sibling) || sibling.authority.batch !== started.batchId
+        || sibling.authority.issueId !== started.issueId) return false;
+    return !!(sibling.redeemedProcess && link.coordinator
+      && link.coordinator.processStart === sibling.redeemedProcess.processStart
+      && samePreparationProcess(link.coordinator, sibling.redeemedPid)
+      && samePreparationProcess(started.process, started.pid));
+  } catch { return false; } // Unreadable or malformed authority remains a blocker.
 }
 
 // ---- the two critical sections -------------------------------------------------------------
@@ -761,7 +842,7 @@ module.exports = {
   SCOPES, SECTIONS, REASONS, AUTHORITY_ENV, MAX_TTL_MS,
   acquire, release, leaseHolder, supervisorPresence,
   grant, settle, settlementState, outstanding,
-  admit, admitEntry, childOwnership,
+  admit, admitEntry, childOwnership, isLivePreparationSibling, preparationProcessIdentity,
   tryEnterSection, exitSection, enterSection, withSection,
   supervisorDir,
 };
