@@ -144,6 +144,11 @@ const { spawnSync } = require('child_process');
 // by definition, so change-log row `verify-nobuffer` was recurring inside the gate that judges
 // the freeze. One value, one file: two copies of a limit drift silently and unattended.
 const { MAX_BUFFER } = require('../pipeline/verify-classify.js');
+// Git-authoritative executable modes (DESIGN.md §4.4, repo-3ec): the canonical gate must judge
+// a side's candidate by the SAME rule the verifier will — its Git modes, not an untrusted
+// worktree bit. Where the worktree is mode-untrusted (core.filemode=false, the Windows bind
+// mount) each side is materialized into a native POSIX tree before its suite/control run.
+const { fileModeUntrusted, materializeCandidate } = require('../pipeline/materialize.js');
 
 // The receipt's formula and its name, IMPORTED rather than reimplemented. The dispatch gate
 // (DESIGN.md §4.12, third admission rule) recomputes this hash from the integration branch and
@@ -348,13 +353,37 @@ function withGuardDir(root, suiteDir, names, fn) {
 // runners routinely refuse a path outside the project, which is why the empty-directory
 // fallback is built inside the tree rather than in the temp area, and a probe handed an
 // absolute path would be running a suite that sits outside the project it is being judged in.
+// Judge a side by its GIT-authoritative modes where the worktree cannot represent them: a
+// mode-untrusted root (core.filemode=false) is laid down on a native POSIX filesystem and both
+// the suite and its control run against THAT, so `test -x` reflects the committed 100755/100644
+// rather than the bind-mount bit. A faithful worktree runs in place, exactly as before. The
+// materialization is the gate's own production step — never the external Docker-command adapter,
+// which only translates a mount address. A materialization failure is reported like a broken run
+// (status null) so it fails closed into `indeterminate` rather than a false verdict.
+function effectiveSide(root) {
+  if (!fileModeUntrusted(root)) return { root, cleanup: () => {} };
+  const mat = materializeCandidate(root);
+  if (!mat.ok) return { root, cleanup: mat.cleanup, error: mat.error };
+  return { root: mat.dir, cleanup: mat.cleanup };
+}
+
 function runSide(root, verifyCommand, tests, timeoutMs, controlArg) {
-  const suite = runVerify(root, verifyCommand, tests, timeoutMs);
-  const chosen = resolveControl(root, controlArg);
-  const control = chosen.dir
-    ? runVerify(root, verifyCommand, chosen.dir, timeoutMs)
-    : withEmptyControlDir(root, (dir) => runVerify(root, verifyCommand, dir, timeoutMs));
-  return { suite, control, chosen };
+  const eff = effectiveSide(root);
+  try {
+    if (eff.error) {
+      const broken = { status: null, signal: null, stdout: '', stderr: `freeze-gate: could not materialize candidate: ${eff.error}`, error: eff.error };
+      return { suite: broken, control: broken, chosen: resolveControl(root, controlArg) };
+    }
+    const effRoot = eff.root;
+    const suite = runVerify(effRoot, verifyCommand, tests, timeoutMs);
+    const chosen = resolveControl(effRoot, controlArg);
+    const control = chosen.dir
+      ? runVerify(effRoot, verifyCommand, chosen.dir, timeoutMs)
+      : withEmptyControlDir(effRoot, (dir) => runVerify(effRoot, verifyCommand, dir, timeoutMs));
+    return { suite, control, chosen };
+  } finally {
+    eff.cleanup();
+  }
 }
 
 // --- the probe's copy of the suite ------------------------------------------------------------

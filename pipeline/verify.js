@@ -26,6 +26,10 @@ const path = require('path');
 // verifier, and so nothing here keeps a second copy of it (change-log row
 // `verify-nobuffer`): a killed run is an error, never a failure.
 const { classify, MAX_BUFFER, RUN_TIMEOUT_MS } = require('./verify-classify.js');
+// Git-authoritative executable modes (DESIGN.md §4.4, repo-3ec): where the workspace cannot
+// represent modes faithfully (a Windows bind mount, core.filemode=false), the acceptance gate
+// judges a native POSIX materialization of the candidate rather than the untrusted worktree.
+const { fileModeUntrusted, materializeCandidate } = require('./materialize.js');
 
 const WS = process.env.WORKSPACE || '/workspace';
 const OUT_DIR = path.join(WS, '.run');
@@ -92,9 +96,34 @@ if (tampered.size > 0) {
 }
 
 // --- Acceptance run: the authoritative gate. ---
+// The gate must judge the tree that will actually be published, by both its contents and its
+// GIT-authoritative modes. On a faithful worktree (core.filemode trusted) that is the workspace
+// itself, exactly as before. Where the worktree bit cannot be trusted (a Windows bind mount,
+// core.filemode=false) the candidate is laid down on a native POSIX filesystem and the unchanged
+// acceptance command runs THERE — so an explicit `--chmod=+x` is honoured and a 100644
+// executable-required file is refused, with no in-place chmod of the untrusted workspace. The
+// materialization's tree id is written beside the evidence so the host can reject stale evidence
+// after a post-verification content/mode change. Materialization failure fails closed (exit 4).
 const testDir = `tests/acceptance/${result.issueId}/`;
+let runDir = WS;
+let candidate = null;
+if (fileModeUntrusted(WS)) {
+  candidate = materializeCandidate(WS);
+  if (!candidate.ok) {
+    if (candidate.cleanup) candidate.cleanup();
+    result.error = `cannot materialize candidate for verification: ${candidate.error}`;
+    writeResult(result, 4);
+  }
+  runDir = candidate.dir;
+  // Bind the evidence to this exact candidate (content + Git modes). A later amend that changes
+  // either yields a different tree id, and the host refuses the stale pass (no verified success,
+  // no PR). Kept out of verify.json — its schema is frozen — in an adjacent .run/ artifact.
+  try { fs.mkdirSync(OUT_DIR, { recursive: true }); fs.writeFileSync(path.join(OUT_DIR, 'verified-tree'), candidate.tree + '\n'); }
+  catch { /* the host treats an absent binding as "cannot check"; the tamper diff still guards */ }
+}
 const acc = spawnSync('sh', ['-c', `${config.verifyCommand} ${testDir}`],
-  { cwd: WS, encoding: 'utf8', timeout: RUN_TIMEOUT_MS, maxBuffer: MAX_BUFFER });
+  { cwd: runDir, encoding: 'utf8', timeout: RUN_TIMEOUT_MS, maxBuffer: MAX_BUFFER });
+if (candidate && candidate.cleanup) candidate.cleanup();
 const accVerdict = classify(acc);
 result.acceptance = accVerdict.verdict;
 result.acceptanceOutput = TAIL((acc.stdout || '') + (acc.stderr || ''), 4000);
