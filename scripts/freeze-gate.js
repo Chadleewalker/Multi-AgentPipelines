@@ -144,6 +144,12 @@ const { spawnSync } = require('child_process');
 // by definition, so change-log row `verify-nobuffer` was recurring inside the gate that judges
 // the freeze. One value, one file: two copies of a limit drift silently and unattended.
 const { MAX_BUFFER } = require('../pipeline/verify-classify.js');
+// Git-authoritative executable modes (DESIGN.md §4.4, repo-3ec): the canonical gate must judge
+// a side's candidate by the SAME rule the verifier will — its Git modes, not an untrusted
+// worktree bit. Where the worktree is mode-untrusted (core.filemode=false, the Windows bind
+// mount) each side is materialized into a native POSIX tree INSIDE the verifier container before
+// its suite/control run (correction 1); `fileModeUntrusted` is the per-run decision.
+const { fileModeUntrusted } = require('../pipeline/materialize.js');
 
 // The receipt's formula and its name, IMPORTED rather than reimplemented. The dispatch gate
 // (DESIGN.md §4.12, third admission rule) recomputes this hash from the integration branch and
@@ -201,7 +207,68 @@ function ownedContainer(identity) {
 // run for reasons the gate never saw. FREEZE_GATE_CMD replaces the configured command; that
 // is the seam the suite stubs through, and it takes a `node <file.js>` stub rather than a
 // shell script because `spawnSync` cannot execute a `#!/bin/sh` file on the Windows host.
-function dockerVerifyArgs(repoRoot, image, verifyCommand, testDir, identity = null) {
+// Correction 1 (repo-3ec): where the mounted candidate's worktree cannot represent modes
+// faithfully (core.filemode=false — the reproduced Windows bind mount), the gate must judge a
+// NATIVE materialization laid down INSIDE the container's executable scratch filesystem (/tmp,
+// mounted `exec` above), never one built on the Windows host and then bind-mounted (which
+// re-exposes the untrusted host modes — the very defect this repair fixes). The candidate is the
+// git-authoritative tree of the mounted /workspace: a throwaway index seeded from the real one
+// (so a staged `git update-index --chmod` survives — resolved WITHOUT GIT_INDEX_FILE set, or it
+// names the throwaway path), `git add -A` + `write-tree`, then a faithful `--shared` clone +
+// `read-tree` + `checkout-index` — the same rule pipeline/materialize.js applies, expressed as
+// portable shell because the pinned image mounts no Node module here. Any failed step exits 75
+// (>1), so a materialization fault fails closed to `indeterminate`, never a false red/green. The
+// suite and its control then run in the materialized candidate; `mkdir -p "$1"` keeps the
+// empty-control fallback (an untracked empty dir that never enters the tree) resolvable there.
+const MATERIALIZE_PREFIX = [
+  // The bind-mounted /workspace is owned by a uid that differs from the container user, so git
+  // refuses it as "dubious ownership". `safe.directory` is honoured only from a config FILE (never
+  // `-c`/env), so write a throwaway global config into the writable tmpfs that trusts it. This is
+  // not core.filemode and does not trust worktree bits — modes still come from the Git tree.
+  'export GIT_CONFIG_GLOBAL=$(mktemp) || exit 75;',
+  'printf "[safe]\\n\\tdirectory = *\\n" > "$GIT_CONFIG_GLOBAL" || exit 75;',
+  '_r3ec_mat() {',
+  '  _ri=$(git rev-parse --git-path index) || return 1;',
+  '  _ti=$(mktemp) || return 1;',
+  '  if [ -f "$_ri" ]; then cp "$_ri" "$_ti" || return 1;',
+  '  else GIT_INDEX_FILE="$_ti" git read-tree HEAD || return 1; fi;',
+  '  GIT_INDEX_FILE="$_ti" git add -A || return 1;',
+  '  _tree=$(GIT_INDEX_FILE="$_ti" git write-tree) || return 1;',
+  '  [ -n "$_tree" ] || return 1;',
+  '  _cand=$(mktemp -d) || return 1;',
+  '  git clone --quiet --shared --no-checkout . "$_cand" || return 1;',
+  // clone preserves only the current local branch; verifiers may resolve main directly.
+  '  _refs=$(git for-each-ref --format="%(objectname) %(refname)" refs/heads/) || return 1;',
+  '  printf "%s\\n" "$_refs" | while read -r _oid _ref; do',
+  '    [ -n "$_ref" ] || continue;',
+  '    git -C "$_cand" update-ref "$_ref" "$_oid" || exit 1;',
+  '  done || return 1;',
+  '  git -C "$_cand" read-tree "$_tree" || return 1;',
+  // Disable conversion only for checkout; tracked .gitattributes remain exact source blobs.
+  '  _attrs="$_cand/.git/info/attributes";',
+  '  _saved_attrs="$_cand/.git/info/r3ec-attributes-before";',
+  '  _had_attrs=0;',
+  '  if [ -f "$_attrs" ]; then cp "$_attrs" "$_saved_attrs" || return 1; _had_attrs=1; fi;',
+  '  printf "%s\\n" "* -text -eol -crlf -ident -filter -working-tree-encoding" > "$_attrs" || return 1;',
+  '  git -C "$_cand" checkout-index -a -f || return 1;',
+  '  if [ "$_had_attrs" -eq 1 ]; then mv -f "$_saved_attrs" "$_attrs" || return 1;',
+  '  else rm -f "$_attrs" || return 1; fi;',
+  '  printf %s "$_cand";',
+  '}',
+  '_cand=$(_r3ec_mat) || { echo "freeze-gate: could not materialize candidate" >&2; exit 75; };',
+  'cd "$_cand" || exit 75;',
+  'mkdir -p "$1" 2>/dev/null || true;',
+// Newline-joined: a POSIX function body `{ ...; }` must be followed by a separator, so the
+// closing `}` cannot sit on the same line as the next command. A `-c` script carries newlines
+// fine, and the mount-address adapter captures the whole argument verbatim.
+].join('\n');
+
+function containerScript(verifyCommand, materialize) {
+  const run = `${verifyCommand} "$1"`;
+  return materialize ? `${MATERIALIZE_PREFIX} ${run}` : run;
+}
+
+function dockerVerifyArgs(repoRoot, image, verifyCommand, testDir, identity = null, materialize = false) {
   const mount = path.resolve(repoRoot).split(path.sep).join('/');
   const ownership = identity ? ['--name', identity.name, '--cidfile', identity.cidFile] : [];
   return [
@@ -214,7 +281,9 @@ function dockerVerifyArgs(repoRoot, image, verifyCommand, testDir, identity = nu
     ...ownership,
     '-e', 'HOME=/tmp/home', '-e', 'WORKSPACE=/workspace',
     '-v', `${mount}:/workspace`, '-w', '/workspace', '--entrypoint', 'sh',
-    image, '-c', `${verifyCommand} "$1"`, 'freeze-gate', testDir,
+    // When materializing in-container the script itself writes a safe.directory global config
+    // (see MATERIALIZE_PREFIX) — env/`-c` safe.directory is ignored by git, so it must be a file.
+    image, '-c', containerScript(verifyCommand, materialize), 'freeze-gate', testDir,
   ];
 }
 
@@ -222,6 +291,9 @@ function runVerify(repoRoot, verifyCommand, testDir, timeoutMs, seams = {}) {
   const cmd = process.env.FREEZE_GATE_CMD || verifyCommand;
   const dockerImage = !process.env.FREEZE_GATE_CMD && process.env.FREEZE_GATE_DOCKER_IMAGE;
   const executable = dockerImage ? (process.env.FREEZE_GATE_DOCKER_CMD || 'docker') : 'sh';
+  // Materialize in-container exactly when the mounted candidate is mode-untrusted (a Windows bind
+  // mount). A faithful worktree runs in place, unchanged. Read from the repo, never the platform.
+  const materialize = !!dockerImage && fileModeUntrusted(repoRoot);
   const run = seams.spawnSync || spawnSync;
   const dockerEnv = { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot,
     COMSPEC: process.env.COMSPEC, PATHEXT: process.env.PATHEXT, MSYS_NO_PATHCONV: '1' };
@@ -230,7 +302,7 @@ function runVerify(repoRoot, verifyCommand, testDir, timeoutMs, seams = {}) {
   try {
     if (dockerImage) identity = (seams.dockerRunIdentity || dockerRunIdentity)();
     const args = dockerImage
-      ? dockerVerifyArgs(repoRoot, dockerImage, verifyCommand, testDir, identity)
+      ? dockerVerifyArgs(repoRoot, dockerImage, verifyCommand, testDir, identity, materialize)
       : ['-c', `${cmd} ${testDir}`];
     r = run(executable, args, {
       cwd: repoRoot, encoding: 'utf8', timeout: timeoutMs,
@@ -348,6 +420,15 @@ function withGuardDir(root, suiteDir, names, fn) {
 // runners routinely refuse a path outside the project, which is why the empty-directory
 // fallback is built inside the tree rather than in the temp area, and a probe handed an
 // absolute path would be running a suite that sits outside the project it is being judged in.
+// Judge a side by its GIT-authoritative modes where the worktree cannot represent them
+// (core.filemode=false). Correction 1 (repo-3ec): the candidate is materialized on a native
+// POSIX filesystem INSIDE the verifier container's executable scratch mount (see runVerify /
+// dockerVerifyArgs), never on the Windows host and then bind-mounted — a host-built directory
+// carries the host's untrusted modes straight back into /workspace. `runSide` therefore hands
+// each run the raw `root`; runVerify decides per run whether to materialize, so both the suite
+// and its control judge the same in-container candidate, while a faithful worktree runs in place
+// exactly as before. A materialization failure inside the container exits >1 and is read as a
+// broken run, so it fails closed into `indeterminate` rather than a false verdict.
 function runSide(root, verifyCommand, tests, timeoutMs, controlArg) {
   const suite = runVerify(root, verifyCommand, tests, timeoutMs);
   const chosen = resolveControl(root, controlArg);

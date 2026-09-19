@@ -128,6 +128,17 @@ restore_verified() { # restore_verified <commit> <had-verify-json> <verify-json>
   else
     rm -f "$RUN/verify.json"
   fi
+  # Correction 5 (repo-3ec): the verified-tree binding is PAIRED with verify.json. The final
+  # docs verification re-materializes and overwrites it with the docs candidate's tree; when docs
+  # are rejected we reset HEAD back to the verified implementation, so the binding must be reset
+  # in lockstep from the values captured beside VERIFIED_RESULT — otherwise the host compares the
+  # restored implementation tree against the docs tree and labels a valid, already-verified
+  # implementation stale (correction 2 now refuses that as non-publishable).
+  if [ "${VERIFIED_TREE_PRESENT:-0}" -eq 1 ]; then
+    printf '%s\n' "$VERIFIED_TREE" > "$RUN/verified-tree" || die30 "could not restore verifier evidence binding"
+  else
+    rm -f "$RUN/verified-tree"
+  fi
 }
 
 # The docs agent gets a disposable Git worktree because useful updates span root-level guides
@@ -392,6 +403,16 @@ while :; do
       if [ -f "$RUN/verify.json" ]; then
         VERIFIED_RESULT=$(cat "$RUN/verify.json") || die30 "could not preserve verifier evidence"
         VERIFIED_RESULT_PRESENT=1
+      fi
+      # Correction 5 (repo-3ec): capture the verified-tree binding TOGETHER with verify.json so
+      # the two can be restored as a pair if the non-fatal docs phase is rejected after the final
+      # verifier has overwritten the binding. Present only on the mode-untrusted managed path
+      # where the verifier materialized the candidate; absent otherwise, and restored as absent.
+      VERIFIED_TREE_PRESENT=0
+      VERIFIED_TREE=""
+      if [ -f "$RUN/verified-tree" ]; then
+        VERIFIED_TREE=$(cat "$RUN/verified-tree") || die30 "could not preserve verifier evidence binding"
+        VERIFIED_TREE_PRESENT=1
       fi
       # Seed the change summary from the agent that did the verified work, so the record of
       # what shipped exists before another agent is given the chance to overwrite it. Seeded
