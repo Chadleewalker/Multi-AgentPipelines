@@ -23,6 +23,9 @@ const {
 // and the failure would be a whole batch refused for a reason nobody could reproduce, or a
 // changed suite admitted.
 const { suiteHash, treeEntries, RECEIPT_NAME } = require('./suite-hash');
+// The host reads the immutable original intent and derives its own documentation scope snapshot
+// from canonical issue data, failing closed on tampered new metadata (repo-062).
+const docsScope = require('./docs-scope');
 
 // §4.11 outcome contract: exit code -> {report status, Beads status}. 'killed' is the
 // host-observed wall-clock kill, which produces no exit code.
@@ -594,6 +597,41 @@ function exportIssue(cfg, issueId) {
   if (!res.ok) return { ok: false, error: res.error };
   const i = Array.isArray(res.data) ? res.data[0] : res.data;
   if (!i) return { ok: false, error: `issue ${issueId} not found` };
+
+  // Host-owned scope binding (repo-062). The presence of either genuinely new metadata field
+  // (`intent` or `scope`) is the new-format marker. A record that presents itself as new but is
+  // incomplete or internally inconsistent — a missing companion field, an intent that no longer
+  // hashes to its recorded hash, or a stored scope that disagrees with the intent's derivation —
+  // fails closed. A record carrying none of the new fields is legacy data and keeps prior
+  // behaviour (`kickoffHash`/`specHash` predate this feature and are NOT new-format markers).
+  const meta = (i.metadata && typeof i.metadata === 'object' && !Array.isArray(i.metadata))
+    ? i.metadata : {};
+  const newFormat = Object.prototype.hasOwnProperty.call(meta, 'intent')
+    || Object.prototype.hasOwnProperty.call(meta, 'scope');
+  let scope = null;
+  let intentObj = null;
+  if (newFormat) {
+    if (typeof meta.intent !== 'string'
+        || typeof meta.kickoffHash !== 'string'
+        || !meta.scope || typeof meta.scope !== 'object' || Array.isArray(meta.scope)) {
+      return { ok: false, error: `issue ${issueId} carries incomplete scope metadata` };
+    }
+    if (docsScope.hashOf(meta.intent) !== meta.kickoffHash) {
+      return { ok: false, error: `issue ${issueId} intent does not bind to its recorded kickoff hash` };
+    }
+    try { intentObj = JSON.parse(meta.intent); } catch {
+      return { ok: false, error: `issue ${issueId} immutable intent is not JSON` };
+    }
+    // The host re-derives the scope from the verified intent — a container-editable stored
+    // scope cannot weaken the snapshot — and refuses if the stored scope disagrees with it.
+    const derived = docsScope.deriveScope(intentObj);
+    if (meta.scope.documentation !== derived.documentation
+        || meta.scope.directive !== derived.directive) {
+      return { ok: false, error: `issue ${issueId} derived documentation scope was tampered` };
+    }
+    scope = derived;
+  }
+
   const md = [
     `# ${i.id}: ${i.title || ''}`,
     '',
@@ -605,8 +643,25 @@ function exportIssue(cfg, issueId) {
     '## Design reference',
     i.design || '(none recorded)',
     '',
-  ].join('\n');
-  return { ok: true, markdown: md, issue: i };
+  ];
+  // The mounted task text — the implementation input — carries the immutable original intent so
+  // the author and implementation see the exact original constraints, nonGoals and kickoff hash
+  // even when the planner omitted or contradicted them (repo-062 C1).
+  if (intentObj) {
+    md.push('## Original kickoff intent (immutable)', '');
+    md.push(`kickoff hash: ${meta.kickoffHash}`, '');
+    const list = (label, arr) => {
+      if (!Array.isArray(arr) || arr.length === 0) return;
+      md.push(`${label}:`);
+      for (const item of arr) md.push(`- ${item}`);
+      md.push('');
+    };
+    list('Constraints', intentObj.constraints);
+    list('Non-goals', intentObj.nonGoals);
+  }
+  const out = { ok: true, markdown: md.join('\n'), issue: i };
+  if (scope) out.scope = scope;
+  return out;
 }
 
 // Terminal write-back after a container exits (§4.10: notes travel via the status file).
