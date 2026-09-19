@@ -516,6 +516,17 @@ The two exit-0 rows also assume schema-valid `status.json` and `verify.json`, ma
 identities, and `acceptance: pass`. Without those prerequisites the outcome is failed, the
 issue is never closed, and no PR is opened.
 
+The acceptance gate judges the candidate by its Git-authoritative executable modes, not an
+untrusted worktree bit (change-log row `repo-3ec`). Where the worktree cannot represent modes
+faithfully — a Windows-hosted Docker bind mount reports `core.filemode=false` — the verifier
+lays the git-authoritative candidate down on a native POSIX filesystem (`pipeline/materialize.js`)
+and runs the unchanged acceptance command there, binding its evidence to that tree id in
+`.run/verified-tree`; a materialization fault fails closed. The same rule governs the
+`scripts/freeze-gate.js` two-direction gate, whose materialization failure fails closed to
+`indeterminate`. Before a PR-eligible verified success publishes, the host recomputes the branch
+tip's tree and refuses the outcome and its PR if a post-verification amend made the pass stale —
+a named failed/blocked outcome whose branch may still push as recoverable evidence.
+
 `undispatchable` is the one outcome here that touches Beads **not at all** (§4.11, §4.12,
 change-log rows `dispatch-gate` and `repo-isq`). The ready queue's second and third admission
 rules refuse the issue before `claim()`, so it is never in progress, never blocked, and the
