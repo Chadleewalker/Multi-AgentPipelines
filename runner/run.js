@@ -95,7 +95,12 @@ function cleanupOwnedLifecycle(cfg, repoRoot, log, traceId, deps = {}) {
 // One task container (§4.10). PIPELINE_EXEC_STUB replaces the container with a local
 // script — used by the runner's own test suites to exercise outcome paths cheaply;
 // real runs always take the docker path.
-async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClockMinutes) {
+async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClockMinutes, docsScope) {
+  // repo-062: the host transports the documentation scope to the container. A preserve scope
+  // tells the entrypoint to skip the docs model and docs worktree; every other value (and the
+  // absence of one) leaves the normal docs phase running. Set explicitly and stripped otherwise
+  // so an ambient value cannot silently prohibit documentation on an unrelated task.
+  const docsScopeEnv = docsScope && docsScope.documentation === 'preserve' ? 'preserve' : null;
   const stub = process.env.PIPELINE_EXEC_STUB;
   if (stub) {
     // Asynchronous on purpose (§7): spawnSync here would serialise every stubbed task and
@@ -106,10 +111,12 @@ async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClo
     // piped: spawnSync's pipes were never read either, and an unread pipe would now block
     // a chatty stub instead of quietly filling a buffer nobody looks at.
     const completed = await new Promise((resolve) => {
+      const stubEnv = { ...process.env, ISSUE_ID: issue.id, TASK_DIR: taskDir, WORKSPACE: ws.dir, RUN_DIR: path.join(ws.dir, '.run') };
+      if (docsScopeEnv) stubEnv.PIPELINE_DOCS_SCOPE = docsScopeEnv; else delete stubEnv.PIPELINE_DOCS_SCOPE;
       const child = require('child_process').spawn(commandFor(cfg), [stub], {
         cwd: ws.dir,
         stdio: ['ignore', 'ignore', 'ignore'],
-        env: { ...process.env, ISSUE_ID: issue.id, TASK_DIR: taskDir, WORKSPACE: ws.dir, RUN_DIR: path.join(ws.dir, '.run') },
+        env: stubEnv,
       });
       let finished = false;
       let timedOut = false;
@@ -139,6 +146,7 @@ async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClo
       pipelineDir: path.join(REPO_ROOT, 'pipeline'),
       issueId: issue.id,
       taskDir,
+      docsScope: docsScopeEnv,
       ...(authCache ? {} : {
         credential: { name: credentialNameFor(providerFor(cfg)), value: token },
       }),
@@ -400,6 +408,11 @@ async function runOneTask(cfg, issue, log, token, gate, ownership) {
     };
   }
   fs.writeFileSync(path.join(taskDir, 'issue.md'), exported.markdown);
+  // Host-owned documentation-scope snapshot, read from canonical exported issue data (repo-062).
+  // It is transported into the container (docs skip) and into publication (Markdown-surface
+  // backstop) from HERE; a container-editable issue file or environment artifact cannot relax it.
+  const docsScopeSnapshot = exported.scope || null;
+  const docsProhibited = !!docsScopeSnapshot && docsScopeSnapshot.documentation === 'preserve';
 
   // ---- per-task workspace: fresh clone, task branch, issue mounted (§4.2, T13) ----
   // Clone remains synchronous and therefore serialises this orchestration thread briefly,
@@ -437,7 +450,7 @@ async function runOneTask(cfg, issue, log, token, gate, ownership) {
       break;
     }
     try {
-      exec = await executeTask(cfg, issue, taskDir, log, tr, ws, token, remainingMinutes);
+      exec = await executeTask(cfg, issue, taskDir, log, tr, ws, token, remainingMinutes, docsScopeSnapshot);
     } catch (error) {
       return laneBoundaryFailure(cfg, issue, log, tr, ws, pauses, activeMs, ownership, error);
     }
@@ -518,6 +531,24 @@ async function runOneTask(cfg, issue, log, token, gate, ownership) {
     for (const err of mem.errors) log.error(tr, `memory: could not file a note — ${err}`);
   }
 
+  // repo-062: a documentation-prohibited task ran implementation and its verifier but never the
+  // docs model or docs worktree. Record that intentional omission as a bounded, explicit line in
+  // the existing run log — deliberately free of any error/publication vocabulary so it is never
+  // read as a docs failure or the later publication result. The "verified implementation summary
+  // is retained" clause is a claim about the WORK and so is made only for an authoritatively
+  // successful verification (real acceptance pass, no invalid-artifact failure, a done/partial
+  // outcome). A failed, stuck or invalid-artifact outcome gets the neutral omission description
+  // instead, because there is no verified summary to retain (repo-062 review correction 6).
+  if (docsProhibited) {
+    const verifiedSuccess = !artifactError
+      && !!artifacts.verify && artifacts.verify.acceptance === 'pass'
+      && (outcome.status === 'done' || outcome.status === 'partial');
+    log.info(tr, verifiedSuccess
+      ? 'documentation phase intentionally omitted for this preserve-documentation task; '
+        + 'the verified implementation summary is retained'
+      : 'documentation phase intentionally omitted for this preserve-documentation task');
+  }
+
   // ---- publish: push what exists, PR what passed (§4.5, T16) ----
   const published = commitCheckError ? {
     ok: false, pushed: false, branch: ws.branch, prUrl: null, error: commitCheckError,
@@ -530,6 +561,9 @@ async function runOneTask(cfg, issue, log, token, gate, ownership) {
     verify: artifacts.verify,
     issue,
     runId: log.runId,
+    // The host-owned documentation-scope snapshot (repo-062): publish refuses a protected
+    // Markdown-surface delta and renders the intentional-omission PR note from it.
+    scope: docsScopeSnapshot,
     // Host-only exact-value discriminator. publish/credential-scan never logs its value.
     secrets: [token],
   }, log, tr), (why) => ({

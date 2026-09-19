@@ -91,6 +91,10 @@ function buildArgs(cfg, opts) {
   // agentCommand (stubs, overrides) owns its own flags and ignores this.
   if (cfg.model) args.push('-e', `PIPELINE_MODEL=${cfg.model}`);
   if (cfg.maxAttempts) args.push('-e', `PIPELINE_MAX_ATTEMPTS=${cfg.maxAttempts}`);
+  // repo-062: a documentation-prohibited task carries its host-owned scope in so the entrypoint
+  // skips the docs model and docs worktree. Only 'preserve' is transported; the absence of the
+  // variable is the normal docs path a container started by an older runner already takes.
+  if (opts.docsScope === 'preserve') args.push('-e', 'PIPELINE_DOCS_SCOPE=preserve');
   args.push(cfg.image, 'bash', '/pipeline/entrypoint.sh');
   return args;
 }
