@@ -16,6 +16,7 @@ const path = require('path');
 
 const { loadConfig } = require('../runner/config');
 const AGENT = require('../runner/agent-provider');
+const MODE_INTENT = require('./probe-mode-intent');
 const { runSync, failureText } = require('../runner/process');
 const { acquire, release, canonicalTarget } = require('../runner/lock');
 const { compareSuites } = require('./freeze-gate');
@@ -505,6 +506,16 @@ function probePrompt(built, previous = '') {
     'pipeline.config.json or any frozen path. Do not use Git or Beads. You have no shell:',
     'the host controller runs the verifier after you exit and will return its evidence on a',
     'later attempt. Read the tests carefully, edit only product files, and then stop.',
+    '',
+    'If a product file needs an explicit Git executable-mode change, request it in your FINAL',
+    'response without using Git or a shell. The host accepts only existing regular product files',
+    'inside this probe, refuses protected paths, and runs the unchanged native gate afterward.',
+    'For a mode request, your entire final response must be the following header and one JSON',
+    'object (at most 64 changes). Use only modes 100644 and 100755 and literal relative paths:',
+    MODE_INTENT.HEADER,
+    '{"version":1,"changes":[{"path":"src/example.sh","mode":"100755"}]}',
+    'The example is a format only: name only files whose mode you explicitly intend to change.',
+    'If no mode changes are needed, finish with your ordinary response; no request file is needed.',
     previous ? `\nPREVIOUS HOST GATE EVIDENCE:\n${previous}` : '',
   ].filter(Boolean).join('\n');
 }
@@ -608,9 +619,20 @@ function proveTests(built, model, seams = {}) {
           error: before.join('; ') };
       }
 
+      let modeAudit = null;
+      if (!skipAgent) {
+        const requested = MODE_INTENT.requestFromLaunch(AGENT.providerFor(built.cfg, 'test-probe'), launched);
+        if (requested) {
+          modeAudit = MODE_INTENT.applyRequest(built, prepared, requested, readManagedProbe);
+          const applied = (seams.invariantErrors || invariantErrors)(built, prepared);
+          if (applied.length) return { ok: false, kind: 'tamper', attempt, probe: prepared.probe,
+            retained: false, error: applied.join('; ') };
+        }
+      }
       const gated = runStage(seams, 'gate', attempt,
         () => (seams.runGate || runGate)(built, prepared, run));
       evidence = `${gated.stdout || ''}${gated.stderr || ''}`.trim();
+      MODE_INTENT.verifyApplied(built, prepared, modeAudit, readManagedProbe);
       const after = runStage(seams, 'protected-check-after', attempt,
         () => (seams.invariantErrors || invariantErrors)(built, prepared));
       if (after.length) {

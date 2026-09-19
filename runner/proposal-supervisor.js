@@ -306,6 +306,7 @@ function productionAdapters(repoRoot, options = {}) {
     },
     authority: {
       acquire({ project }) { return parent(project); },
+      outstanding({ project }) { return authorityApi.outstanding(project); },
       canReopen({ project }) {
         const holder = authorityApi.leaseHolder(project);
         if (!lease || !holder || !holder.live || holder.pid !== process.pid || holder.id !== lease.id) {
@@ -479,6 +480,31 @@ function createProductionSupervisor(options = {}) {
     if (kind === 'review') return 'review';
     return null;
   }
+  function preparationGrantSlots(current) {
+    // A start call returns as soon as its child is spawned. Its outstanding grant, not
+    // that short call or this tick's attempted set, reserves capacity for the whole
+    // preparation. Count orphaned, expired and uncertain grants until the owner settles
+    // them. The host authority also sees grants missing from this controller's journal.
+    let occupied;
+    if (adapters.authority && typeof adapters.authority.outstanding === 'function') {
+      try {
+        const grants = adapters.authority.outstanding({ project });
+        if (!Array.isArray(grants) || grants.some(grant => !grant || typeof grant.scope !== 'string')) return 0;
+        occupied = grants.filter(grant => grant.scope === 'preparation').length;
+      } catch {
+        // Unreadable authority prevents new admission, not observation or settlement.
+        return 0;
+      }
+    } else if (options.adapters && options.testingSentinel === TESTING_SENTINEL) {
+      // Older explicitly injected fixtures have only journal grants. Production always
+      // uses the host reader above and cannot enter this compatibility path.
+      occupied = current.order.filter(id => {
+        const p = current.proposals.get(id);
+        return p.preparationGrant && !p.preparationSettled;
+      }).length;
+    } else return 0;
+    return Math.max(0, stageLimits.preparation - occupied);
+  }
   function actions(current, attempted) {
     const rows = current.order.map(id => [id, current.proposals.get(id)]);
     // Every category is chosen only from its un-attempted candidates, capped by its stage
@@ -525,8 +551,11 @@ function createProductionSupervisor(options = {}) {
     chosen = pick(rows.filter(([, p]) => adapters.authority
       && typeof adapters.authority.grant === 'function'
       && !current.closed && p.stage === 'criticizing'
-      && !p.preparationGrant).map(([id]) => ({ kind: 'grant-preparation', id, key: `prep-grant:${id}` })), 'preparation');
+      && !p.preparationGrant).map(([id]) => ({ kind: 'grant-preparation', id, key: `prep-grant:${id}` })), 'preparation')
+      .slice(0, preparationGrantSlots(current));
     if (chosen.length) return chosen;
+    // These grants already reserve their slots; starting them must not require a second
+    // free slot. Polling and settlement below retain their independent observation cap.
     chosen = pick(rows.filter(([, p]) => !current.closed && p.stage === 'criticizing'
       && p.preparationGrant && !p.preparationOperation)
       .map(([id]) => ({ kind: 'start-preparation', id, key: 'preparation-launch' })), 'preparation');

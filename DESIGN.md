@@ -259,6 +259,19 @@ promote the exact suite and receipt. Freeze refuses unrelated staged paths, buil
 a private immutable index, and pushes that exact object under a remote lease before the runner's
 own readback, only then removing the owned clones.
 
+The probe's file tools cannot express Git executable intent, so an optional final-response
+request supplies that missing operation (change-log row `repo-lvq`). The agent may name a
+bounded list of existing regular product files and explicitly select Git mode `100644` or
+`100755`. The host consumes only a completed provider final response, validates the owned
+probe identity and current protected-path policy, and applies only those named modes. It
+retains an audit outside the candidate, checks that the requested bytes and Git modes survive
+the gate, and keeps the existing protected checks before and after verification. The same
+unchanged acceptance suite still must fail in the baseline and pass in the native probe.
+
+The request is not a command channel or a verdict. No extension, shebang, test text or apparent
+workspace mode is used to infer intent. Shell-free tools and credential boundaries remain
+unchanged. Ordinary responses make no mode request and keep their previous behavior.
+
 **The author's setup context is bounded, and its exit is not its outcome** (change-log row
 `repo-7a0`). The coordinator reads Beads once and embeds the issue in an immutable brief, but a
 Codex author session reaches its own shell, and one `bd prime` there reloads the target
@@ -988,6 +1001,19 @@ today's behaviour exactly, which is the property that lets standalone operation 
 without a compatibility branch anywhere: admission answers `standalone` and the existing
 lock does the rest.
 
+**A live preparation sibling is authenticated before it stops blocking admission**
+(change-log row `repo-9eq`). The unmatched-worker check before a new preparation manifest
+may recognize a worker belonging to the same live supervisor only through its host-produced
+grant nonce and coordinator identity. Both preparation grants must be redeemed, unsettled
+and bound to that exact parent and target; the recorded batch and issue must match the outer
+preparation manifest, and the sibling must name a different batch and issue. The supervisor,
+coordinators and worker must retain their exact OS process-start identities: Linux `/proc`
+start ticks or Windows process `StartTime` ticks from a bounded query. Conservative PID
+liveness alone cannot authorize this exception. Missing, malformed, dead, recycled, foreign,
+settled or unsupported identity remains a blocker, including older starts without the link.
+This is read-only classification; it neither settles nor acknowledges another worker and
+changes no global lock or explicit recovery rule.
+
 **Two sections, not one lock.** Two authorized children may be live at once — that is the
 point of the layer — so the serialization the target lock used to provide has to come from
 somewhere. It comes from two named host-global critical sections keyed on (canonical target,
@@ -1079,8 +1105,18 @@ The conveyor's proposal history is append-only and uses a closed host-owned grap
 `needs-input` to `specifying`; model output cannot name a transition. Every derived spec and
 test brief retains the immutable kickoff hash and field-level intent references. Invalid
 durable history is rejected before controller calls. The scheduler enforces one validated
-global ceiling and independent specification, preparation, and review ceilings, consumes a
-bounded admission turn at a time, and prioritizes ready implementation over new specification.
+global ceiling and independent specification, preparation, and review ceilings on controller
+calls, consumes a bounded admission turn at a time, and prioritizes ready implementation over
+new specification. Preparation also reserves its stage capacity for the lifetime of each
+outstanding host grant (change-log row `repo-9eq`). Before granting more preparation work, the
+controller counts all outstanding preparation grants for the canonical target, including
+launching, expired, orphaned or uncertain grants absent from its journal. A return from the
+start call, a new tick or controller reconstruction releases no slot; only authoritative
+settlement does. Already-granted starts use their existing reservations, and observation and
+settlement continue when capacity is full or the authority read fails. An unreadable authority
+admits no new grants. Lowering the cap preserves existing grants while blocking new ones
+until capacity becomes available. The global limit remains a controller-call ceiling; this
+does not introduce a global lifetime limit or implicit retry, release or recovery.
 Stopping closes intake before waiting for already-owned critical sections and the shared feed
 to settle. JSON and human status are projections of the same journal and expose timing,
 attempt, model/token, identity, queue, and next-action facts.
@@ -2156,9 +2192,11 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
     writes no preparation state, so repairing the named prerequisite is the entire retry
     procedure. Worktree allocation remains serialized in the parent; a default and hard maximum
     of ten child processes receive complete snapshots on stdin and call only the structured author/proof
-    cores. The coordinator and the standalone commands share the runner's target-global lock,
-    so no preparation worker can overlap a pipeline run or be rediscovered through an ambiguous
-    folder. `runs/preparations/<batch>/` holds an immutable manifest, hash-chained events and
+    cores. Standalone coordinators share the runner's target-global lock, so their preparation
+    workers cannot overlap an unrelated pipeline run. Supervised children instead use the
+    scoped grants, authenticated sibling admission and capacity reservations in §3.10
+    (change-log row `repo-9eq`); an ambiguous folder never establishes ownership.
+    `runs/preparations/<batch>/` holds an immutable manifest, hash-chained events and
     nonce-paired worker start/results. The manifest records the parent's falsifiable process
     identity, and every worker start records the same PID-recycle-safe identity used by the
     target lock. Status evaluates both identities: an unmatched live `author-proof` or `proof`

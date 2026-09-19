@@ -27,3 +27,6 @@ jobs:
           sh tools/run-acceptance.sh tests/acceptance/repo-djf.62/
           sh tools/run-acceptance.sh tests/acceptance/repo-3ec/
           sh tools/run-acceptance.sh tests/acceptance/repo-062/
+          node tests/integration/preparation-siblings-review.js
+          node tests/integration/preparation-lifetime-cap-review.js
+          node tests/integration/probe-mode-intent-review.js

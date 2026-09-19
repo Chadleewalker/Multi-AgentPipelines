@@ -470,9 +470,18 @@ function runWorker(root, batch, item, configPath, state = prepState, seams = {})
     const platform = typeof seams.platform === 'string' ? seams.platform : process.platform;
     const workerPid = child.pid;
     const workerIdentity = Number.isInteger(workerPid) && workerPid > 0
-      ? lock.livenessFields(workerPid, { platform }) : null;
+      ? ((seams.ownership && seams.ownership.delegation
+        ? supervisor.preparationProcessIdentity(workerPid) : null)
+        || lock.livenessFields(workerPid, { platform })) : null;
     const started = { nonce, pid: workerIdentity ? workerIdentity.pid : workerPid, phase: item.action,
-      ...(workerIdentity ? { process: workerIdentity } : {}), data: { action: item.action } };
+      ...(workerIdentity ? { process: workerIdentity } : {}), data: {
+        action: item.action,
+        // Bind this worker generation to the exact host-admitted preparation child. A later
+        // grant for the same batch/issue cannot make an older unmatched worker a live sibling.
+        ...(seams.ownership && seams.ownership.delegation ? { supervisor: {
+          nonce: seams.ownership.delegation.nonce, coordinator: supervisor.preparationProcessIdentity(),
+        } } : {}),
+      } };
     try { state.writeWorkerStarted(root, batch, item.id, started); }
     catch (e) {
       try { child.kill('SIGKILL'); } catch { /* the not-yet-fed worker owns no descendant */ }
@@ -676,7 +685,7 @@ function attemptPhase(started) {
   return started && (started.phase || (started.data && started.data.action)) || null;
 }
 
-function unresolvedWorkers(root, state = prepState, targetRepoPath = null) {
+function unresolvedWorkers(root, state = prepState, targetRepoPath = null, childAdmission = null) {
   let entries;
   try { entries = fs.readdirSync(root, { withFileTypes: true }); }
   catch (e) { if (e && e.code === 'ENOENT') return { ok: true, workers: [] }; return { ok: false, error: e.message }; }
@@ -695,6 +704,10 @@ function unresolvedWorkers(root, state = prepState, targetRepoPath = null) {
         const id = typeof issue === 'string' ? issue : issue.id;
         const latest = latestAttempt(state.readWorkerRecords(root, entry.name, id));
         if (latest.started && !latest.result) {
+          // Only another authenticated live child of this same supervisor is ordinary work.
+          // Unlinked historical records and every uncertain identity still require recovery.
+          if (childAdmission && latest.started.batchId === entry.name && latest.started.issueId === id
+              && supervisor.isLivePreparationSibling(childAdmission, latest.started)) continue;
           workers.push({ batch: entry.name, issueId: id, pid: latest.started.pid || null,
             phase: attemptPhase(latest.started), nonce: latest.started.nonce || null });
         }
@@ -999,7 +1012,9 @@ async function execute(opts, io = {}, seams = {}) {
       err(`prepare-batch: resume with: ${priorPause.resumeCommand}`);
       return EXIT_REFUSED;
     }
-    const interrupted = unresolvedWorkers(root, state, cfg.targetRepoPath);
+    const siblingAdmission = childAdmission && childAdmission.batch === opts.batch
+      && ids.includes(childAdmission.issueId) ? childAdmission : null;
+    const interrupted = unresolvedWorkers(root, state, cfg.targetRepoPath, siblingAdmission);
     if (!interrupted.ok) {
       err(`prepare-batch: ${interrupted.error}`);
       return EXIT_ATTENTION;
