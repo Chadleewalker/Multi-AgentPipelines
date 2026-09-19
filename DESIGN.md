@@ -1255,6 +1255,26 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
    outcomes retain their existing meaning; malformed diagnostic evidence cannot turn stuck,
    tampered, paused or failed into another class (change-log row
    `runtime-artifact-schema-gate`).
+   **The gate judges the candidate's contents and its Git-authoritative modes together**
+   (change-log row `repo-3ec`). Git index modes — set by an explicit
+   `git update-index --chmod=+x` or `--chmod=-x` — determine publishable executable
+   semantics; an extension, a shebang or an apparent Windows bind-mount permission never
+   does, and the verifier neither blanket-chmods files nor enables `core.filemode=true` to
+   trust bind-mount bits. On a faithful worktree the acceptance command runs in
+   `/workspace` exactly as before. Where the worktree cannot represent modes faithfully —
+   a Windows-hosted Docker bind mount reports `core.filemode=false` — the verifier lays the
+   git-authoritative candidate (worktree content with index modes, staged into a throwaway
+   index so an uncommitted `--chmod` intent survives and the real index is untouched) down
+   on a native POSIX filesystem via `pipeline/materialize.js` and runs the unchanged
+   acceptance command there, so a 100755 file is executable and a 100644
+   executable-required file is refused. Materialization failure fails closed with bounded,
+   actionable evidence. The materialized tree id is written to `/workspace/.run/verified-tree`
+   — beside `verify.json`, not inside its frozen schema — binding the evidence to the exact
+   content and modes it judged so the host can later reject a stale pass (item 5). The same
+   rule governs the canonical two-direction freeze gate (`scripts/freeze-gate.js`): each
+   side is materialized before its suite and control run, and a materialization failure
+   there is reported as a broken run so it fails closed to `indeterminate` rather than a
+   false verdict.
 5. **Git isolation; the host pushes everything that exists, PRs only what passed.** Every
    task gets a fresh branch off `main`; nothing touches `main`. After the container exits,
    the runner pushes the task branch **whenever it has commits — including WIP commits
@@ -1293,6 +1313,16 @@ algorithms; it is not a second live copy of their values (change-log row `repo-t
    "no commits" no-op. A required regression verdict is checked at the start of this
    settlement, before even a no-commit result is accepted: an unavailable mandatory
    discriminator can never close the issue or publish a branch.
+   **A verified pass is publishable only while it still describes the candidate on the
+   branch** (change-log row `repo-3ec`). When a mode-untrusted verification bound its
+   evidence to a candidate tree (item 4), the host — before a verified-success outcome
+   publishes — recomputes the branch tip's tree and refuses the outcome and its PR if a
+   post-verification amend changed the candidate's content or its Git modes, since either
+   yields a different tree id and makes the prior pass stale. The check applies only when a
+   PR-eligible outcome would publish committed work; an absent binding means the worktree
+   was faithful and ordinary runs are unchanged. A refused stale pass is a named
+   failed/blocked outcome: the branch may still be pushed as recoverable evidence, but no
+   verified-success outcome is reported and no PR is opened.
 6. **Budgets and hard exits — time and attempts, not money.** Two budgets only: max
    **active** wall-clock per task (host-enforced, default 4 hours, pause time excluded —
    see next item) and a per-task verify-attempt cap — default 3, tunable per run via `maxAttempts` in `run.config.json`, forwarded to the container as `PIPELINE_MAX_ATTEMPTS` (entrypoint-enforced, counted in the
