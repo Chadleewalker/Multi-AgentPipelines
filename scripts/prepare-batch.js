@@ -46,13 +46,29 @@ const USAGE = [
   '  node scripts/prepare-batch.js resume <batch>',
   '  node scripts/prepare-batch.js status <batch> [--json]',
   '  node scripts/prepare-batch.js retry <batch> <id> [<id> ...] [--resume-partial]',
+  '  node scripts/prepare-batch.js retry <batch> <id> --candidate-probe <path> --candidate-hash <sha256>',
   '  node scripts/prepare-batch.js acknowledge-interrupted <batch> <id> [<id> ...]',
 ].join('\n');
+
+function candidateSelectorError(opts) {
+  if (opts.candidateProbe === undefined) return null;
+  if (opts.mode !== 'retry') return 'candidate reuse is accepted only by retry';
+  if (!Array.isArray(opts.issues) || opts.issues.length !== 1) return 'candidate reuse requires exactly one issue id';
+  if (opts.resumePartial) return 'candidate reuse cannot be combined with --resume-partial';
+  const candidate = opts.candidateProbe;
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)
+      || typeof candidate.path !== 'string' || !candidate.path.trim() || candidate.path.includes('\0')
+      || typeof candidate.hash !== 'string' || !/^[0-9a-f]{64}$/.test(candidate.hash)) {
+    return 'candidate reuse requires --candidate-probe and a 64-character lowercase --candidate-hash';
+  }
+  return null;
+}
 
 function parseArgs(argv) {
   const answer = { mode: argv[0] || null, batch: argv[1] || null, issues: [],
     concurrency: DEFAULT_CONCURRENCY, resumePartial: false };
   const modes = new Set(['start', 'resume', 'status', 'retry', 'acknowledge-interrupted']);
+  let candidatePath; let candidateHash;
   if (!modes.has(answer.mode)) return { error: `unknown mode ${JSON.stringify(answer.mode)}` };
   for (let i = 2; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -62,6 +78,13 @@ function parseArgs(argv) {
       if (arg === '--config') answer.config = value;
       else if (arg === '--issue') answer.issues.push(value);
       else answer.concurrency = Number(value);
+    } else if (arg === '--candidate-probe' || arg === '--candidate-hash') {
+      const value = argv[++i];
+      if (value === undefined || value.startsWith('--')) return { error: `${arg} needs a value` };
+      if ((arg === '--candidate-probe' && candidatePath !== undefined)
+          || (arg === '--candidate-hash' && candidateHash !== undefined)) return { error: `${arg} may be supplied only once` };
+      if (arg === '--candidate-probe') candidatePath = value;
+      else candidateHash = value;
     } else if (arg === '--json') answer.json = true;
     else if (arg === '--resume-partial') {
       // Bounded on purpose: the one explicit opt-in that lets a recorded, acknowledged
@@ -72,6 +95,12 @@ function parseArgs(argv) {
     } else if (arg.startsWith('--')) return { error: `unknown option ${JSON.stringify(arg)}` };
     else if (answer.mode === 'retry' || answer.mode === 'acknowledge-interrupted') answer.issues.push(arg);
     else return { error: `unexpected argument ${JSON.stringify(arg)}` };
+  }
+  if (candidatePath !== undefined || candidateHash !== undefined) {
+    answer.candidateProbe = { path: candidatePath, hash: candidateHash };
+    const invalid = candidateSelectorError(answer);
+    if (invalid) return { error: invalid };
+    answer.candidateProbe.path = path.resolve(candidatePath);
   }
   try { prepState.validateBatchId(answer.batch); }
   catch { return { error: 'a safe batch id is required' }; }
@@ -476,6 +505,7 @@ function runWorker(root, batch, item, configPath, state = prepState, seams = {})
     const started = { nonce, pid: workerIdentity ? workerIdentity.pid : workerPid, phase: item.action,
       ...(workerIdentity ? { process: workerIdentity } : {}), data: {
         action: item.action,
+        ...(item.candidateProbe ? { candidateProbe: item.candidateProbe } : {}),
         // Bind this worker generation to the exact host-admitted preparation child. A later
         // grant for the same batch/issue cannot make an older unmatched worker a live sibling.
         ...(seams.ownership && seams.ownership.delegation ? { supervisor: {
@@ -561,7 +591,8 @@ function runWorker(root, batch, item, configPath, state = prepState, seams = {})
       resolve(result);
     });
     child.stdin.end(JSON.stringify({ action: item.action, built: item.built, configPath,
-      ...(item.retainedProbe ? { retainedProbe: item.retainedProbe } : {}) }));
+      ...(item.retainedProbe ? { retainedProbe: item.retainedProbe } : {}),
+      ...(item.candidateProbe ? { candidateProbe: item.candidateProbe } : {}) }));
   });
 }
 
@@ -885,6 +916,8 @@ function shouldCheckPrerequisites(seams) {
 
 async function execute(opts, io = {}, seams = {}) {
   const out = io.out || console.log; const err = io.err || console.error;
+  const invalidCandidate = candidateSelectorError(opts);
+  if (invalidCandidate) { err(`prepare-batch: ${invalidCandidate}`); return EXIT_USAGE; }
   const state = seams.state || prepState;
   const root = (seams.preparationRoot || state.preparationRoot)(process.env);
   if (opts.mode === 'status') return statusReport(root, opts.batch, opts.json, state, io);
@@ -1087,6 +1120,10 @@ async function execute(opts, io = {}, seams = {}) {
     }
     // A test-supplied integration inspector is already the authority for its synthetic tree;
     // production still re-reads each real worktree HEAD after creation.
+    if (opts.candidateProbe !== undefined && (snapshots.length !== 1 || snapshots[0].action !== 'proof')) {
+      err('prepare-batch: candidate reuse requires one runnable proof-only retry; no worktree or worker was created.');
+      return EXIT_ATTENTION;
+    }
     snapshots = prepareWorktrees(snapshots, configPath, seams,
       Object.prototype.hasOwnProperty.call(seams, 'inspectIntegration') ? null : baseHead, cfg);
     const strays = strayIssues(cfg, rosterIds, seams);
@@ -1151,12 +1188,20 @@ async function execute(opts, io = {}, seams = {}) {
             }
           }
         }
-        // A durably recorded retained proof is the one thing a relaunched proof worker may reuse:
-        // it resumes that exact container instead of cloning a fresh red baseline, and — where the
-        // attempt that produced it authored first — without a second author session. Authorization
-        // is re-read from the record itself, the path must still be on disk, and the phase being
-        // relaunched must still be `proof`; anything else launches exactly as retry does today.
-        if (item.action === 'proof' && prior.result) {
+        if (opts.candidateProbe !== undefined) {
+          // Explicit candidate reuse is a fresh gate-only proof generation, never permission to
+          // resume authoring or to bypass an earlier admission/recovery refusal. Its distinct
+          // selector does not inherit authority from the old result's inspection-only path.
+          if (item.action !== 'proof') {
+            item.outcome = 'attention'; delete item.action;
+            item.error = item.error || 'candidate reuse requires a runnable proof-only retry';
+          } else {
+            item.candidateProbe = { path: path.resolve(opts.candidateProbe.path), hash: opts.candidateProbe.hash };
+          }
+        } else if (item.action === 'proof' && prior.result) {
+          // Automatic retained-proof selection keeps its existing authorization rule. A generic
+          // inspection path never authorizes reuse, and explicit candidate selection never enters
+          // this branch or changes the prior worker result.
           const retained = authorizedResumableProbe(prior.result.data);
           if (retained && fs.existsSync(retained)) item.retainedProbe = retained;
         }

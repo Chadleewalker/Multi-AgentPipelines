@@ -412,7 +412,28 @@ codes as the plain command and validates canonical target repository identity, i
 worktree, suite bytes, author HEAD, baseline manifest and ownership — each refusing on its own, with
 a bounded diagnostic — before any agent launch or gate. `--skip-agent` re-gates without a model
 launch and without rebuilding RED, running the protected-tree invariants before and after exactly
-one two-direction gate, and is refused unless `--resume-probe` names the retained container.
+one two-direction gate, and is refused unless `--resume-probe` names the retained container
+or an explicit candidate is adopted into a new proof as described below.
+
+After an approved correction to an unfrozen suite, an existing managed candidate can be input
+to a fresh proof without another model session. First inspect its current identity:
+
+```bash
+node scripts/prove-tests.js <issue-id> --config <path> --inspect-candidate <probe-dir>
+node scripts/prepare-batch.js retry <batch> <issue-id> \
+  --candidate-probe <probe-dir> --candidate-hash <hash-from-inspection>
+```
+
+This explicit, single-issue retry creates new baseline/probe clones with the current suite,
+copies only the inspected product delta with exact bytes and Git modes, and runs one normal
+red/green gate. It never falls back to a model. The old candidate, marker and results are not
+rewritten; its original baseline may be absent after cancellation. Repository, issue, source
+worktree, base commit, original protected paths and supplied candidate hash must agree. Source
+and copied product identities are checked again after the gate. Links, non-product changes,
+unsupported modes and oversized candidates are refused. The new marker and worker proof record
+name the source identity and old/new suite hashes. Existing credential/prerequisite checks still
+apply, and freeze/publication approval remains separate. A failed gate should be diagnosed before
+choosing an explicit further model attempt.
 
 A shell-free green-probe agent can request an explicit executable-mode change in its final
 response (change-log row `repo-lvq`). It names only existing regular product files in its own
