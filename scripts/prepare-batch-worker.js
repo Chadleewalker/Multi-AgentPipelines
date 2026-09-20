@@ -22,6 +22,17 @@ function limited(value, max = MAX_TEXT) {
   return text.length <= max ? text : `${text.slice(0, max)}\n[truncated ${text.length - max} characters]`;
 }
 
+function revisionAudit(revision) {
+  if (!revision || typeof revision !== 'object' || Array.isArray(revision)
+      || revision.version !== 1 || !/^[0-9a-f]{64}$/.test(revision.suiteHash || '')
+      || !revision.review || typeof revision.review !== 'object' || Array.isArray(revision.review)
+      || !/^[0-9a-f]{64}$/.test(revision.review.hash || '')
+      || !revision.candidateProbe || typeof revision.candidateProbe !== 'object' || Array.isArray(revision.candidateProbe)
+      || !/^[0-9a-f]{64}$/.test(revision.candidateProbe.hash || '')) return null;
+  return { version: 1, sourceSuiteHash: revision.suiteHash, reviewHash: revision.review.hash,
+    candidateHash: revision.candidateProbe.hash };
+}
+
 function validateJob(job) {
   if (!job || typeof job !== 'object' || Array.isArray(job)) return 'job must be a JSON object';
   if (!SAFE_ACTIONS.has(job.action)) return 'action must be author-proof or proof';
@@ -34,7 +45,16 @@ function validateJob(job) {
   if (!built.folder || built.folder.exists !== true || typeof built.folder.dir !== 'string') {
     return 'job has no existing dedicated worktree';
   }
-  if (job.action === 'author-proof' && (built.state !== 'write' || typeof built.text !== 'string')) {
+  if (job.revision !== undefined) {
+    if (job.action !== 'author-proof' || built.state !== 'freeze') return 'suite revision requires an unfrozen author-proof job';
+    if (job.retainedProbe !== undefined || job.candidateProbe !== undefined) return 'suite revision carries its own candidate and cannot resume a retained proof';
+    const revision = job.revision;
+    if (!revisionAudit(revision) || typeof revision.review.text !== 'string' || !revision.review.text.trim()
+        || typeof revision.candidateProbe.path !== 'string' || !revision.candidateProbe.path.trim()
+        || revision.candidateProbe.path.includes('\0')) return 'invalid suite revision snapshot';
+  }
+  if (job.action === 'author-proof' && (typeof built.text !== 'string'
+      || (job.revision === undefined && built.state !== 'write'))) {
     return 'author-proof needs a write-state brief';
   }
   if (job.action === 'proof' && !['freeze', 're-gate', 'write'].includes(built.state)) {
@@ -64,9 +84,11 @@ function currentHead(built, run = runSync) {
 }
 
 function authorStructured(built, configPath, seams, log) {
-  if (typeof author.authorIssue === 'function') {
-    return author.authorIssue(built, configPath, { out: (s) => log.push(limited(s)), err: (s) => log.push(limited(s)) }, seams);
+  const authorIssue = seams.authorIssue || author.authorIssue;
+  if (typeof authorIssue === 'function') {
+    return authorIssue(built, configPath, { out: (s) => log.push(limited(s)), err: (s) => log.push(limited(s)) }, seams);
   }
+  if (seams.revision) return { ok: false, outcome: 'setup-failed', kind: 'revision', error: 'suite revision requires the structured author entry point' };
   // Compatibility with the immediately preceding release. This is the same bd-free core that
   // authorIssue extracts: audit, restricted author, audit, then the independent green proof.
   const before = (seams.auditAuthorTree || author.auditAuthorTree)(built, seams.runSync || runSync);
@@ -151,7 +173,8 @@ function terminalException(thrown, log = []) {
 
 function execute(job, seams = {}) {
   const invalid = validateJob(job);
-  if (invalid) return { ok: false, outcome: 'invalid', error: invalid };
+  const audit = revisionAudit(job && job.revision);
+  if (invalid) return { ok: false, outcome: 'invalid', error: invalid, ...(audit ? { revision: audit } : {}) };
   const log = [];
   // Both job shapes reach the proof through this one seam, and only the proof's own result
   // carries the `retained` decision the filter above needs — the structured answers below have
@@ -164,6 +187,10 @@ function execute(job, seams = {}) {
     observedProofs.push(value);
     return value;
   } };
+  if (job.revision) {
+    proofSeams.revision = job.revision;
+    proofSeams.probeSeams = { ...(seams.probeSeams || {}), candidateProbe: job.revision.candidateProbe };
+  }
   let answer;
   try {
     answer = job.action === 'author-proof'
@@ -176,11 +203,12 @@ function execute(job, seams = {}) {
     // additively as a role-only diagnostic. The raw in-process cause is deliberately NOT
     // serialized into any new public field — in-process cause preservation and durable cleanup
     // evidence are separate requirements, so the envelope carries the cleanup role only.
-    return terminalException(thrown, log);
+    return { ...terminalException(thrown, log), ...(audit ? { revision: audit } : {}) };
   }
   answer = answer && typeof answer === 'object' ? { ...answer } : { ok: false, outcome: 'unproven', error: 'worker returned no result' };
   if (answer.ok) answer.outcome = 'proven-at-base';
   else if (!answer.outcome) answer.outcome = 'unproven';
+  const completedRevision = answer.revision;
   for (const key of ['evidence', 'agentOutput', 'error', 'stderr', 'log']) {
     if (answer[key] !== undefined && answer[key] !== null) answer[key] = limited(answer[key]);
   }
@@ -196,7 +224,7 @@ function execute(job, seams = {}) {
         issue: checked.marker.issue, head: checked.marker.head,
         manifestHash: checked.marker.manifestHash, evidenceHash: checked.marker.evidenceHash,
         attempts: checked.marker.attempts,
-        ...(job.candidateProbe && checked.marker.candidateReuse
+        ...((job.candidateProbe || job.revision) && checked.marker.candidateReuse
           ? { candidateReuse: checked.marker.candidateReuse } : {}),
       };
     }
@@ -206,6 +234,16 @@ function execute(job, seams = {}) {
     if (resumable) answer.resumableProbe = resumable;
   }
   if (log.length) answer.log = limited(log.filter(Boolean).join('\n'));
+  if (audit) {
+    answer.revision = { ...audit };
+    if (completedRevision && Number.isFinite(completedRevision.authorElapsedMs) && completedRevision.authorElapsedMs >= 0) {
+      answer.revision.authorElapsedMs = completedRevision.authorElapsedMs;
+    }
+    if (completedRevision && /^[0-9a-f]{64}$/.test(completedRevision.resultSuiteHash || '')) {
+      answer.revision.resultSuiteHash = completedRevision.resultSuiteHash;
+    }
+    if (answer.proof) answer.proof.revision = { ...answer.revision };
+  }
   return answer;
 }
 

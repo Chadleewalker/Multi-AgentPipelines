@@ -435,6 +435,30 @@ name the source identity and old/new suite hashes. Existing credential/prerequis
 apply, and freeze/publication approval remains separate. A failed gate should be diagnosed before
 choosing an explicit further model attempt.
 
+A completed, unfrozen author draft can also be corrected in place (change-log row `repo-8uh`).
+Inspect its raw input fingerprint and provide bounded review instructions:
+
+```bash
+node scripts/author-revision.js inspect <author-worktree> <issue-id>
+node scripts/prepare-batch.js retry <batch> <issue-id> \
+  --revise-suite <hash-from-inspection> --review <review.txt> \
+  --candidate-probe <probe-dir> --candidate-hash <candidate-hash-from-inspection>
+```
+
+This creates a fresh `author-proof` generation in the same registered worktree. The restricted
+author receives the existing suite and targeted corrections, then one candidate-reuse gate runs
+without a proof-model fallback. The issue, criteria, configuration, integration base and source
+suite must still match; committed/frozen suites, incomplete authors and stale inputs are refused.
+Prior records and the source candidate are preserved. A failed or interrupted correction cannot
+inherit an earlier proof, and generic resume cannot silently turn it into a full author rewrite.
+The fingerprint binds raw bytes and Git modes for this operation; it does not replace the
+canonical freeze hash. Review input is limited to 16 KiB, suite input to 128 files/2 MiB, with
+links and unsupported files refused. New records carry source/review/candidate hashes and a
+separate `authorElapsedMs`, measuring the author invocation including its own checks.
+
+Managed author briefs name only the permitted verifier. The operator brief still documents the
+host freeze gate; the model is not asked to invoke it. Human freeze and merge boundaries remain.
+
 A shell-free green-probe agent can request an explicit executable-mode change in its final
 response (change-log row `repo-lvq`). It names only existing regular product files in its own
 disposable probe and chooses Git mode `100644` or `100755`. The host applies validated requests
@@ -598,6 +622,23 @@ Inside a task container:
   defects with `node /pipeline/status.js concern "..."`; neither changes the outcome.
 - Commit meaningful implementation boundaries locally. The host performs disclosure
   scanning and publication after the container exits.
+
+## Optional implementation reference
+
+The bounded trial in `docs/implementation-reference-trial.md` captures a successful managed
+proof as untrusted product-code reference before human-approved freeze consumes its clone.
+Use `scripts/capture-implementation-reference.js` with an explicit target, issue, probe,
+inspected candidate hash and external output path. It prints the captured artifact hash.
+After ordinary freeze publication, `runner/run.js --implementation-reference <file>
+--implementation-reference-hash <hash>` can supply that reference to the normal implementation
+agent. Both flags are required; there is no environment default or run-config field.
+
+The trial requires one fixed worker, exactly the selected issue in the ready queue, matching
+published suite and unchanged product base. It refuses other integration changes. It accepts
+only a small bounded diff of modified existing regular UTF-8 product files, with no additions,
+deletions, renames, binaries or mode changes. The capture requires a recorded successful product
+binding; unbound historical proofs must be re-proven. No code is applied automatically and no
+model, verification, publication or approval gate is skipped.
 
 ## Changing policy
 
