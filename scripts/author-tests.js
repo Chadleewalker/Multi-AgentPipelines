@@ -13,6 +13,7 @@ const { loadConfig } = require('../runner/config');
 const AGENT = require('../runner/agent-provider');
 const CONTAINMENT = require('../runner/author-containment');
 const AUTHOR_EVIDENCE = require('../runner/author-evidence');
+const REVISION = require('./author-revision');
 const { runSync, failureText } = require('../runner/process');
 const { acquire, release } = require('../runner/lock');
 const { buildBrief, verifyCommandError } = require('./spec-brief');
@@ -122,7 +123,7 @@ function launchAuthor(built, model, run = runSync) {
       '--no-session-persistence',
     ],
     runOptions: {
-      cfg: built.cfg, cwd: built.folder.dir, input: `${built.text}\n`, timeoutMs,
+      cfg: built.cfg, cwd: built.folder.dir, input: `${built.authorText || built.text}\n`, timeoutMs,
       label: `${provider} test-author session`, maxBuffer: MAX_BUFFER,
       env,
     },
@@ -242,9 +243,27 @@ function auditAuthorTree(built, run = runSync) {
 // `git worktree add`. That makes it safe for a batch coordinator to serialize all Beads reads
 // in its parent process and run these workers concurrently without contending on embedded Dolt.
 function authorIssue(built, configPath, io = {}, seams = {}) {
+  let authorElapsedMs = null;
+  const result = authorIssueCore(built, configPath, io, { ...seams,
+    recordAuthorTime: (elapsed) => { authorElapsedMs = elapsed; },
+  });
+  const answer = { ...result, ...(authorElapsedMs !== null ? { authorElapsedMs } : {}) };
+  if (seams.revision) {
+    const revision = seams.revision;
+    let resultSuiteHash = null;
+    try { resultSuiteHash = REVISION.inspectSuite(built.folder.dir, built.suiteId || built.id).hash; } catch { /* failed correction stays failed */ }
+    answer.revision = { version: 1, sourceSuiteHash: revision.suiteHash,
+      reviewHash: revision.review && revision.review.hash,
+      candidateHash: revision.candidateProbe && revision.candidateProbe.hash,
+      authorElapsedMs, resultSuiteHash };
+  }
+  return answer;
+}
+
+function authorIssueCore(built, configPath, io = {}, seams = {}) {
   const out = io.out || console.log; const err = io.err || console.error;
   const setup = (kind, error) => ({ ok: false, outcome: 'setup-failed', kind, error, exitCode: EXIT_SETUP });
-  if (!built || !built.ok || built.state !== 'write') {
+  if (!built || !built.ok || (seams.revision ? built.state !== 'freeze' : built.state !== 'write')) {
     const result = setup('state', `structured author requires write state (got ${(built && built.state) || 'invalid'})`);
     err(`author-tests: ${result.error}`);
     return result;
@@ -258,6 +277,13 @@ function authorIssue(built, configPath, io = {}, seams = {}) {
     const result = setup('config', 'structured author requires the run config path used to build its snapshot');
     err(`author-tests: ${result.error}`);
     return result;
+  }
+  if (seams.revision) {
+    const checked = REVISION.validateRevision(built, seams.revision);
+    if (!checked.ok) { err(checked.error); return setup('revision', checked.error); }
+    // Keep the actual brief classification. Revision is explicit authority to correct this
+    // existing draft, not a fiction that the suite was absent or its author interrupted.
+    built = { ...built, text: REVISION.correctionBrief(built, seams.revision), authorText: null };
   }
   const unsafeVerifier = verifyCommandError(built.policy && built.policy.verifyCommand);
   if (unsafeVerifier) {
@@ -290,12 +316,17 @@ function authorIssue(built, configPath, io = {}, seams = {}) {
   // cause survives; the simultaneous cleanup failure is reported once here, bounded and
   // role-only, so it is not lost at the public consumer boundary.
   let r;
+  const authorStarted = Date.now();
   try {
     r = (seams.launchAuthor || launchAuthor)(built, model, seams.runSync || runSync);
   } catch (error) {
     const thrownCleanup = error && typeof error === 'object' ? error.containmentCleanup : null;
     if (thrownCleanup && thrownCleanup.ok === false) err(`Outcome: ${cleanupDiagnostic(thrownCleanup)}`);
     throw error;
+  } finally {
+    const elapsed = Date.now() - authorStarted;
+    seams.recordAuthorTime(elapsed);
+    out(`Author session finished in ${elapsed}ms.`);
   }
   // The launch's own containment-cleanup outcome, carried additively onto whatever primary
   // outcome the provider result produces below.
@@ -349,8 +380,22 @@ function authorIssue(built, configPath, io = {}, seams = {}) {
       agentStatus: r.status, exitCode: EXIT_AGENT, containmentCleanup: cleanup };
   }
 
-  out('Test-author agent exited successfully. Starting the isolated two-direction green proof.');
+  if (seams.revision) {
+    const checked = REVISION.validateRevision(built, seams.revision, undefined, { checkSuite: false });
+    if (!checked.ok) return { ok: false, outcome: 'boundary-violation', kind: 'revision-after',
+      error: checked.error, exitCode: EXIT_AGENT };
+    try { REVISION.inspectSuite(built.folder.dir, built.suiteId || built.id); }
+    catch (error) { return { ok: false, outcome: 'boundary-violation', kind: 'revision-after',
+      error: error.message, exitCode: EXIT_AGENT }; }
+  }
+
+  out(seams.revision ? 'Correction completed. Re-proving with the selected candidate; no proof model will run.'
+    : 'Test-author agent exited successfully. Starting the isolated two-direction green proof.');
   const probeSeams = { ...(seams.probeSeams || {}) };
+  if (seams.revision) {
+    delete probeSeams.retainedProbe;
+    probeSeams.candidateProbe = seams.revision.candidateProbe;
+  }
   if (typeof probeSeams.onStage !== 'function') probeSeams.onStage = (event) => {
     const line = proofStageLine(event); if (line) out(line);
   };

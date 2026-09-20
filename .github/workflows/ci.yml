@@ -31,3 +31,6 @@ jobs:
           node tests/integration/preparation-lifetime-cap-review.js
           node tests/integration/probe-mode-intent-review.js
           node tests/integration/proof-candidate-reuse-review.js
+          node tests/integration/author-revision-review.js
+          node tests/integration/author-revision-routing-review.js
+          node tests/integration/implementation-reference.js

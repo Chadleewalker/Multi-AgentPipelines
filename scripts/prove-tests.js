@@ -307,11 +307,13 @@ function finalizeManagedPromotion(tx) {
   } catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
 }
 
-function markProven(prepared, attempt, evidence) {
+function markProven(prepared, attempt, evidence, options = {}) {
   const markerPath = path.join(prepared.container, MARKER);
   const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
   Object.assign(marker, { status: 'proven', attempts: attempt, evidenceHash: sha(Buffer.from(evidence || '')),
     provenAt: new Date().toISOString() });
+  delete marker.productHash;
+  if (/^[0-9a-f]{64}$/.test(options.productHash || '')) marker.productHash = options.productHash;
   fs.writeFileSync(markerPath, `${JSON.stringify(marker, null, 2)}\n`);
 }
 
@@ -651,8 +653,15 @@ function proveTests(built, model, seams = {}) {
             retained: false, error: applied.join('; ') };
         }
       }
+      // Optional reference provenance only; failure to inspect must not change proof outcome.
+      const productHash = () => {
+        try { return CANDIDATE.productSnapshot(prepared.probe, built.policy).hash; }
+        catch { return null; }
+      };
+      const productBefore = productHash();
       const gated = runStage(seams, 'gate', attempt,
         () => (seams.runGate || runGate)(built, prepared, run));
+      const productAfter = productHash();
       evidence = `${gated.stdout || ''}${gated.stderr || ''}`.trim();
       MODE_INTENT.verifyApplied(built, prepared, modeAudit, readManagedProbe);
       const after = runStage(seams, 'protected-check-after', attempt,
@@ -663,7 +672,8 @@ function proveTests(built, model, seams = {}) {
       }
       if (gated.status === 0) {
         runStage(seams, 'marker-write', attempt,
-          () => (seams.markProven || markProven)(prepared, attempt, evidence));
+          () => (seams.markProven || markProven)(prepared, attempt, evidence,
+            { productHash: productBefore && productBefore === productAfter ? productAfter : null }));
         keepBaseline = true;
         return { ok: true, attempt, probe: prepared.probe, container: prepared.container, evidence,
           retained: true, agentOutput: String(launched.stdout || '').trim(),

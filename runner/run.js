@@ -128,7 +128,13 @@ function parseArgs(argv) {
   for (let i = 2; i < argv.length; i++) {
     if (argv[i] === '--config') out.config = argv[++i];
     else if (argv[i] === '--dry-run') out.dryRun = true;
+    else if (argv[i] === '--implementation-reference' || argv[i] === '--implementation-reference-hash') {
+      const key = argv[i] === '--implementation-reference' ? 'implementationReference' : 'implementationReferenceHash';
+      if (out[key] || !argv[i + 1] || argv[i + 1].startsWith('--')) throw new Error(`${argv[i]} requires one value`);
+      out[key] = argv[++i];
+    }
   }
+  if (!!out.implementationReference !== !!out.implementationReferenceHash) throw new Error('implementation reference requires both artifact path and explicit hash');
   return out;
 }
 
@@ -424,7 +430,7 @@ function laneBoundaryFailure(cfg, issue, log, tr, ws, pauses, activeMs, ownershi
   };
 }
 
-async function runOneTask(cfg, issue, log, token, gate, ownership) {
+async function runOneTask(cfg, issue, log, token, gate, ownership, implementationReference = null) {
   const tr = log.trace(issue.id);
   const taskDir = log.taskDir(issue.id);
 
@@ -491,7 +497,7 @@ async function runOneTask(cfg, issue, log, token, gate, ownership) {
   // Clone remains synchronous and therefore serialises this orchestration thread briefly,
   // but every Git call is bounded. Active container deadlines do not share this event loop:
   // runner/deadline-watchdog.js owns each clock and bounded Docker kill independently.
-  const ws = prepare(cfg, issue.id, exported.markdown, log, tr);
+  const ws = prepare(cfg, issue.id, exported.markdown, log, tr, implementationReference);
   if (!ws.ok) {
     log.error(tr, `workspace preparation failed: ${ws.reason}`);
     const settled = beadsWrite(cfg, () => finish(cfg, issue.id, { status: 'failed', beads: 'blocked' },
@@ -757,6 +763,11 @@ async function main() {
     process.exit(2);
   }
 
+  // Explicit command-line input only: validate before credentials, network, or model startup.
+  const implementationReference = args.implementationReference
+    ? require('./implementation-reference').load(args.implementationReference, args.implementationReferenceHash, cfg)
+    : null;
+
   const log = startRun(REPO_ROOT, process.env.RUN_ID);
   const startedAt = new Date().toISOString();
   const t = `${log.runId}/preflight`;
@@ -850,6 +861,7 @@ async function main() {
     process.exitCode = 1;
     return false;
   }
+  if (implementationReference) require('./implementation-reference').selectQueue(implementationReference, q);
   // The summary line and its structured twin, from ONE call (change-log row `repo-3xw`).
   // `queueSummary` is no longer called here: two call sites would be two chances for the
   // prose and the event to describe different queues.
@@ -898,7 +910,7 @@ async function main() {
 
   const drained = await drainQueue(
     source,
-    (issue) => runOneTask(cfg, issue, log, token, gate, resolvedPre.ownership),
+    (issue) => runOneTask(cfg, issue, log, token, gate, resolvedPre.ownership, implementationReference),
     cfg.concurrency
   );
   const results = drained.filter(Boolean);
@@ -1036,5 +1048,5 @@ module.exports = {
   // Exported for repo-3ec correction-2 regression coverage (tests/integration/mode-review.js):
   // the fail-closed verified-evidence binding check is a production decision worth exercising
   // directly, independent of the full runOneTask publication path the frozen suite already drives.
-  staleEvidence, legacyArtifactStub,
+  staleEvidence, legacyArtifactStub, parseArgs,
 };

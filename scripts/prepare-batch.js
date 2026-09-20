@@ -24,6 +24,7 @@ const prerequisites = require('../runner/prerequisites');
 const writeProtection = require('./write-protection-policy');
 const designRef = require('../runner/design-ref');
 const authorEvidence = require('../runner/author-evidence');
+const authorRevision = require('./author-revision');
 
 const ROOT = path.resolve(__dirname, '..');
 const WORKER = path.join(__dirname, 'prepare-batch-worker.js');
@@ -47,6 +48,7 @@ const USAGE = [
   '  node scripts/prepare-batch.js status <batch> [--json]',
   '  node scripts/prepare-batch.js retry <batch> <id> [<id> ...] [--resume-partial]',
   '  node scripts/prepare-batch.js retry <batch> <id> --candidate-probe <path> --candidate-hash <sha256>',
+  '  node scripts/prepare-batch.js retry <batch> <id> --revise-suite <sha256> --review <file> --candidate-probe <path> --candidate-hash <sha256>',
   '  node scripts/prepare-batch.js acknowledge-interrupted <batch> <id> [<id> ...]',
 ].join('\n');
 
@@ -62,6 +64,20 @@ function candidateSelectorError(opts) {
     return 'candidate reuse requires --candidate-probe and a 64-character lowercase --candidate-hash';
   }
   return null;
+}
+
+function revisionSelectorError(opts) {
+  if (opts.reviseSuite === undefined && opts.review === undefined) return null;
+  if (opts.mode !== 'retry' || !Array.isArray(opts.issues) || opts.issues.length !== 1) {
+    return 'suite revision requires retry with exactly one issue id';
+  }
+  if (opts.resumePartial || opts.retainedProbe !== undefined) return 'suite revision cannot resume a partial or retained proof';
+  if (typeof opts.reviseSuite !== 'string' || !/^[0-9a-f]{64}$/.test(opts.reviseSuite)
+      || typeof opts.review !== 'string' || !opts.review.trim() || opts.review.includes('\0')) {
+    return 'suite revision requires --revise-suite <64 lowercase hex> and --review <file>';
+  }
+  if (opts.candidateProbe === undefined) return 'suite revision requires an explicit candidate probe and hash';
+  return candidateSelectorError(opts);
 }
 
 function parseArgs(argv) {
@@ -85,6 +101,12 @@ function parseArgs(argv) {
           || (arg === '--candidate-hash' && candidateHash !== undefined)) return { error: `${arg} may be supplied only once` };
       if (arg === '--candidate-probe') candidatePath = value;
       else candidateHash = value;
+    } else if (arg === '--revise-suite' || arg === '--review') {
+      const value = argv[++i];
+      if (value === undefined || value.startsWith('--')) return { error: `${arg} needs a value` };
+      const key = arg === '--revise-suite' ? 'reviseSuite' : 'review';
+      if (answer[key] !== undefined) return { error: `${arg} may be supplied only once` };
+      answer[key] = value;
     } else if (arg === '--json') answer.json = true;
     else if (arg === '--resume-partial') {
       // Bounded on purpose: the one explicit opt-in that lets a recorded, acknowledged
@@ -102,6 +124,9 @@ function parseArgs(argv) {
     if (invalid) return { error: invalid };
     answer.candidateProbe.path = path.resolve(candidatePath);
   }
+  const invalidRevision = revisionSelectorError(answer);
+  if (invalidRevision) return { error: invalidRevision };
+  if (answer.review !== undefined) answer.review = path.resolve(answer.review);
   try { prepState.validateBatchId(answer.batch); }
   catch { return { error: 'a safe batch id is required' }; }
   if (!Number.isInteger(answer.concurrency) || answer.concurrency < 1 || answer.concurrency > MAX_CONCURRENCY) {
@@ -506,6 +531,8 @@ function runWorker(root, batch, item, configPath, state = prepState, seams = {})
       ...(workerIdentity ? { process: workerIdentity } : {}), data: {
         action: item.action,
         ...(item.candidateProbe ? { candidateProbe: item.candidateProbe } : {}),
+        ...(item.revision ? { revision: { version: 1, sourceSuiteHash: item.revision.suiteHash,
+          reviewHash: item.revision.review.hash, candidateHash: item.revision.candidateProbe.hash } } : {}),
         // Bind this worker generation to the exact host-admitted preparation child. A later
         // grant for the same batch/issue cannot make an older unmatched worker a live sibling.
         ...(seams.ownership && seams.ownership.delegation ? { supervisor: {
@@ -592,7 +619,8 @@ function runWorker(root, batch, item, configPath, state = prepState, seams = {})
     });
     child.stdin.end(JSON.stringify({ action: item.action, built: item.built, configPath,
       ...(item.retainedProbe ? { retainedProbe: item.retainedProbe } : {}),
-      ...(item.candidateProbe ? { candidateProbe: item.candidateProbe } : {}) }));
+      ...(item.candidateProbe ? { candidateProbe: item.candidateProbe } : {}),
+      ...(item.revision ? { revision: item.revision } : {}) }));
   });
 }
 
@@ -918,6 +946,8 @@ async function execute(opts, io = {}, seams = {}) {
   const out = io.out || console.log; const err = io.err || console.error;
   const invalidCandidate = candidateSelectorError(opts);
   if (invalidCandidate) { err(`prepare-batch: ${invalidCandidate}`); return EXIT_USAGE; }
+  const invalidRevision = revisionSelectorError(opts);
+  if (invalidRevision) { err(`prepare-batch: ${invalidRevision}`); return EXIT_USAGE; }
   const state = seams.state || prepState;
   const root = (seams.preparationRoot || state.preparationRoot)(process.env);
   if (opts.mode === 'status') return statusReport(root, opts.batch, opts.json, state, io);
@@ -1120,9 +1150,42 @@ async function execute(opts, io = {}, seams = {}) {
     }
     // A test-supplied integration inspector is already the authority for its synthetic tree;
     // production still re-reads each real worktree HEAD after creation.
+    if (opts.mode === 'resume' || opts.mode === 'retry') {
+      for (const item of snapshots) {
+        const prior = latestAttempt(state.readWorkerRecords(root, opts.batch, item.id));
+        if (!prior.started || !prior.started.data || !prior.started.data.revision
+            || attemptPhase(prior.started) !== 'author-proof') continue;
+        const evidence = suiteEvidence(item, prior, seams);
+        if (![authorEvidence.STATES.AUTHORED_UNPROVEN, authorEvidence.STATES.PROVEN,
+          authorEvidence.STATES.FROZEN].includes(evidence.state)) {
+          err(`prepare-batch: incomplete suite correction for ${item.id} requires human review and explicit recovery;`
+            + ' inspect the recorded revision hashes and existing suite. Automatic resume and --resume-partial cannot discard correction intent. No worktree or worker was created.');
+          return EXIT_ATTENTION;
+        }
+      }
+    }
     if (opts.candidateProbe !== undefined && (snapshots.length !== 1 || snapshots[0].action !== 'proof')) {
       err('prepare-batch: candidate reuse requires one runnable proof-only retry; no worktree or worker was created.');
       return EXIT_ATTENTION;
+    }
+    if (opts.reviseSuite !== undefined) {
+      const item = snapshots[0];
+      const prior = latestAttempt(state.readWorkerRecords(root, opts.batch, item.id));
+      const evidence = suiteEvidence(item, prior, seams);
+      if (item.built.state !== 'freeze' || !item.built.folder.exists || !prior.started || !prior.result
+          || ![authorEvidence.STATES.AUTHORED_UNPROVEN, authorEvidence.STATES.PROVEN].includes(evidence.state)) {
+        err('prepare-batch: suite revision requires a completed, unfrozen author result in its existing worktree; no worktree or worker was created.');
+        return EXIT_ATTENTION;
+      }
+      try {
+        const review = (seams.readReview || authorRevision.readReview)(opts.review);
+        item.revision = (seams.prepareRevision || authorRevision.prepareRevision)(item.built,
+          { suiteHash: opts.reviseSuite, review }, opts.candidateProbe, seams.runSync || runSync);
+      } catch (error) {
+        err(`prepare-batch: suite revision refused: ${error.message}`);
+        return EXIT_ATTENTION;
+      }
+      item.action = 'author-proof'; item.outcome = 'author-proof';
     }
     snapshots = prepareWorktrees(snapshots, configPath, seams,
       Object.prototype.hasOwnProperty.call(seams, 'inspectIntegration') ? null : baseHead, cfg);
@@ -1188,7 +1251,14 @@ async function execute(opts, io = {}, seams = {}) {
             }
           }
         }
-        if (opts.candidateProbe !== undefined) {
+        if (item.revision) {
+          // A correction was admitted against the completed source suite before worktree
+          // handling. Keep every later HEAD/recovery refusal; never convert it back into work.
+          if (item.action !== 'author-proof' || item.built.state !== 'freeze') {
+            item.outcome = 'attention'; delete item.action;
+            item.error = item.error || 'suite revision no longer has an admitted author-proof phase';
+          }
+        } else if (opts.candidateProbe !== undefined) {
           // Explicit candidate reuse is a fresh gate-only proof generation, never permission to
           // resume authoring or to bypass an earlier admission/recovery refusal. Its distinct
           // selector does not inherit authority from the old result's inspection-only path.

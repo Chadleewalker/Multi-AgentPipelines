@@ -259,6 +259,22 @@ promote the exact suite and receipt. Freeze refuses unrelated staged paths, buil
 a private immutable index, and pushes that exact object under a remote lease before the runner's
 own readback, only then removing the owned clones.
 
+**A successful probe may supply optional implementation reference data** (change-log row
+`repo-dgw`). A bounded product snapshot before and after the successful native gate may
+record an optional product hash; an unavailable or changed snapshot leaves the proof outcome
+alone and makes only this reference unavailable. Before freeze consumes the proof, an explicit
+capture pins its target, issue, base, successful product binding and suite, exporting a small
+diff of modified existing regular text product files outside the target. This is untrusted code
+for the normal implementation agent to inspect, improve, use or reject, never automatically
+applied code or a substitute for verification. An explicit runner command-line selector and
+artifact hash admit only a fixed single-worker run with exactly that ready issue. The freshly
+cloned task workspace must have the same canonical Git product base and published suite;
+integration changes outside that issue's freeze refuse reuse. The reference lives only in
+excluded `.run/implementation-reference.json`; canonical issue text, human freeze/review,
+normal model invocation, frozen-path checks, regressions, scanning and publication stay intact.
+No selector preserves the ordinary prompt and execution path. There is no seed registry,
+automatic rebase, configurable new policy vocabulary or relaxed admission.
+
 The probe's file tools cannot express Git executable intent, so an optional final-response
 request supplies that missing operation (change-log row `repo-lvq`). The agent may name a
 bounded list of existing regular product files and explicitly select Git mode `100644` or
@@ -271,6 +287,17 @@ unchanged acceptance suite still must fail in the baseline and pass in the nativ
 The request is not a command channel or a verdict. No extension, shebang, test text or apparent
 workspace mode is used to infer intent. Shell-free tools and credential boundaries remain
 unchanged. Ordinary responses make no mode request and keep their previous behavior.
+
+**Completed draft corrections preserve the work already done** (change-log row `repo-8uh`).
+An explicit, single-issue preparation retry may revise an existing unfrozen suite using its
+raw input fingerprint and bounded review instructions. It retains the actual freeze-state brief
+classification and creates a new author-proof generation, rather than pretending an author was
+interrupted or replacing the issue. The registered worktree, original issue/criteria, integration
+base, configuration and selected managed candidate are checked before the restricted author runs.
+Afterward the normal author boundary audit and a fresh candidate-reuse red/green gate decide the
+result. The gate launches no implementation model and never falls back to one. Prior evidence is
+unchanged; incomplete corrections cannot gain a freeze invitation or silently resume with a generic
+rewrite brief. Managed prompts use only the allowed verifier and record author time separately.
 
 **The author's setup context is bounded, and its exit is not its outcome** (change-log row
 `repo-7a0`). The coordinator reads Beads once and embeds the issue in an immutable brief, but a

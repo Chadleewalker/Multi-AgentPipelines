@@ -744,7 +744,15 @@ function writeBrief(ctx) {
   lines.push('its first ten lines, and must be GREEN at the fork point. Never label something a');
   lines.push('guard that is red today; that refuses the freeze outright.');
   lines.push('');
-  lines.push(...gateLines(repoRoot, cfg, suiteId, folder));
+  if (ctx.managedAuthor) {
+    lines.push('RUN THE PERMITTED VERIFIER above from this worktree and inspect its per-test failure');
+    lines.push('reasons. Prove fixture helpers with positive/negative controls, reuse existing tested');
+    lines.push('helpers where applicable, and distinguish missing behavior from broken test machinery.');
+    lines.push('Do not run the host freeze gate or seek unrelated shell permissions. The host owns');
+    lines.push('the later independent red/green proof; report your actual verifier result, not an');
+    lines.push('inferred gate verdict.');
+    lines.push('');
+  } else lines.push(...gateLines(repoRoot, cfg, suiteId, folder));
 
   const frozen = policy.frozenPaths.length
     ? policy.frozenPaths.join(', ')
@@ -753,7 +761,7 @@ function writeBrief(ctx) {
   lines.push('one ends every attempt as tampered before any test result exists. Nor any other');
   lines.push('suite under tests/acceptance/, nor the issue text itself.');
   lines.push('');
-  lines.push('STOP AND REPORT: the files you wrote, which criterion each proves, the gate\'s');
+  lines.push(`STOP AND REPORT: the files you wrote, which criterion each proves, the ${ctx.managedAuthor ? 'verifier\'s' : 'gate\'s'}`);
   lines.push('verdict with the per-test reasons behind it, and any spec defect you found. Do not');
   lines.push(`commit to ${branch} and do not freeze. Approval comes before the freeze.`);
   lines.push('');
@@ -887,6 +895,7 @@ function buildBrief(opts) {
     ok: true, state: state.state, cfg, branch, id: opts.id, requestedId: opts.id,
     canonicalId, suiteId: state.suiteId, policy, folder,
     text: lines.join('\n'), issue: found.issue, criteria,
+    ...(state.state === 'write' ? { authorText: writeBrief({ ...ctx, managedAuthor: true }).join('\n') } : {}),
     issueUpdatedAt: found.issue.updated_at || null,
   };
 }

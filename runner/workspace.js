@@ -73,7 +73,7 @@ function chooseBranch(cloneDir, issueId, cfg) {
 }
 
 // Prepare one task's workspace. Returns {ok, dir, branch, forkPoint} or {ok:false,reason}.
-function prepare(cfg, issueId, issueMarkdown, log, traceId) {
+function prepare(cfg, issueId, issueMarkdown, log, traceId, implementationReference = null) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `pipeline-${issueId}-`));
   const fail = (reason) => { discard(dir); return { ok: false, reason }; };
 
@@ -124,6 +124,12 @@ function prepare(cfg, issueId, issueMarkdown, log, traceId) {
       return fail(`cannot resolve workspace fork point: ${failureText(fork, 'git rev-parse failed')}`);
     }
     const regressionPolicy = regressionPolicyAt(dir, forkPoint, cfg);
+    if (implementationReference) {
+      const admission = require('./queue').partitionByFreeze(cfg, [{ id: issueId }]);
+      require('./implementation-reference').stage(implementationReference, cfg, issueId,
+        { dir, forkPoint }, admission);
+      log.info(traceId, `implementation reference staged: artifact=${implementationReference.hash} candidate=${implementationReference.value.candidateHash} suite=${implementationReference.value.suiteHash}`);
+    }
     log.info(traceId, `workspace ready: ${dir} on ${branch} (fork point ${forkPoint.slice(0, 8)})`,
       { event: 'workspace.ready', data: { dir, branch, forkPoint } });
     return {
