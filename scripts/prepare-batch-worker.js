@@ -41,6 +41,16 @@ function validateJob(job) {
     return 'proof job has an unsupported brief state';
   }
   if (job.retainedProbe !== undefined && typeof job.retainedProbe !== 'string') return 'retained probe must be a path string';
+  if (job.candidateProbe !== undefined) {
+    if (job.action !== 'proof') return 'candidate reuse requires a proof-only job';
+    if (job.retainedProbe !== undefined) return 'candidate reuse cannot be combined with a retained probe';
+    const candidate = job.candidateProbe;
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)
+        || typeof candidate.path !== 'string' || !candidate.path.trim() || candidate.path.includes('\0')
+        || typeof candidate.hash !== 'string' || !/^[0-9a-f]{64}$/.test(candidate.hash)) {
+      return 'candidate reuse requires a path and a 64-character lowercase hash';
+    }
+  }
   return null;
 }
 
@@ -79,11 +89,12 @@ function authorStructured(built, configPath, seams, log) {
       error: result.error, evidence: limited(result.evidence) };
 }
 
-function proofStructured(built, seams, retainedProbe = null) {
+function proofStructured(built, seams, retainedProbe = null, candidateProbe = null) {
   const model = String(built.cfg.testProbeModel || built.cfg.testAuthorModel || built.cfg.model || '').trim();
   if (!model) return { ok: false, outcome: 'unproven', kind: 'config', error: 'no probe model is configured' };
   const probeSeams = { ...(seams.probeSeams || {}) };
   if (retainedProbe) probeSeams.retainedProbe = retainedProbe;
+  if (candidateProbe) probeSeams.candidateProbe = candidateProbe;
   if (typeof seams.onStage === 'function' && typeof probeSeams.onStage !== 'function') probeSeams.onStage = seams.onStage;
   const answered = (seams.proveTests || proof.proveTests)(built, model, probeSeams);
   // A proof that answered with nothing object-shaped is a malformed result, not a verdict: read
@@ -157,7 +168,7 @@ function execute(job, seams = {}) {
   try {
     answer = job.action === 'author-proof'
       ? authorStructured(job.built, job.configPath, proofSeams, log)
-      : proofStructured(job.built, proofSeams, job.retainedProbe);
+      : proofStructured(job.built, proofSeams, job.retainedProbe, job.candidateProbe);
   } catch (thrown) {
     // A launch/author exception that escaped authorIssue is serialized into the worker's
     // EXISTING terminal invalid envelope rather than crashing the worker: its primary message is
@@ -185,6 +196,8 @@ function execute(job, seams = {}) {
         issue: checked.marker.issue, head: checked.marker.head,
         manifestHash: checked.marker.manifestHash, evidenceHash: checked.marker.evidenceHash,
         attempts: checked.marker.attempts,
+        ...(job.candidateProbe && checked.marker.candidateReuse
+          ? { candidateReuse: checked.marker.candidateReuse } : {}),
       };
     }
   }

@@ -17,6 +17,7 @@ const path = require('path');
 const { loadConfig } = require('../runner/config');
 const AGENT = require('../runner/agent-provider');
 const MODE_INTENT = require('./probe-mode-intent');
+const CANDIDATE = require('./proof-candidate');
 const { runSync, failureText } = require('../runner/process');
 const { acquire, release, canonicalTarget } = require('../runner/lock');
 const { compareSuites } = require('./freeze-gate');
@@ -593,19 +594,24 @@ function invariantErrors(built, prepared) {
   } catch (e) { return [...errors, e.message]; }
   for (const detail of manifestDifference(prepared.manifest, baseline)) errors.push(`baseline protected path ${detail}`);
   for (const detail of manifestDifference(prepared.manifest, probe)) errors.push(`probe protected path ${detail}`);
-  return errors;
+  return [...errors, ...CANDIDATE.candidateIntegrityErrors(built, prepared, module.exports)];
 }
 
 function proveTests(built, model, seams = {}) {
   const run = seams.runSync || runSync;
+  if (seams.candidateProbe && seams.retainedProbe) {
+    return { ok: false, kind: 'setup', retained: false, error: 'candidate adoption and proof resume are separate operations' };
+  }
   const prepared = runStage(seams, 'prepare', null,
-    () => seams.retainedProbe
+    () => seams.candidateProbe
+      ? CANDIDATE.prepareCandidate(built, model, seams.candidateProbe, module.exports, run, seams.tempRoot || os.tmpdir())
+      : seams.retainedProbe
       ? (seams.resumeProbe || resumeProbe)(built, seams.retainedProbe, run)
       : (seams.prepareProbe || prepareProbe)(built, model, run, seams.tempRoot || os.tmpdir()));
   if (!prepared.ok) return { ok: false, kind: 'setup', retained: false, error: prepared.error };
-  // Skipping the agent is meaningful only when resuming an already-built probe: there is nothing
-  // to re-gate otherwise, and RED is never rebuilt here either way.
-  const skipAgent = seams.skipAgent === true && !!seams.retainedProbe;
+  // A retained proof can be re-gated in place. Explicit candidate adoption instead creates
+  // a fresh pair; both paths verify existing product bytes without launching a model.
+  const skipAgent = !!seams.candidateProbe || seams.skipAgent === true && !!seams.retainedProbe;
   const attempts = skipAgent ? 1 : Math.max(1, Number(built.cfg.testProbeAttempts) || 3);
   let evidence = '';
   let keepBaseline = false;
@@ -660,7 +666,8 @@ function proveTests(built, model, seams = {}) {
           () => (seams.markProven || markProven)(prepared, attempt, evidence));
         keepBaseline = true;
         return { ok: true, attempt, probe: prepared.probe, container: prepared.container, evidence,
-          retained: true, agentOutput: String(launched.stdout || '').trim() };
+          retained: true, agentOutput: String(launched.stdout || '').trim(),
+          ...(prepared.candidateReuse ? { candidateReuse: prepared.candidateReuse } : {}) };
       }
       if (attempt === attempts) {
         const retained = retainUnfinished(prepared);
@@ -701,7 +708,8 @@ function boundedDiagnostic(text) {
 }
 
 const USAGE = 'usage: node scripts/prove-tests.js <issue-id> --config run.config.<project>.json'
-  + ' [--resume-probe <retained probe dir>] [--skip-agent]';
+  + ' [--resume-probe <retained probe dir>] [--skip-agent]'
+  + ' [--inspect-candidate <probe dir> | --candidate-probe <probe dir> --candidate-hash <sha256>]';
 function parseArgs(argv) {
   const opts = { id: null, config: null, resumeProbe: null, skipAgent: false };
   for (let i = 0; i < argv.length; i += 1) {
@@ -714,12 +722,25 @@ function parseArgs(argv) {
       const value = argv[++i];
       if (value === undefined || value.startsWith('--')) return { error: '--resume-probe needs a value' };
       opts.resumeProbe = value;
+    } else if (['--inspect-candidate', '--candidate-probe', '--candidate-hash'].includes(arg)) {
+      const value = argv[++i];
+      if (!value || value.startsWith('--')) return { error: `${arg} needs a value` };
+      const key = { '--inspect-candidate': 'inspectCandidate', '--candidate-probe': 'candidatePath', '--candidate-hash': 'candidateHash' }[arg];
+      if (opts[key]) return { error: `${arg} may only be supplied once` };
+      opts[key] = value;
     } else if (arg === '--skip-agent') opts.skipAgent = true;
     else if (arg === '-h' || arg === '--help') opts.help = true;
     else if (arg.startsWith('--')) return { error: `unknown option "${arg}"` };
     else if (opts.id) return { error: 'only one issue id may be proven at a time' };
     else opts.id = arg;
   }
+  if (opts.candidatePath || opts.candidateHash) {
+    if (!opts.candidatePath || !/^[0-9a-f]{64}$/.test(opts.candidateHash || '') || opts.resumeProbe || opts.inspectCandidate) {
+      return { error: 'candidate adoption needs a path and SHA256, separately from inspection/resume' };
+    }
+    opts.candidateProbe = { path: path.resolve(opts.candidatePath), hash: opts.candidateHash };
+  }
+  if (opts.inspectCandidate && (opts.resumeProbe || opts.skipAgent)) return { error: 'candidate inspection does not resume or run a proof' };
   return opts;
 }
 
@@ -729,9 +750,9 @@ function main(argv, out = console.log, err = console.error, seams = {}) {
   if (opts.error || !opts.id || !opts.config || !validIssueId(opts.id)) {
     err(`prove-tests: ${opts.error || 'a safe issue id and --config are required'}`); err(USAGE); return 2;
   }
-  // Re-gating without an agent only makes sense against an already-built retained probe. Refuse
-  // rather than quietly preparing a fresh pair of clones and gating a probe nobody edited.
-  if (opts.skipAgent && !opts.resumeProbe) {
+  // A model-free gate needs an existing candidate, either retained in place or explicitly
+  // adopted into a fresh pair. Never gate a new probe that nobody implemented.
+  if (opts.skipAgent && !opts.resumeProbe && !opts.candidateProbe) {
     err('prove-tests: --skip-agent only applies to a retained probe named by --resume-probe'); err(USAGE); return 2;
   }
   const configPath = path.resolve(opts.config);
@@ -767,12 +788,21 @@ function main(argv, out = console.log, err = console.error, seams = {}) {
     if (!built.folder || !built.folder.exists) {
       err(`prove-tests: no existing issue worktree contains ${opts.id}; run author-tests first`); return 3;
     }
+    if (opts.inspectCandidate) {
+      try {
+        const candidate = CANDIDATE.inspectCandidate(built, opts.inspectCandidate, module.exports);
+        const { products, marker, ...identity } = candidate;
+        out(JSON.stringify({ ...identity, productFiles: products.files.length }));
+        return 0;
+      } catch (error) { err(`prove-tests: ${boundedDiagnostic(error.message)}`); return 3; }
+    }
     const model = String(built.cfg.testProbeModel || built.cfg.testAuthorModel || built.cfg.model || '').trim();
     if (!model) { err('prove-tests: no probe model is configured'); return 3; }
     const probeSeams = { ...(seams.probeSeams || {}) };
     // Additive, exactly like onStage below: a caller's own launchProbe/runGate stubs still apply,
     // and an invocation naming neither flag is byte-for-byte the command it has always been.
     if (opts.resumeProbe) probeSeams.retainedProbe = path.resolve(opts.resumeProbe);
+    if (opts.candidateProbe) probeSeams.candidateProbe = opts.candidateProbe;
     if (opts.skipAgent) probeSeams.skipAgent = true;
     if (typeof probeSeams.onStage !== 'function') probeSeams.onStage = (event) => {
       const line = proofStageLine(event); if (line) err(`prove-tests: ${line}`);
