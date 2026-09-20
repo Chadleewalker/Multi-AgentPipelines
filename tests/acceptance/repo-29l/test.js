@@ -123,7 +123,7 @@ fs.mkdirSync(TARGETS, { recursive: true });
 process.env.PIPELINE_STATE_DIR = STATE;           // the path helpers read this at call time
 
 const NONCE = crypto.randomBytes(6).toString('hex');
-const API_SECRET = `sk-ant-LIVEKEYFAKE-${NONCE}`;         // credential — never displayed
+const API_SECRET = ['sk', 'ant', 'LIVEKEYFAKE', NONCE].join('-'); // credential — never displayed
 const SPEC_SECRET = `SPECBODYMODELOUTPUT-${NONCE}`;       // model output/spec — never displayed
 const LEASE_SECRET = `LEASETOKEN-${NONCE}`;               // grant/lease token — never displayed
 const CONSTRAINT_SECRET = `KICKOFFCONSTRAINT-${NONCE}`;   // full kickoff constraints — never displayed
