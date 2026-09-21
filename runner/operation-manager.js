@@ -376,6 +376,96 @@ function createHostOperationManager(options = {}) {
     return { ok: true, ...inspect(record) };
   }
 
+  // Compatibility proof for a controller journal that predates durable replacement
+  // publication.  The operation manager owns every byte used here; callers receive only a
+  // yes/no answer plus the already-public operation projection.  Merely plausible status
+  // fields are not enough: both attempts must carry the exact sealed authority from their
+  // canonical attempt files and real launch/exit identity.
+  function proveDirectSuccessor(input = {}) {
+    let project, id, statePath;
+    try {
+      project = assertExternal(input.project);
+      id = safeId(input.id);
+      ({ statePath } = pathsFor(project, id));
+    } catch (e) { return { ok: false, error: e.message }; }
+    const grantError = validateGrant('implementation', project, null, input.grant);
+    if (grantError) return { ok: false, error: `operation manager: ${grantError}` };
+    const predecessorRunId = String(input.predecessorRunId || '').trim();
+    const record = readJson(statePath);
+    const attempts = record && record.previousAttempts;
+    const direct = Array.isArray(attempts) ? attempts.at(-1) : null;
+    const directOperation = direct && direct.operation;
+    const expectedAuthority = input.grant.authority;
+    const expectedNonce = expectedAuthority.nonce;
+    const currentAuthorityPath = record && Number.isInteger(record.attempt)
+      ? path.join(path.dirname(statePath), `${id}.attempt-${record.attempt}.authority.json`) : null;
+    const predecessorAuthorityPath = direct && Number.isInteger(direct.attempt)
+      ? path.join(path.dirname(statePath), `${id}.attempt-${direct.attempt}.authority.json`) : null;
+    const samePath = (left, right) => typeof left === 'string' && path.resolve(left) === path.resolve(right);
+    const processIdentity = (identity, pid, startedAt) => identity
+      && identity.pid === pid && typeof identity.host === 'string' && identity.host
+      && typeof identity.platform === 'string' && identity.platform
+      && Number.isFinite(identity.takenAtMs) && identity.takenAtMs > 0
+      && Number.isFinite(identity.uptimeSeconds) && identity.uptimeSeconds >= 0
+      && Object.prototype.hasOwnProperty.call(identity, 'procStart')
+      && (identity.procStart === null || /^[0-9]+$/.test(String(identity.procStart)))
+      && identity.startedAt === startedAt;
+    const launchedAndExited = value => value && value.childIdentity === 'known'
+      && Number.isInteger(value.pid) && value.pid > 0
+      && processIdentity(value.processIdentity, value.pid, value.startedAt)
+      && typeof value.exitedAt === 'string'
+      && (Number.isInteger(value.exitCode)
+        || (typeof value.exitSignal === 'string' && value.exitSignal));
+    const directExited = direct && direct.exit && typeof direct.exitedAt === 'string'
+      && direct.exit.exitedAt === direct.exitedAt
+      && (Number.isInteger(direct.exit.code)
+        || (typeof direct.exit.signal === 'string' && direct.exit.signal));
+    const runIds = new Set();
+    const contiguous = record && Array.isArray(attempts)
+      && attempts.length === record.attempt - 1
+      && attempts.every((row, index) => {
+        const operation = row && row.operation;
+        const runId = operation && operation.runId;
+        if (!row || row.attempt !== index + 1 || !operation
+            || operation.kind !== 'implementation' || operation.id !== id
+            || operation.project !== project || typeof runId !== 'string' || !runId
+            || runIds.has(runId)) return false;
+        runIds.add(runId); return true;
+      });
+    const exact = record && record.kind === 'implementation' && record.id === id
+      && record.project === project && typeof record.runId === 'string' && record.runId
+      && record.runId !== predecessorRunId
+      && !runIds.has(record.runId) && contiguous
+      && record.state === 'attention' && Number.isInteger(record.attempt) && record.attempt > 1
+      && launchedAndExited(record) && record.recoveryPending !== true
+      && !(record.settlement && record.settlement.state === 'attempting')
+      && !fs.existsSync(`${statePath}.settlement`)
+      && record.grantNonce === expectedNonce
+      && samePath(record.authorityPath, currentAuthorityPath)
+      && sameBytes(readJson(currentAuthorityPath), expectedAuthority)
+      && Array.isArray(record.attempts) && sameBytes(record.attempts, attempts)
+      && direct && directOperation && direct.attempt === record.attempt - 1
+      && direct.state === 'attention' && direct.childIdentity === 'known'
+      && Number.isInteger(direct.pid) && direct.pid > 0
+      && processIdentity(direct.processIdentity, direct.pid, direct.startedAt)
+      && directExited && directOperation.kind === 'implementation'
+      && directOperation.id === id && directOperation.project === project
+      && directOperation.runId === predecessorRunId
+      && directOperation.startedAt === direct.startedAt
+      && direct.grantNonce === expectedNonce
+      && samePath(direct.authorityPath, predecessorAuthorityPath)
+      && sameBytes(direct.authority, expectedAuthority)
+      && sameBytes(readJson(predecessorAuthorityPath), expectedAuthority);
+    if (!exact) {
+      return { ok: false, error: 'operation manager: no exact direct legacy successor is proven' };
+    }
+    const operation = inspect(record, false);
+    if (operation.state !== 'attention') {
+      return { ok: false, error: 'operation manager: proven legacy successor is no longer in attention' };
+    }
+    return { ok: true, operation };
+  }
+
   function validateGrant(kind, project, batchId, grant) {
     const authority = grant && grant.authority;
     if (!authority || typeof authority !== 'object') return 'a child grant is required';
@@ -815,7 +905,8 @@ function createHostOperationManager(options = {}) {
     return { ok: true, id: found.id, runId: found.runId, stopFile };
   }
 
-  return { startPreparation, startImplementation, status, restart, retry, recoverLaunch, reconcile, stop };
+  return { startPreparation, startImplementation, status, proveDirectSuccessor,
+    restart, retry, recoverLaunch, reconcile, stop };
 }
 
 module.exports = { createHostOperationManager };

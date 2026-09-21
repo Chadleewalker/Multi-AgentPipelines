@@ -98,9 +98,11 @@ function atomicWriteJson(file, value, exclusive = false) {
 function controlRequestPaths(project, request, env = process.env) {
   const stateDir = supervisorStateDirFor(project, env);
   const kind = request.kind === 'settlement-reconcile' ? request.kind : 'implementation-retry';
-  const body = { schema: 1, kind, project: LOCK.canonicalTarget(project),
+  const expectedRunId = String(request.expectedRunId || '').trim();
+  const body = { schema: expectedRunId ? 2 : 1, kind, project: LOCK.canonicalTarget(project),
     proposalId: String(request.proposalId || ''), operationId: String(request.operationId || ''),
-    approved: request.approved === true, reason: String(request.reason || '').trim() };
+    approved: request.approved === true, reason: String(request.reason || '').trim(),
+    ...(expectedRunId ? { expectedRunId } : {}) };
   const id = digest(JSON.stringify(body));
   const dir = path.join(stateDir, 'requests');
   return { id, body: { ...body, id }, requestPath: path.join(dir, `${id}.request.json`),
@@ -186,6 +188,33 @@ function fold(events) {
     if (event.type === 'feed.retry-requested') {
       result.retry = { ...event, phase: 'requested' }; continue;
     }
+    if (event.type === 'feed.legacy-successor-adopted' && result.feed) {
+      const predecessor = event.predecessor;
+      const successor = event.successor;
+      result.feed = { ...successor, generation: result.feed.generation,
+        stopRequested: false, legacySuccessorOf: predecessor };
+      if (result.feeds.length) result.feeds[result.feeds.length - 1] = result.feed;
+      else result.feeds.push(result.feed);
+      const legacyAdoption = { predecessor, successor: {
+        operationId: successor.id, runId: successor.runId, attempt: successor.attempt,
+        grantNonce: successor.grantNonce,
+      } };
+      result.retry = { ...event, phase: 'legacy-successor-adopted', legacyAdoption };
+      for (const p of result.proposals.values()) {
+        if (p.feedId !== successor.id) continue;
+        p.runId = successor.runId; p.task = null;
+        p.implementation = {
+          operationId: successor.id, runId: successor.runId,
+          issueId: p.specification && p.specification.issueId || null,
+          operationState: successor.state, settled: false, outcome: null,
+          reason: event.reason || null,
+          attention: `adopted legacy successor ${successor.id}/${successor.runId}`
+            + ` for journaled predecessor ${predecessor.operationId}/${predecessor.runId}`,
+          predecessor, legacyAdoption,
+        };
+      }
+      continue;
+    }
     if (event.type === 'feed.retry-predecessor-settled' && result.retry) {
       result.retry = { ...result.retry, phase: 'predecessor-settled' }; continue;
     }
@@ -211,7 +240,7 @@ function fold(events) {
           operationState: replacement.state || 'launching', settled: false,
           outcome: null, reason: event.reason || null,
           attention: `replacement dispatch for failed predecessor ${predecessor.operationId}/${predecessor.runId}`,
-          predecessor,
+          predecessor, legacyAdoption: result.retry && result.retry.legacyAdoption || null,
         };
       }
       continue;
@@ -879,6 +908,10 @@ function createProductionSupervisor(options = {}) {
             || (Array.isArray(task.attemptNotes)
               ? task.attemptNotes.filter(note => typeof note === 'string' && note.trim()).join('\n') : null)) || null,
           attention, task: completed && task ? task : null,
+          ...(proposal.implementation && proposal.implementation.predecessor
+            ? { predecessor: proposal.implementation.predecessor } : {}),
+          ...(proposal.implementation && proposal.implementation.legacyAdoption
+            ? { legacyAdoption: proposal.implementation.legacyAdoption } : {}),
         };
         if (JSON.stringify(implementation) !== JSON.stringify(proposal.implementation)) {
           append('implementation.observed', { proposalId: id, implementation,
@@ -1092,6 +1125,9 @@ function createProductionSupervisor(options = {}) {
     const proposalId = String(request.proposalId || '').trim();
     const operationId = String(request.operationId || '').trim();
     const reason = typeof request.reason === 'string' ? request.reason.trim() : '';
+    const requestId = /^[a-f0-9]{64}$/.test(String(request.id || '')) ? String(request.id) : null;
+    const expectedRunId = typeof request.expectedRunId === 'string'
+      ? request.expectedRunId.trim() : '';
     if (request.approved !== true) {
       return { ok: false, error: 'proposal supervisor: retry requires explicit approval' };
     }
@@ -1107,9 +1143,44 @@ function createProductionSupervisor(options = {}) {
     let observed;
     try { observed = await adapters.operations.status({ project, id: operationId }); }
     catch (error) { return { ok: false, error: `proposal supervisor: operation status failed: ${error.message}` }; }
-    const exact = observed && observed.ok && observed.id === operationId
+    let exact = observed && observed.ok && observed.id === operationId
       && observed.project === project && observed.runId === current.feed.runId;
-    if (!exact) return { ok: false, error: 'proposal supervisor: retry operation identity is unavailable or mismatched' };
+    const sameRequest = requestId && current.retry && current.retry.requestId === requestId;
+    if (sameRequest && current.retry.phase === 'replacement-dispatch' && exact) {
+      return { ok: true, existing: true, operation: observed };
+    }
+    if (expectedRunId && current.feed.runId !== expectedRunId && !sameRequest) {
+      return { ok: false, error: 'proposal supervisor: retry approval is pinned to a different implementation run' };
+    }
+    if (!exact) {
+      let proof;
+      try {
+        proof = typeof adapters.operations.proveDirectSuccessor === 'function'
+          ? await adapters.operations.proveDirectSuccessor({ project, id: operationId,
+            predecessorRunId: current.feed.runId, grant: current.feedGrant })
+          : null;
+      } catch (error) {
+        proof = { ok: false, error: error.message };
+      }
+      if (!proof || proof.ok !== true || !proof.operation) {
+        return { ok: false, error: 'proposal supervisor: retry operation identity is unavailable or mismatched; no exact direct legacy successor is proven' };
+      }
+      observed = proof.operation;
+      const grantNonce = current.feedGrant && current.feedGrant.authority
+        && current.feedGrant.authority.nonce;
+      const direct = observed.previousAttempts.at(-1);
+      const predecessor = { operationId, runId: current.feed.runId,
+        attempt: direct.attempt, grantNonce };
+      const successor = { id: observed.id, project: observed.project, kind: observed.kind,
+        runId: observed.runId, state: observed.state, attempt: observed.attempt,
+        grantNonce: observed.grantNonce };
+      append('feed.legacy-successor-adopted', { proposalId, operationId, reason,
+        requestId, expectedRunId: expectedRunId || null, predecessor, successor });
+      current = state(); p = current.proposals.get(proposalId);
+      exact = current.feed && current.feed.id === operationId
+        && current.feed.runId === observed.runId;
+      if (!exact) return { ok: false, error: 'proposal supervisor: durable legacy successor adoption failed' };
+    }
     // An exact replay after the replacement was launched is successful but inert. A later
     // replacement that itself reaches attention is a new explicit recovery decision.
     if (observed.state !== 'attention') {
@@ -1128,9 +1199,12 @@ function createProductionSupervisor(options = {}) {
       attempt: observed.attempt || null, grantNonce: observed.grantNonce || null };
     const resuming = current.retry && current.retry.predecessor
       && current.retry.proposalId === proposalId && current.retry.operationId === operationId
-      && current.retry.predecessor.runId === predecessor.runId;
+      && current.retry.predecessor.runId === predecessor.runId
+      && (!requestId || current.retry.requestId === requestId);
     if (!resuming) {
-      append('feed.retry-requested', { proposalId, operationId, reason, predecessor });
+      append('feed.retry-requested', { proposalId, operationId, reason, predecessor,
+        requestId, expectedRunId: expectedRunId || null,
+        legacyAdoption: current.retry && current.retry.legacyAdoption || null });
       current = state();
     }
     if (current.retry.phase === 'requested') {
@@ -1172,6 +1246,8 @@ function createProductionSupervisor(options = {}) {
     const proposalId = String(request.proposalId || '').trim();
     const operationId = String(request.operationId || '').trim();
     const reason = typeof request.reason === 'string' ? request.reason.trim() : '';
+    const expectedRunId = typeof request.expectedRunId === 'string'
+      ? request.expectedRunId.trim() : '';
     if (request.approved !== true || !reason) {
       return { ok: false, error: 'proposal supervisor: reconciliation requires explicit approval and a non-empty audit reason' };
     }
@@ -1180,6 +1256,9 @@ function createProductionSupervisor(options = {}) {
     if (!p || !current.feed || current.feed.id !== operationId || p.feedId !== operationId
         || p.stage !== 'implementing') {
       return { ok: false, error: 'proposal supervisor: reconciliation does not match the active implementation assignment' };
+    }
+    if (expectedRunId && current.feed.runId !== expectedRunId) {
+      return { ok: false, error: 'proposal supervisor: reconciliation approval is pinned to a different implementation run' };
     }
     let answer;
     try { answer = await adapters.operations.reconcile({ project, id: operationId,
@@ -1253,6 +1332,7 @@ function createProductionSupervisor(options = {}) {
       nextAction = `inspect ${p.implementation.attention}; when approved run node scripts/proposal-supervisor.js ${recovery}`
         + ` --config ${JSON.stringify(options.configPath)} --proposal ${id}`
         + ` --operation ${p.implementation.operationId} --reason "<audit reason>" --approved`;
+      nextAction += ` --expected-run ${p.implementation.runId}`;
     }
     else if (p.stage === 'review' && verdictValue === 'pending') nextAction = 'record review verdict';
     else if (p.stage === 'failed' && p.implementation && p.implementation.outcome) {
@@ -1357,7 +1437,13 @@ function formatHumanStatus(status) {
     row.implementation ? `operationId=${row.implementation.operationId} implementationRunId=${row.implementation.runId}`
       + ` outcome=${row.implementation.outcome || '(not terminal)'} operationState=${row.implementation.operationState}`
       + ` settled=${row.implementation.settled} reason=${JSON.stringify(row.implementation.reason)}`
-      + ` attention=${row.implementation.attention || ''}` : '',
+      + ` attention=${row.implementation.attention || ''}`
+      + (row.implementation.predecessor
+        ? ` predecessorOperationId=${row.implementation.predecessor.operationId}`
+          + ` predecessorRunId=${row.implementation.predecessor.runId}` : '')
+      + (row.implementation.legacyAdoption
+        ? ` journaledLegacyRunId=${row.implementation.legacyAdoption.predecessor.runId}`
+          + ` adoptedLegacyRunId=${row.implementation.legacyAdoption.successor.runId}` : '') : '',
     `verdictReason=${row.verdictReason || ''} reviewAttention=${row.reviewAttention || ''}`,
     row.reviewEvidence ? `canonicalVerdict=${row.reviewEvidence.verdict} canonicalReason=${row.reviewEvidence.reason}` : '',
     `nextAction=${row.nextAction}`,

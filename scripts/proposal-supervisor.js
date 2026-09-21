@@ -50,11 +50,12 @@ function checkSpecificationAuth(cfg, deps = {}) {
 
 function parse(argv) {
   const out = { command: argv[0], configPath: null, proposalId: null, operationId: null,
-    reason: null, approved: false, json: false };
+    expectedRunId: null, reason: null, approved: false, json: false };
   for (let i = 1; i < argv.length; i += 1) {
     if (argv[i] === '--config') out.configPath = argv[++i];
     else if (argv[i] === '--proposal') out.proposalId = argv[++i];
     else if (argv[i] === '--operation') out.operationId = argv[++i];
+    else if (argv[i] === '--expected-run') out.expectedRunId = argv[++i];
     else if (argv[i] === '--reason') out.reason = argv[++i];
     else if (argv[i] === '--approved') out.approved = true;
     else if (argv[i] === '--json') out.json = true;
@@ -62,11 +63,11 @@ function parse(argv) {
   }
   if (!['start', 'run', 'resume', 'tick', 'stop', 'status', 'retry', 'reconcile'].includes(out.command)
       || !out.configPath) {
-    throw new Error('usage: node scripts/proposal-supervisor.js <start|run|resume|tick|stop|status|retry|reconcile> --config <file> [--proposal <kp-id>] [--operation <id>] [--reason <text>] [--approved] [--json]');
+    throw new Error('usage: node scripts/proposal-supervisor.js <start|run|resume|tick|stop|status|retry|reconcile> --config <file> [--proposal <kp-id>] [--operation <id>] [--expected-run <run-id>] [--reason <text>] [--approved] [--json]');
   }
   if (['retry', 'reconcile'].includes(out.command)
-      && (!out.proposalId || !out.operationId || !out.reason || !out.approved)) {
-    throw new Error(`${out.command} requires --proposal <kp-id> --operation <id> --reason <text> --approved`);
+      && (!out.proposalId || !out.operationId || !out.expectedRunId || !out.reason || !out.approved)) {
+    throw new Error(`${out.command} requires --proposal <kp-id> --operation <id> --expected-run <run-id> --reason <text> --approved`);
   }
   return out;
 }
@@ -120,9 +121,16 @@ async function main(argv, io = {}, deps = {}) {
     writeOut(`${JSON.stringify(result)}\n`); return result;
   }
   if (['retry', 'reconcile'].includes(args.command)) {
+    const observed = await makeSupervisor(common).status(args.proposalId);
+    const implementation = observed && observed.implementation;
+    if (!observed || observed.found === false || !implementation
+        || implementation.operationId !== args.operationId
+        || implementation.runId !== args.expectedRunId) {
+      throw new Error('recovery request does not match an observable implementation run');
+    }
     const request = { kind: args.command === 'reconcile' ? 'settlement-reconcile' : 'implementation-retry',
       proposalId: args.proposalId, operationId: args.operationId,
-      approved: true, reason: args.reason };
+      expectedRunId: args.expectedRunId, approved: true, reason: args.reason };
     const queued = (deps.enqueueRetryRequest || enqueueRetryRequest)(cfg.targetRepoPath, request);
     if (!queued || queued.ok === false) throw new Error(queued && queued.error || 'retry request could not be queued');
     const holder = (deps.supervisorPresence || authority.supervisorPresence)(cfg.targetRepoPath);

@@ -310,9 +310,11 @@ The normal operator recovery surface is durable and supervisor-owned:
 
 ```bash
 node scripts/proposal-supervisor.js retry --config <run.config.json> \
-  --proposal <kp-id> --operation <operation-id> --reason "<audit reason>" --approved
+  --proposal <kp-id> --operation <operation-id> --expected-run <run-id> \
+  --reason "<audit reason>" --approved
 node scripts/proposal-supervisor.js reconcile --config <run.config.json> \
-  --proposal <kp-id> --operation <operation-id> --reason "<audit reason>" --approved
+  --proposal <kp-id> --operation <operation-id> --expected-run <run-id> \
+  --reason "<audit reason>" --approved
 ```
 
 Against a live owner, these commands atomically enqueue one host-state request for its next
@@ -320,7 +322,18 @@ ordinary tick; replay names the same request and cannot launch twice. Against a 
 owner, the same command explicitly reclaims its preserved grant lineage and remains alive as
 the replacement supervisor while the request runs and the child settles. Neither path edits a
 journal, selects a clean state directory, invokes the operation manager directly, or creates a
-one-off bootstrap. `status` prints the exact command shape for the current attention state.
+one-off bootstrap. The required `--expected-run` value pins the approval and request identity
+to the exact failed run, so repeating the same command can never authorize a later attempt.
+`status` prints the exact command shape for the current attention state.
+
+A retained pre-upgrade journal can name the run immediately before the operation manager's
+current attention attempt. The same public `retry` command automatically adopts that current
+attempt only when the manager's immutable history proves the journaled run as its direct
+predecessor under the same canonical project, operation id and sealed grant nonce, with known
+child identity and terminal process evidence. The supervisor journals the adoption before any
+settlement or replacement launch and reports both identities. Ambiguous history, a skipped
+attempt, a changed grant, live or recovery-pending work, and uncertain settlement all remain
+refusals; operators do not repair them by editing host state or resubmitting the proposal.
 
 `supervisorGlobalConcurrency` bounds all controller calls together;
 `supervisorStageConcurrency` independently bounds controller calls in `specification`,

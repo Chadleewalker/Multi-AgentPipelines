@@ -1098,7 +1098,18 @@ not through a second lease holder or an editable project file. A live owner cons
 request once in its ordinary tick; when the recorded owner is provably dead, the same command
 reclaims the lease and remains alive as the replacement supervisor. Retry and settlement
 reconciliation therefore use one durable control path in both cases, and request replay can
-only repeat observation or acknowledgement, never child dispatch.
+only repeat observation or acknowledgement, never child dispatch. Every operator request is
+pinned to the exact expected implementation run; a later attempt requires a new, explicit
+approval rather than inheriting the text of an earlier command.
+Pre-upgrade journals may still name an operation's immediately preceding run after the
+operation manager has durably advanced that same operation to an attention successor. An
+approved retry adopts that successor only when its immutable attempt history proves the
+journaled run as the direct predecessor and both records match the exact canonical project,
+operation id and sealed grant nonce. The successor must also have known child identity,
+terminal process evidence, no pending recovery and no settlement in progress. Adoption is
+journaled before predecessor settlement or replacement launch, and status preserves both run
+identities. Missing, non-direct, foreign, nonterminal or nonce-mismatched evidence is refused;
+no journal rewrite, alternate state root or replacement proposal is a recovery mechanism.
 If a pre-upgrade controller already settled the exact sealed predecessor grant but died before
 journaling that fact, a successor may treat matching terminal host evidence as an idempotent
 answer. This read-only check compares the complete authority bytes and requested outcome; it
