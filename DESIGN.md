@@ -1093,6 +1093,12 @@ cannot dispatch another child. An explicit reclaim carries each unsettled grant'
 original-parent lineage through any number of dead supervisors; admission and settlement
 require an exact nonce plus original-parent match in the current live lease. Serialized former
 leases are evidence, never capabilities, and cannot settle work after ownership changes.
+Operator recovery crosses process boundaries through an idempotent request file in host state,
+not through a second lease holder or an editable project file. A live owner consumes each
+request once in its ordinary tick; when the recorded owner is provably dead, the same command
+reclaims the lease and remains alive as the replacement supervisor. Retry and settlement
+reconciliation therefore use one durable control path in both cases, and request replay can
+only repeat observation or acknowledgement, never child dispatch.
 
 **The production proposal supervisor is a durable poller, not an operator-driven
 tick.** `runner/proposal-supervisor.js` acquires the parent lease before its unattended

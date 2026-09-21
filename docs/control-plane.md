@@ -306,6 +306,22 @@ releasing its parent lease. If the process crashes, restart only observes record
 operations—attention and uncertain settlement still require an explicitly approved supervisor
 recovery path; no observation or resume command launches replacement work implicitly.
 
+The normal operator recovery surface is durable and supervisor-owned:
+
+```bash
+node scripts/proposal-supervisor.js retry --config <run.config.json> \
+  --proposal <kp-id> --operation <operation-id> --reason "<audit reason>" --approved
+node scripts/proposal-supervisor.js reconcile --config <run.config.json> \
+  --proposal <kp-id> --operation <operation-id> --reason "<audit reason>" --approved
+```
+
+Against a live owner, these commands atomically enqueue one host-state request for its next
+ordinary tick; replay names the same request and cannot launch twice. Against a provably dead
+owner, the same command explicitly reclaims its preserved grant lineage and remains alive as
+the replacement supervisor while the request runs and the child settles. Neither path edits a
+journal, selects a clean state directory, invokes the operation manager directly, or creates a
+one-off bootstrap. `status` prints the exact command shape for the current attention state.
+
 `supervisorGlobalConcurrency` bounds all controller calls together;
 `supervisorStageConcurrency` independently bounds controller calls in `specification`,
 `preparation`, and `review`. Both are positive whole-number host configuration, validated
