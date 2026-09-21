@@ -9,7 +9,8 @@ const { spawnSync } = require('child_process');
 const { loadConfig } = require('../runner/config');
 const { probeBound } = require('../runner/prerequisites');
 const { createProductionSupervisor, openProjectSupervisor, formatHumanStatus,
-  supervisorStateDirFor } = require('../runner/proposal-supervisor');
+  supervisorStateDirFor, enqueueRetryRequest } = require('../runner/proposal-supervisor');
+const authority = require('../runner/supervisor');
 // Intake, answers, and review decisions remain available through the canonical operator CLIs:
 // scripts/kickoff.js, scripts/specify-proposal.js, and scripts/verdict.js.
 
@@ -48,16 +49,24 @@ function checkSpecificationAuth(cfg, deps = {}) {
 }
 
 function parse(argv) {
-  const out = { command: argv[0], configPath: null, proposalId: null, json: false };
+  const out = { command: argv[0], configPath: null, proposalId: null, operationId: null,
+    reason: null, approved: false, json: false };
   for (let i = 1; i < argv.length; i += 1) {
     if (argv[i] === '--config') out.configPath = argv[++i];
     else if (argv[i] === '--proposal') out.proposalId = argv[++i];
+    else if (argv[i] === '--operation') out.operationId = argv[++i];
+    else if (argv[i] === '--reason') out.reason = argv[++i];
+    else if (argv[i] === '--approved') out.approved = true;
     else if (argv[i] === '--json') out.json = true;
     else throw new Error(`unknown argument ${argv[i]}`);
   }
-  if (!['start', 'run', 'resume', 'tick', 'stop', 'status'].includes(out.command)
+  if (!['start', 'run', 'resume', 'tick', 'stop', 'status', 'retry', 'reconcile'].includes(out.command)
       || !out.configPath) {
-    throw new Error('usage: node scripts/proposal-supervisor.js <start|resume|stop|status> --config <file> [--proposal <kp-id>] [--json]');
+    throw new Error('usage: node scripts/proposal-supervisor.js <start|run|resume|tick|stop|status|retry|reconcile> --config <file> [--proposal <kp-id>] [--operation <id>] [--reason <text>] [--approved] [--json]');
+  }
+  if (['retry', 'reconcile'].includes(out.command)
+      && (!out.proposalId || !out.operationId || !out.reason || !out.approved)) {
+    throw new Error(`${out.command} requires --proposal <kp-id> --operation <id> --reason <text> --approved`);
   }
   return out;
 }
@@ -109,6 +118,26 @@ async function main(argv, io = {}, deps = {}) {
     const supervisor = makeSupervisor(common);
     const result = await supervisor.stop();
     writeOut(`${JSON.stringify(result)}\n`); return result;
+  }
+  if (['retry', 'reconcile'].includes(args.command)) {
+    const request = { kind: args.command === 'reconcile' ? 'settlement-reconcile' : 'implementation-retry',
+      proposalId: args.proposalId, operationId: args.operationId,
+      approved: true, reason: args.reason };
+    const queued = (deps.enqueueRetryRequest || enqueueRetryRequest)(cfg.targetRepoPath, request);
+    if (!queued || queued.ok === false) throw new Error(queued && queued.error || 'retry request could not be queued');
+    const holder = (deps.supervisorPresence || authority.supervisorPresence)(cfg.targetRepoPath);
+    if (holder && holder.live) {
+      writeOut(`${JSON.stringify({ ...queued, owner: holder.id })}\n`);
+      return { ...queued, owner: holder.id };
+    }
+    // With no live owner, this normal command becomes the recovered owner and stays alive
+    // to supervise the replacement through terminal settlement. It uses the same durable
+    // request consumed by an already-live owner; there is no alternate bootstrap path.
+    const opened = (deps.openProjectSupervisor || openProjectSupervisor)({ ...common,
+      reclaim: true, reopen: false, supervisorId: `proposal-supervisor-${process.pid}` });
+    if (!opened.ok) throw new Error(opened.reason || `project supervisor is held by ${opened.holder && opened.holder.id}`);
+    writeOut(`${JSON.stringify({ ...queued, owner: opened.lease.id, reclaimed: opened.tookOver === true })}\n`);
+    return runOwnedLoop(opened, false);
   }
   const opened = (deps.openProjectSupervisor || openProjectSupervisor)({ ...common,
     reclaim: args.command === 'resume', reopen: ['start', 'run', 'resume'].includes(args.command),

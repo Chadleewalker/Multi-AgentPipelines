@@ -275,9 +275,14 @@ existing run sentinel so active workers drain.
 
 The manager API deliberately separates observation from mutation. `status({ project, id })`
 may recover an implementation PID only from the authenticated child artifact; `restart(...)`
-never launches recorded work. `retry({ project, id, approved: true, grant })` is the only retry
-path and accepts only an attention operation whose child identity and settlement are already
-known. A pre-spawn reservation is different: `recoverLaunch({ project, operationId, configPath,
+never launches recorded work. `retry({ project, id, approved: true, grant })` is the operation
+manager's narrow retry primitive and accepts only an attention operation whose child identity
+and settlement are already known. Production callers use the proposal supervisor's
+`retry({ proposalId, operationId, approved: true, reason })`, which owns predecessor release,
+current-lease authority and the durable replacement handoff. The replacement operation/run
+identity is journaled after host launch intent and before child admission; replay returns the
+same replacement without another dispatch. A pre-spawn reservation is different:
+`recoverLaunch({ project, operationId, configPath,
 grant, approved: true, reason })` requires a non-empty parent audit reason attesting that no child
 remains, preserves the reserved attempt as `not-spawned`, and launches the next attempt. It is
 the only mutation path for an orphan slot, a matching pending launch, or a retry slot whose next
@@ -298,8 +303,24 @@ preparation, implementation, and review evidence. It retires a drained implement
 before assigning later prepared work to a uniquely named successor. The `stop` command
 closes durable intake immediately; the live process then drains and settles children before
 releasing its parent lease. If the process crashes, restart only observes recorded
-operations—attention and uncertain settlement still require the explicit operation-manager
-recovery commands described above.
+operations—attention and uncertain settlement still require an explicitly approved supervisor
+recovery path; no observation or resume command launches replacement work implicitly.
+
+The normal operator recovery surface is durable and supervisor-owned:
+
+```bash
+node scripts/proposal-supervisor.js retry --config <run.config.json> \
+  --proposal <kp-id> --operation <operation-id> --reason "<audit reason>" --approved
+node scripts/proposal-supervisor.js reconcile --config <run.config.json> \
+  --proposal <kp-id> --operation <operation-id> --reason "<audit reason>" --approved
+```
+
+Against a live owner, these commands atomically enqueue one host-state request for its next
+ordinary tick; replay names the same request and cannot launch twice. Against a provably dead
+owner, the same command explicitly reclaims its preserved grant lineage and remains alive as
+the replacement supervisor while the request runs and the child settles. Neither path edits a
+journal, selects a clean state directory, invokes the operation manager directly, or creates a
+one-off bootstrap. `status` prints the exact command shape for the current attention state.
 
 `supervisorGlobalConcurrency` bounds all controller calls together;
 `supervisorStageConcurrency` independently bounds controller calls in `specification`,

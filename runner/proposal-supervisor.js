@@ -77,6 +77,53 @@ function atomicAppend(file, event) {
   try { fs.writeSync(fd, `${JSON.stringify(event)}\n`); fs.fsyncSync(fd); }
   finally { fs.closeSync(fd); }
 }
+function atomicWriteJson(file, value, exclusive = false) {
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  if (exclusive) {
+    let fd;
+    try { fd = fs.openSync(file, 'wx', 0o600); }
+    catch (error) { if (error.code === 'EEXIST') return false; throw error; }
+    try { fs.writeSync(fd, `${JSON.stringify(value, null, 2)}\n`); fs.fsyncSync(fd); }
+    finally { fs.closeSync(fd); }
+    return true;
+  }
+  const scratch = `${file}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+  try {
+    fs.writeFileSync(scratch, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+    fs.renameSync(scratch, file);
+  } finally { try { fs.unlinkSync(scratch); } catch (e) { if (e.code !== 'ENOENT') throw e; } }
+  return true;
+}
+
+function controlRequestPaths(project, request, env = process.env) {
+  const stateDir = supervisorStateDirFor(project, env);
+  const kind = request.kind === 'settlement-reconcile' ? request.kind : 'implementation-retry';
+  const body = { schema: 1, kind, project: LOCK.canonicalTarget(project),
+    proposalId: String(request.proposalId || ''), operationId: String(request.operationId || ''),
+    approved: request.approved === true, reason: String(request.reason || '').trim() };
+  const id = digest(JSON.stringify(body));
+  const dir = path.join(stateDir, 'requests');
+  return { id, body: { ...body, id }, requestPath: path.join(dir, `${id}.request.json`),
+    resultPath: path.join(dir, `${id}.result.json`) };
+}
+
+function enqueueRetryRequest(project, request, env = process.env) {
+  const paths = controlRequestPaths(project, request, env);
+  if (!paths.body.proposalId || !paths.body.operationId || !paths.body.approved || !paths.body.reason) {
+    return { ok: false, error: 'proposal supervisor: retry request requires proposal, operation, approval and reason' };
+  }
+  const created = atomicWriteJson(paths.requestPath, { ...paths.body,
+    requestedAt: new Date().toISOString() }, true);
+  return { ok: true, id: paths.id, queued: created, existing: !created,
+    requestPath: paths.requestPath, resultPath: paths.resultPath };
+}
+
+function readRetryResult(project, request, env = process.env) {
+  const paths = controlRequestPaths(project, request, env);
+  let result = null;
+  try { result = JSON.parse(fs.readFileSync(paths.resultPath, 'utf8')); } catch {}
+  return result;
+}
 function readJournal(file) {
   let text = '';
   try { text = fs.readFileSync(file, 'utf8'); }
@@ -111,7 +158,7 @@ function validateSnapshot(file) {
 }
 function fold(events) {
   const result = { closed: false, parentLease: null, parentReleased: false,
-    feedGrant: null, feed: null, feeds: [], proposals: new Map(), order: [] };
+    feedGrant: null, feed: null, feeds: [], retry: null, proposals: new Map(), order: [] };
   for (const event of events) {
     if (!event || typeof event !== 'object') throw new Error('proposal supervisor: invalid journal event');
     if (event.type === 'intake.closed') { result.closed = true; continue; }
@@ -128,6 +175,39 @@ function fold(events) {
     }
     if (event.type === 'feed.completed' && result.feed) { result.feed.completed = true; continue; }
     if (event.type === 'feed.settled') { result.feed = null; result.feedGrant = null; continue; }
+    if (event.type === 'feed.retry-requested') {
+      result.retry = { ...event, phase: 'requested' }; continue;
+    }
+    if (event.type === 'feed.retry-predecessor-settled' && result.retry) {
+      result.retry = { ...result.retry, phase: 'predecessor-settled' }; continue;
+    }
+    if (event.type === 'feed.retry-granted' && result.retry) {
+      result.feedGrant = event.grant;
+      result.retry = { ...result.retry, phase: 'granted', grant: event.grant }; continue;
+    }
+    if (event.type === 'feed.replaced' && result.feed) {
+      const predecessor = event.predecessor || { operationId: result.feed.id, runId: result.feed.runId };
+      const replacement = { ...event.operation, generation: result.feed.generation,
+        stopRequested: false, replacementOf: predecessor };
+      result.feed = replacement;
+      if (result.feeds.length) result.feeds[result.feeds.length - 1] = replacement;
+      else result.feeds.push(replacement);
+      result.retry = { ...(result.retry || {}), phase: 'replacement-dispatch', predecessor,
+        operation: event.operation, reason: event.reason };
+      for (const p of result.proposals.values()) {
+        if (p.feedId !== replacement.id) continue;
+        p.runId = replacement.runId; p.task = null;
+        p.implementation = {
+          operationId: replacement.id, runId: replacement.runId,
+          issueId: p.specification && p.specification.issueId || null,
+          operationState: replacement.state || 'launching', settled: false,
+          outcome: null, reason: event.reason || null,
+          attention: `replacement dispatch for failed predecessor ${predecessor.operationId}/${predecessor.runId}`,
+          predecessor,
+        };
+      }
+      continue;
+    }
     if (event.type === 'proposal.submitted') {
       if (!result.proposals.has(event.proposalId)) {
         result.order.push(event.proposalId);
@@ -281,8 +361,19 @@ function productionAdapters(repoRoot, options = {}) {
     if (!acquired.ok) throw new Error(acquired.reason || 'proposal supervisor authority is held');
     lease = acquired.lease; return lease;
   }
+  const supervisedAuthority = { ...authorityApi,
+    settle(historicalLease, nonce, settleOptions) {
+      const currentLease = parent(historicalLease && historicalLease.target);
+      return authorityApi.settle(currentLease, nonce, settleOptions);
+    },
+    settlementState(historicalLease, nonce) {
+      const currentLease = parent(historicalLease && historicalLease.target);
+      return authorityApi.settlementState(currentLease, nonce);
+    },
+  };
   const operations = createHostOperationManager({ pipelineRoot: root,
-    stateRoot: options.operationStateRoot, runsRoot: options.runsRoot });
+    stateRoot: options.operationStateRoot, runsRoot: options.runsRoot,
+    supervisor: supervisedAuthority });
   return {
     kickoff: {
       verify(record) { return kickoff.verifyRecord(record, record && record.id, record && record.target); },
@@ -327,12 +418,15 @@ function productionAdapters(repoRoot, options = {}) {
       settle(grant, outcome = 'complete') {
         const nonce = typeof grant === 'string' ? grant
           : grant && grant.authority ? grant.authority.nonce : grant && grant.nonce;
-        const parentLease = grant && grant.parentLease || lease;
-        const made = authorityApi.settle(parentLease, nonce,
-          typeof outcome === 'object' ? outcome : { outcome });
+        const grantTarget = grant && grant.authority && grant.authority.target;
+        const currentLease = parent(grantTarget || (lease && lease.target));
+        const settlement = typeof outcome === 'object' ? outcome : { outcome };
+        const made = authorityApi.settle(currentLease, nonce, settlement);
         if (!made.ok) {
-          const known = authorityApi.settlementState(parentLease, nonce);
-          if (known && known.ok && known.settled) return { ok: true, existing: true };
+          const known = authorityApi.settlementState(currentLease, nonce);
+          if (known && known.ok && known.settled && known.outcome === settlement.outcome) {
+            return { ok: true, existing: true };
+          }
         }
         return made;
       },
@@ -838,6 +932,25 @@ function createProductionSupervisor(options = {}) {
   }
   async function doTick() {
     await ingest();
+    const requestDir = path.join(stateDir, 'requests');
+    let requestNames = [];
+    try { requestNames = fs.readdirSync(requestDir).filter(name => name.endsWith('.request.json')).sort(); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    for (const name of requestNames) {
+      const requestPath = path.join(requestDir, name);
+      const resultPath = path.join(requestDir, name.replace(/\.request\.json$/, '.result.json'));
+      if (fs.existsSync(resultPath)) continue;
+      let request;
+      try { request = JSON.parse(fs.readFileSync(requestPath, 'utf8')); }
+      catch (error) {
+        atomicWriteJson(resultPath, { ok: false, error: `unreadable retry request: ${error.message}` });
+        continue;
+      }
+      const result = request.kind === 'settlement-reconcile'
+        ? await reconcile(request) : await retry(request);
+      atomicWriteJson(resultPath, { ...result, requestId: request.id,
+        completedAt: new Date(now()).toISOString() });
+    }
     const attempted = new Set();
     // Bounded generously by the number of proposals: every candidate is either progressed or
     // marked attempted, so the loop terminates when `actions` runs dry. The cap is only a
@@ -962,6 +1075,110 @@ function createProductionSupervisor(options = {}) {
       ? `review evidence conflict: accepted ${p.verdict}; canonical record now says ${evidence.verdict}` : null };
   }
 
+  async function retry(request = {}) {
+    const proposalId = String(request.proposalId || '').trim();
+    const operationId = String(request.operationId || '').trim();
+    const reason = typeof request.reason === 'string' ? request.reason.trim() : '';
+    if (request.approved !== true) {
+      return { ok: false, error: 'proposal supervisor: retry requires explicit approval' };
+    }
+    if (!reason) return { ok: false, error: 'proposal supervisor: retry requires a non-empty audit reason' };
+    let current = state();
+    let p = current.proposals.get(proposalId);
+    if (!p) return { ok: false, error: `proposal supervisor: proposal ${proposalId} was not found` };
+    if (!current.feed || current.feed.id !== operationId || p.feedId !== operationId
+        || p.stage !== 'implementing' || !p.implementation) {
+      return { ok: false, error: 'proposal supervisor: retry does not match the active implementation assignment' };
+    }
+
+    let observed;
+    try { observed = await adapters.operations.status({ project, id: operationId }); }
+    catch (error) { return { ok: false, error: `proposal supervisor: operation status failed: ${error.message}` }; }
+    const exact = observed && observed.ok && observed.id === operationId
+      && observed.project === project && observed.runId === current.feed.runId;
+    if (!exact) return { ok: false, error: 'proposal supervisor: retry operation identity is unavailable or mismatched' };
+    // An exact replay after the replacement was launched is successful but inert. A later
+    // replacement that itself reaches attention is a new explicit recovery decision.
+    if (observed.state !== 'attention') {
+      if (current.retry && current.retry.phase === 'replacement-dispatch'
+          && current.retry.operation && current.retry.operation.runId === current.feed.runId) {
+        return { ok: true, existing: true, operation: observed };
+      }
+      return { ok: false, error: `proposal supervisor: only attention operations may be retried (${observed.state})` };
+    }
+    if (observed.childIdentity === 'pending' || observed.recoveryPending === true
+        || (observed.settlement && observed.settlement.state === 'attempting')) {
+      return { ok: false, error: 'proposal supervisor: uncertain launch or settlement must be reconciled before retry' };
+    }
+
+    const predecessor = { operationId, runId: current.feed.runId,
+      attempt: observed.attempt || null, grantNonce: observed.grantNonce || null };
+    const resuming = current.retry && current.retry.predecessor
+      && current.retry.proposalId === proposalId && current.retry.operationId === operationId
+      && current.retry.predecessor.runId === predecessor.runId;
+    if (!resuming) {
+      append('feed.retry-requested', { proposalId, operationId, reason, predecessor });
+      current = state();
+    }
+    if (current.retry.phase === 'requested') {
+      const released = await adapters.authority.settle(current.feedGrant, 'released');
+      if (!released || released.ok === false) {
+        return { ok: false, error: released && released.error || 'proposal supervisor: predecessor release failed' };
+      }
+      append('feed.retry-predecessor-settled', { proposalId, operationId, predecessor, outcome: 'released' });
+      current = state();
+    }
+    let grant = current.retry.grant || null;
+    if (!grant) {
+      grant = await adapters.authority.grant({ scope: 'implementation', project });
+      if (!grant || grant.ok === false) {
+        return { ok: false, error: grant && grant.error || 'proposal supervisor: replacement grant failed' };
+      }
+      append('feed.retry-granted', { proposalId, operationId, predecessor, grant });
+    }
+
+    let published = false;
+    const publishIntent = operation => {
+      if (published) return;
+      append('feed.replaced', { proposalId, predecessor, operation, reason });
+      published = true;
+    };
+    const answer = await adapters.operations.retry({ project, id: operationId,
+      approved: true, reason, grant, onLaunchIntent: publishIntent });
+    if (!answer || answer.ok === false || !answer.operation) {
+      return { ok: false, error: answer && answer.error || 'proposal supervisor: replacement launch failed',
+        operation: answer && answer.operation || null };
+    }
+    // Production publishes from the pre-spawn callback. Explicit test adapters that do not
+    // implement that seam still receive a durable identity before this method reports success.
+    publishIntent(answer.operation);
+    return { ok: true, operation: answer.operation, predecessor };
+  }
+
+  async function reconcile(request = {}) {
+    const proposalId = String(request.proposalId || '').trim();
+    const operationId = String(request.operationId || '').trim();
+    const reason = typeof request.reason === 'string' ? request.reason.trim() : '';
+    if (request.approved !== true || !reason) {
+      return { ok: false, error: 'proposal supervisor: reconciliation requires explicit approval and a non-empty audit reason' };
+    }
+    const current = state();
+    const p = current.proposals.get(proposalId);
+    if (!p || !current.feed || current.feed.id !== operationId || p.feedId !== operationId
+        || p.stage !== 'implementing') {
+      return { ok: false, error: 'proposal supervisor: reconciliation does not match the active implementation assignment' };
+    }
+    let answer;
+    try { answer = await adapters.operations.reconcile({ project, id: operationId,
+      approved: true, reason }); }
+    catch (error) { return { ok: false, error: `proposal supervisor: reconciliation failed: ${error.message}` }; }
+    if (!answer || answer.ok === false) return { ok: false,
+      error: answer && answer.error || 'proposal supervisor: settlement remains uncertain',
+      operation: answer && answer.operation || null };
+    append('feed.reconciled', { proposalId, operationId, reason, operation: answer.operation });
+    return { ok: true, operation: answer.operation };
+  }
+
   function proposalStatus(id, current) {
     const p = current.proposals.get(id);
     if (!p) return { found: false, proposalId: id };
@@ -1018,7 +1235,12 @@ function createProductionSupervisor(options = {}) {
     let nextAction;
     if (p.stage === 'needs-input') nextAction = 'answer the concrete question';
     else if (p.reviewAttention) nextAction = `inspect ${p.reviewAttention}`;
-    else if (p.implementation && p.implementation.attention) nextAction = `inspect ${p.implementation.attention}`;
+    else if (p.implementation && p.implementation.attention) {
+      const recovery = /settl/i.test(p.implementation.attention) ? 'reconcile' : 'retry';
+      nextAction = `inspect ${p.implementation.attention}; when approved run node scripts/proposal-supervisor.js ${recovery}`
+        + ` --config ${JSON.stringify(options.configPath)} --proposal ${id}`
+        + ` --operation ${p.implementation.operationId} --reason "<audit reason>" --approved`;
+    }
     else if (p.stage === 'review' && verdictValue === 'pending') nextAction = 'record review verdict';
     else if (p.stage === 'failed' && p.implementation && p.implementation.outcome) {
       nextAction = `inspect ${p.implementation.outcome} evidence and explicitly authorize any recovery`;
@@ -1082,7 +1304,7 @@ function createProductionSupervisor(options = {}) {
       scheduler: { active: { ...active }, limits: { global: globalLimit, ...stageLimits } },
       proposals: current.order.map(proposalId => proposalStatus(proposalId, current)) };
   }
-  return { submit, tick, resume, run, stop, answer, decide, status, reopen };
+  return { submit, tick, resume, run, stop, answer, decide, retry, reconcile, status, reopen };
 }
 
 function openProjectSupervisor(options = {}) {
@@ -1119,8 +1341,10 @@ function formatHumanStatus(status) {
     `availableTokens=${JSON.stringify(row.availableTokens)} kickoffHash=${row.kickoffHash} specHash=${row.specHash}`,
     `issueId=${row.issueId} freezeReceipt=${row.freezeReceipt} runId=${row.runId}`,
     `branch=${row.branch} prUrl=${row.prUrl} reviewItemId=${row.reviewItemId} verdict=${row.verdict}`,
-    row.implementation ? `outcome=${row.implementation.outcome || '(not terminal)'} operationState=${row.implementation.operationState}`
-      + ` reason=${JSON.stringify(row.implementation.reason)} attention=${row.implementation.attention || ''}` : '',
+    row.implementation ? `operationId=${row.implementation.operationId} implementationRunId=${row.implementation.runId}`
+      + ` outcome=${row.implementation.outcome || '(not terminal)'} operationState=${row.implementation.operationState}`
+      + ` settled=${row.implementation.settled} reason=${JSON.stringify(row.implementation.reason)}`
+      + ` attention=${row.implementation.attention || ''}` : '',
     `verdictReason=${row.verdictReason || ''} reviewAttention=${row.reviewAttention || ''}`,
     row.reviewEvidence ? `canonicalVerdict=${row.reviewEvidence.verdict} canonicalReason=${row.reviewEvidence.reason}` : '',
     `nextAction=${row.nextAction}`,
@@ -1128,4 +1352,5 @@ function formatHumanStatus(status) {
 }
 
 module.exports = { createProductionSupervisor, openProjectSupervisor, productionAdapters,
-  formatHumanStatus, supervisorStateDirFor, TESTING_SENTINEL, STAGES };
+  formatHumanStatus, supervisorStateDirFor, enqueueRetryRequest, readRetryResult,
+  TESTING_SENTINEL, STAGES };

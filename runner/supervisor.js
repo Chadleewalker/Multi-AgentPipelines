@@ -263,6 +263,27 @@ function acquire(repoRoot, targetRepoPath, supervisorId, options = {}) {
     }
   }
   const priorOutstanding = existing ? outstanding(targetRepoPath) : [];
+  let recoveredGrants = [];
+  if (options.reclaim === true && existing) {
+    for (const item of priorOutstanding) {
+      const grantRecord = readGrant(target, item.nonce);
+      if (!grantRecord) {
+        return { ok: false, holder: holderFrom(existing.record, false), outstanding: priorOutstanding,
+          reason: `supervisor cannot authenticate outstanding grant ${item.nonce} for reclaim` };
+      }
+      const direct = grantRecord.authority.parent.id === existing.record.id
+        && grantRecord.authority.parent.pid === existing.record.pid;
+      const inherited = recoveredEntry(existing.record, grantRecord);
+      if (!direct && !inherited) {
+        return { ok: false, holder: holderFrom(existing.record, false), outstanding: priorOutstanding,
+          reason: `supervisor cannot prove recovery lineage for outstanding grant ${item.nonce}` };
+      }
+      recoveredGrants.push(inherited || { nonce: item.nonce, parent: {
+        id: grantRecord.authority.parent.id, pid: grantRecord.authority.parent.pid,
+        ownerToken: existing.record.ownerToken || null,
+      } });
+    }
+  }
 
   // An explicit reclaim of a dead parent may pass an uncertain preparation marker; it may
   // never delete one. The marker outlives the reclaim and still needs its own acknowledgement.
@@ -284,10 +305,6 @@ function acquire(repoRoot, targetRepoPath, supervisorId, options = {}) {
     };
   }
   const token = crypto.randomBytes(24).toString('hex');
-  const recoveredGrants = options.reclaim === true && existing
-    ? priorOutstanding.map(item => ({ nonce: item.nonce,
-      parent: { id: existing.record.id, pid: existing.record.pid,
-        ownerToken: existing.record.ownerToken || null } })) : [];
   const record = leaseRecordFor(id, target, token, held.ownership, recoveredGrants);
   writeJson(leaseFile(target), record);
   const lease = {
@@ -328,6 +345,25 @@ function readGrant(target, nonce) {
   if (!record || record.kind !== 'supervisor-grant' || record.target !== target
       || record.nonce !== nonce || !record.authority) return null;
   return record;
+}
+
+// Recovery authority is deliberately exact and transitive. A reclaim may carry an
+// outstanding grant forward, but only by preserving the original issuer recorded in the
+// sealed grant. Ambiguous or rewritten ancestry is not authority.
+function recoveredEntry(leaseRecord, grantRecord) {
+  if (!leaseRecord || !grantRecord || !grantRecord.authority || !grantRecord.authority.parent) return null;
+  const matches = (leaseRecord.recoveredGrants || []).filter(item => item
+    && item.nonce === grantRecord.nonce && item.parent
+    && item.parent.id === grantRecord.authority.parent.id
+    && item.parent.pid === grantRecord.authority.parent.pid);
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function ownsGrant(leaseRecord, grantRecord) {
+  return !!(leaseRecord && grantRecord && grantRecord.authority && grantRecord.authority.parent
+    && ((grantRecord.authority.parent.id === leaseRecord.id
+      && grantRecord.authority.parent.pid === leaseRecord.pid)
+      || recoveredEntry(leaseRecord, grantRecord)));
 }
 
 // Every grant not yet settled by its parent, oldest first. A grant is NEVER removed by
@@ -417,12 +453,8 @@ function settle(lease, nonce, options = {}) {
   }
   const record = readGrant(held.target, String(nonce || ''));
   if (!record) return { ok: false, error: `supervisor: no grant record for ${nonce}` };
-  const recovered = (held.record.recoveredGrants || []).some(item => item
-    && item.nonce === record.nonce && item.parent
-    && item.parent.id === record.authority.parent.id
-    && item.parent.pid === record.authority.parent.pid);
-  if ((record.authority.parent.id !== held.record.id
-      || record.authority.parent.pid !== held.record.pid) && !recovered) {
+  const recovered = recoveredEntry(held.record, record);
+  if (!ownsGrant(held.record, record)) {
     return { ok: false, error: `supervisor: ${nonce} was granted by ${record.authority.parent.id}, not by this supervisor` };
   }
   if (record.state !== 'granted' && record.state !== 'redeemed') {
@@ -454,19 +486,16 @@ function settlementState(lease, nonce) {
   if (!held.ok) return { ok: false, error: `supervisor: cannot inspect child settlement — ${held.error}` };
   const record = readGrant(held.target, String(nonce || ''));
   if (!record) return { ok: false, error: `supervisor: no grant record for ${nonce}` };
-  const recovered = (held.record.recoveredGrants || []).some(item => item
-    && item.nonce === record.nonce && item.parent
-    && item.parent.id === record.authority.parent.id
-    && item.parent.pid === record.authority.parent.pid);
-  if ((record.authority.parent.id !== held.record.id
-      || record.authority.parent.pid !== held.record.pid) && !recovered) {
+  if (!ownsGrant(held.record, record)) {
     return { ok: false, error: `supervisor: ${nonce} was granted by another supervisor` };
   }
-  if (record.state === 'complete') return { ok: true, settled: true, nonce: record.nonce };
+  if (record.state === 'complete' || record.state === 'released') {
+    return { ok: true, settled: true, outcome: record.state, nonce: record.nonce };
+  }
   if (record.state === 'granted' || record.state === 'redeemed') {
     return { ok: true, settled: false, nonce: record.nonce };
   }
-  return { ok: false, error: `supervisor: grant ${nonce} is settled as ${record.state}, not complete` };
+  return { ok: false, error: `supervisor: grant ${nonce} has an unknown state ${record.state}` };
 }
 
 // ---- admission -----------------------------------------------------------------------------
@@ -528,7 +557,7 @@ function admit(authority, options = {}) {
     return refuse('wrong-parent', authority,
       `the granting supervisor is no longer live for ${target}; the grant stays outstanding as evidence`);
   }
-  if (lease.record.id !== record.authority.parent.id || lease.record.pid !== record.authority.parent.pid) {
+  if (!ownsGrant(lease.record, record)) {
     return refuse('wrong-parent', authority,
       `${target} is now supervised by ${lease.record.id} (pid ${lease.record.pid}), not by the parent this authority names`);
   }
@@ -565,7 +594,8 @@ function admit(authority, options = {}) {
       issueId: record.authority.issueId,
       batch: record.authority.batch,
       target,
-      parent: { ...record.authority.parent },
+      parent: { id: lease.record.id, pid: lease.record.pid },
+      grantParent: { ...record.authority.parent },
       sections: [...SECTIONS],
     },
   };
@@ -698,15 +728,13 @@ function isLivePreparationSibling(admission, started) {
     const lease = readLease(target);
     if (!lease || !lease.live || !samePreparationProcess(lease.record.preparationProcess, lease.record.pid)) return false;
     const matchesParent = (record) => record && record.state === 'redeemed'
-      && record.authority.scope === 'preparation'
-      && record.authority.parent.id === lease.record.id
-      && record.authority.parent.pid === lease.record.pid;
+      && record.authority.scope === 'preparation' && ownsGrant(lease.record, record);
     const current = readGrant(target, String(admission.nonce || ''));
     if (!matchesParent(current) || current.redeemedPid !== process.pid
         || !samePreparationProcess(current.redeemedProcess, process.pid)
         || current.authority.batch !== admission.batch
         || current.authority.issueId !== admission.issueId
-        || canonical(current.authority.parent) !== canonical(admission.parent)
+        || canonical(admission.parent) !== canonical({ id: lease.record.id, pid: lease.record.pid })
         || canonical(admission.sections) !== canonical(SECTIONS)) return false;
     const link = started.data && started.data.supervisor;
     if (!link || typeof link.nonce !== 'string' || !/^[a-f0-9]{32,128}$/.test(link.nonce)
@@ -742,7 +770,13 @@ function verifyAdmission(admission, section) {
   try { target = lock.canonicalTarget(admission.target); }
   catch { return { ok: false, reason: 'wrong-target', message: 'supervisor: the admission names no canonical target' }; }
   const record = readGrant(target, String(admission.nonce || ''));
-  if (!record || record.state !== 'redeemed' || record.authority.scope !== admission.scope) {
+  const lease = readLease(target);
+  if (!record || record.state !== 'redeemed' || record.authority.scope !== admission.scope
+      || !lease || !lease.live || !ownsGrant(lease.record, record)
+      || record.authority.issueId !== admission.issueId
+      || record.authority.batch !== admission.batch
+      || canonical(admission.parent) !== canonical({ id: lease.record.id, pid: lease.record.pid })
+      || canonical(admission.sections) !== canonical(SECTIONS)) {
     return { ok: false, reason: 'forged',
       message: `supervisor: no redeemed grant record backs admission ${admission.nonce} for ${target}` };
   }
