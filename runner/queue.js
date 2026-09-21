@@ -124,7 +124,13 @@ function resolveBranch(cfg) {
 // Returns a probe that answers one candidate at a time, plus its own cleanup.
 function fetchBranch(cfg, branch) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pipeline-dispatch-gate-'));
-  const cleanup = () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* temp */ } };
+  // A successful fetch can leave its pack files briefly held by Git or antivirus on
+  // Windows. Use the same bounded cleanup retry as the other disposable Git fixtures so
+  // one transient handle cannot turn every dispatch check into a permanent disk leak.
+  const cleanup = () => {
+    try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
+    catch { /* disposable evidence only; the caller's dispatch verdict remains authoritative */ }
+  };
   // No `--initial-branch`: the throwaway's own branch name is never read (FETCH_HEAD is),
   // and pinning it would make the gate — which runs before every dispatch — require a git
   // newer than 2.28 for no benefit at all.

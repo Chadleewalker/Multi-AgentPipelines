@@ -112,6 +112,10 @@ function git(cwd, args) {
 }
 const mk = (d) => { fs.mkdirSync(d, { recursive: true }); return d; };
 const tmp = (tag) => fs.mkdtempSync(path.join(os.tmpdir(), `unit-gate-${tag}-`));
+// Only this checker's synchronous gate calls use this dedicated probe home. Other live
+// supervisors on the same host may legitimately create and remove dispatch probes between
+// two global temp-directory listings; they must not make our cleanup assertion flaky.
+const probeTemp = tmp('dispatch-probes');
 
 // A bare remote whose HEAD symref names `branch` explicitly — the `ls-remote --symref`
 // fallback reads exactly that, so leaving it to the host's init.defaultBranch would make
@@ -236,8 +240,13 @@ function run(work, remote, entries, over = {}) {
   const stub = writeBdStub(dir, entries, logFile);
   const cfg = cfgFor({ targetRepoPath: work, targetRepoRemote: remote, ...over });
   let res;
-  try { res = withBd(stub, () => queue.readyQueue(cfg)); }
+  const originalTmpdir = os.tmpdir;
+  try {
+    os.tmpdir = () => probeTemp;
+    res = withBd(stub, () => queue.readyQueue(cfg));
+  }
   catch (e) { res = { threw: e && e.message }; }
+  finally { os.tmpdir = originalTmpdir; }
   const argv = fs.readFileSync(logFile, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
   return { res, argv };
 }
@@ -248,7 +257,7 @@ const has = (a, id) => idsOf(a).includes(id);
 // which is the point: a rename that stopped cleaning up would still be caught, because the
 // check below counts what a call ADDED rather than what matches one fixed name.
 const tmpListing = () => {
-  try { return fs.readdirSync(os.tmpdir()).filter((n) => /^pipeline-dispatch-gate-/.test(n)); }
+  try { return fs.readdirSync(probeTemp).filter((n) => /^pipeline-dispatch-gate-/.test(n)); }
   catch { return []; }
 };
 
