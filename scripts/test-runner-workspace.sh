@@ -55,6 +55,7 @@ mkdir -p "$RUN_DIR"
 printf '{"issueId":"%s","attempts":[{"number":1,"verifierResult":"pass","timestamp":"2026-07-25T12:00:00Z"}],"changeSummary":"added new-file"}\n' "$ISSUE_ID" > "$RUN_DIR/status.json"
 printf '{"issueId":"%s","timestamp":"2026-07-25T12:00:00Z","acceptance":"pass","regressions":"absent"}\n' "$ISSUE_ID" > "$RUN_DIR/verify.json"
 git add -A && git commit -qm "Task $ISSUE_ID: implementation (verified on attempt 1)"
+git rev-parse 'HEAD^{tree}' > "$RUN_DIR/verified-tree" || exit 1
 exit 0
 EOF
 cat > "$TMP/stub-nowork.sh" <<'EOF'
@@ -105,7 +106,7 @@ grep -q '"acceptance": "pass"' "$TD/verify.json" 2>/dev/null || grep -q '"accept
   && pass "collected verify.json is intact" || fail "verify.json corrupt"
 
 # 7. Outcome derived from the collected artifacts (not from the stub's guesswork).
-echo "$OUT" | grep -q "exit 0 -> done" && pass "outcome derived from collected verify.json" || fail "outcome wrong"
+echo "$OUT" | grep -q "exit 0 -> done" && pass "outcome derived from collected verify.json" || fail "outcome wrong: $(echo "$OUT" | tail -8)"
 
 # 8. No-commit task: nothing to push.
 I2=$(bdq create "no-work task" -d x --acceptance ok --design "design-ref: 4.6" -p 0 --silent)
