@@ -35,13 +35,13 @@ require_commands() {
 require_commands || exit 1
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CFG="$ROOT/run.config.fixture.json"
+source "$ROOT/scripts/fixture-config.sh"
+CFG=$(fixture_config "$ROOT") || CFG="$ROOT/run.config.fixture.json"
 # Git-ignored: it names a path on your disk and a repo that is probably private.
 if [ ! -f "$CFG" ]; then
   echo "FAIL  $CFG not found."
-  echo "      This pass needs a disposable fixture repo of your own (see scripts/test-fixture.sh"
-  echo "      for what makes one valid). Then: cp run.config.example.json run.config.fixture.json"
-  echo "      and point targetRepoPath / targetRepoRemote / image at it."
+  echo "      This pass needs a configured disposable fixture in this checkout or its shared"
+  echo "      main checkout (see scripts/test-fixture.sh for what makes one valid)."
   exit 1
 fi
 KEEP=0; [ "${1:-}" = "--keep" ] && KEEP=1

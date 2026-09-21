@@ -9,15 +9,16 @@
 # Run from Git Bash:  bash scripts/test-fixture.sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CFG="$ROOT/run.config.fixture.json"
+source "$ROOT/scripts/fixture-config.sh"
+CFG=$(fixture_config "$ROOT") || CFG="$ROOT/run.config.fixture.json"
 FAIL=0
 pass() { echo "PASS  $1"; }
 fail() { echo "FAIL  $1"; FAIL=1; }
 
 # Git-ignored: it names a path on your disk and a repo that is probably private.
 if [ ! -f "$CFG" ]; then
-  fail "$CFG not found — cp run.config.example.json run.config.fixture.json and point it"
-  echo "      at your own disposable fixture repo. The checks below define what it must contain."
+  fail "$CFG not found — configure the disposable fixture in this checkout or its shared main checkout"
+  echo "      The checks below define what that fixture must contain."
   exit 1
 fi
 
