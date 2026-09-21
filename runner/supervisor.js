@@ -366,6 +366,25 @@ function ownsGrant(leaseRecord, grantRecord) {
       || recoveredEntry(leaseRecord, grantRecord)));
 }
 
+// Read-only terminal evidence for idempotent controller replay. Exact authority bytes must
+// match the sealed host record; this grants no admission or mutation authority and therefore
+// does not let a successor settle a live or foreign grant.
+function grantState(authority) {
+  if (!authority || typeof authority !== 'object' || Array.isArray(authority)) {
+    return { ok: false, error: 'supervisor: an exact grant authority is required' };
+  }
+  let target;
+  try { target = lock.canonicalTarget(authority.target); }
+  catch { return { ok: false, error: 'supervisor: grant authority names no canonical target' }; }
+  const record = readGrant(target, String(authority.nonce || ''));
+  if (!record || canonical(record.authority) !== canonical(authority)) {
+    return { ok: false, error: 'supervisor: grant authority does not match its sealed host record' };
+  }
+  return { ok: true, nonce: record.nonce, state: record.state,
+    settled: record.state === 'complete' || record.state === 'released',
+    outcome: ['complete', 'released'].includes(record.state) ? record.state : null };
+}
+
 // Every grant not yet settled by its parent, oldest first. A grant is NEVER removed by
 // inference — not by expiry, not by the parent dying, not by a reclaim — so this is the one
 // place a person looks to find out what a killed supervisor left behind.
@@ -875,7 +894,7 @@ function withSection(admission, section, fn, options = {}) {
 module.exports = {
   SCOPES, SECTIONS, REASONS, AUTHORITY_ENV, MAX_TTL_MS,
   acquire, release, leaseHolder, supervisorPresence,
-  grant, settle, settlementState, outstanding,
+  grant, settle, settlementState, grantState, outstanding,
   admit, admitEntry, childOwnership, isLivePreparationSibling, preparationProcessIdentity,
   tryEnterSection, exitSection, enterSection, withSection,
   supervisorDir,
