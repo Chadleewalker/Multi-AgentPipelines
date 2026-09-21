@@ -7,7 +7,7 @@
 # timeout. Uses a throwaway target repo with bd initialized so stale-issue
 # recovery is exercised for real.
 # Run from Git Bash:  bash scripts/test-runner-bootstrap.sh
-set -u
+set -u -o pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d)"
 FAIL=0
@@ -108,13 +108,15 @@ docker network inspect pipeline-net >/dev/null 2>&1 \
 # repository root cannot contain the operator's ignored .env.pipeline, so this assertion
 # never reads or silently succeeds because of a real credential.
 AUTH_ROOT="$TMP/missing-auth-root"
-mkdir -p "$AUTH_ROOT/scripts" "$AUTH_ROOT/contracts" "$AUTH_ROOT/schemas"
-cp -rf "$ROOT/runner" "$AUTH_ROOT/runner"
-cp -f "$ROOT/scripts/write-protection-policy.js" "$AUTH_ROOT/scripts/write-protection-policy.js"
-cp -f "$ROOT/scripts/sweep-assertions.js" "$AUTH_ROOT/scripts/sweep-assertions.js"
-cp -f "$ROOT/contracts/control-plane.json" "$AUTH_ROOT/contracts/control-plane.json"
-cp -f "$ROOT/schemas/status.schema.json" "$AUTH_ROOT/schemas/status.schema.json"
-cp -f "$ROOT/schemas/verify.schema.json" "$AUTH_ROOT/schemas/verify.schema.json"
+mkdir -p "$AUTH_ROOT"
+# A complete tracked tree is the runner's real module closure. Archive it into a fresh root
+# rather than maintaining an incomplete list of runner/scripts/pipeline imports by hand.
+# Git excludes ignored .env.pipeline, local fixture config and host state, so the isolated
+# credential refusal remains real. A failed archive is a harness failure, never a pass.
+if ! git -C "$ROOT" archive --format=tar HEAD | tar -xf - -C "$AUTH_ROOT"; then
+  fail "could not materialize the tracked runner tree for missing-token proof"
+  exit 1
+fi
 OUT=$(cd "$TMP" && CLAUDE_CODE_OAUTH_TOKEN= HOME="$TMP" node "$AUTH_ROOT/runner/run.js" --config "$GOOD" --dry-run 2>&1); RC=$?
 [ "$RC" = 2 ] && echo "$OUT" | grep -q "no CLAUDE_CODE_OAUTH_TOKEN (.env.pipeline or environment)" \
   && pass "missing token: exit 2 before container work with the exact diagnostic" || fail "missing-token handling (rc=$RC): $(echo "$OUT" | head -8)"
