@@ -26,20 +26,26 @@ PROXY="http://$PROXY_NAME:$PROXY_PORT"
 # hosts and the no-direct-egress assertion are the same for both profiles.
 PROFILE="${PIPELINE_PROXY_PROFILE:-claude}"
 case "$PROFILE" in
-  codex) ALLOWED_URL="https://api.openai.com/" ;;
-  claude|'') ALLOWED_URL="https://api.anthropic.com/" ;;
+  codex) ALLOWED_URL="https://auth.openai.com/oauth/token"; MODEL_URL="https://api.openai.com/" ;;
+  claude|'') ALLOWED_URL="https://api.anthropic.com/"; MODEL_URL="" ;;
   *) echo "unknown proxy profile '$PROFILE' (expected claude or codex)" >&2; exit 2 ;;
 esac
 
 PROBE_CMD='
   code() { curl -s -m 10 -o /dev/null -w "%{http_code}" "$1" 2>/dev/null || true; }
   A=$(code "$ALLOWED_URL")
+  if [ -n "${MODEL_URL:-}" ]; then M=$(code "$MODEL_URL"); else M=""; fi
   B=$(code https://github.com/)
   C=$(code https://registry.npmjs.org/)
   D=$(env -u HTTPS_PROXY -u HTTP_PROXY sh -c \
       "curl -s -m 8 -o /dev/null -w \"%{http_code}\" https://github.com/ 2>/dev/null" || true)
-  echo "profile=$PIPELINE_PROXY_PROFILE allowed=$ALLOWED_URL:${A:-000} blocked1=${B:-000} blocked2=${C:-000} direct=${D:-000}"
+  if [ "$PIPELINE_PROXY_PROFILE" = codex ]; then
+    echo "profile=$PIPELINE_PROXY_PROFILE refresh=$ALLOWED_URL:${A:-000} model=${MODEL_URL:-none}:${M:-000} blocked1=${B:-000} blocked2=${C:-000} direct=${D:-000}"
+  else
+    echo "profile=$PIPELINE_PROXY_PROFILE allowed=$ALLOWED_URL:${A:-000} blocked1=${B:-000} blocked2=${C:-000} direct=${D:-000}"
+  fi
   [ -n "$A" ] && [ "$A" != 000 ] || exit 1     # allowed endpoint must be reachable
+  [ -z "${MODEL_URL:-}" ] || { [ -n "$M" ] && [ "$M" != 000 ] || exit 1; }
   [ -z "$B" ] || [ "$B" = 000 ] || exit 1      # github.com must be blocked
   [ -z "$C" ] || [ "$C" = 000 ] || exit 1      # registry.npmjs.org must be blocked
   [ -z "$D" ] || [ "$D" = 000 ] || exit 1      # no direct egress without the proxy
@@ -49,7 +55,7 @@ PROBE_CMD='
 run_probes() {
   docker run --rm --network "$NET" \
     -e HTTPS_PROXY="$PROXY" -e HTTP_PROXY="$PROXY" -e NO_PROXY=localhost,127.0.0.1 \
-    -e ALLOWED_URL="$ALLOWED_URL" -e PIPELINE_PROXY_PROFILE="$PROFILE" \
+    -e ALLOWED_URL="$ALLOWED_URL" -e MODEL_URL="${MODEL_URL:-}" -e PIPELINE_PROXY_PROFILE="$PROFILE" \
     "$BASE_IMG" sh -c "$PROBE_CMD"
 }
 
@@ -58,7 +64,7 @@ run_probes() {
 if command -v timeout >/dev/null 2>&1; then
   timeout "$BOUND" docker run --rm --network "$NET" \
     -e HTTPS_PROXY="$PROXY" -e HTTP_PROXY="$PROXY" -e NO_PROXY=localhost,127.0.0.1 \
-    -e ALLOWED_URL="$ALLOWED_URL" -e PIPELINE_PROXY_PROFILE="$PROFILE" \
+    -e ALLOWED_URL="$ALLOWED_URL" -e MODEL_URL="${MODEL_URL:-}" -e PIPELINE_PROXY_PROFILE="$PROFILE" \
     "$BASE_IMG" sh -c "$PROBE_CMD"
 else
   run_probes
