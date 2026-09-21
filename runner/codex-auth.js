@@ -4,6 +4,7 @@ const nodeFs = require('fs');
 const crypto = require('crypto');
 const path = require('path');
 const os = require('os');
+const processApi = require('./process');
 
 const AUTH_MODES = ['chatgpt', 'api-key'];
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -11,6 +12,23 @@ function cacheDefault() { return path.join(os.homedir(), '.pipeline-codex-auth')
 function managed(text) {
   try { const value = JSON.parse(text); return value && value.auth_mode === 'chatgpt'
     && value.tokens && typeof value.tokens.refresh_token === 'string' && value.tokens.refresh_token.trim() ? value : null; } catch { return null; }
+}
+function accessExpiry(value) {
+  if (!value || typeof value !== 'string') return null;
+  const parts = value.split('.');
+  if (parts.length < 2) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    return typeof payload.exp === 'number' && Number.isFinite(payload.exp) ? payload.exp : null;
+  } catch { return null; }
+}
+function usableAccess(value) {
+  const expiry = accessExpiry(value && value.tokens && value.tokens.access_token);
+  return expiry !== null && expiry > Math.floor(Date.now() / 1000);
+}
+function usableSession(text) {
+  const value = managed(text);
+  return !!(value && typeof value.tokens.access_token === 'string' && usableAccess(value));
 }
 function validateConfig(raw = {}) {
   const mode = raw.codexAuth === undefined ? 'api-key' : raw.codexAuth;
@@ -163,6 +181,77 @@ async function preflight(opts = {}) {
     if (/busy/.test(e.message || '')) return { ok: false, reason: 'ChatGPT credential lane is busy; wait for the active worker.' };
     return { ok: false, reason: 'Run codex login and complete device authentication before launching ChatGPT workers.' };
   }
+}
+
+// Refresh readiness is deliberately separate from structural preflight. The latter can seed
+// and validate a lane before the project lifecycle exists; this operation runs only after the
+// run has created its own network and proxy, while the lane lock remains held for the complete
+// refresh and atomic publication. The container gets a disposable copy inside the lane, never
+// the durable file and never an operator Codex home.
+async function refreshLane(opts = {}, root) {
+  const fs = opts.fs || nodeFs;
+  const lane = path.resolve(root);
+  let retained = null;
+  let refreshed = false;
+  try {
+    await withCacheLock({ ...opts, fs, cacheRoot: lane, wait: false }, async () => {
+      const durable = authFile(lane);
+      if (!fs.existsSync(durable)) throw new Error('durable cache missing');
+      const before = fs.readFileSync(durable, 'utf8');
+      if (!managed(before)) throw new Error('durable cache malformed');
+      fs.chmodSync(durable, 0o600);
+      if (usableSession(before)) return;
+      if (!opts.network || !opts.proxyUrl || !opts.image) throw new Error('refresh path is unavailable');
+
+      retained = path.join(lane, `refresh-${process.pid}-${Math.random().toString(16).slice(2)}`);
+      refreshed = true;
+      ensureDir(fs, retained);
+      copyAtomic(fs, durable, authFile(retained));
+
+      const env = { ...(opts.env || process.env) };
+      for (const name of ['CODEX_API_KEY', 'OPENAI_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'CODEX_HOME']) {
+        delete env[name];
+      }
+      const result = processApi.runSync('docker', [
+        'run', '--rm', '--network', opts.network,
+        '--security-opt', 'seccomp=unconfined', '--user', 'root',
+        '-e', `HTTPS_PROXY=${opts.proxyUrl}`, '-e', `HTTP_PROXY=${opts.proxyUrl}`,
+        '-e', 'NO_PROXY=localhost,127.0.0.1', '-e', 'CODEX_HOME=/root/.codex',
+        '-v', `${retained}:/root/.codex:rw`, opts.image, 'codex', 'exec',
+        '--ephemeral', '--ignore-user-config', '--ignore-rules', '--strict-config',
+        '--json', '-',
+      ], { cfg: opts.cfg, env, label: 'managed ChatGPT refresh probe' });
+      if (!result || result.status !== 0 || result.timedOut) throw new Error('refresh probe failed');
+
+      const after = fs.readFileSync(authFile(retained), 'utf8');
+      if (!usableSession(after)) throw new Error('refresh probe returned unusable authentication');
+      // copyAtomic writes/chmods a sibling temporary file before rename. If publication fails,
+      // the old durable bytes remain and `retained` is intentionally left for recovery.
+      copyAtomic(fs, authFile(retained), durable);
+      fs.rmSync(retained, { recursive: true, force: true });
+      retained = null;
+    });
+    return { ok: true, refreshed };
+  } catch (error) {
+    // Never return child stderr/stdout or exception text: both can contain OAuth material.
+    return { ok: false, recoverable: !!retained,
+      reason: 'managed ChatGPT refresh readiness failed; refresh was denied, unusable, or could not be persisted' };
+  }
+}
+
+async function refreshReadiness(opts = {}) {
+  const lanes = Array.isArray(opts.lanes) ? opts.lanes : [];
+  const candidates = lanes.length ? lanes : [{ id: 'lane-1', cacheRoot: opts.cacheRoot, healthy: true }];
+  const checked = [];
+  for (const lane of candidates) {
+    if (!lane || lane.healthy === false || typeof lane.cacheRoot !== 'string') continue;
+    const result = await refreshLane(opts, lane.cacheRoot);
+    checked.push({ ...lane, healthy: result.ok, ...(result.ok ? {} : { reason: 'refresh-failed' }) });
+  }
+  const healthy = checked.filter(lane => lane.healthy);
+  if (!healthy.length) return { ok: false, lanes: checked,
+    reason: 'managed ChatGPT refresh readiness failed; no healthy credential lane remains' };
+  return { ok: true, lanes: checked, healthyLaneCount: healthy.length };
 }
 
 // Credential jobs share a deterministic FIFO queue and acquire one exclusive lane;
@@ -338,4 +427,4 @@ async function recoverTaskCache(handle, opts = {}) {
   return true;
 }
 module.exports = { AUTH_MODES, validateConfig, preflight, stageTaskCache, releaseTaskCache,
-  recoverTaskCache, withCacheLock, createLanePool };
+  recoverTaskCache, withCacheLock, createLanePool, refreshReadiness, refreshLane };

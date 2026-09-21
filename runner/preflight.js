@@ -267,7 +267,8 @@ function preflightAfterAuth(cfg, repoRoot, log, deps = {}) {
   }
   log.info(t, `project lock held for ${cfg.targetRepoPath}`,
     { event: 'lock.held', data: { path: cfg.targetRepoPath } });
-  return startupGates(cfg, repoRoot, log, deps, t, {
+  const gates = deps.managedAuthReadiness ? startupGatesManaged : startupGates;
+  return gates(cfg, repoRoot, log, deps, t, {
     ownership: held.ownership,
     lockOwned: true,
     releaseOwnership: () => release(repoRoot, cfg.targetRepoPath, held.ownership),
@@ -279,7 +280,8 @@ function preflightAfterAuth(cfg, repoRoot, log, deps = {}) {
 // parent's lease already excludes every other coordinator from this canonical target, so the
 // child takes no lock and must never release the one it was let in under.
 function childPreflight(cfg, repoRoot, log, deps, t, child) {
-  return startupGates(cfg, repoRoot, log, deps, t, {
+  const gates = deps.managedAuthReadiness ? startupGatesManaged : startupGates;
+  return gates(cfg, repoRoot, log, deps, t, {
     ownership: null,
     lockOwned: false,
     childAdmission: child,
@@ -411,6 +413,104 @@ function startupGates(cfg, repoRoot, log, deps, t, owned) {
   }
 }
 
+// The managed lane has one asynchronous gate that must run after this run's network/proxy
+// exists and before stale Beads recovery. The legacy gate above remains synchronous so Claude
+// and API-key callers retain their established interface.
+async function startupGatesManaged(cfg, repoRoot, log, deps, t, owned) {
+  let keepOwnership = false;
+  let networkAttempted = false;
+  try {
+    const checkDocker = deps.dockerAvailable || dockerAvailable;
+    const checkImage = deps.imageExists || imageExists;
+    const startNetwork = deps.networkUp || networkUp;
+    const checkEgress = deps.egressCheck || egressCheck;
+    const recover = deps.recoverStaleIssues || recoverStaleIssues;
+    const identity = (deps.verifyRepoIdentity || verifyRepoIdentity)(cfg);
+    if (!identity.ok) return { ok: false, identityMismatch: true, reason: identity.reason };
+    log.info(t, `repository identity verified via '${identity.remoteName}' (${identity.identity})`);
+
+    const shell = (deps.resolveHostShell || resolveHostShell)(cfg.hostShell, { timeoutMs: cfg.lifecycleTimeoutMs });
+    if (!shell.ok) return { ok: false, reason: shell.reason, shellUnavailable: true };
+    cfg.hostShell = shell.command;
+    log.info(t, `host shell verified (${shell.kind}): ${shell.command}`);
+
+    const daemon = checkDocker(cfg);
+    if (daemon.status !== 0) return { ok: false,
+      reason: daemon.timedOut ? failureText(daemon) : 'Docker daemon not reachable (is Docker Desktop running?)' };
+    log.info(t, 'docker daemon reachable');
+    const image = checkImage(cfg.image, cfg);
+    if (image.status !== 0) return { ok: false,
+      reason: image.timedOut ? failureText(image)
+        : `image '${cfg.image}' not found — build it during planning (§3.4); the runner never builds` };
+    log.info(t, `image ${cfg.image} present`);
+
+    const provider = providerFor(cfg);
+    const supports = (deps.imageSupportsProvider || imageSupportsProvider)(cfg, provider);
+    if (!supports) return { ok: false,
+      reason: `image '${cfg.image}' has no usable ${provider} CLI with every required capability`
+        + ' — rebuild the pinned base image during planning (§3.4); the runner never builds' };
+    log.info(t, `image ${cfg.image} runs the selected ${provider} CLI`);
+    if ((!deps.imageSupportsProvider || deps.codexSandboxAvailable)
+        && !(deps.codexSandboxAvailable || codexSandboxAvailable)(cfg)) {
+      return { ok: false,
+        reason: `image '${cfg.image}' cannot start the Codex workspace sandbox as its non-root`
+          + ' task user — the Docker runtime must permit the provider-specific unprivileged'
+          + ' namespace policy; no task was started' };
+    }
+    if (!deps.imageSupportsProvider || deps.codexSandboxAvailable) {
+      log.info(t, `image ${cfg.image} starts the Codex workspace sandbox as node`);
+    }
+
+    networkAttempted = true;
+    const net = startNetwork(repoRoot, cfg, log, t);
+    if (!net.ok) return { ok: false, reason: `network/sidecar failed to start: ${net.output.trim()}` };
+    log.info(t, 'network + proxy sidecar up');
+    const eg = checkEgress(repoRoot, cfg);
+    if (!eg.ok) return { ok: false, reason: `egress check failed — allowlist not in force: ${eg.output.trim()}` };
+    log.info(t, 'egress check passed (allowlist in force)');
+
+    // Older injected auth objects intentionally remain structural-only. Production and this
+    // task's real module both expose refreshReadiness, so no legacy fixture gains a Docker call.
+    const refresh = deps.refreshReadiness
+      || (deps.codexAuth && deps.codexAuth.refreshReadiness)
+      || (!deps.codexAuth && codexAuth.refreshReadiness);
+    if (refresh) {
+      const auth = await Promise.resolve(refresh({
+        cfg, env: deps.env || process.env, fs: deps.fs,
+        cacheRoot: cfg.codexAuthCacheRoot, lanes: cfg.codexAuthLanes,
+        network: cfg.network, proxyUrl: cfg.proxyUrl, image: cfg.image,
+        targetRepoPath: cfg.targetRepoPath, repoRoot,
+      }));
+      if (!auth || !auth.ok) return { ok: false, authRefused: true,
+        reason: auth && auth.reason || 'managed ChatGPT refresh readiness failed; no healthy credential lane remains' };
+      if (Array.isArray(auth.lanes)) cfg.codexAuthLanes = auth.lanes;
+      log.info(t, 'managed ChatGPT refresh readiness passed');
+    }
+
+    const stale = recover(cfg, log, t, owned.ownership);
+    if (stale.error) log.error(t, `stale-issue recovery skipped: ${stale.error}`);
+    keepOwnership = true;
+    return { ok: true, recovered: stale.recovered || [], networkOwned: true,
+      lockOwned: owned.lockOwned, ownership: owned.ownership,
+      ...(owned.childAdmission ? { childAdmission: owned.childAdmission } : {}) };
+  } catch (e) {
+    return { ok: false, unexpected: true, reason: `preflight failed unexpectedly: ${e && e.message ? e.message : e}` };
+  } finally {
+    if (!keepOwnership) {
+      try {
+        if (networkAttempted) {
+          const down = (deps.networkDown || networkDown)(repoRoot, cfg);
+          if (down && down.ok === false) {
+            log.error(t, `preflight cleanup could not tear down network plumbing: ${String(down.output || '').trim() || 'no diagnostic'}`);
+          }
+        }
+      } catch (e) {
+        log.error(t, `preflight cleanup threw while tearing down network plumbing: ${e && e.message ? e.message : e}`);
+      } finally { owned.releaseOwnership(); }
+    }
+  }
+}
+
 // Managed ChatGPT state is checked before every lock and mutable gate. Legacy modes stay synchronous.
 function preflight(cfg, repoRoot, log, deps = {}) {
   if (providerFor(cfg) !== 'codex' || cfg.codexAuth !== 'chatgpt') return preflightAfterAuth(cfg, repoRoot, log, deps);
@@ -427,7 +527,7 @@ function preflight(cfg, repoRoot, log, deps = {}) {
       cfg.codexAuthCacheRoot = auth.cacheRoot;
       cfg.codexAuthLanes = [{ id: 'lane-1', cacheRoot: auth.cacheRoot, healthy: true }];
     }
-    return preflightAfterAuth(cfg, repoRoot, log, deps);
+    return preflightAfterAuth(cfg, repoRoot, log, { ...deps, managedAuthReadiness: true });
   });
 }
 
