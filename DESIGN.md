@@ -1099,6 +1099,10 @@ request once in its ordinary tick; when the recorded owner is provably dead, the
 reclaims the lease and remains alive as the replacement supervisor. Retry and settlement
 reconciliation therefore use one durable control path in both cases, and request replay can
 only repeat observation or acknowledgement, never child dispatch.
+If a pre-upgrade controller already settled the exact sealed predecessor grant but died before
+journaling that fact, a successor may treat matching terminal host evidence as an idempotent
+answer. This read-only check compares the complete authority bytes and requested outcome; it
+does not confer admission, settlement or section authority over any live or foreign grant.
 
 **The production proposal supervisor is a durable poller, not an operator-driven
 tick.** `runner/proposal-supervisor.js` acquires the parent lease before its unattended

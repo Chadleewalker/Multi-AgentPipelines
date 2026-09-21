@@ -114,7 +114,15 @@ function enqueueRetryRequest(project, request, env = process.env) {
   }
   const created = atomicWriteJson(paths.requestPath, { ...paths.body,
     requestedAt: new Date().toISOString() }, true);
-  return { ok: true, id: paths.id, queued: created, existing: !created,
+  let retried = false;
+  if (!created) {
+    try {
+      const prior = JSON.parse(fs.readFileSync(paths.resultPath, 'utf8'));
+      if (prior && prior.ok === false) { fs.unlinkSync(paths.resultPath); retried = true; }
+    } catch {}
+  }
+  return { ok: true, id: paths.id, queued: created || retried, existing: !created && !retried,
+    retried,
     requestPath: paths.requestPath, resultPath: paths.resultPath };
 }
 
@@ -426,6 +434,11 @@ function productionAdapters(repoRoot, options = {}) {
           const known = authorityApi.settlementState(currentLease, nonce);
           if (known && known.ok && known.settled && known.outcome === settlement.outcome) {
             return { ok: true, existing: true };
+          }
+          const exact = grant && grant.authority
+            ? authorityApi.grantState(grant.authority) : null;
+          if (exact && exact.ok && exact.settled && exact.outcome === settlement.outcome) {
+            return { ok: true, existing: true, terminalEvidence: true };
           }
         }
         return made;
