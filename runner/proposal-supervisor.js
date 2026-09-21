@@ -1201,7 +1201,10 @@ function createProductionSupervisor(options = {}) {
       && current.retry.proposalId === proposalId && current.retry.operationId === operationId
       && current.retry.predecessor.runId === predecessor.runId
       && (!requestId || current.retry.requestId === requestId);
-    if (!resuming) {
+    // Adoption is only a durable identity decision, not a settlement decision. A crash
+    // immediately after that event must still enter the ordinary requested phase so the
+    // old sealed grant is released before any new grant or child dispatch.
+    if (!resuming || current.retry.phase === 'legacy-successor-adopted') {
       append('feed.retry-requested', { proposalId, operationId, reason, predecessor,
         requestId, expectedRunId: expectedRunId || null,
         legacyAdoption: current.retry && current.retry.legacyAdoption || null });

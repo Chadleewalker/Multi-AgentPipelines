@@ -59,6 +59,11 @@ async function check(name, body) {
         id: 'a'.repeat(64), expectedRunId: legacy.failed.child.runId,
         reason: 'adopt the exact durable successor and retry it' });
       assert(result.ok, JSON.stringify(result));
+      const settledPredecessor = AUTH.settlementState(w.currentOwner.lease,
+        legacy.child.authority.nonce);
+      assert(settledPredecessor.ok && settledPredecessor.settled
+        && settledPredecessor.outcome === 'released',
+      `adopted predecessor grant was not released before replacement: ${JSON.stringify(settledPredecessor)}`);
       assert.strictEqual(w.children.filter(row => row.kind === 'implementation').length, before + 1);
       const row = await w.supervisor.status(legacy.failed.p.proposalId);
       assert(row.implementation.legacyAdoption, JSON.stringify(row));
@@ -114,6 +119,44 @@ async function check(name, body) {
       });
     }));
 
+  results.push(await check('C2 C3 crash after adoption resumes predecessor release before dispatch',
+    () => world('repo-wjl-adoption-crash', async w => {
+      const legacy = await legacySuccessor(w);
+      const grant = w.events().find(event => event.type === 'feed.granted'
+        && event.operationId === legacy.failed.id).grant;
+      const proof = w.manager.proveDirectSuccessor({ project: w.target, id: legacy.failed.id,
+        predecessorRunId: legacy.failed.child.runId, grant });
+      assert(proof.ok, JSON.stringify(proof));
+      const predecessor = { operationId: legacy.failed.id,
+        runId: legacy.failed.child.runId, attempt: 1,
+        grantNonce: legacy.child.authority.nonce };
+      const successor = { id: proof.operation.id, project: proof.operation.project,
+        kind: proof.operation.kind, runId: proof.operation.runId,
+        state: proof.operation.state, attempt: proof.operation.attempt,
+        grantNonce: proof.operation.grantNonce };
+      // An exact controller crash seam: the identity event fsynced, but retry-requested
+      // did not. The real operation and both real child/grant records are untouched.
+      const events = w.events();
+      fs.appendFileSync(path.join(w.stateDir, 'events.jsonl'), `${JSON.stringify({
+        sequence: events.length + 1, type: 'feed.legacy-successor-adopted',
+        at: new Date().toISOString(), proposalId: legacy.failed.p.proposalId,
+        operationId: legacy.failed.id, reason: 'resume after identity decision',
+        requestId: 'c'.repeat(64), expectedRunId: legacy.failed.child.runId,
+        predecessor, successor,
+      })}\n`);
+      w.reconstruct();
+      const result = await w.supervisor.retry({ proposalId: legacy.failed.p.proposalId,
+        operationId: legacy.failed.id, approved: true, id: 'c'.repeat(64),
+        expectedRunId: legacy.failed.child.runId,
+        reason: 'resume after identity decision' });
+      assert(result.ok, JSON.stringify(result));
+      const released = AUTH.settlementState(w.currentOwner.lease,
+        legacy.child.authority.nonce);
+      assert(released.ok && released.settled && released.outcome === 'released',
+        'crash replay skipped predecessor settlement');
+      assert.strictEqual(w.children.filter(row => row.kind === 'implementation').length, 3);
+    })));
+
   results.push(await check('C3 C4 durable request replay and identical CLI text cannot authorize a later run',
     () => world('repo-wjl-durable-request', async w => {
       const legacy = await legacySuccessor(w);
@@ -124,6 +167,10 @@ async function check(name, body) {
       assert(queued.result.ok && queued.result.queued, JSON.stringify(queued));
       await w.supervisor.tick();
       assert(fs.existsSync(queued.result.resultPath), 'owning supervisor did not acknowledge request');
+      const predecessor = AUTH.settlementState(w.currentOwner.lease,
+        legacy.child.authority.nonce);
+      assert(predecessor.ok && predecessor.settled && predecessor.outcome === 'released',
+        'durable request left the adopted predecessor grant outstanding');
       const before = w.children.filter(row => row.kind === 'implementation').length;
       const replacement = w.feed();
       assert.notStrictEqual(replacement.runId, legacy.child.runId);
