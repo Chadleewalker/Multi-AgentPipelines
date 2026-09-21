@@ -7,7 +7,8 @@
 // issues, and tear the network down at run end.
 'use strict';
 const path = require('path');
-const { bd, bdJson } = require('./bd');
+const crypto = require('crypto');
+const { bd, bdJson, toMountPath } = require('./bd');
 const { deriveNames } = require('./config');
 const {
   acquire, release, clearRecoveryOwner, OWNER_TOKEN_KEY, OWNER_RUN_KEY,
@@ -18,6 +19,7 @@ const { verifyRepoIdentity } = require('./repo-identity');
 const { admitEntry } = require('./supervisor');
 const {
   normalizeProvider, providerFor, missingCodexCapabilities,
+  CODEX_REQUIRED_EXEC_FLAGS,
 } = require('./agent-provider');
 const codexAuth = require('./codex-auth');
 const { sandboxSecurityArgs } = require('./container');
@@ -72,6 +74,50 @@ function codexSandboxAvailable(cfg, execute = sh) {
     '--user', 'node', '--entrypoint', 'codex', cfg.image, 'sandbox', '--', 'true',
   ], { label: 'Codex workspace sandbox capability probe' });
   return !!probe && probe.status === 0;
+}
+
+// A credential-free prompt reaches the pinned CLI through process input AND Docker
+// stdin. The root wrapper performs only the same private cache handoff as tasks;
+// Codex runs as node, without a repository, host configuration or verifier attached.
+function managedRefreshProbe(cfg, handle) {
+  const env = { ...process.env, MSYS_NO_PATHCONV: '1' };
+  for (const key of ['CODEX_HOME', 'CODEX_API_KEY', 'OPENAI_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']) delete env[key];
+  const name = `codex-readiness-${process.pid}-${crypto.randomBytes(8).toString('hex')}`;
+  const script = `set -eu
+    chmod 700 /run/pipeline-auth-host /root/.codex
+    cp -f /run/pipeline-auth-host/cache/auth.json /root/.codex/auth.json
+    chown -R node:node /root/.codex
+    chmod 600 /root/.codex/auth.json
+    rc=0
+    timeout -s KILL 55 runuser -u node --preserve-environment -- "$@" || rc=$?
+    cp -f /root/.codex/auth.json /run/pipeline-auth-host/cache/.auth.tmp
+    chmod 600 /run/pipeline-auth-host/cache/.auth.tmp
+    mv -f /run/pipeline-auth-host/cache/.auth.tmp /run/pipeline-auth-host/cache/auth.json
+    exit "$rc"`;
+  const result = sh(cfg, 'docker', [
+    'run', '--rm', '-i', '--name', name, '--network', cfg.network,
+    ...sandboxSecurityArgs('codex'), '--user', 'root', '--read-only',
+    '--pids-limit', '128', '--memory', '512m', '--cpus', '1',
+    '--tmpfs', '/tmp:rw,nosuid,nodev,size=64m',
+    '--tmpfs', '/root/.codex:rw,nosuid,nodev,size=32m',
+    '--tmpfs', '/run/pipeline-auth-host:rw,nosuid,nodev,size=1m,mode=0700',
+    '-v', `${toMountPath(handle.hostPath)}:/run/pipeline-auth-host/cache:rw`,
+    '-e', 'CODEX_HOME=/root/.codex',
+    '-e', `HTTPS_PROXY=${cfg.proxyUrl}`, '-e', `HTTP_PROXY=${cfg.proxyUrl}`,
+    '-e', 'NO_PROXY=localhost,127.0.0.1',
+    '--entrypoint', 'bash', cfg.image, '-c', script, '--',
+    'codex', 'exec', '--model', cfg.model || 'gpt-5.6-terra',
+    '--sandbox', 'read-only', ...CODEX_REQUIRED_EXEC_FLAGS.filter(flag => flag !== '--approve-for-me'),
+    '--skip-git-repo-check', '--json', '-',
+  ], { env, input: 'Reply with exactly OK. Do not use tools or read any files.\n',
+    timeoutMs: 90000, maxBuffer: 256 * 1024, label: 'managed ChatGPT refresh readiness' });
+  // Killing the Docker client alone can leave its container alive. The internal bound
+  // normally ends it first; on transport interruption remove only our random name.
+  if (result && (result.error || result.signal)) {
+    sh(cfg, 'docker', ['rm', '-f', name], { env, timeoutMs: 10000,
+      maxBuffer: 4096, label: 'managed ChatGPT readiness cleanup' });
+  }
+  return result;
 }
 
 // The network, the proxy sidecar and its port are per project (§4.8 — `config.js`
@@ -289,11 +335,24 @@ function childPreflight(cfg, repoRoot, log, deps, t, child) {
 
 // Everything after admission and the lock. Extracted so the standalone and supervisor-child
 // paths cannot drift apart in gate ORDER — the order is the contract (§4.12): identity, shell,
-// Docker, image, network, egress, stale-issue recovery, and a compensating teardown on every
+// Docker, image, network, egress, managed refresh, stale-issue recovery, and teardown on every
 // unsuccessful path.
 function startupGates(cfg, repoRoot, log, deps, t, owned) {
   let keepOwnership = false;
   let networkAttempted = false;
+  let asyncCleanup = false;
+  function cleanup() {
+    if (keepOwnership) return;
+    try {
+      if (networkAttempted) {
+        const down = (deps.networkDown || networkDown)(repoRoot, cfg);
+        if (down && down.ok === false) {
+          log.error(t, `preflight cleanup could not tear down network plumbing: ${String(down.output || '').trim() || 'no diagnostic'}`);
+        }
+      }
+    } catch (e) { log.error(t, `preflight cleanup threw while tearing down network plumbing: ${e && e.message ? e.message : e}`); }
+    finally { owned.releaseOwnership(); }
+  }
   try {
     const checkDocker = deps.dockerAvailable || dockerAvailable;
     const checkImage = deps.imageExists || imageExists;
@@ -372,42 +431,44 @@ function startupGates(cfg, repoRoot, log, deps, t, owned) {
     // attempted startup therefore owns a compensating `down` on every non-success path.
     networkAttempted = true;
     const net = startNetwork(repoRoot, cfg, log, t);
-    if (!net.ok) return { ok: false, reason: `network/sidecar failed to start: ${net.output.trim()}` };
+    if (!net.ok) return { ok: false, reason: cfg.codexAuth === 'chatgpt' && provider === 'codex'
+      ? codexAuth.REFRESH_READINESS_REASON : `network/sidecar failed to start: ${net.output.trim()}` };
     log.info(t, 'network + proxy sidecar up');
 
     const eg = checkEgress(repoRoot, cfg);
-    if (!eg.ok) return { ok: false, reason: `egress check failed — allowlist not in force: ${eg.output.trim()}` };
+    if (!eg.ok) return { ok: false, reason: cfg.codexAuth === 'chatgpt' && provider === 'codex'
+      ? codexAuth.REFRESH_READINESS_REASON : `egress check failed — allowlist not in force: ${eg.output.trim()}` };
     log.info(t, 'egress check passed (allowlist in force)');
 
-    const stale = recover(cfg, log, t, owned.ownership);
-    if (stale.error) log.error(t, `stale-issue recovery skipped: ${stale.error}`);
+    function finishAdmission() {
+      const stale = recover(cfg, log, t, owned.ownership);
+      if (stale.error) log.error(t, `stale-issue recovery skipped: ${stale.error}`);
 
-    keepOwnership = true;
-    return {
-      ok: true,
-      recovered: stale.recovered || [],
-      networkOwned: true,
-      lockOwned: owned.lockOwned,
-      ownership: owned.ownership,
-      ...(owned.childAdmission ? { childAdmission: owned.childAdmission } : {}),
-    };
+      keepOwnership = true;
+      return {
+        ok: true,
+        recovered: stale.recovered || [],
+        networkOwned: true,
+        lockOwned: owned.lockOwned,
+        ownership: owned.ownership,
+        ...(owned.childAdmission ? { childAdmission: owned.childAdmission } : {}),
+      };
+    }
+    if (provider === 'codex' && cfg.codexAuth === 'chatgpt') {
+      asyncCleanup = true;
+      return codexAuth.refreshReadiness({ lanes: cfg.codexAuthLanes,
+        probe: handle => managedRefreshProbe(cfg, handle) }).then(auth => {
+        cfg.codexAuthLanes = auth.lanes;
+        if (!auth.ok) return { ok: false, authRefused: true, reason: auth.reason };
+        return finishAdmission();
+      }).catch(() => ({ ok: false, authRefused: true, reason: codexAuth.REFRESH_READINESS_REASON }))
+        .finally(cleanup);
+    }
+    return finishAdmission();
   } catch (e) {
     return { ok: false, unexpected: true, reason: `preflight failed unexpectedly: ${e && e.message ? e.message : e}` };
   } finally {
-    if (!keepOwnership) {
-      try {
-        if (networkAttempted) {
-          const down = (deps.networkDown || networkDown)(repoRoot, cfg);
-          if (down && down.ok === false) {
-            log.error(t, `preflight cleanup could not tear down network plumbing: ${String(down.output || '').trim() || 'no diagnostic'}`);
-          }
-        }
-      } catch (e) {
-        log.error(t, `preflight cleanup threw while tearing down network plumbing: ${e && e.message ? e.message : e}`);
-      } finally {
-        owned.releaseOwnership();
-      }
-    }
+    if (!asyncCleanup) cleanup();
   }
 }
 
@@ -421,17 +482,20 @@ function preflight(cfg, repoRoot, log, deps = {}) {
       : { cacheRoot: env.PIPELINE_CODEX_CACHE }),
     targetRepoPath: cfg.targetRepoPath, repoRoot,
   })).then((auth) => {
-    if (!auth || !auth.ok) return { ok: false, authRefused: true, reason: auth && auth.reason || 'ChatGPT authentication unavailable' };
+    if (!auth || !auth.ok) return { ok: false, authRefused: true,
+      reason: auth && /busy/.test(auth.reason || '')
+        ? 'Managed ChatGPT refresh readiness refused: credential lane is busy; wait for the active worker.'
+        : codexAuth.REFRESH_READINESS_REASON };
     if (Array.isArray(auth.lanes)) cfg.codexAuthLanes = auth.lanes;
     else {
       cfg.codexAuthCacheRoot = auth.cacheRoot;
       cfg.codexAuthLanes = [{ id: 'lane-1', cacheRoot: auth.cacheRoot, healthy: true }];
     }
     return preflightAfterAuth(cfg, repoRoot, log, deps);
-  });
+  }).catch(() => ({ ok: false, authRefused: true, reason: codexAuth.REFRESH_READINESS_REASON }));
 }
 
 module.exports = {
   preflight, networkUp, networkDown, egressCheck, imageExists, imageSupportsProvider,
-  codexSandboxAvailable, dockerAvailable, recoverStaleIssues, metadataOf, ownedBy, verifyRepoIdentity,
+  codexSandboxAvailable, managedRefreshProbe, dockerAvailable, recoverStaleIssues, metadataOf, ownedBy, verifyRepoIdentity,
 };

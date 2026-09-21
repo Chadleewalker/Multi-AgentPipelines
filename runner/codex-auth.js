@@ -114,7 +114,63 @@ function canonicalLaneRoots(opts, fs) {
 function copyAtomic(fs, source, destination) {
   const data = fs.readFileSync(source, 'utf8'); if (!managed(data)) throw new Error('saved ChatGPT session is invalid');
   const temp = `${destination}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
-  fs.writeFileSync(temp, data, { mode: 0o600 }); fs.chmodSync(temp, 0o600); fs.renameSync(temp, destination);
+  try {
+    fs.writeFileSync(temp, data, { mode: 0o600 }); fs.chmodSync(temp, 0o600); fs.renameSync(temp, destination);
+  } finally { try { fs.unlinkSync(temp); } catch {} }
+}
+
+// Expiry is a freshness check, never an authentication proof. Unknown/malformed
+// access tokens must take the real CLI path too, not structural admission.
+function futureAccess(text) {
+  const session = managed(text);
+  try {
+    const token = session.tokens.access_token;
+    const exp = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8')).exp;
+    return typeof exp === 'number' && Number.isFinite(exp) && exp > Date.now() / 1000 + 60;
+  } catch { return false; }
+}
+const REFRESH_READINESS_REASON = 'Managed ChatGPT refresh readiness failed. Check the pinned Codex image and restricted proxy access to auth.openai.com:443, then retry; if the session is revoked, run codex login for that lane. Prior durable credentials and any recovery copy were preserved.';
+
+// Called only after the selected network/egress policy is up, before target mutation.
+// Reuse the task handoff lock and publication path for the entire refresh transaction.
+async function refreshReadiness(opts = {}) {
+  const lanes = [];
+  for (const lane of opts.lanes || []) {
+    if (!lane.healthy) { lanes.push(lane); continue; }
+    let handle;
+    try {
+      handle = await stageTaskCache({ cacheRoot: lane.cacheRoot, taskId: 'refresh-readiness',
+        ...(opts.fs ? { fs: opts.fs } : {}), wait: false });
+      const fs = handle.fs;
+      const file = authFile(handle.hostPath);
+      if (!futureAccess(fs.readFileSync(file, 'utf8'))) {
+        const result = await opts.probe(handle);
+        if (!result || result.status !== 0 || result.error || result.timedOut
+            || !futureAccess(fs.readFileSync(file, 'utf8'))) throw new Error('refresh-unusable');
+        await releaseTaskCache(handle);
+      } else {
+        // No refresh needed: avoid rewriting the durable cache just to inspect it.
+        fs.rmSync(handle.hostPath, { recursive: true, force: true });
+        unlockTaskCache(handle);
+      }
+      lanes.push({ ...lane, healthy: true });
+    } catch {
+      // Never echo CLI output, filesystem errors, paths or auth contents. A rotated
+      // token may exist even after a failed model turn, so retain the handoff for repair.
+      if (handle) { handle.retained = true; unlockTaskCache(handle); }
+      lanes.push({ ...lane, healthy: false, reason: 'refresh-readiness' });
+    }
+  }
+  const healthyLaneCount = lanes.filter(lane => lane.healthy).length;
+  return { ok: healthyLaneCount > 0, lanes, healthyLaneCount,
+    ...(healthyLaneCount ? {} : { reason: REFRESH_READINESS_REASON }) };
+}
+function unlockTaskCache(handle) {
+  const fs = handle.fs || nodeFs;
+  try {
+    const file = lockPath(handle.cacheRoot); const owner = managedLock(fs, file);
+    if (owner && handle.owner && owner.nonce === handle.owner.nonce) fs.unlinkSync(file);
+  } catch { /* an unremovable lock remains fail-closed */ }
 }
 async function preflight(opts = {}) {
   if (opts.mode !== 'chatgpt') return { ok: true, cacheRoot: opts.cacheRoot || cacheDefault() };
@@ -338,4 +394,4 @@ async function recoverTaskCache(handle, opts = {}) {
   return true;
 }
 module.exports = { AUTH_MODES, validateConfig, preflight, stageTaskCache, releaseTaskCache,
-  recoverTaskCache, withCacheLock, createLanePool };
+  recoverTaskCache, withCacheLock, createLanePool, refreshReadiness, REFRESH_READINESS_REASON };

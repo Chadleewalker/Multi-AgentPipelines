@@ -34,12 +34,17 @@ esac
 PROBE_CMD='
   code() { curl -s -m 10 -o /dev/null -w "%{http_code}" "$1" 2>/dev/null || true; }
   A=$(code "$ALLOWED_URL")
+  R=skipped
+  if [ "$PIPELINE_PROXY_PROFILE" = codex ]; then
+    R=$(code https://auth.openai.com/oauth/token)
+  fi
   B=$(code https://github.com/)
   C=$(code https://registry.npmjs.org/)
   D=$(env -u HTTPS_PROXY -u HTTP_PROXY sh -c \
       "curl -s -m 8 -o /dev/null -w \"%{http_code}\" https://github.com/ 2>/dev/null" || true)
-  echo "profile=$PIPELINE_PROXY_PROFILE allowed=$ALLOWED_URL:${A:-000} blocked1=${B:-000} blocked2=${C:-000} direct=${D:-000}"
+  echo "profile=$PIPELINE_PROXY_PROFILE allowed=$ALLOWED_URL:${A:-000} refresh=${R:-000} blocked1=${B:-000} blocked2=${C:-000} direct=${D:-000}"
   [ -n "$A" ] && [ "$A" != 000 ] || exit 1     # allowed endpoint must be reachable
+  [ -n "$R" ] && [ "$R" != 000 ] || exit 1     # OAuth route must be reachable too
   [ -z "$B" ] || [ "$B" = 000 ] || exit 1      # github.com must be blocked
   [ -z "$C" ] || [ "$C" = 000 ] || exit 1      # registry.npmjs.org must be blocked
   [ -z "$D" ] || [ "$D" = 000 ] || exit 1      # no direct egress without the proxy

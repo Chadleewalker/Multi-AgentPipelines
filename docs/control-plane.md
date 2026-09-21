@@ -155,8 +155,9 @@ configurable:
 - **The container command.** The runner passes `PIPELINE_PROVIDER`, and
   `pipeline/entrypoint.sh` selects that provider's noninteractive invocation.
 - **The egress profile.** `docker/proxy` carries the Anthropic endpoints;
-  `docker/proxy-codex` allows exactly `api.openai.com`, `chatgpt.com`, and
-  `ab.chatgpt.com`. `PIPELINE_PROXY_PROFILE` picks which sidecar `scripts/pipeline-net.sh`
+  `docker/proxy-codex` allows exactly `api.openai.com`, `chatgpt.com`,
+  `ab.chatgpt.com`, and `auth.openai.com` (the pinned CLI's OAuth refresh host).
+  `PIPELINE_PROXY_PROFILE` picks which sidecar `scripts/pipeline-net.sh`
   builds and which endpoint `scripts/egress-check.sh` proves reachable. One profile per
   provider: widening either to carry the other's endpoints is refused by design, not by a
   check.
@@ -173,8 +174,7 @@ Because that sandbox creates its own unprivileged namespace, Codex task containe
 a host namespace, the Docker socket, or another host path. Before network startup or target
 mutation, preflight runs `codex sandbox -- true` without credentials or network as the image's
 non-root `node` user under that exact option and refuses a host where the namespace cannot start.
-The one live model call in the Codex surface is opt-in and
-documentary:
+The separate model-identification smoke is opt-in and documentary:
 
 ```bash
 CODEX_LIVE_SMOKE=1 node scripts/codex-live-smoke.js --image <rebuilt-pinned-task-image>
@@ -203,6 +203,20 @@ untouched while healthy siblings continue. A staging, launch, or refresh rejecti
 one failed task row and one canonical `task.finished` event while the shared drain awaits every
 healthy sibling before report generation and cleanup. The ownership module does not mutate
 process I/O or add caller keepalive polling.
+
+After restricted networking and egress checks pass, implementation readiness checks each
+eligible lane again under its exclusive lock. Expired or unparseable access tokens must
+complete a bounded authenticated Codex turn through that same proxy and task image before
+stale-issue recovery, any Beads mutation, target workspace creation or task launch. The probe
+supplies a fixed credential-free prompt over stdin, runs Codex as `node` with a private
+internal cache, and mounts no repository. Only a successful CLI exit with a usable refresh
+token and future access expiry can atomically replace the durable cache with mode `0600`.
+Failure quarantines the lane and preserves prior durable state plus its recovery copy;
+no healthy lane means a bounded, credential-redacted managed ChatGPT refresh readiness refusal.
+The egress gate positively visits `https://auth.openai.com/oauth/token` as well as the
+model endpoint and retains both blocked-host checks and the direct-egress negative control.
+Squid admits only the exact OAuth host on CONNECT port 443; TLS passthrough does not inspect
+URL paths. API-key and other-provider readiness do not run this credential probe.
 
 ## Supervised operation
 

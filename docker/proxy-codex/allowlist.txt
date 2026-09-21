@@ -5,3 +5,4 @@
 api.openai.com
 chatgpt.com
 ab.chatgpt.com
+auth.openai.com

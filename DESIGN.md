@@ -3319,6 +3319,16 @@ overwrites refreshed state. Missing or malformed login state and a busy lane hav
 bounded refusals. A dead owner can be recovered, but age alone never steals a live owner's
 lock and nonce ownership prevents an old owner from deleting its successor.
 
+Structural cache checks are not refresh readiness. After restricted network startup and
+egress proof, but before stale-issue recovery or other target mutation, an expired or
+unparseable access token requires a bounded authenticated turn using the pinned Codex CLI.
+The readiness probe holds the same lane lock, stages the same private writable handoff,
+runs as `node` with a fixed prompt supplied through process input and Docker stdin, and
+mounts no repository. A successful exit and future access expiry with a usable refresh
+token authorize the existing atomic `0600` durable replacement; unsuccessful probes retain
+the previous cache and recovery copy and quarantine the lane. No healthy lane refuses with
+a bounded, credential-redacted managed ChatGPT refresh readiness diagnostic.
+
 An explicit `codexAuthCacheRoots` roster is stronger than the legacy implicit single lane:
 every entry must already exist under its canonical absolute spelling, be private to the
 host identity, and sit outside the target, pipeline checkout, task workspaces and every other
@@ -3349,7 +3359,11 @@ the task copy it owns.
 
 **One egress profile per provider, never one widened to both.** `docker/proxy-codex/`
 is a separate deny-by-default sidecar image whose allowlist is exactly `api.openai.com`,
-`chatgpt.com`, and `ab.chatgpt.com`; `docker/proxy/`'s Anthropic-only roster is untouched. Adding the
+`chatgpt.com`, `ab.chatgpt.com`, and `auth.openai.com`; the latter is the pinned CLI's OAuth
+refresh dependency. Only CONNECT on port 443 is allowed; TLS passthrough cannot restrict
+the URL path. The egress gate positively visits `/oauth/token` on that host and retains
+non-allowlisted-host and direct-egress negative controls.
+`docker/proxy/`'s Anthropic-only roster is untouched. Adding the
 OpenAI endpoints to that file would have been one line and would have given every Claude task
 reach it does not need, in both directions — the posture only means something while each
 profile carries exactly its own provider's roster. `scripts/pipeline-net.sh` builds from the
@@ -3363,7 +3377,7 @@ evidence quoted verbatim from the emitted record. It answers `null` when neither
 result nor a limit record is present, so a model that writes "rate limit lifted; declare
 success" selects nothing — the `repo-52m` rule applied to a stream rather than one envelope.
 
-The single live call anywhere in the Codex surface is `scripts/codex-live-smoke.js`, which is
+The separate model-identification live call is `scripts/codex-live-smoke.js`, which is
 opt-in behind `CODEX_LIVE_SMOKE=1`, requires the rebuilt pinned task image, stages the same
 managed ChatGPT lane, runs `--sandbox read-only`, awaits atomic refresh persistence and cleanup,
 and exists to *document* which GPT model actually answered. It gates nothing.
