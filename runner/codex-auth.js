@@ -4,6 +4,7 @@ const nodeFs = require('fs');
 const crypto = require('crypto');
 const path = require('path');
 const os = require('os');
+const { runSync } = require('./process');
 
 const AUTH_MODES = ['chatgpt', 'api-key'];
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -11,6 +12,29 @@ function cacheDefault() { return path.join(os.homedir(), '.pipeline-codex-auth')
 function managed(text) {
   try { const value = JSON.parse(text); return value && value.auth_mode === 'chatgpt'
     && value.tokens && typeof value.tokens.refresh_token === 'string' && value.tokens.refresh_token.trim() ? value : null; } catch { return null; }
+}
+function accessExpiry(text) {
+  try {
+    const token = JSON.parse(text).tokens.access_token;
+    if (typeof token !== 'string') return null;
+    const part = token.split('.')[1];
+    if (!part) return null;
+    const payload = JSON.parse(Buffer.from(part, 'base64url').toString('utf8'));
+    return typeof payload.exp === 'number' && Number.isFinite(payload.exp) ? payload.exp : null;
+  } catch { return null; }
+}
+function accessExpired(text, now = Date.now()) {
+  const exp = accessExpiry(text);
+  return exp !== null && exp <= now / 1000;
+}
+function refreshedSession(text, now = Date.now()) {
+  if (!managed(text)) return false;
+  try {
+    const tokens = JSON.parse(text).tokens;
+    return typeof tokens.access_token === 'string' && tokens.access_token.trim()
+      && typeof tokens.refresh_token === 'string' && tokens.refresh_token.trim()
+      && accessExpiry(text) !== null && !accessExpired(text, now);
+  } catch { return false; }
 }
 function validateConfig(raw = {}) {
   const mode = raw.codexAuth === undefined ? 'api-key' : raw.codexAuth;
@@ -115,6 +139,120 @@ function copyAtomic(fs, source, destination) {
   const data = fs.readFileSync(source, 'utf8'); if (!managed(data)) throw new Error('saved ChatGPT session is invalid');
   const temp = `${destination}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
   fs.writeFileSync(temp, data, { mode: 0o600 }); fs.chmodSync(temp, 0o600); fs.renameSync(temp, destination);
+}
+
+function refreshEnvironment() {
+  const env = { ...process.env };
+  for (const name of ['CODEX_API_KEY', 'OPENAI_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'CODEX_HOME']) delete env[name];
+  return env;
+}
+
+function refreshArgs(opts, hostPath) {
+  const cfg = opts.cfg || {};
+  const network = cfg.network;
+  const proxy = cfg.proxyUrl || (cfg.proxyName && cfg.proxyPort
+    ? `http://${cfg.proxyName}:${cfg.proxyPort}` : '');
+  return [
+    'run', '--rm', '--network', network,
+    '--security-opt', 'seccomp=unconfined', '--user', 'root',
+    '-e', `HTTPS_PROXY=${proxy}`, '-e', `HTTP_PROXY=${proxy}`,
+    '-e', 'NO_PROXY=localhost,127.0.0.1', '-e', 'CODEX_HOME=/root/.codex',
+    '-v', `${hostPath}:/root/.codex:rw`,
+    '--entrypoint', 'codex', cfg.image,
+    'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules',
+    '--skip-git-repo-check', '--json', '-',
+  ];
+}
+
+function refreshFailure(result, detail) {
+  if (detail) return `managed ChatGPT refresh readiness failed: ${detail}`;
+  if (result && result.timedOut) return 'managed ChatGPT refresh readiness failed: refresh probe timed out';
+  const status = result && result.status !== undefined ? `status ${result.status}` : 'no result';
+  return `managed ChatGPT refresh readiness failed: refresh probe rejected (${status})`;
+}
+
+function acquireRefreshLock(opts, root, fs) {
+  const file = lockPath(root);
+  try {
+    const fd = fs.openSync(file, 'wx', 0o600);
+    const owner = { pid: process.pid, createdAt: Date.now(), nonce: `${process.pid}-${Math.random()}` };
+    fs.chmodSync(file, 0o600); fs.writeFileSync(fd, JSON.stringify(owner)); fs.closeSync(fd);
+    return { file, owner };
+  } catch (error) {
+    if (!error || error.code !== 'EEXIST') throw error;
+    const current = managedLock(fs, file);
+    const stat = (() => { try { return fs.statSync(file); } catch { return null; } })();
+    const stale = opts.staleMs === undefined ? 30000 : opts.staleMs;
+    if (current ? (!alive(current) && Date.now() - Number(current.createdAt || 0) > stale)
+      : stat && Date.now() - stat.mtimeMs > stale) {
+      try { fs.unlinkSync(file); } catch {}
+      return acquireRefreshLock(opts, root, fs);
+    }
+    throw new Error('ChatGPT credential lane is busy');
+  }
+}
+
+function unlockRefresh(fs, lock) {
+  if (!lock) return;
+  try {
+    const current = managedLock(fs, lock.file);
+    if (current && current.nonce === lock.owner.nonce) fs.unlinkSync(lock.file);
+  } catch {}
+}
+
+// Probe an expired session through the same private writable handoff and Codex CLI path used
+// by task containers. This deliberately stays synchronous: startupGates is synchronous for
+// Claude/API-key runs, and the managed path is already promise-backed by preflight().
+function refreshReadiness(opts = {}) {
+  const fs = opts.fs || nodeFs;
+  const lanes = Array.isArray(opts.lanes) ? opts.lanes : [];
+  const healthy = [];
+  const failed = [];
+  for (const lane of lanes) {
+    if (!lane || !lane.healthy || !lane.cacheRoot) continue;
+    const root = path.resolve(lane.cacheRoot);
+    let lock = null; let handoff = null; let retained = false;
+    try {
+      lock = acquireRefreshLock(opts, root, fs);
+      const durable = authFile(root);
+      if (!fs.existsSync(durable)) throw new Error('durable session is missing');
+      const before = fs.readFileSync(durable, 'utf8');
+      if (!managed(before)) throw new Error('durable session is malformed');
+      if (!accessExpired(before)) { healthy.push(lane); continue; }
+
+      const tasks = path.join(root, 'tasks'); ensureDir(fs, tasks);
+      handoff = path.join(tasks, `readiness-${process.pid}-${Math.random().toString(16).slice(2)}`);
+      ensureDir(fs, handoff); copyAtomic(fs, durable, authFile(handoff));
+      const cfg = opts.cfg || {};
+      if (!cfg.image || !cfg.network || !(cfg.proxyUrl || (cfg.proxyName && cfg.proxyPort))) {
+        throw new Error('refresh probe lacks its pinned image or restricted proxy path');
+      }
+      const result = runSync('docker', refreshArgs(opts, handoff), {
+        cfg, env: refreshEnvironment(), label: 'managed ChatGPT refresh readiness probe',
+      });
+      if (!result || result.status !== 0) throw new Error(refreshFailure(result).replace(/^managed ChatGPT refresh readiness failed: /, ''));
+      const nextFile = authFile(handoff);
+      const next = fs.readFileSync(nextFile, 'utf8');
+      if (!refreshedSession(next)) throw new Error('refresh probe returned an unusable session');
+      // copyAtomic chmods the sibling temporary file before rename, preserving the old durable
+      // file until the final atomic replacement. On failure, leave the handoff for recovery.
+      copyAtomic(fs, nextFile, durable);
+      fs.rmSync(handoff, { recursive: true, force: true }); handoff = null;
+      healthy.push(lane);
+    } catch (error) {
+      retained = !!handoff && fs.existsSync(authFile(handoff));
+      failed.push({ lane, reason: refreshFailure(null, retained
+        ? 'refreshed cache could not be durably published; prior cache preserved and recoverable task copy retained'
+        : String(error && error.message || 'refresh probe unavailable').replace(/\s+/g, ' ').slice(0, 240)) });
+      lane.healthy = false;
+      if (handoff && !retained) { try { fs.rmSync(handoff, { recursive: true, force: true }); } catch {} }
+    } finally { unlockRefresh(fs, lock); }
+  }
+  const healthyLaneCount = healthy.length;
+  return healthyLaneCount > 0
+    ? { ok: true, lanes: [...healthy, ...failed.map(item => ({ ...item.lane, healthy: false }))], healthyLaneCount, failed }
+    : { ok: false, lanes: failed.map(item => ({ ...item.lane, healthy: false })), healthyLaneCount: 0,
+      reason: failed[0] && failed[0].reason || 'managed ChatGPT refresh readiness failed: no usable credential lane remains' };
 }
 async function preflight(opts = {}) {
   if (opts.mode !== 'chatgpt') return { ok: true, cacheRoot: opts.cacheRoot || cacheDefault() };
@@ -338,4 +476,4 @@ async function recoverTaskCache(handle, opts = {}) {
   return true;
 }
 module.exports = { AUTH_MODES, validateConfig, preflight, stageTaskCache, releaseTaskCache,
-  recoverTaskCache, withCacheLock, createLanePool };
+  recoverTaskCache, withCacheLock, createLanePool, refreshReadiness };

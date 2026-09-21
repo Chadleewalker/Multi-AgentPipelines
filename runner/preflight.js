@@ -379,6 +379,20 @@ function startupGates(cfg, repoRoot, log, deps, t, owned) {
     if (!eg.ok) return { ok: false, reason: `egress check failed — allowlist not in force: ${eg.output.trim()}` };
     log.info(t, 'egress check passed (allowlist in force)');
 
+    // The proxy is live now, but Beads recovery and every later task admission are still
+    // ahead. An expired managed session must prove that the pinned Codex CLI can refresh its
+    // lane-private handoff through this run's restricted path before any mutable queue work.
+    if (providerFor(cfg) === 'codex' && cfg.codexAuth === 'chatgpt') {
+      const probe = deps.refreshReadiness || codexAuth.refreshReadiness;
+      const refreshed = probe({ cfg, lanes: cfg.codexAuthLanes, env: deps.env || process.env });
+      if (!refreshed || !refreshed.ok) {
+        return { ok: false, authRefused: true,
+          reason: refreshed && refreshed.reason || 'managed ChatGPT refresh readiness failed' };
+      }
+      cfg.codexAuthLanes = refreshed.lanes;
+      log.info(t, `managed ChatGPT refresh readiness passed (${refreshed.healthyLaneCount} lane(s))`);
+    }
+
     const stale = recover(cfg, log, t, owned.ownership);
     if (stale.error) log.error(t, `stale-issue recovery skipped: ${stale.error}`);
 
