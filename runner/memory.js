@@ -14,6 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 const { bd, bdJson } = require('./bd');
+const CONTROL_PLANE = require('./control-plane');
 
 const HEADER = '# Project memory';
 const EMPTY = '(no memories recorded)';
@@ -76,7 +77,7 @@ function exportMemory(cfg, runDir) {
 // failed the trust check does not seed project memory) and never 'paused' (not
 // terminal). Anything unrecognised, absent or non-string is false: the gate fails
 // closed, because a status the runner does not know about is not one we let write.
-const MEMORY_STATUSES = ['done', 'partial', 'failed', 'stuck'];
+const MEMORY_STATUSES = CONTROL_PLANE.memory.eligibleOutcomes;
 function shouldFileMemory(status) {
   return MEMORY_STATUSES.includes(status);
 }
@@ -118,4 +119,4 @@ function fileMemoryNotes(cfg, issueId, status) {
   return { filed, errors };
 }
 
-module.exports = { exportMemory, fileMemoryNotes, shouldFileMemory };
+module.exports = { exportMemory, fileMemoryNotes, shouldFileMemory, MEMORY_STATUSES };

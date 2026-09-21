@@ -6,7 +6,30 @@
   "wallClockMinutes": 240,
   "probeIntervalMinutes": 15,
   "bdTimeoutMs": 60000,
+  "gitTimeoutMs": 60000,
+  "lifecycleTimeoutMs": 120000,
   "concurrency": 1,
+  "supervisorGlobalConcurrency": 2,
+  "supervisorStageConcurrency": {
+    "specification": 1,
+    "preparation": 1,
+    "review": 1
+  },
+  "feedIdleGraceMinutes": 0,
+  "feedPollSeconds": 30,
+  "allowHalfProven": false,
   "agentCommand": null,
-  "model": "opus"
+  "hostShell": null,
+  "provider": "claude",
+  "codexAuth": "chatgpt",
+  "reasoningEffort": "medium",
+  "testAuthorProvider": "claude",
+  "testAuthorReasoningEffort": "medium",
+  "testProbeProvider": "claude",
+  "testProbeReasoningEffort": "medium",
+  "model": "opus",
+  "testAuthorModel": "opus",
+  "testProbeModel": "opus",
+  "specificationModel": "gpt-5.6-terra",
+  "testProbeAttempts": 3
 }

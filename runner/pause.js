@@ -10,23 +10,24 @@
 // Two layers: waitForWindow is ONE wait, and createPauseGate (§7) is the run-level park
 // that owns the single shared wait and the single cycle counter for the whole run.
 'use strict';
-const { spawnSync } = require('child_process');
 const { DEFAULTS } = require('./config');
+const { commandFor } = require('./host-shell');
+const { runSync } = require('./process');
 
 const MINUTE = 60 * 1000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // The probe runs on the HOST (§4.7): the host has the CLI and the token, and a probe
 // needs no sandbox — it does nothing but ask whether the window has reopened.
-function probeHost(token) {
+function probeHost(token, hostShell, cfg) {
   // PIPELINE_PROBE_CMD is a test seam (same idea as PIPELINE_AGENT_CMD): it replaces
   // the real CLI call so suites can exercise the probe path without burning the window.
   const stub = process.env.PIPELINE_PROBE_CMD;
   const r = stub
-    ? spawnSync('sh', ['-c', stub], { encoding: 'utf8', timeout: 2 * MINUTE })
-    : spawnSync('claude', ['-p', 'ok', '--max-turns', '1'], {
-      encoding: 'utf8',
-      timeout: 2 * MINUTE,
+    ? runSync(hostShell || 'sh', ['-c', stub], { cfg, label: 'rate-limit probe seam' })
+    : runSync('claude', ['-p', 'ok', '--max-turns', '1'], {
+      cfg,
+      label: 'rate-limit probe',
       env: { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: token || process.env.CLAUDE_CODE_OAUTH_TOKEN || '' },
     });
   const out = `${r.stdout || ''}${r.stderr || ''}`;
@@ -66,7 +67,7 @@ function waitPlan(status, cfg, now) {
 async function waitForWindow(cfg, status, log, traceId, opts = {}) {
   const token = opts.token;
   const sleepFn = opts.sleepFn || sleep;
-  const probe = opts.probeFn || probeHost;
+  const probe = opts.probeFn || ((value) => probeHost(value, commandFor(cfg, 'sh'), cfg));
   const now = opts.now || Date.now;
   // The default lives in config.js's DEFAULTS and nowhere else: a second copy here drifts
   // silently, and the cap is the only thing bounding the loop.
@@ -78,7 +79,8 @@ async function waitForWindow(cfg, status, log, traceId, opts = {}) {
   for (let i = spent + 1; i <= maxPauses; i++) {
     const plan = waitPlan(status, cfg, now());
     if (plan.kind === 'reset-time') {
-      log.info(traceId, `paused: waiting until reported reset ${plan.until} (${Math.round(plan.ms / MINUTE)}m)`);
+      log.info(traceId, `paused: waiting until reported reset ${plan.until} (${Math.round(plan.ms / MINUTE)}m)`,
+        { event: 'park.waiting', data: { until: String(plan.until) } });
     } else {
       log.info(traceId, `paused: no reset time reported; probing every ${cfg.probeIntervalMinutes}m (attempt ${i})`);
     }
@@ -171,7 +173,8 @@ function createPauseGate(cfg, log, opts = {}) {
         log.error(traceId, `run-level park: no more waits this run — ${reason}`);
         return { resumed: false, cycles: gate.cycles, exhausted: true, reason };
       }
-      log.info(traceId, `run-level park: the window reopened (${gate.cycles}/${maxPauses} wait cycles spent)`);
+      log.info(traceId, `run-level park: the window reopened (${gate.cycles}/${maxPauses} wait cycles spent)`,
+        { event: 'park.reopened', data: {} });
       return { resumed: true, cycles: gate.cycles };
     })();
     waitPromise = p;
@@ -200,7 +203,8 @@ function createPauseGate(cfg, log, opts = {}) {
       log.error(traceId, `run-level park: ${reason}`);
       return Promise.resolve({ resumed: false, cycles: gate.cycles, joined: false, exhausted: true, reason });
     }
-    log.info(traceId, `rate limit: opening the run-level wait (${gate.cycles}/${maxPauses} cycles spent)`);
+    log.info(traceId, `rate limit: opening the run-level wait (${gate.cycles}/${maxPauses} cycles spent)`,
+      { event: 'park.opened', data: { cycles: gate.cycles, max: maxPauses } });
     return openWait(status, traceId).then((r) => ({ ...r, joined: false }));
   }
 

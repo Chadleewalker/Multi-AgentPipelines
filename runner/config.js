@@ -7,26 +7,91 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const CONTROL_PLANE = require('./control-plane');
+const {
+  PROVIDERS, REASONING_EFFORTS, CREDENTIAL_NAMES,
+  normalizeProvider, normalizeReasoningEffort, validProvider, validReasoningEffort,
+} = require('./agent-provider');
 
-const DEFAULTS = {
-  proxyPort: 3128,
-  wallClockMinutes: 240,        // §4.6 default 4 hours of ACTIVE time
-  maxAttempts: 3,               // §4.6 verify-attempt cap -> PIPELINE_MAX_ATTEMPTS
-  probeIntervalMinutes: 15,     // §4.7 rate-limit probe cadence
-  maxPauseCycles: 96,           // §4.7/§7 stop condition: total wait cycles per RUN (~24h at 15m)
-  agentCommand: null,           // optional override -> PIPELINE_AGENT_CMD (§4.3 seam)
-  bdTimeoutMs: 60000,           // §4.1 bound on every runner `bd` call (runner/bd.js)
-  concurrency: 1,               // §7 how many task containers ONE runner works at once
-  // "opus" is an alias the CLI resolves to the CURRENT latest Opus, so the pipeline
-  // follows model releases without edits here. The entrypoint records the RESOLVED
-  // id (e.g. claude-opus-5) in the status file, so provenance stays exact even
-  // though the request is an alias (§4.3). Pin a concrete id instead when a run must
-  // be byte-reproducible against one specific model.
-  model: 'opus',
-};
+// Defaults are part of the public run-config contract. Their rationale and validation
+// remain here; their values come from contracts/control-plane.json so operator guides,
+// tests and runtime code cannot grow independent copies.
+const DEFAULTS = CONTROL_PLANE.configDefaults;
 const REQUIRED = ['targetRepoPath', 'targetRepoRemote', 'image'];
-// The ceiling on §7's concurrency knob. See loadConfig for why it is a literal.
-const MAX_CONCURRENCY = 3;
+// §7's concurrency knob has NO ceiling (change-log row `concurrency-uncapped`). The literal 3
+// that used to live here was a hedge against the shared subscription window, and the run-level
+// park (§4.7) already answers that at any N. Kept as a named export so the suites that pin the
+// validation contract have one place to read it from; null means "no upper bound".
+const MAX_CONCURRENCY = null;
+// The provider vocabulary itself lives in runner/agent-provider.js — the module that also
+// constructs every launch — so a value this loader accepts cannot drift from one an
+// adapter knows how to run. These are only the field names it appears under.
+const PROVIDER_FIELDS = ['provider', 'testAuthorProvider', 'testProbeProvider'];
+const REASONING_EFFORT_FIELDS = [
+  'reasoningEffort', 'testAuthorReasoningEffort', 'testProbeReasoningEffort',
+];
+const CODEX_AUTH_MODES = ['chatgpt', 'api-key'];
+// The specification planner lane (§6.5). `scripts/specify-proposal.js` is a Codex-only
+// controller authenticated by a saved ChatGPT session, so its model is a FIFTH explicit
+// selection and never a link in the `model` chain: a Claude implementation run resolving
+// `opus` would otherwise hand a Claude alias to `codex exec --model`, and the mixed run
+// would fail at the model endpoint after durable intake had already begun. The default is
+// therefore a Codex alias and a constant — not `DEFAULTS.model`, and not derived from it.
+// Deliberately NOT in contracts/control-plane.json's configDefaults: that object is the
+// spread applied to `raw`, and putting this there would make `cfg.specificationModel`
+// indistinguishable from a field the operator wrote.
+const DEFAULT_SPECIFICATION_MODEL = 'gpt-5.6-terra';
+
+function sameHostPath(left, right) {
+  const a = path.resolve(left); const b = path.resolve(right);
+  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+function pathInside(parent, child) {
+  const rel = path.relative(parent, child);
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
+}
+function insideTaskWorkspace(candidate) {
+  for (let cursor = candidate;;) {
+    if (fs.existsSync(path.join(cursor, '.git')) && fs.existsSync(path.join(cursor, '.run'))) return true;
+    const parent = path.dirname(cursor);
+    if (parent === cursor) return false;
+    cursor = parent;
+  }
+}
+function configuredLaneRoots(raw, targetRepoPath) {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new Error("run.config.json: 'codexAuthCacheRoots' must be a non-empty array of private canonical absolute directories");
+  }
+  const roots = raw.map((value) => {
+    if (typeof value !== 'string' || !value || !path.isAbsolute(value)
+        || path.normalize(value) !== value || !fs.existsSync(value)) {
+      throw new Error("run.config.json: 'codexAuthCacheRoots' entries must be existing canonical absolute directories");
+    }
+    let real; let stat;
+    try { real = fs.realpathSync(value); stat = fs.statSync(real); } catch {
+      throw new Error("run.config.json: 'codexAuthCacheRoots' entries must be existing canonical absolute directories");
+    }
+    if (!sameHostPath(value, real) || !stat.isDirectory()) {
+      throw new Error("run.config.json: 'codexAuthCacheRoots' entries must name their canonical directory identity");
+    }
+    return real;
+  });
+  const pipelineRoot = path.resolve(__dirname, '..');
+  let target = path.resolve(targetRepoPath);
+  try { target = fs.realpathSync(target); } catch { /* target identity is checked later */ }
+  for (let i = 0; i < roots.length; i += 1) {
+    if (pathInside(pipelineRoot, roots[i]) || pathInside(target, roots[i]) || insideTaskWorkspace(roots[i])) {
+      throw new Error("run.config.json: 'codexAuthCacheRoots' entries must be outside repositories and task workspaces");
+    }
+    for (let j = i + 1; j < roots.length; j += 1) {
+      if (pathInside(roots[i], roots[j]) || pathInside(roots[j], roots[i])) {
+        throw new Error("run.config.json: 'codexAuthCacheRoots' entries must not overlap");
+      }
+    }
+  }
+  return roots;
+}
 
 // ---- per-project network + proxy names (§4.8, §4.12) -------------------------------
 // The task network and the proxy sidecar are per project, not per pipeline: two runner
@@ -90,6 +155,10 @@ function loadConfig(file) {
   for (const k of REQUIRED) {
     if (!raw[k] || typeof raw[k] !== 'string') throw new Error(`run.config.json: missing required field '${k}'`);
   }
+  if (raw.codexAuth !== undefined && !CODEX_AUTH_MODES.includes(raw.codexAuth)) {
+    throw new Error("run.config.json: 'codexAuth' must be 'chatgpt' or 'api-key'");
+  }
+  const laneRoots = configuredLaneRoots(raw.codexAuthCacheRoots, raw.targetRepoPath);
   for (const k of ['wallClockMinutes', 'probeIntervalMinutes', 'proxyPort']) {
     if (raw[k] !== undefined && (typeof raw[k] !== 'number' || raw[k] <= 0)) {
       throw new Error(`run.config.json: '${k}' must be a positive number`);
@@ -110,21 +179,143 @@ function loadConfig(file) {
   if (raw.bdTimeoutMs !== undefined && !(Number.isInteger(raw.bdTimeoutMs) && raw.bdTimeoutMs > 0)) {
     throw new Error(`run.config.json: 'bdTimeoutMs' must be a positive whole number`);
   }
+  // The bound on the dispatch gate's git calls (§4.12), validated exactly as bdTimeoutMs is
+  // and for the same reason: it goes straight into spawnSync's `timeout`, which rejects a
+  // fractional or non-positive value late and obscurely. `git fetch` against an unreachable
+  // host parks indefinitely, and an unbounded gate parks the whole run before it claims
+  // anything at all.
+  if (raw.gitTimeoutMs !== undefined && !(Number.isInteger(raw.gitTimeoutMs) && raw.gitTimeoutMs > 0)) {
+    throw new Error(`run.config.json: 'gitTimeoutMs' must be a positive whole number`);
+  }
+  // Docker probes, network scripts, GitHub CLI publication and other short-lived host
+  // lifecycle calls share one bound. The task container itself is deliberately excluded:
+  // its much longer active-time budget is enforced by the independent watchdog.
+  if (raw.lifecycleTimeoutMs !== undefined
+      && !(Number.isInteger(raw.lifecycleTimeoutMs) && raw.lifecycleTimeoutMs > 0)) {
+    throw new Error(`run.config.json: 'lifecycleTimeoutMs' must be a positive whole number`);
+  }
   // §7's concurrency knob: how many task containers ONE runner process holds at once.
-  // Default 1 — strictly sequential, exactly as before the knob existed. The ceiling is a
-  // literal here because §7 states only a hedged range; a run is bounded by the slowest
-  // task in the batch, not by how many it holds, so more depth buys progressively less
-  // while multiplying the load on one subscription window.
+  // Default 1 — strictly sequential, exactly as before the knob existed. Any whole number
+  // from 1 up is accepted: the operator owns the trade (a run is bounded by its slowest task,
+  // and every container shares one subscription window, which the run-level park guards).
   if (raw.concurrency !== undefined
-      && !(Number.isInteger(raw.concurrency) && raw.concurrency >= 1 && raw.concurrency <= MAX_CONCURRENCY)) {
-    throw new Error(`run.config.json: 'concurrency' must be a whole number from 1 to ${MAX_CONCURRENCY}`);
+      && !(Number.isInteger(raw.concurrency) && raw.concurrency >= 1)) {
+    throw new Error(`run.config.json: 'concurrency' must be a whole number of 1 or more`);
+  }
+  // Proposal-conveyor limits are host policy. Models never get to raise them, and bad
+  // values are rejected here before the supervisor acquires authority or calls an adapter.
+  if (raw.supervisorGlobalConcurrency !== undefined
+      && !(Number.isInteger(raw.supervisorGlobalConcurrency)
+        && raw.supervisorGlobalConcurrency >= 1)) {
+    throw new Error("run.config.json: 'supervisorGlobalConcurrency' must be a positive whole number");
+  }
+  if (raw.supervisorStageConcurrency !== undefined) {
+    const value = raw.supervisorStageConcurrency;
+    const allowed = new Set(['specification', 'preparation', 'review']);
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+        || Object.keys(value).some(key => !allowed.has(key))
+        || Object.values(value).some(limit => !Number.isInteger(limit) || limit < 1)) {
+      throw new Error("run.config.json: 'supervisorStageConcurrency' must contain only positive whole-number specification, preparation, and review limits");
+    }
+  }
+  // The live queue feed (§4.12). ZERO IS LEGAL AND IS THE DEFAULT — it means "off" — which is
+  // why this is `>= 0` where every other numeric field here is `> 0`. Validating it like its
+  // neighbours would reject the one value that expresses today's behaviour, and the config
+  // that most wants to say it explicitly is the one being switched back after a bad night.
+  if (raw.feedIdleGraceMinutes !== undefined
+      && !(Number.isInteger(raw.feedIdleGraceMinutes) && raw.feedIdleGraceMinutes >= 0)) {
+    throw new Error(`run.config.json: 'feedIdleGraceMinutes' must be a whole number of 0 or more (0 = the feed is off)`);
+  }
+  // The poll floor, on the other hand, must be positive: zero would let every idle worker
+  // re-read the queue on every pass of its wait loop, which is a synchronous `bd` and
+  // `git fetch` per pass — a busy-wait against a database and a git remote.
+  if (raw.feedPollSeconds !== undefined
+      && !(Number.isInteger(raw.feedPollSeconds) && raw.feedPollSeconds > 0)) {
+    throw new Error(`run.config.json: 'feedPollSeconds' must be a positive whole number`);
+  }
+  // §4.12's third admission rule. A BOOLEAN and nothing else: the gate reads it as `!== true`,
+  // so a config saying "true", 1 or null would silently mean false and a run would refuse
+  // half-proven suites the operator believed they had admitted — a whole batch not dispatched,
+  // discovered in the morning, with the config on screen appearing to say otherwise.
+  if (raw.allowHalfProven !== undefined && typeof raw.allowHalfProven !== 'boolean') {
+    throw new Error(`run.config.json: 'allowHalfProven' must be true or false`);
+  }
+  // Host-only environment a headless acceptance run needs — a binary that is not on PATH, a
+  // display variable, a licence key path. STRINGS ONLY, and read by NOTHING at run time: this is
+  // consumed by `scripts/spec-brief.js` to tell an agent what to export before running the
+  // project's verifier by hand, and it is in the run config rather than `pipeline.config.json`
+  // precisely because a machine-specific path must not be committed to the target repo. A
+  // container gets its dependencies from the image and never reads this.
+  if (raw.hostEnv !== undefined) {
+    if (!raw.hostEnv || typeof raw.hostEnv !== 'object' || Array.isArray(raw.hostEnv)) {
+      throw new Error(`run.config.json: 'hostEnv' must be an object of NAME: value strings`);
+    }
+    for (const [k, v] of Object.entries(raw.hostEnv)) {
+      if (typeof v !== 'string') throw new Error(`run.config.json: hostEnv.${k} must be a string`);
+    }
+  }
+  if (raw.hostShell !== undefined && raw.hostShell !== null
+      && (typeof raw.hostShell !== 'string' || !raw.hostShell.trim())) {
+    throw new Error(`run.config.json: 'hostShell' must be null or a non-empty executable path`);
+  }
+  // Model aliases are handed to CLIs as argv values. Empty or non-string values would either
+  // silently unpin the session or make spawn reject its argument list late, after planning has
+  // already created a worktree. testAuthorModel is deliberately separate from the autonomous
+  // implementation model; when absent, the planning launcher falls back to model.
+  // specificationModel is validated by the SAME rule and falls back to NOTHING — see
+  // DEFAULT_SPECIFICATION_MODEL above.
+  for (const k of ['model', 'testAuthorModel', 'testProbeModel', 'specificationModel']) {
+    if (raw[k] !== undefined && raw[k] !== null
+        && (typeof raw[k] !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(raw[k].trim()))) {
+      throw new Error(`run.config.json: '${k}' must be null or a non-empty model alias`);
+    }
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9._/:@-]*$/.test(raw.image)) {
+    throw new Error(`run.config.json: 'image' must be a safe Docker image reference`);
+  }
+  if (raw.testProbeAttempts !== undefined
+      && !(Number.isInteger(raw.testProbeAttempts) && raw.testProbeAttempts > 0 && raw.testProbeAttempts <= 10)) {
+    throw new Error(`run.config.json: 'testProbeAttempts' must be a whole number from 1 to 10`);
   }
   for (const k of ['network', 'proxyName']) {
     if (raw[k] !== undefined && (typeof raw[k] !== 'string' || !raw[k].trim())) {
       throw new Error(`run.config.json: '${k}' must be a non-empty string when present`);
     }
   }
+  // ---- provider selection (§4.3, §6.8) -----------------------------------------------
+  // A CLOSED vocabulary, refused by field name here rather than by a spawn that fails
+  // obscurely after a worktree exists. `provider` is the run-wide selection; the two stage
+  // fields override it for the planning-side test author and green probe independently,
+  // because those are host launches under a person's eye while the implementation agent is
+  // not. Absent means absent: nothing below writes a provider field the config omitted.
+  for (const k of PROVIDER_FIELDS) {
+    if (raw[k] !== undefined && raw[k] !== null && !validProvider(raw[k])) {
+      throw new Error(`run.config.json: '${k}' must be one of ${PROVIDERS.join(' | ')}`);
+    }
+  }
+  for (const k of REASONING_EFFORT_FIELDS) {
+    if (raw[k] !== undefined && raw[k] !== null && !validReasoningEffort(raw[k])) {
+      throw new Error(`run.config.json: '${k}' must be one of ${REASONING_EFFORTS.join(' | ')}`
+        + ' (reasoning effort)');
+    }
+  }
   const cfg = { ...DEFAULTS, ...raw, configPath: p };
+  cfg.codexAuth = raw.codexAuth === undefined ? 'api-key' : raw.codexAuth;
+  if (laneRoots) cfg.codexAuthCacheRoots = laneRoots;
+  // Resolved AFTER the spread and deliberately NOT in contracts/control-plane.json's
+  // configDefaults: a stage field's default is the run-wide value, and the run-wide value's
+  // default is the constant — a chain, not a single value a defaults table could carry.
+  // With every field absent this resolves to Claude at every stage, which is what makes an
+  // untouched run config byte-for-byte the pre-Codex pipeline.
+  cfg.provider = normalizeProvider(raw.provider);
+  cfg.testAuthorProvider = normalizeProvider(raw.testAuthorProvider || cfg.provider);
+  cfg.testProbeProvider = normalizeProvider(raw.testProbeProvider || cfg.provider);
+  // The specification lane resolves from its own field or the constant, in EVERY case —
+  // explicit or defaulted — so no reading of this line can reach `cfg.model`.
+  cfg.specificationModel = raw.specificationModel || DEFAULT_SPECIFICATION_MODEL;
+  cfg.reasoningEffort = normalizeReasoningEffort(raw.reasoningEffort);
+  cfg.testAuthorReasoningEffort = normalizeReasoningEffort(raw.testAuthorReasoningEffort || cfg.reasoningEffort);
+  cfg.testProbeReasoningEffort = normalizeReasoningEffort(raw.testProbeReasoningEffort || cfg.reasoningEffort);
   // An explicit name always wins; derivation fills only what the config left out.
   const derived = deriveNames(p);
   if (!cfg.network) cfg.network = derived.network;
@@ -135,14 +326,45 @@ function loadConfig(file) {
   return cfg;
 }
 
-// The subscription token (§6): git-ignored .env.pipeline, or the ambient env.
-function loadToken(repoRoot) {
+// ---- the host credential boundary (§6) -----------------------------------------------
+// One provider, one credential, selected here and nowhere else. Source order is the
+// historical one: the git-ignored .env.pipeline first, then the ambient environment.
+// The env argument exists so a test can make this deterministic without mutating
+// process.env; production callers pass nothing and get the real environment.
+//
+// There is NO cross-provider fallback. A Codex run that finds no CODEX_API_KEY must be
+// refused by name, not started with a Claude token that will fail at the model endpoint
+// after a container, a network and a Beads claim already exist.
+function readEnvPipeline(repoRoot, name) {
   const f = path.join(repoRoot, '.env.pipeline');
-  if (fs.existsSync(f)) {
-    const m = fs.readFileSync(f, 'utf8').match(/^\s*CLAUDE_CODE_OAUTH_TOKEN\s*=\s*(.+?)\s*$/m);
-    if (m) return m[1].replace(/^["']|["']$/g, '');
-  }
-  return process.env.CLAUDE_CODE_OAUTH_TOKEN || '';
+  if (!fs.existsSync(f)) return '';
+  const m = fs.readFileSync(f, 'utf8')
+    .match(new RegExp(`^\\s*${name}\\s*=\\s*(.+?)\\s*$`, 'm'));
+  return m ? m[1].replace(/^["']|["']$/g, '') : '';
 }
 
-module.exports = { loadConfig, loadToken, deriveNames, DEFAULTS, MAX_CONCURRENCY };
+function loadProviderCredential(repoRoot, provider, env = process.env) {
+  const name = CREDENTIAL_NAMES[normalizeProvider(provider)];
+  const fromFile = readEnvPipeline(repoRoot, name);
+  if (fromFile) return { name, value: fromFile };
+  const raw = env && typeof env[name] === 'string' ? env[name].trim() : '';
+  return raw ? { name, value: raw } : null;
+}
+
+// The one diagnostic a missing credential produces. Kept as a function so the Claude
+// wording stays byte-identical to the line the runner has always printed.
+function missingCredentialDiagnostic(provider) {
+  const name = CREDENTIAL_NAMES[normalizeProvider(provider)];
+  return `no ${name} (.env.pipeline or environment) — tasks cannot authenticate`;
+}
+
+// The historical Claude-only accessor, now one call away from the general one.
+function loadToken(repoRoot) {
+  const credential = loadProviderCredential(repoRoot, 'claude');
+  return credential ? credential.value : '';
+}
+
+module.exports = {
+  loadConfig, loadToken, loadProviderCredential, missingCredentialDiagnostic,
+  deriveNames, DEFAULTS, MAX_CONCURRENCY, DEFAULT_SPECIFICATION_MODEL,
+};

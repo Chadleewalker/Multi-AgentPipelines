@@ -176,6 +176,48 @@ ok('a task row with no model counts under (none recorded), never as a model name
     rowWith(outA, 'app-013 in ') === -1);
 }
 
+// ---- the model cross-tab -------------------------------------------------------------
+// The section exists to answer "was the cheaper model good enough", which is a question
+// about a JOIN: outcome, first-attempt rate and verdicts CUT BY model. A flat per-model
+// count and a flat outcome table both stay green while the join is wrong, so every check
+// below reads inside one model's block and the two models are built to disagree — model-a
+// passes 1 of 1 first time, model-b 1 of 2. An implementation that computed the rate
+// corpus-wide and printed it under each model would print the same fraction twice.
+function modelBlock(out, model) {
+  const all = rows(out);
+  const start = all.findIndex((l) => l.startsWith(`- ${model}: `));
+  if (start < 0) return null;
+  const rest = all.slice(start + 1);
+  const end = rest.findIndex((l) => !l.startsWith('  - '));
+  return [all[start], ...(end < 0 ? rest : rest.slice(0, end))];
+}
+{
+  const a1 = modelBlock(outA, 'model-a');
+  const b1 = modelBlock(outA, 'model-b');
+  const none = modelBlock(outA, '(none recorded)');
+  ok('every model that ran a task gets its own block, including the unrecorded bucket',
+    a1 !== null && b1 !== null && none !== null);
+  ok('a model block counts its own task rows (model-a 3, model-b 2, unrecorded 1)',
+    a1[0].includes('3 task row(s)') && b1[0].includes('2 task row(s)')
+    && none[0].includes('1 task row(s)'));
+  ok('outcomes are cut by model, not repeated from the corpus tally',
+    a1.some((l) => /- done: 1\b/.test(l)) && a1.some((l) => /- stuck: 1\b/.test(l))
+    && a1.some((l) => /- tampered: 1\b/.test(l)));
+  ok('a model sees only its own outcomes — model-b ran no stuck or tampered task',
+    b1.some((l) => /- done: 2\b/.test(l))
+    && !b1.some((l) => /stuck|tampered/.test(l)));
+  ok('the first-attempt rate is per model and the two models disagree (1 of 1 vs 1 of 2)',
+    a1.some((l) => l.includes('done on attempt 1: 1 of 1 done task(s)'))
+    && b1.some((l) => l.includes('done on attempt 1: 1 of 2 done task(s)')));
+  ok('the rate carries its own denominator, so a done row with no attempts cannot inflate it',
+    a1.some((l) => l.includes('with a recorded attempt count')));
+  ok('a bucket with no done task says so rather than printing 0 of 0 or NaN',
+    none.some((l) => l.includes('(no done task with a recorded attempt count)'))
+    && !none.some((l) => /NaN|0 of 0/.test(l)));
+  ok('a corpus with no verdicts says so per model rather than printing an empty list',
+    a1.some((l) => l.includes('(no verdict recorded)')));
+}
+
 // ---- pure reader, usage, roots ------------------------------------------------------
 ok('the runs root is byte-identical after the audit (pure reader)', same(snapBefore, snapshot(A)));
 ok('the working directory is untouched — no cache, no index, no report file',
@@ -284,6 +326,15 @@ ok('the done-but-rejected join is listed', rowWith(outB, 'app-113', 'rejected') 
 ok('a merged task never lands on a rejected line', rowWith(outB, 'app-112', 'rejected') === -1);
 ok('a corpus with concerns does not print the zero-concern flag',
   !outB.includes('(zero spec concerns recorded anywhere in this corpus)'));
+
+{
+  // The same PR-bearing rule the coverage section applies: app-114 carries a verdict and
+  // a null prUrl, and coverage already refuses to count it. Counting it here would have
+  // one report disagree with itself about how many verdicts the corpus holds.
+  const nb = modelBlock(outB, '(none recorded)');
+  ok('the model cross-tab counts verdicts on PR-bearing rows only, agreeing with coverage',
+    nb !== null && nb.some((l) => l.includes('merged 1, rejected 1 (of 2 recorded)')));
+}
 
 // ---- fixture C: the zero-concern corpus ---------------------------------------------
 const C = path.join(tmp, 'C');

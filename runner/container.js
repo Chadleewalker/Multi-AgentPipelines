@@ -7,18 +7,61 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const { spawn, spawnSync } = require('child_process');
+const { spawn } = require('child_process');
 const { toMountPath } = require('./bd');
+const { createDeadlineWatchdog } = require('./deadline-watchdog');
+const { timeoutFor } = require('./process');
+const {
+  CREDENTIAL_NAMES, credentialNameFor, providerFor, providerForCredentialName,
+} = require('./agent-provider');
+
+// Every provider credential name this pipeline knows. The Claude one is also spelled out
+// literally because `scripts/test-runner-container.sh` greps THIS file for it.
+const CREDENTIAL_ENV_NAMES = [...new Set([
+  'CLAUDE_CODE_OAUTH_TOKEN', ...Object.values(CREDENTIAL_NAMES),
+])];
 
 // Windows/Git Bash: Docker needs C:/... mount sources, and MSYS must not rewrite
 // container-side paths like /workspace into C:\Program Files\Git\workspace.
 const DOCKER_ENV = { ...process.env, MSYS_NO_PATHCONV: '1' };
+const WATCHDOG_DOCKER_ENV = { ...DOCKER_ENV };
+for (const name of CREDENTIAL_ENV_NAMES) delete WATCHDOG_DOCKER_ENV[name];
+
+// Which credential this container gets, and under which environment-variable name.
+// `opts.credential` is the provider-aware form the runner selects (config.js owns the
+// selection); `opts.token` is the historical Claude-shaped argument, kept working so an
+// older caller behaves exactly as before. A task NEVER gets both, and never gets the one
+// belonging to the provider it was not launched for.
+function credentialFor(cfg, opts) {
+  const chosen = opts && opts.credential;
+  if (chosen && chosen.name) return { name: chosen.name, value: chosen.value || '' };
+  if (opts && opts.token) return { name: credentialNameFor(providerFor(cfg)), value: opts.token };
+  return null;
+}
+
+function providerOf(cfg, credential) {
+  return credential ? providerForCredentialName(credential.name) : providerFor(cfg);
+}
+
+// Codex's workspace-write sandbox creates an unprivileged user/mount namespace with bwrap.
+// Docker's default seccomp policy blocks that namespace syscall before bwrap can apply its
+// tighter inner policy. Delegate the syscall decision only for Codex task containers; no
+// capability, privileged mode, host namespace or host path is added, and Claude keeps its
+// exact historical Docker argv.
+const CODEX_SANDBOX_SECURITY_ARGS = Object.freeze(['--security-opt', 'seccomp=unconfined']);
+
+function sandboxSecurityArgs(provider) {
+  return provider === 'codex' ? [...CODEX_SANDBOX_SECURITY_ARGS] : [];
+}
 
 // The container's inputs are exactly these (§4.10) — nothing else crosses the boundary.
 function buildArgs(cfg, opts) {
-  const { containerName, workspaceDir, pipelineDir, issueId, token } = opts;
+  const { containerName, workspaceDir, pipelineDir, issueId } = opts;
+  const credential = credentialFor(cfg, opts);
+  const provider = providerOf(cfg, credential);
   const args = [
     'run', '--rm',
+    ...sandboxSecurityArgs(provider),
     '--name', containerName,
     '--network', cfg.network,
     '-v', `${toMountPath(workspaceDir)}:/workspace`,
@@ -31,14 +74,27 @@ function buildArgs(cfg, opts) {
     '-e', `HTTP_PROXY=${cfg.proxyUrl}`,
     '-e', 'NO_PROXY=localhost,127.0.0.1',
   ];
-  // Token by name only: the value comes from the runner's environment, so it never
-  // appears in an argument list, a log line, or an image layer (§6).
-  if (token) args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN');
+  // Credential by NAME only: the value is placed in the docker client's own environment
+  // below, so it never appears in an argument list, a log line, or an image layer (§6).
+  if (credential) args.push('-e', credential.name);
+  if (provider === 'codex' && cfg.codexAuth === 'chatgpt' && opts.authCache) {
+    args.push('--user', 'root');
+    args.push('-v', `${toMountPath(opts.authCache.hostPath)}:/run/pipeline-auth-host/cache:rw`);
+    args.push('-e', 'PIPELINE_CHATGPT_AUTH=1');
+  }
+  // The entrypoint selects its noninteractive command from this, so a Codex task cannot be
+  // started by a Claude image invocation or the reverse.
+  args.push('-e', `PIPELINE_PROVIDER=${provider}`);
+  if (cfg.reasoningEffort) args.push('-e', `PIPELINE_REASONING_EFFORT=${cfg.reasoningEffort}`);
   if (cfg.agentCommand) args.push('-e', `PIPELINE_AGENT_CMD=${cfg.agentCommand}`);
   // The entrypoint appends --model to its default headless invocation; an explicit
   // agentCommand (stubs, overrides) owns its own flags and ignores this.
   if (cfg.model) args.push('-e', `PIPELINE_MODEL=${cfg.model}`);
   if (cfg.maxAttempts) args.push('-e', `PIPELINE_MAX_ATTEMPTS=${cfg.maxAttempts}`);
+  // repo-062: a documentation-prohibited task carries its host-owned scope in so the entrypoint
+  // skips the docs model and docs worktree. Only 'preserve' is transported; the absence of the
+  // variable is the normal docs path a container started by an older runner already takes.
+  if (opts.docsScope === 'preserve') args.push('-e', 'PIPELINE_DOCS_SCOPE=preserve');
   args.push(cfg.image, 'bash', '/pipeline/entrypoint.sh');
   return args;
 }
@@ -52,36 +108,68 @@ function runTask(cfg, opts, log, traceId) {
     const logStream = fs.createWriteStream(path.join(opts.taskDir, 'container.log'));
     const started = Date.now();
 
-    log.info(traceId, `launching container ${opts.containerName} (budget ${Math.round(budgetMs / 60000)}m active)`);
-    const child = spawn('docker', args, {
-      env: { ...DOCKER_ENV, CLAUDE_CODE_OAUTH_TOKEN: opts.token || '' },
+    log.info(traceId, `launching container ${opts.containerName} (budget ${Math.round(budgetMs / 60000)}m active)`, {
+      event: 'container.launched',
+      data: { name: opts.containerName, budgetMinutes: Math.round(budgetMs / 60000) },
     });
+    // Exactly one provider credential crosses this boundary. Every other one is removed
+    // from the docker client's environment first, so a host that holds both cannot leak
+    // the unselected provider's key into a task through `-e NAME` inheritance.
+    const credential = credentialFor(cfg, opts);
+    const childEnv = { ...DOCKER_ENV };
+    for (const name of CREDENTIAL_ENV_NAMES) delete childEnv[name];
+    delete childEnv.OPENAI_API_KEY;
+    delete childEnv.CODEX_HOME;
+    if (credential) childEnv[credential.name] = credential.value;
+    const child = (opts.spawn || spawn)('docker', args, { env: childEnv });
     child.stdout.pipe(logStream);
     child.stderr.pipe(logStream);
 
     let timedOut = false;
-    // Wall clock is a Node timer + `docker kill` — never a platform `timeout` (§6).
-    const timer = setTimeout(() => {
-      timedOut = true;
-      log.error(traceId, `wall-clock budget exhausted — killing ${opts.containerName}`);
-      spawnSync('docker', ['kill', opts.containerName], { env: DOCKER_ENV });
-    }, budgetMs);
+    let settled = false;
+    const deadlineAt = started + budgetMs;
+    const watchdogFactory = opts.watchdogFactory || createDeadlineWatchdog;
+    // The wall clock and kill live in a worker thread. A synchronous clone/push/Beads
+    // operation in another runner worker can block this thread's callbacks, but it cannot
+    // delay the independent deadline or its bounded Docker kill.
+    const watchdog = watchdogFactory({
+      delayMs: budgetMs,
+      command: 'docker',
+      args: ['kill', opts.containerName],
+      timeoutMs: timeoutFor(cfg, 'lifecycle'),
+      label: `docker kill ${opts.containerName}`,
+      env: WATCHDOG_DOCKER_ENV,
+      onDeadline() {
+        timedOut = true;
+        log.error(traceId, `wall-clock budget exhausted — killing ${opts.containerName}`);
+      },
+      onResult(result) {
+        if (!result.ok) log.error(traceId, `container kill did not complete: ${result.error}`);
+      },
+    });
+
+    async function finish(result) {
+      if (settled) return;
+      settled = true;
+      try { await watchdog.cancel(); }
+      catch (e) { log.error(traceId, `container deadline watchdog cleanup failed: ${e && e.message ? e.message : e}`); }
+      resolve(result);
+    }
 
     child.on('close', (code) => {
-      clearTimeout(timer);
       const durationMs = Date.now() - started;
-      resolve({
-        exitCode: timedOut ? 'killed' : code,
-        killed: timedOut,
+      const deadlineHit = timedOut || watchdog.fired || Date.now() >= deadlineAt;
+      finish({
+        exitCode: deadlineHit ? 'killed' : code,
+        killed: deadlineHit,
         durationMs,
       });
     });
     child.on('error', (err) => {
-      clearTimeout(timer);
       log.error(traceId, `docker run failed to start: ${err.message}`);
-      resolve({ exitCode: 30, killed: false, durationMs: Date.now() - started });
+      finish({ exitCode: 30, killed: false, durationMs: Date.now() - started });
     });
   });
 }
 
-module.exports = { runTask, buildArgs };
+module.exports = { runTask, buildArgs, sandboxSecurityArgs, CODEX_SANDBOX_SECURITY_ARGS };

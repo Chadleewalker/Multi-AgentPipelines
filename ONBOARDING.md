@@ -32,7 +32,12 @@ Four stages, in order. Each is interactive, each happens once except the last:
    bounded interview, critics, dry-run decomposition as the readiness test). Identify
    each change-log row by a kebab-case slug — the issue id for a row a task produced, a
    short descriptive name for a row a planning session produced — never by a version
-   number, which parallel agents cannot assign uniquely (§12). Small
+   number, which parallel agents cannot assign uniquely (§12). Keep those rows in their
+   own file rather than inside the design doc, as this repo does with `docs/change-log.md`:
+   an append-only table can be marked `merge=union` in the repo-root `.gitattributes`, and
+   then N task branches each appending a row all merge without a person hand-resolving the
+   same conflict N-1 times. Never point that attribute at the design doc itself — prose is
+   amended in place, and union merge would keep both copies of an amended paragraph. Small
    projects can live on the scaffold's `SPEC.md` alone and enter planning per-task —
    the doc layer is for work big enough to decompose.
 3. **Onboard** — the checklist below: GitHub remote, integration branch recorded,
@@ -114,7 +119,7 @@ coverage that matters is of the area about to be tasked out, not of the whole sy
       (shell scripts run inside Linux containers; a CRLF checkout on Windows breaks
       them and can read as tampering).
 
-### 2. The frozen-test home and the idea inbox
+### 2. The frozen-test home, the idea inbox and the thread directory
 - [ ] Create `tests/acceptance/` with a short README stating the freeze rules: tests
       land here during planning (PLANNING.md step 6), are committed to the integration
       branch before a run, and are diffed against the fork point by the verifier —
@@ -129,6 +134,69 @@ coverage that matters is of the area about to be tasked out, not of the whole sy
       not a control. An empty directory cannot do the job: a good runner is *supposed* to fail
       on "no test files found", so the gate would be unable to discriminate on exactly the
       projects it works best for.
+
+      **The control is load-bearing twice over since change-log row `repo-inj`.** The gate's
+      `--green <probe-dir>` runs the same suite a second time in a *probe* — a throwaway,
+      repo-shaped tree in which the criteria are already satisfied by any means however crude —
+      and resolves a control against the **probe's** root by this same rule, because a probe
+      whose control is not green is a malformed probe rather than an unreachable criterion.
+      Two onboarding consequences. Keep `verifyCommand` a path to a runner that **lives in the
+      tree** and is invoked relative to cwd (`sh tools/run-acceptance.sh`, not an absolute path
+      or a globally-installed binary): a probe is built by copying that runner, the suite and
+      `_control/` to the same relative paths, so a runner the tree does not carry cannot be
+      copied into one. And keep the control trivially passing for the same reason as above — it
+      is now the thing that tells a broken probe from a criterion no implementation can reach.
+
+      The same run also prints a **brittleness lint** over the tests being frozen — never over
+      `_control/`, which is live repo content rather than anything under review (§3.2, move 6;
+      change-log row `repo-uw6`). It names assertions whose *expected side is a literal the
+      author typed* and asks whether later work is licensed to grow what they enumerate; the
+      count prints even when it is zero, and a finding can never fail a freeze. **Its language
+      scope is worth knowing before you onboard.** It reads `.js`, `.cjs`, `.mjs`, `.ts`,
+      `.gd`, `.py`, `.sh` and `.bash`, the patterns are written against JavaScript, GDScript,
+      Python and shell, and anything else is best-effort. Whatever it does not read it *names*
+      — `extension`, `binary`, `unreadable`, one line per path — so a project whose tests are
+      in another language sees its suite listed as skipped rather than silently blessed. That
+      is the honest answer, not a fault to fix: the exit-code half of the gate is unaffected
+      and works on any language.
+
+      **The same run also runs your guards alone** (§3.2 "the stale guard"; change-log rows
+      `stale-guard-design`, `repo-i4b`). A test file that declares itself a guard — the literal
+      `[guard]` token, any case, on a comment line within its first ten lines — is copied into a
+      scratch directory alongside the suite and run through your `verifyCommand` by itself,
+      where it must be **green**: a guard says "existing behaviour still holds", so red before
+      any work exists means the pin has already moved. That is `stale-guard`, exit 5, and it is
+      never a pass. Three onboarding consequences. Guards are found by the same reader as the
+      lint above — **top-level files in the suite directory, in those same extensions**, so a
+      nested file or a suite in another language declares no guards and the run prints
+      `guard files: 0` rather than pretending otherwise; the count prints on every run, at zero
+      too. A guard file must resolve whatever it needs **relative to its own `__dirname`** at the
+      suite's depth (`path.resolve(__dirname, '..', '..', '..')` for the project root, the
+      convention every frozen suite here already follows), because the scratch directory is a
+      sibling of the suite at the same depth and nothing else about the tree moves. And the
+      directory — `.freeze-gate-guards-<pid>-<seq>/`, removed in a `finally` — is built inside
+      the repo for the same reason the empty control is, so an interrupted gate can leave one
+      obviously disposable folder next to your suite.
+      **A verdict that proceeds leaves a receipt in the suite** (§3.2; change-log rows
+      `receipt-design`, `repo-erq` and `repo-isq`). The gate writes `tests/acceptance/<issue-id>/.freeze-gate.json`
+      — gate version, verdict, whether a probe was supplied, a content hash of the suite, the
+      checkout's HEAD, the guard and brittleness counts, a timestamp — and it is committed to
+      the integration branch with the tests (PLANNING.md step 6). **The runner enforces this**
+      (§4.12's third admission rule): a suite on the branch with no receipt, or with one written
+      for a different version of that suite, is refused before anything is claimed and the issue
+      stays `open`. So for this project it is not a habit but a requirement — re-run the gate
+      after any edit to a frozen suite, however small, and push the fresh receipt in the same
+      commit. A suite the gate found red with **no probe** (`--green`) records `half-proven` and
+      is refused too, unless that project's `run.config.<project>.json` sets
+      `"allowHalfProven": true`. Two onboarding consequences.
+      **The project must be a real git repository with history**, because the hash is over the
+      blob ids git will store rather than the bytes on disk: a checkout with CRLF line endings
+      and an LF blob is the normal case on Windows, and a byte hash would disagree with the
+      branch on every freeze. A `--repo` with no history is refused before the gate runs
+      anything. And **the README you wrote above should name the receipt**, because it lives
+      inside `tests/acceptance/` and is therefore frozen like everything else there: a
+      container that edits it ends the task `tampered`, and that is worth saying once in the
+      place a task agent is likely to read.
 - [ ] Create `docs/IDEAS.md` — the project's own idea inbox. Copy the structure from
       this pipeline repo's `docs/IDEAS.md`: a flat list of parked "this should probably
       become a design someday" notes, plus **Promoted** and **Dropped** tables. It costs
@@ -138,6 +206,14 @@ coverage that matters is of the area about to be tasked out, not of the whole sy
       in the pipeline repo, which is public and documents the machinery, never the work
       done with it. This is the same boundary that makes `run.config.<project>.json`
       git-ignored there.
+- [ ] Create `docs/threads/` with a copy of this pipeline repo's `docs/threads/README.md`
+      — the durable identity file an idea thread gets from its first exchange (§3.8). One
+      file per thread being worked, `docs/threads/<slug>.md`, undated, with status in its
+      header; the session working it becomes disposable, so a fresh session picks the
+      thread up by reading one file. Nothing in the runner reads this directory and no
+      thread file is a Beads issue. **Each project keeps its own**, for the same boundary
+      as the idea inbox above — a thread about this project must never be filed in the
+      public pipeline repo.
 
 ### 3. `pipeline.config.json` (§3.4)
 - [ ] Write it in the repo root:
@@ -198,9 +274,9 @@ Copy this section in (adjust nothing but the project name):
 
 ```markdown
 ### Working inside the pipeline container (read this when you are the coding agent in a run)
-- This is a locked-down Docker container: the network reaches Anthropic endpoints only.
-  No package installs, no web lookups — everything you need is in this repo, the issue
-  file, or the memory file.
+- This is a locked-down Docker container: the network reaches the endpoints of the one
+  model provider this run selected, and nothing else. No package installs, no web lookups
+  — everything you need is in this repo, the issue file, or the memory file.
 - Your task is `/workspace/.run/issue.md`; project memory is `/workspace/.run/memory.md`.
   Both are read-only exports — use them, don't edit them.
 - NEVER touch `tests/acceptance/` or any path in `pipeline.config.json`'s `frozenPaths`.
@@ -233,14 +309,57 @@ Copy this section in (adjust nothing but the project name):
       allowlist proxy are per project, and the runner derives both names from that
       `<project>` segment when the config gives none (change-log row `repo-jur`). Two
       projects whose configs are both called `run.config.json` share one network and one
-      sidecar, so starting the second run destroys the first run's route to Anthropic.
-      Set `network` / `proxyName` explicitly only if you want particular names.
+      sidecar, so starting the second run destroys the first run's route to its model
+      provider. Set `network` / `proxyName` explicitly only if you want particular names.
       **One config per target repo.** A run locks its target repo before any other gate,
       so a second config aimed at the same repo is refused by name rather than draining
       the same queue twice (change-log row `repo-os9`). The lock keys on the canonical
       path, so a trailing separator or forward-vs-back slashes do not buy you a second
       identity — and a lock left behind by a killed run is taken over by the next one,
       never cleared by hand.
+- [ ] Leave `provider` alone unless the user asks for a different model vendor. Absent, it
+      is `claude` at every stage and the launches are exactly what they have always been.
+      Setting it to `codex` — run-wide, or per stage with `testAuthorProvider` /
+      `testProbeProvider` — also requires an explicit `codexAuth` choice: `chatgpt` uses a
+      managed session created by `codex login`, while `api-key` loads `CODEX_API_KEY` with
+      no fallback to the Claude token. A missing field preserves legacy API-key behavior;
+      the checked-in template declares dormant `chatgpt` while retaining Claude defaults.
+      The selection also controls which command the container entrypoint runs and which
+      provider-only allowlist the sidecar builds, so the host needs a base image carrying
+      the pinned Codex CLI before the run starts. One saved ChatGPT session is one exclusive
+      implementation lane even when `concurrency` is higher. For parallel subscription work,
+      set `codexAuthCacheRoots` to a nonempty array of canonical absolute private directories,
+      each already populated by an independent Codex login and outside every repository,
+      task workspace and other lane. The runner validates the whole roster before target
+      mutation, quarantines a bad lane individually, and admits FIFO credential work up to
+      the healthy lane count. Set `model` to something that provider
+      understands while you are there; `reasoningEffort` (`minimal | low | medium | high`,
+      and its two stage twins) applies to Codex launches.
+      See `docs/control-plane.md` and `DESIGN.md` §6.5.
+- [ ] Set `specificationModel` only to a **Codex** alias, and only if the proposal conveyor
+      should plan with something other than its default. It is the model
+      `scripts/specify-proposal.js` hands to Codex, it is independent of `model`,
+      `testAuthorModel` and `testProbeModel`, and it never falls back to any of them — so a
+      Claude implementation config still specifies through Codex on a saved ChatGPT login.
+      A host that runs the conveyor therefore needs `codex login` even when every other lane
+      is Claude.
+- [ ] **Ask the user for one integer implementation concurrency**, and record the answer as
+      `concurrency` in that same host-local run config. Ask it once, as a single question —
+      *how many implementation tasks may run at the same time under one coordinated run?* —
+      and state the whole of what the answer buys in the same breath, because this is the
+      only place the operator is asked:
+      it must be an **integer** (a whole number) of 1 or more, and it **caps how many
+      implementation tasks one coordinated run works simultaneously**;
+      **no preference, no answer or no opinion means 1**, which is also the default the
+      runner uses when the config says nothing about it;
+      **higher values increase this host's CPU, RAM and container demand**, since every
+      task running at once is another live container on this machine;
+      and **higher values may consume model capacity faster when the selected authentication
+      permits parallel calls**. Claude subscription and Codex API-key tasks can occupy those
+      slots together; one managed ChatGPT login remains serialized on its exclusive lane.
+      There is no ceiling beyond what the host can carry (change-log row
+      `concurrency-uncapped`); `runner/config.js` refuses anything else by name —
+      `'concurrency' must be a whole number of 1 or more`.
 - [ ] If this pipeline repo is public, add `.sanitize-denylist` (copy
       `.sanitize-denylist.example`): the private project names, hosts and clients that must
       never appear in the tracked tree. Also **git-ignored**, because committing the list of
@@ -271,6 +390,148 @@ Copy this section in (adjust nothing but the project name):
       (§4.2); anything only on the local disk does not exist as far as a run is
       concerned.
 
+## Working one project in parallel — one owner, many bounded workers
+
+New operators read the target lock as "everything about this project is serial", or else
+try to escape it by making a second config. Both readings are wrong, and the three
+sections here are the whole model: one owner, bounded workers beneath it, and looking
+rather than clearing when someone else is the owner.
+
+### One owner per target: the host-global canonical-target lock
+
+Before any other gate, a run or a preparation takes a **host-global lock on the canonical
+target path** — one record per machine per repository, whichever pipeline checkout it was
+started from (change-log row `repo-os9`). That lock is the **authority**: whoever holds it
+is the one coordinator entitled to mutate that target — its queue, its worktrees, its
+branches, its Beads state — for as long as it is held. Everything else about parallelism
+on one project follows from there, and two of the consequences are refusals rather than
+advice:
+
+- **Never write a second `run.config.<project>.json` naming a target that already has
+  one**, as a route to parallelism on the same project. Two configs pointed at one target
+  are not two lanes: the second is refused by name at the lock, and if it ever did get
+  past it would drain one queue twice, with two owners claiming the same issues.
+- **Never reach for an alternate path spelling** to buy a second identity — a trailing
+  separator, forward versus back slashes, a differently-cased drive letter, a second
+  checkout of the same repository. The lock keys on the canonical target path, so every
+  spelling of one repository folds to one key. A spelling that did slip past would not
+  have created a second project; it would have created a second owner of one project,
+  which is the corruption the lock exists to prevent.
+
+What the holder **may** do is fan out. Being the sole mutation authority is not a promise
+to work serially: the owning coordinator may run bounded, **isolated** workers beneath
+itself — each in its own registered **worktree** or clone, each writing only inside its own
+tree, all of them capped by a number the operator chose. The number recorded in step 8 is
+exactly that cap for a run, and the preparation command below is exactly that shape for
+planning. The lock excludes a second owner; it never constrains the owner's own workers.
+
+**The owner can also be a supervisor, and then the commands themselves are its workers.** One
+live project supervisor holds that same lease and may hand its own `prepare-batch.js` and
+`runner/run.js` a narrow, expiring authority to run *under* its ownership rather than contend
+with it (`DESIGN.md` §3.10, change-log row `repo-rj7`). This changes nothing you type: the
+authority travels in the `PIPELINE_CHILD_AUTHORITY` environment variable, no command line grew
+a flag, and with no supervisor present every command behaves exactly as the rest of this
+section describes. It also changes none of the refusals above — because the supervisor's lease
+*is* the canonical-target lock, a second supervisor and every unrelated coordinator are still
+refused by owner name, and an admitted child takes no lock of its own and releases none. What
+it does change is that a preparation and an implementation worker of one project can be live
+together; the two things that must not overlap, Beads writes and integration publication, stay
+serialized as named critical sections. The host-side library is driven by the unattended
+proposal conveyor:
+
+```bash
+node scripts/proposal-supervisor.js run --config run.config.<project>.json
+```
+
+The command discovers durable kickoff records and stays alive while specification, preparation,
+implementation, or review evidence is pending. It launches the existing preparation command and
+one project live feed, retires a drained feed before creating a uniquely identified successor,
+and passes child authority itself; do not set `PIPELINE_CHILD_AUTHORITY` by hand. Its
+specification lane is Codex-only, so `start`, `run`, `resume` and `tick` first prove a saved
+ChatGPT login with one bounded `codex login status` — no API key substitutes for it, and the
+check happens before the lease, durable intake, locks, worktrees or Docker, so a missing login
+costs nothing but the retry. `status` and `stop` launch no planner and stay ungated. Use
+`node scripts/proposal-supervisor.js stop --config run.config.<project>.json` for a clean drain:
+intake closes immediately, owned children settle, and only then is the parent lease released.
+After a crash, restart observes the journal but does not guess through uncertain child identity
+or settlement; those states still require the explicit operation-manager recovery paths.
+
+### Preparing several frozen suites for one project at once
+
+Frozen-test preparation for one project goes through **one named coordinator**, and it is
+that coordinator — not you, and not several terminals — that runs the suites side by side:
+
+```bash
+node scripts/prepare-batch.js start <batch> --config run.config.<project>.json \
+  --issue <issue-id-1> --issue <issue-id-2> --author-concurrency 2
+```
+
+Repeat `--issue` once per suite in the batch — that repetition is what makes it one
+same-project batch rather than several jobs. `--author-concurrency` takes a whole number
+from 1 to 10 (change-log row `preparation-concurrency-ten`) and bounds how many
+test-authoring workers that single coordinator runs at a time. The coordinator owns the
+target lock for the whole batch, reads Beads serially, hands each worker a complete brief
+in its own registered worktree, and keeps a resumable record you can query or resume later.
+
+At the start of every launch-capable batch command, the coordinator checks the Docker daemon,
+the configured image, the configured host shell, and authentication for both planning-stage
+providers. A failure names the exact remedy before it creates a manifest, worktree or attempt,
+so start Docker Desktop, build the named image, correct `hostShell`, or restore the named
+provider login as instructed and rerun the same batch name. Read-only status and interrupted
+worker acknowledgement do not depend on these prerequisites.
+
+An author or green-probe worker that returns the provider's canonical usage-limit response
+parks admission for the entire batch at the reported reset time. Workers already running settle
+once, untouched issues stay pending, and completed suites and retained probes stay available.
+Run `node scripts/prepare-batch.js status <batch>` for the paused stage, affected workers,
+preserved paths, reset time, and exact `resume` command. Running that command before reset
+refuses without a model launch; at or after reset it continues only unfinished proof work.
+
+Every issue must use a repository-relative structured design reference such as
+`design-ref: DESIGN.md#§4.12`. If approved rationale exists only outside the integration commit,
+publish it before preparation with `node scripts/design-provenance.js publish <issue-id>
+--config run.config.<project>.json --source <approved-file> --anchor <heading>`, then run the
+same command's `verify` verb. The publisher creates the issue-owned
+`docs/design/provenance/<issue-id>.md` commit and updates Beads on the host; preparation refuses
+an unresolved path or heading before creating any suite worktree.
+
+**Never launch independent `author-tests.js` sessions to get parallel preparation** — not
+two by hand, not one per issue, not in separate terminals. `author-tests.js` is the
+single-suite path and takes the same target ownership for itself, so extra sessions refuse
+each other at best and race over one worktree registry at worst. Repeated `--issue` under
+one `prepare-batch.js start` is the supported way to prepare more than one suite.
+
+### When the target is already owned
+
+A lock you did not take means another coordinator is working that target right now. That
+is the system doing its job, not an error to clear. Look, then wait:
+
+```bash
+node scripts/dashboard.js                     # read-only: every lock, its holder, its liveness
+node scripts/prepare-batch.js status <batch>  # read-only: one known preparation, stage by stage
+```
+
+`node scripts/dashboard.js` is the **read-only** lock and liveness view: it reads the lock
+records and each run's own artifacts and reports which target is held, by which run, and
+whether that holder is still live. It writes nothing. When the holder is a preparation
+whose batch name you already know, `node scripts/prepare-batch.js status <batch>` reports
+that known batch's stages the same read-only way: an active worker is `authoring` or
+`proving`, and `interrupted-unknown` appears only after its persisted, PID-recycle-safe
+process identity is no longer live and no terminal result exists. Neither command touches
+the holder.
+
+**Never delete a lock, never bypass it, never take over a live holder, and never interrupt,
+kill or cancel one.** Each of those trades a visible wait for two owners of one target, and
+none of them is ever the fix: a record whose owner really is gone is taken over by the next
+run on its own evidence (change-log row `repo-os9`). Wait for the live holder to finish.
+
+Waiting can be **optional** and hands-off. If the user wants one, define a **task-scoped**
+**periodic** check — a re-check on an interval, alive only for the task in hand and ending
+with it — whose **only** effect is to report **held or free**. It starts nothing on either
+answer: it queues no work, claims no lock, changes no file, and never starts work of its
+own. Work begins only when the user, having read that report, **separately approves**
+beginning it. A check that started work by itself would be a takeover with a timer.
+
 ## After onboarding — the life of an onboarded project
 
 Onboarding is once, ever, per project — like wiring a house: run the electricity once,
@@ -292,6 +553,46 @@ step 7. Minutes of work, and only when the ingredient list actually changes.
 
 The steady rhythm is: **plan → run → review PRs in the morning → merge or send back** —
 and "send back" is itself just the next planning session.
+
+**What onboarding turns on, the moment `pipeline.config.json` lands.** That file at the
+project's integration fork point is the marker for pipeline-first write protection: from
+then on an agent session in that checkout reads freely and does not change product,
+configuration, control or frozen paths by hand — in the shared checkout and in every
+worktree, because a worktree is isolation and not authority. Install the hooks once per
+machine and check them honestly:
+
+```bash
+node scripts/write-protection.js install
+node scripts/write-protection.js status
+```
+
+`status` reports each client as enforced, degraded, disabled, unsupported, uninstalled or
+untrusted, and will not call enforcement complete while a hook lives in a file the operator
+can edit. Codex specifically will not treat a freshly installed, non-managed hook as
+authoritative on shape alone: run its interactive `/hooks` command to trust both installed
+definitions, then record that with `node scripts/write-protection.js review --client codex`,
+or `status` reports it `untrusted` rather than `enforced`.
+That honesty is the point: a hook is prevention, and the layer that does not depend on one
+is **admission**, which re-runs the same check over the real checkout inside the freeze,
+inside batch preparation and again at dispatch, refusing by name rather than tidying
+anything away. A refusal never resets, cleans, stashes, overwrites, commits or moves a
+file. When you have hand-made edits it will not carry, give them a Git-registered home of
+their own and keep the originals:
+
+```bash
+node scripts/write-protection.js recover --target <dir> --issue <id>
+```
+
+If a person decides to work in the project by hand for a while, that decision is explicit,
+scoped to one repository and one session, visible in `status`, and revocable:
+
+```bash
+node scripts/write-protection.js allow-writes --target <dir> --session <id> --minutes 60
+node scripts/write-protection.js revoke --target <dir> --session <id>
+```
+
+Nothing you can commit into the project opts out of any of this — that is what makes the
+default worth having.
 
 One line ends each review, per PR (DESIGN.md §5, change-log row `repo-1ie`):
 

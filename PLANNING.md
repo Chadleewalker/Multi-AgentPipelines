@@ -25,10 +25,49 @@ redo:
 - A thin per-project Dockerfile sits beside it, `FROM` the pinned base image (§6).
 - Beads is initialized in the host working copy (`bd init`; see `beads/issue-template.md`).
 - The base image is built (`docker/base/`, checks: `scripts/test-base-image.sh`).
+- Write protection is installed on this machine (`node scripts/write-protection.js install`,
+  then `node scripts/write-protection.js status`). Because the target carries
+  `pipeline.config.json`, it is pipeline-first by default and this session cannot change
+  product, configuration, control or frozen paths by hand — see the section below before
+  you reach for an editor.
+
+## Planning under pipeline-first protection
+
+A planning session reads everything and writes almost nothing, which is what the protection
+is shaped around. Declared planning and design paths stay open to you: the spec draft, the
+design doc, this playbook, the notes under `docs/`. The acceptance suite you author in §3 is
+opened for exactly the issue you are authoring it for, and for nothing else — another
+issue's suite is somebody else's frozen evidence. Product code, `pipeline.config.json`, the
+control-plane contracts and the frozen paths are closed, in the shared checkout and in every
+worktree alike; a worktree is isolation, not authority.
+
+Two things follow for this playbook. First, the write hooks refuse at the tool call but they
+are not the perimeter — a local hook can be switched off and a tool path can go uncovered —
+so **admission** re-runs the same check over the real integration checkout inside §6's
+freeze, inside `scripts/prepare-batch.js`, and again at dispatch. A freeze that refuses with
+a list of protected paths is that check, not a broken gate: the paths it names are edits
+nobody planned. Second, nothing is ever taken off you. Recover them into a Git-registered
+worktree of their own, originals untouched, and then decide file by file:
+
+```bash
+node scripts/write-protection.js status                   # what is enforced, honestly
+node scripts/write-protection.js recover --target <dir> --issue <id>
+```
+
+If you genuinely need to work by hand for a while — a repair to the pipeline's own tooling,
+an experiment that is not a task — that is a person's decision and it is taken explicitly:
+
+```bash
+node scripts/write-protection.js allow-writes --target <dir> --session <id> --minutes 60
+node scripts/write-protection.js revoke --target <dir> --session <id>
+```
+
+It covers one repository and one session, expires on its own, and appears in `status` until
+it does. Nothing inside the tree opts out, so there is no file to add and none to remove.
 
 ## The Session, Step by Step
 
-### 0. Read the idea inbox
+### 0. Read the idea inbox and the open threads
 Open [`docs/IDEAS.md`](docs/IDEAS.md) — in *this* repo when the session is about the
 pipeline, in the target project's repo otherwise — and see whether anything parked there
 belongs in this session. It is where "that's probably a good idea" gets written down
@@ -42,6 +81,69 @@ row first, then step 1 below — because an idea implemented straight from the i
 design section, which is the definition of scope creep (§3.1). When one graduates, move it
 to the file's **Promoted** table; when the session concludes one is not wanted, move it to
 **Dropped** with the reason, so it doesn't come back every few months.
+
+Then open [`docs/threads/`](docs/threads/README.md) — same repo, same rule — and read any
+thread whose header says `status:   ready`. A thread is an idea *being worked*: one file
+holding its question, current thinking, the decisions already taken and by whom, and what
+is still open (DESIGN.md §3.8). A `ready` thread is a candidate that arrives with its
+design decisions already made and its open questions already named, which is strictly more
+than an inbox entry offers — and costs this session nothing to skip, since a thread is no
+more a commitment than an inbox entry is. `open` and `parked` threads are not this
+session's business unless the session is about to work one.
+
+```bash
+grep -l "^status:   ready" docs/threads/*.md      # run from the repo the session is about
+```
+
+When a thread graduates, its slug is already the change-log ref (§3.8), its status becomes
+`promoted`, and its `Outcome` names what it became; a thread the session concludes is not
+wanted becomes `dropped` with the reason. Either way the file stays — deleting it throws
+away the reason, which is the only thing that stops the idea coming back.
+
+An idea already submitted through `scripts/kickoff.js` has a durable `kickoff-intake/1`
+record instead of a Markdown inbox entry. Turn that exact immutable intent into the initial
+canonical Beads spec before authoring its tests:
+
+```bash
+node scripts/specify-proposal.js run --config run.config.<project>.json --proposal kp-…
+# If it returns needs-input, preserve the printed evidence hash when answering:
+node scripts/specify-proposal.js answer --config run.config.<project>.json --proposal kp-… \
+  --evidence sha256:… --answer "the product choice"
+node scripts/specify-proposal.js run --config run.config.<project>.json --proposal kp-…
+```
+
+The specifier uses the configured Codex model with saved ChatGPT authentication and a
+read-only checkout pinned to integration. That model is its own run-config field,
+`specificationModel`, and it never falls back to the implementation `model`: this controller is
+Codex-only, so a Claude implementation alias would reach `codex exec --model` and fail. Leave the
+field out and the specifier uses its Codex constant default, whatever the rest of the config
+selects. It creates no issue while a product choice is
+missing; a linked answer starts a fresh attempt, and a completed proposal creates or
+recovers exactly one Beads issue. Treat that issue as the starting draft for the review,
+critics and approval steps below—its generated criteria and difficulty are proposals, not
+a substitute for user approval or the frozen-test proof.
+
+For continuous intake, the production supervisor performs that specification step and the later
+preparation, implementation, and review observation without operator ticks:
+
+```bash
+node scripts/proposal-supervisor.js run --config run.config.<project>.json
+```
+
+It discovers new kickoff records while it runs and rotates a drained implementation feed before
+assigning later prepared work. Because it drives the specification lane itself, `start`, `run`,
+`resume` and `tick` first prove a saved ChatGPT login with one bounded `codex login status` — even
+on an otherwise all-Claude config — and refuse before ownership, durable intake, locks, worktrees
+or Docker if it is missing. `status` and `stop` never launch a planner, so neither is gated.
+Stop it cleanly with:
+
+```bash
+node scripts/proposal-supervisor.js stop --config run.config.<project>.json
+```
+
+This closes intake first and lets already-owned work settle before the project lease is released.
+A restart preserves recorded identities and outstanding grants rather than invoking retry,
+recovery, or reconciliation implicitly.
 
 Then run the drift report against the target (change-log row `trace-ledger`):
 
@@ -78,8 +180,10 @@ The five fields:
 - **Acceptance criteria** — the "Done means" list: 3–6 concrete, machine-checkable
   outcomes. Each must be verifiable by a script or test with no human judgment
   ("`verify.sh` exits 0 and the branch exists", never "works well").
-- **design-ref** — the design-doc section this task implements. Mandatory: a task that
-  cites nothing is scope creep (§3.1).
+- **design-ref** — the repository-relative design document and optional Markdown heading this
+  task implements, for example `design-ref: DESIGN.md#§3.10`. Mandatory: a task that cites
+  nothing is scope creep, and a path or anchor absent from the integration commit cannot be
+  handed to an implementation worker (§3.1).
 - **Attempt log** — starts empty; the runner appends to it during runs.
 
 Label the task **trivial / medium / hard**, and split anything bigger than one PR the
@@ -168,6 +272,278 @@ specs actually get skipped. This is the only thing that makes the panel auditabl
 critic that never gates leaves no other trace (§3.2, move 4).
 
 ### 3. Write the acceptance tests
+
+**Launch the test author from the generated brief.** The planning command computes the same
+deterministic brief, creates or reuses the issue's dedicated worktree, and opens one headless
+Claude session there with an explicit model alias:
+
+```bash
+node scripts/author-tests.js <issue-id> --config run.config.<project>.json
+```
+
+Every one of those six is already recorded — in the run config, the target's
+`pipeline.config.json`, git's worktree registry and Beads — so none of them is retyped, and the
+brief quotes the issue's own criteria rather than the planning draft that produced them. Set
+the optional `testAuthorModel` in the run config when the test author should differ from the
+implementation `model`; otherwise the launcher uses `model`. `testProbeModel` may pin the
+separate green-probe agent and falls back through `testAuthorModel` to `model`; all aliases are
+explicit argv values, never a global CLI selection. The proposal specifier's `specificationModel`
+is outside that chain entirely — it resolves from its own field or a Codex constant and from
+nothing else. `testProbeAttempts` bounds the host-feedback
+loop at three by default. `scripts/spec-brief.js` remains the read-only command for inspecting or
+saving the brief without opening a session.
+
+It works out which of three states the issue is in first, because the instructions differ:
+write the tests, freeze a suite the working tree already holds, or re-gate one that is on the
+branch without a readable receipt. The last two need no drafting at all, and a report that does
+not separate them makes a nearly-finished task look like an untouched one.
+
+**A suite directory is not evidence that its suite was finished.** An author killed after
+writing some of its files but before a terminal result leaves a directory indistinguishable
+from a finished one, so the choice above is decided by the durable preparation record — kept
+under the host preparation root, outside the model-editable worktree — and never by file
+existence alone (`runner/author-evidence.js`, change-log row `repo-djf-42-author-evidence`).
+That record reads as `absent`, `authoring`, `interrupted-partial`, `authored-unproven`,
+`proven` or `frozen`. An `author-proof` attempt that recorded no result and whose worker is no
+longer live, or one whose outcome says its authoring half never completed, is
+`interrupted-partial` however many files are on disk; an interrupted standalone `proof` leaves
+the suite `authored-unproven`, because authoring had already finished before it started. Only
+`authored-unproven`, `proven` and `frozen` may be offered the freeze command, and a suite with
+no recorded attempt at all is still read exactly as it always was.
+
+For `interrupted-partial` the launcher prints that state and its reason and offers one bounded
+recovery instead of the freeze step: re-run the same `node scripts/author-tests.js <issue-id>
+--config <path>` invocation. It continues in the same existing worktree, and the brief tells
+the author that the files already there are a partial draft to read, keep and complete.
+Nothing is deleted, moved or archived — the partial bytes stay exactly as they are, the
+diagnostics that explain them live in the separate preparation record, and human approval
+remains the only freeze boundary.
+
+The launcher does not treat a successful test-author exit as completion. It first refuses any
+worktree change outside that issue's suite, then creates two independent disposable clones at
+the author's exact HEAD and overlays the suite byte-for-byte into both. One remains the red
+baseline. A separately pinned probe agent may edit product code in the other, with file tools
+only — no shell, Git, Beads or freeze capability. After every attempt the host starts the gate's
+verifier inside the project's configured image with no network, credentials, capabilities or
+host mount other than that disposable clone, then feeds its evidence into the next bounded
+ attempt. The whole acceptance tree, `pipeline.config.json` and every configured frozen Git
+ pathspec are hashed before the agent and checked after both the agent and gate. Wildcard matches,
+ ignored additions and file modes count — modes as *Git* records them (`100644`, `100755`,
+ `120000`, `40000`), so a Windows checkout bind-mounted into a Linux container is not read as a
+ change while an executable-bit change Git does record still is. Two strict non-test shapes in
+ another suite are the only exceptions:
+ a valid single-link regular untracked `.freeze-gate.json` receipt in the integration-target
+ comparison only, and an ignored-and-untracked Godot `.gd.uid`
+ sidecar beside its unchanged `.gd` companion. The receipt is parsed by the runner's own rule;
+ staged, tracked, malformed, unreadable and symlinked receipts remain protected. The generated UID body is
+ variable-width (one through thirteen engine-alphabet characters), not fixed-width. The suite
+ under proof, malformed, orphan or tracked sidecars, and any uncertain Git query remain protected.
+ Any changed protected byte is a refusal. A refusal is diffed against whichever of the clean base
+ or proven tree is closer, so an expected suite awaiting promotion is not named as the concurrent change.
+
+Only a gate exit 0 is a launcher success. The ownership-marked baseline and probe are retained,
+and the reported human command includes `--probe <dir>` so the approved freeze re-runs the same
+containerized two-direction proof without first changing the integration checkout. After that
+gate passes and the protected bytes are rechecked, freeze transactionally promotes the exact
+suite and receipt from the baseline; any pre-commit refusal restores the previous integration
+tree. It rejects unrelated staged paths, builds the candidate commit from a private immutable
+index, and pushes that exact object under a remote lease so concurrent work cannot ride along or
+be overwritten. The launcher itself never calls `freeze.js`, commits, merges or pushes. Verifier containers
+have resource limits and deterministic cleanup by an owned name/CID; clone ownership is recorded
+outside the model-editable tree. Managed clones are removed only after freeze has pushed and the
+runner has read the result back as dispatchable.
+
+**A proof that did not finish is kept, not swept.** A provider usage limit already preserved its
+container; ordinary attempt exhaustion and a recoverable non-usage-limit fault or interruption
+after preparation now do the same (change-log row `repo-djf-49-retained-proof`). At that decision
+the controller re-reads the container's ownership out of band rather than trusting a value carried
+from preparation time, because a sandboxed probe agent has had the tree in between. Only an intact
+owner record and marker authorize it to rewrite the marker to the distinct state `unfinished` and
+report an explicit `retained: true`, keeping both the red baseline and the probe. Missing,
+mismatched, malformed or symlinked ownership answers false and authorizes nothing: no marker byte
+moves, no reparse point is followed, and nothing recursive is removed. Tampering is excluded from
+retention outright — ownership may be perfectly intact, but the tree the proof would resume from
+is no longer the tree that was prepared — and a marker write that cannot be read back claims no
+retention either, because a retention claim is a claim about what is on disk. `proven` stays
+something only a successful gate ever writes.
+
+Resume or re-gate a retained proof as its own command, rather than paying for both clones again:
+
+```bash
+node scripts/prove-tests.js <issue-id> --config run.config.<project>.json \
+  --resume-probe <retained probe dir> [--skip-agent]
+```
+
+It takes the same target lock, reads the same brief and returns the same exit codes as the plain
+invocation, and validates the retained container on seven independent dimensions — canonical target
+repository identity, issue, source worktree, suite bytes, author HEAD, baseline manifest and
+ownership — before any agent launch or gate. Each one refuses on its own, and the refusal is a
+bounded diagnostic that names the reason rather than quoting an unbounded host error over it.
+
+Repository identity is asked first, and it is a canonical identity rather than a path string
+(change-log row `repo-djf-51-proof-target-identity`). The other six dimensions can all be
+byte-identical across two genuinely different repositories, because the target the clones were
+actually taken from was the one thing never compared: a config edited or swapped between attempts,
+an equivalent spelling that resolves elsewhere, and a junction or symlink retargeted underneath a
+stable literal path all reached the same retained container. Preparation now records
+`targetIdentity` in the ownership marker — `runner/lock.js`'s `canonicalTarget`, the same authority
+the host-global target lock uses to decide that two spellings name one project, so ownership and a
+retained proof answer "the same repository?" with one rule — and resume recomputes it and refuses
+unless the two agree. An equivalent spelling of the same repository still resumes; a different
+repository, a retargeted reparse point at the same literal path, and a missing or malformed
+recorded identity are refused. That refusal is decided from the marker already in hand, ahead of
+every other check, so nothing is launched, no gate runs, no marker byte moves and nothing is swept:
+the container stays byte-identical and the swapped-in path is neither followed nor removed. A target
+that cannot be canonicalized fails preparation rather than producing an unbindable probe. `--skip-agent` re-gates without a model: no
+RED is rebuilt and no session is launched, and the protected-tree invariants still run before and
+after exactly one two-direction gate, which remains the only thing that can write `proven`. It is
+refused without `--resume-probe`, because a freshly prepared probe nobody has edited is not
+something to re-gate. Both flags are additive; an invocation naming neither is the command it has
+always been.
+
+Inside a preparation batch, that retention now survives the worker that decided it (change-log row
+`repo-djf-50-resumable-proof-identity`). The batch worker used to flatten every unsuccessful proof
+into one generic `probe` path — the same field an agent failure, a tamper refusal and a setup
+fault carry for inspection — so the durable record could not tell a proof in progress from a
+corpse kept to look at. It now reports a second, dedicated `resumableProbe` beside that unchanged
+inspection path, for `proof` and `author-proof` alike, and only for ordinary validated attempt
+exhaustion whose path still reads back on disk as an owned managed container for that job's suite
+with an `unfinished` marker. The path is re-read there rather than echoed, because a result claiming
+retention is not evidence of it. Usage-limit parks keep their existing resume wiring, and setup,
+agent, tamper, config and malformed results gain nothing.
+
+One authorization rule — not `ok`, `outcome` and `kind` both `unproven`, and a non-empty path
+string — decides that field wherever it is read, and it is applied twice on purpose: as the worker
+envelope is parsed, so an unauthorized or forged claim never enters durable state, and again on the
+durable record's own recorded content when `retry` reads it back, so a row written by another
+writer or before this rule existed proves nothing by carrying the key. A selected path must still
+exist and the phase being relaunched must still be `proof`; retry then hands that exact recorded
+string to the next proof worker, which resumes that container instead of cloning a fresh red
+baseline and, where the earlier attempt authored first, without a second author session. Missing,
+stale, mismatched-phase, inspection-only and non-resumable records take the path retry already
+takes, and `probe` alone never fabricates retention.
+
+**Prepare a dependency-shaped backlog as one resumable planning batch.** Repeating the
+single-issue launcher by hand is unnecessary when several approved specs are waiting. Name the
+batch and its complete issue set once:
+
+```bash
+node scripts/prepare-batch.js start <batch> --config run.config.<project>.json \
+  --issue <id> --issue <id> [--author-concurrency 1..10]
+node scripts/prepare-batch.js status <batch>
+```
+
+The coordinator snapshots every issue, its dependencies, criteria, integration HEAD and
+host-local run policy before it starts a worker. It reads Beads serially and uses the canonical
+id returned by `bd show` for new suite and worktree paths. One unique exact legacy alias worktree
+may be reused to preserve unfinished work; dual or ambiguous carriers fail closed, and a
+published alias suite must be re-cut under the canonical path the runner dispatches. It then runs
+at most ten test authors, both by default and at the hard maximum. Workers receive the immutable
+snapshot on stdin; they cannot re-read Beads or choose another worktree. The same target-global
+lock excludes a normal pipeline run and either standalone author/proof command while preparation
+owns the target.
+
+Before preparation, publish approved design text that exists only in an operator checkout and
+audit the exact integration commit:
+
+```bash
+node scripts/design-provenance.js publish <issue-id> --config run.config.<project>.json \
+  --source <approved-file> [--anchor '§3.10'] [--expected-head <sha>]
+node scripts/design-provenance.js verify <issue-id> --config run.config.<project>.json
+```
+
+Publication commits and pushes only `docs/design/provenance/<issue-id>.md`, refuses a live
+target owner, stale expected HEAD, or different bytes already owned by that issue, and updates
+the canonical issue's structured `design-ref` through the host. Preparation repeats resolution
+from its pinned integration HEAD and records that commit; an unresolved path or heading becomes
+`needs-design`, launches no worker, and names the publish command as its remedy.
+
+If publication stops after the local commit or after the remote accepts the push, rerun the
+same publish command with the same source bytes. The retry reuses the existing commit only when
+it is the exact one-file provenance commit and proves that commit reachable from the configured
+remote integration ref before updating Beads. Remote divergence refuses without force-pushing,
+creating a duplicate commit, or deleting the stranded evidence.
+
+For an imported canonical issue that cannot publish a repository document, the design field may
+instead be self-contained: `design-snapshot: sha256:<digest>` followed by a fenced block whose
+UTF-8 body (including one trailing newline) hashes to that digest. Preparation resolves a valid
+snapshot without repository or operator-local files and refuses a mismatched digest as
+`snapshot-mismatch`. The normal `new-issue.sh` workflow continues to require a structured
+`design-ref`; publication is the preferred planning path because it leaves reviewable provenance
+in the integration history.
+
+Under a live project supervisor, preparation instead runs as that supervisor's admitted
+`preparation` child: it takes no lock of its own and releases none, because its parent's lease
+is the same target-global authority and already excludes every other coordinator (DESIGN.md
+§3.10, change-log row `repo-rj7`). Admission happens before the write-protection backstop, the
+lock, and any worker, worktree or Beads read, so a preparation presenting no grant — or a
+forged, replayed, expired, wrong-target, wrong-parent or released one — is refused by name with
+nothing launched. With no supervisor present the paragraph above is exactly what happens.
+The supervising host launches those commands through `runner/operation-manager.js`. Its durable
+operation record is separate from preparation and run artifacts, and retry is admitted only
+after child identity and any prior settlement are known; concurrent starts and retries contend
+on host-global atomic transitions.
+
+Before allocating the named batch, the coordinator checks Docker daemon reachability, the
+configured image, the configured host shell, and authentication for every provider selected by
+the author and probe stages. The first failure names the exact repair and launches no worker or
+attempt; fix it and rerun the same command with the same batch name. `status` and
+`acknowledge-interrupted` remain usable while those prerequisites are unavailable.
+
+State is durable under `runs/preparations/<batch>/`. `resume <batch>` reports or continues work
+whose ownership is unambiguous. Status evaluates the persisted batch-owner and worker process
+identities with the target lock's reboot- and PID-recycle-safe liveness rule: a live worker reports
+`authoring` or `proving`, a terminal result remains authoritative, and only a worker whose identity
+is no longer live and has no matching result becomes `interrupted-unknown`. That state blocks new
+preparation. Stop the recorded worker and any descendants, then record that human check with
+`acknowledge-interrupted <batch> <id>...`; only after that may `retry <batch> <id>...` start a new
+attempt. A bare `retry` still refuses an acknowledged attempt whose phase has since changed, and
+still names the partial suite for a human to inspect. `retry <batch> <id>... --resume-partial` is
+the one explicit, bounded exception: for an acknowledged `author-proof` interruption whose durable
+evidence still says the authoring half never completed, it resumes authoring in the **existing**
+worktree — one Beads read, one new worker generation, one model launch — and deletes, moves and
+archives nothing, so the resumed author continues from the partial bytes. Any other acknowledged
+phase, an issue already disqualified for another reason, and the flag on any mode other than
+`retry` are all refused exactly as before, and a concurrent second resume meets the same
+target-global lock with nothing launched. Retrying a durably acknowledged interruption skips
+re-resolving design provenance, because the attempt being recovered was already admitted through
+that gate at its own snapshot; an issue edited since then is still refused by the
+criteria-fingerprint check beside it. A retried `proof` phase needs no flag to reuse a retained
+container: where the durable record carries an authorized, still-present resumable proof, retry
+passes that exact path to the relaunched worker as described above, and otherwise launches
+precisely as it does today.
+A successful item means **proven at the recorded integration base**. The coordinator
+never freezes, commits, merges, pushes, changes Beads, or turns blocked
+implementation dependencies into test-author dependencies: specs may be prepared together, then
+the ordinary Beads-ready runner releases their implementation waves in dependency order.
+
+A canonical provider usage-limit result from either the author or green-probe stage is batch
+state, not an issue failure. The first result closes new worker admission, records one pause with
+its reset time and currently active workers, and preserves authored suites and managed probes.
+`status <batch>` prints those details and the exact `resume <batch>` command. Resume before the
+reset refuses without launching a worker; eligible resume reuses valid retained evidence and
+continues only the unfinished attempt, including after an interrupted or repeated resume.
+
+While a proof is running, the coordinator reports the current fixed stage (`prepare`, probe
+agent, protected check, gate, final protected check, or marker write) and the elapsed time of each
+completed stage. These messages are progress only; the durable worker result remains the sole
+success record. Protected-tree scans use bounded multi-path Git hashing, preserving repository
+attributes and clean filters while avoiding one Windows process launch per protected file.
+Generated Godot sidecars are classified from one NUL-delimited ignore query and one complete
+tracked-path snapshot rather than two Git children per candidate. Any incomplete, malformed or
+failed bulk result keeps the uncertain paths protected rather than producing a partial manifest.
+
+`allowHalfProven: true` is incompatible with this all-proven preparation posture and is refused;
+change that run policy explicitly rather than asking the coordinator to weaken it. Human review
+still follows. Because a freeze advances the integration HEAD, approved publication re-proves
+each retained suite at the then-current HEAD and freezes it immediately, one at a time; an older
+`proven-at-base` record is evidence, not permission to publish from a stale base.
+
+A machine-specific path — a binary that is not on `PATH` — belongs in the run config's optional
+`hostEnv`, never in the target's `pipeline.config.json`: run configs are host-local and
+git-ignored, which is exactly where a path that is true on one machine should live. The brief
+emits it as an `export` line. Nothing at run time reads it; a container gets its dependencies
+from the image.
 Claude writes the tests **now, before any code exists**, from the spec alone (§2, §4.4):
 - They live at `tests/acceptance/<issue-id>/` in the target repo (§3.1) — create the
   issue id first if needed by doing step 6 early, or use a placeholder directory and
@@ -197,19 +573,46 @@ cannot fail is caught before the user signs off on it:
 
 ```bash
 node scripts/freeze-gate.js --repo <target-repo> \
-  --tests tests/acceptance/<issue-id>/ --spec docs/planning-draft-<date>.md
+  --tests tests/acceptance/<issue-id>/ --green <probe-dir> \
+  --spec docs/planning-draft-<date>.md
 ```
 
 The tests exist and the implementation does not, which is exactly the state a task branch
 forks from — so **they must be red**. A test green here is satisfied by an empty diff: it
 would pass a correct submission, a broken one, and no submission at all.
 
+**Red is only half the proof, and `--green` is the other half.** A suite that discriminates
+and a suite whose own fixture is broken are *the same observation* — non-zero — so everything
+in the paragraph above is satisfied by a suite no implementation could ever turn green. That
+has cost two tasks three attempts each: one froze with 11 of 29 checks unreachable because a
+preload stub killed the child process before its first line, and one froze with the criterion
+the task existed for calling `git init -q -c …`, where `-c` must precede the subcommand, so no
+repository was ever created and the two neighbouring checks passed *vacuously*. Both were
+diagnosed by the task agent through the spec-concern channel, in a container, at attempt three.
+
+So build a **probe**: a throwaway tree in which the criteria are *already satisfied*, by any
+means however crude, and hand it to `--green`. It is not an implementation and nobody keeps it.
+
+- **A probe is a REPO-SHAPED TREE, not a handful of files.** Every frozen suite resolves its
+  own root as the tree it sits in, never the working directory, and `verifyCommand` is a path
+  relative to cwd. So a probe carries the project's test runner at the same relative path,
+  `tests/acceptance/<issue-id>/`, and `tests/acceptance/_control/` if the project has one. A
+  directory holding only the criteria's artifacts yields "no test files" and a false *unreachable*.
+- **A probe satisfies the criteria by changing the tree, never by editing a check.** The probe
+  runs its own copy of the suite, so the gate hashes both copies first: a copy with a file
+  *missing*, edited or added is named and refused before the probe runs. A probe that edits its
+  judge would otherwise bless exactly the freeze this gate exists to prevent.
+- **Crude is the point.** Hard-code the return value, write the file the test looks for, stub
+  the command. If a criterion cannot be satisfied even by cheating, that is the finding.
+
 - **exit 0 — red.** The tests discriminate. Proceed.
 - **exit 1 — green.** A spec bug. Either the criterion is not discriminating and needs
   rewriting, or it is a **guard** ("existing behaviour X still holds"), which is legal but
   must be labelled `[guard]` in the spec. The gate counts labelled guards and prints the
   count; that count belongs in the approval pass, so a spec that is all guards is visible
-  rather than silent.
+  rather than silent — and a spec that is *nothing but* guards is a **pure refactor**, which
+  is a spec bug of a different kind and cannot be fixed by rewriting the criteria. See
+  [**A pure refactor cannot be frozen**](#a-pure-refactor-cannot-be-frozen) in step 1.
 - **exit 2 — could not tell.** The command also fails against the **control**
   (`tests/acceptance/_control/`, one trivially-passing test committed at onboarding), so its
   exit code says nothing about *these* tests — the harness is broken independently of the
@@ -217,6 +620,91 @@ would pass a correct submission, a broken one, and no submission at all.
   If the project has no control fixture the gate says so in its report and falls back to
   probing with an empty directory, which proves very little: a good runner is *supposed* to
   fail when it finds no tests. Add the fixture rather than reading anything into that.
+  **A malformed probe lands here too, not on exit 3** — a probe whose own control is not green,
+  or that does not carry the suite at all, is the *probe's* bug and is reported as one. Every
+  exit-2 detail names which side is broken: the fork point, the probe, the probe's control, or
+  the arguments.
+- **exit 3 — unreachable.** The tests are red at the fork point *and* red in the probe, on a
+  probe whose own control is green. So the harness works and the criteria still did not pass in
+  a tree where they are supposed to be satisfied already: either the probe does not really
+  satisfy them, or one or more checks cannot be reached by any implementation. **Never a pass.**
+  Find out which before freezing — read the probe's failing lines, and if the probe is honest,
+  the criterion is the thing to fix. This is the verdict that would have saved the two runs
+  above, and it is worth the cost of building the probe on its own.
+- **exit 4 — half-proven.** Red at the fork point, on a green control, with no probe supplied.
+  The tests can fail; nothing has ever seen them pass. **This is legal and it proceeds** — a
+  freeze with no probe stays a freeze, and building a probe for a one-line criterion is often
+  not worth the minutes. What it is not is silent: carry the half-proven state into the approval
+  pass the way the guard count is carried, so the user is approving a spec they know is proven
+  on one side only. Prefer a probe for anything hard, anything whose tests build fixtures of
+  their own, and anything where a criterion's *setup* could fail without the check noticing.
+  The planning launcher does not choose this escape hatch automatically: it reports failure and
+  offers no freeze command. Half-proven remains available only through an explicit manual gate
+  and approval.
+- **exit 5 — stale-guard. Never a pass.** A test file that declares itself a guard — the
+  literal `[guard]` token on a comment line within its first ten lines, the same word the spec
+  uses — is run *alone* against the fork point, and this one came back red. A guard says
+  "existing behaviour X still holds", so it is the one kind of criterion that is *supposed* to
+  be green before any work exists: red here cannot mean the implementation is missing, because
+  there is nothing for it to be waiting for. It means the pin has already moved — the number,
+  the key or the file it names changed before you got here. It beats exits 0, 3 and 4 and
+  short-circuits the probe, and the report names the file. Re-read that guard against the tree
+  as it stands now, re-pin it or drop the criterion, and re-run the gate. A guard subset that
+  could not *run* is exit 2 naming the guard side, on the same reasoning that puts a malformed
+  probe on 2 rather than 3. The count of guard files is printed on every run, at zero too, and
+  belongs in the approval pass beside the count of `[guard]` labels in the spec.
+
+**Then read what the gate says, not only how it exited.** Below the verdict the same run
+prints a second, textual pass over the suite it is about to bless (§3.2, move 6; change-log
+row `freeze-brittleness-lint`):
+
+```
+brittleness findings: 2
+  test.js:118  [literal-name-list]  literal-name-list: the expected side is a list of names
+      assert.deepStrictEqual(Object.keys(cfg), ['alpha', 'beta', 'gamma']);
+  skipped: logo.png  (extension)
+```
+
+A red test can still be the wrong test. A criterion that pins a list of names, asserts an
+exact count, hashes a whole build, or diffs the branch against its own fork point is red at
+freeze *and discriminating at freeze*, and then goes red again for every later task that
+legitimately grows the thing it enumerated — the last shape **inverts**, going red precisely
+*because* an unrelated later task did its job correctly. No amount of red can detect that,
+which is why the gate reads the text as well.
+
+- **The count prints even when it is zero**, so a clean suite can be told from a pass that
+  never ran. `unavailable - <reason>` means the pass itself failed; that is not a zero.
+- **The lint cannot change the exit code**, in either direction. Findings never fail a
+  freeze — a gate on spec *authoring* is one you get past by rewording until it passes
+  (hard rule 5) — and a clean pass never rescues a green verdict.
+- **Every finding takes a disposition, the way a critic's does.** Write each one into the
+  planning draft with what was done about it — accepted and the test rewritten, or rejected
+  with the reason it is correct here — so "the lint raised four and all four were
+  considered" is a claim anyone can check later instead of taking on trust. It decides
+  nothing: no tool can tell a catalogue later work will grow from an enumeration of *this
+  task's own output*, and the second is exactly what a discriminating criterion should
+  assert. **Rejecting a finding is the common answer and needs no apology; leaving one
+  unmentioned is the failure.**
+- **Skips are findings too.** Each skipped path is named with a reason — `binary`,
+  `extension`, `unreadable`. A suite whose real assertions all sit in a file the pass could
+  not read has been blessed by a discriminator that never looked at it.
+
+**A verdict that proceeds leaves a receipt** (§3.2; change-log rows `receipt-design` and
+`repo-erq`). On exit 0 and on exit 4 the gate writes `.freeze-gate.json` into the suite
+directory it just judged and says so on the last line of its report. It records the gate
+version, the verdict, whether a probe was supplied, a content hash of the suite, the
+checkout's HEAD, the guard and brittleness counts, and the moment it ran. Three things follow
+for a planning session:
+
+- **`--repo` must be a git repository.** The hash is over the blob ids git will store, not
+  the bytes on disk — this machine's checkout is CRLF and the committed blob is LF, so a byte
+  hash would disagree with the branch on every freeze. A `--repo` with no history is refused
+  at exit 2 before anything runs.
+- **The receipt is part of the freeze**, not a by-product: it goes to the integration branch
+  in the same commit as the tests (step 6), and it is inside `tests/acceptance/`, so the
+  verifier already diffs it and a container that edits it ends the task `tampered`.
+- **Re-run the gate after touching a test.** The hash is of the suite as it stood when the
+  gate ran, so an edit after the fact leaves a receipt that describes a suite nobody gated.
 
 A pure refactor's only honest criteria are guards, which is why they are labelled rather
 than forbidden — and a spec that is *nothing but* guards is the sign that the task has no
@@ -228,19 +716,28 @@ the question that catches it before drafting, and for what to do with the work i
 ### 5. The user approves intent
 Write the drafted specs to **one reviewable file in the repo** —
 `docs/planning-draft-<YYYY-MM-DD>.md` — so the user has a single, findable thing to
-read (never a scratchpad or chat-only summary). The draft is **superseded by the Beads
-issues at freeze**: the issue is the canonical spec from then on, so the snapshot is
-disposable and can be deleted once the tasks have run. The user reads the plain-English
+read (never a scratchpad or chat-only summary). For a manually entered task, the draft is
+**superseded by the Beads issue at freeze**; for a durable kickoff, the specifier-created
+issue is already canonical and the reviewable file records the revisions that must be
+applied to it before freeze. Either way, the snapshot is disposable and can be deleted once
+the tasks have run. The user reads the plain-English
 spec — description, constraints, acceptance criteria in "Done means" form, and the
 difficulty label — and says whether it matches what they want. Adjust until yes. For a
 backlog decomposed from a design doc, this is a single list pass checking the slicing,
 not a re-litigation of intent (§3.3).
 
-**The draft carries the panel's dispositions.** Every critic finding from step 2 appears in
-this file with what was done about it — accepted, rejected with a reason, or deferred. The
-user is approving intent, not auditing reviews, so this is not something they have to read;
-it is there so that "the panel raised nine things and all nine were handled" is a claim
-anyone can check later instead of taking on trust.
+**The draft carries the panel's dispositions — and the freeze gate's.** Every critic finding
+from step 2 appears in this file with what was done about it — accepted, rejected with a reason, or deferred —
+and so does every brittleness finding the freeze gate printed in step 4, on the same terms.
+The user is approving intent, not auditing reviews, so this is not
+something they have to read; it is there so that "the panel raised nine things and the lint
+raised four, and all thirteen were handled" is a claim anyone can check later instead of
+taking on trust.
+
+**And the gate's own state travels with them**, one line each: the count of declared guards,
+and — when step 4 exited 4 — that the spec is **half-proven**, red at the fork point with no
+probe ever run against it. Both are recorded for the same reason, which is that an exemption
+nobody sees is an exemption nobody weighed.
 
 **Developers may go deeper (§3.3):** the plain-English criteria are the required gate,
 but the actual test files from step 3 are open for inspection — a developer who wants
@@ -251,6 +748,47 @@ the prose alone may. Claude offers, never insists.
 
 ### 6. Freeze
 On approval, in the target repo:
+
+**One command does all of this, and the last thing it does is check its own work:**
+
+```bash
+node scripts/freeze.js commit <issue-id> [<issue-id>...] --config run.config.<project>.json
+```
+
+It gates the suite, commits it and its receipt to the integration branch under a generated
+message, pushes, and then asks the **runner's own dispatch gate** whether the branch it just
+wrote will be accepted — so a freeze it reports as done is one a launch will take, rather than
+one this session believes it made. Add `--probe <dir>` to hand the gate the tree from step 4,
+`--dry-run` to gate and report without writing anything, and pass several ids to freeze a batch
+in one commit. It refuses before touching anything if any suite in the batch fails its gate, if
+the target checkout has staged work, or if that checkout is parked on another branch: a
+half-done freeze is worse than none, because the operator then has a tree they did not make.
+
+When several automatically managed proofs were prepared against the same integration HEAD,
+pass one absolute mapping per full suite id:
+
+```bash
+node scripts/freeze.js commit <id-a> <id-b> --config run.config.<project>.json \
+  --managed-probe <id-a>=<probe-a> --managed-probe <id-b>=<probe-b>
+```
+
+The command validates every marker and the common base before running any gate, gates each
+suite against its own retained baseline and green probe, promotes the exact suite union as one
+transaction, and makes one commit and one leased push. Missing, duplicate, extra, mixed-base or
+changed proofs refuse the whole batch before publication. This is the publication counterpart
+to `prepare-batch`: freezing one proof first would advance the integration base and stale every
+other proof from the same preparation wave.
+
+"Absolute" is judged in both path flavours rather than the running platform's, so a POSIX root,
+a Windows drive root with either slash and a UNC share are accepted identically on the host and
+inside a container. A drive-relative `C:probe` is not absolute in either flavour and is still
+refused, as is any ordinary relative path.
+
+**It will not write the tests.** The suite is the spec (§2, hard invariant 3), and an issue whose
+`tests/acceptance/<issue-id>/` does not exist is refused naming step 3. That refusal is the tool
+working.
+
+The manual sequence it replaces, which is what it does and the reason each part matters:
 1. Commit the acceptance tests **to the project's integration branch** (its
    `defaultBranch` — §3.4; `main` only if none is configured) and push. Frozen means:
    the test paths as they exist at the task branch's fork point from that branch —
@@ -258,6 +796,18 @@ On approval, in the target repo:
    integration branch at run time, tests must be on it before the run; the verifier
    diffs **all of `tests/acceptance/`** plus the config's `frozenPaths` against the
    fork point and treats any difference as tampering (§4.4).
+   **The push is now enforced, not merely expected** (§4.12's second admission rule,
+   change-log rows `dispatch-gate` and `repo-5yu`): before claiming anything the runner
+   fetches the integration branch from `targetRepoRemote` and refuses any candidate whose
+   `tests/acceptance/<issue-id>/` is not a directory there. Committed locally and unpushed
+   is the same as absent. A refused issue is never dispatched, never touched in Beads and
+   stays `open` — it appears in the report as `undispatchable` with the remedy, rather than
+   burning three attempts and a container on a verifier that could only ever exit 1.
+   **Commit `.freeze-gate.json` with the tests.** The gate wrote it into the suite directory
+   on the verdict that let you get this far (step 4; §3.2), it records the hash of the suite
+   as gated, and it is what turns "the gate was run" from a step the playbook asks for into a
+   fact the runner can check. If the suite changed after the gate ran, re-run the gate first
+   — the receipt would otherwise describe a suite nobody gated.
 2. Create the issue with all five fields via the wrapper (refuses a missing design-ref):
    `scripts/new-issue.sh -t "<title>" -d "<description>" -c "<constraints>"
    -a "<acceptance>" -r "<design-ref>" [-p 0-4] [-D dep-id,dep-id] -C <target-repo>`
@@ -279,17 +829,77 @@ install anything at run time):
    The runner only asserts the image exists; it never builds.
 
 ### 8. Pre-run checklist
+
+**Ask what a run would actually do, before launching one:**
+
+```bash
+node scripts/freeze.js status --config run.config.<project>.json
+```
+
+It prints the two populations a launch would produce — dispatchable and refused, each refusal
+with its reason and its remedy — using the runner's own gate against the same branch, and
+writes nothing anywhere. It exits **1 when the queue has candidates and none of them can be
+dispatched**, which is the state a run reports as success while doing no work at all.
+
+This is the first two bullets below, automated and answered in seconds. Run it; then read the
+bullets for the halves it cannot check — the **priority order**, the image, and whether the task
+has everything it needs to know.
 - `bd ready` (in the target repo's working copy) lists exactly the tasks meant to run,
   in the intended priority order. An **epic** may appear in that list and is expected to —
   `bd ready` returns the parent alongside its children — but the runner filters entries
   typed `epic` out and names them in its `ready queue:` log line (§3.1, §4.12). Every
-  other type (`bug`, `feature`, `chore`, `decision`) *does* run, so anything in the list
+  other type (`bug`, `feature`, `chore`, `decision`) is *eligible* to run — subject to the
+  next two bullets, which are the queue's second and third admission rules — so anything in the list
   that is not meant to run this batch must be blocked or closed, not merely retyped.
-- Frozen tests are on the integration branch (`defaultBranch`) and pushed;
-  `pipeline.config.json` is current.
+  The *membership* half of this bullet is automated by the marker's own reader — see the
+  last act below — which leaves you the half it cannot check: the **priority order**.
+- Frozen tests are on the integration branch (`defaultBranch`) **and pushed**;
+  `pipeline.config.json` is current. The runner checks the pushed half itself now and
+  refuses what it cannot find (§4.12, change-log row `repo-5yu`), which turns the old
+  silent three-attempt failure into an `undispatchable` row naming the remedy — but it
+  refuses *per issue*, so an unpushed freeze still costs you that task's slot in the batch.
+  **A run that dispatches nothing from a non-empty queue now exits 2**, where it used to exit 0
+  and read as a quiet day. That is the signal for anything scripting the loop; a genuinely empty
+  queue is still a legitimate no-op at exit 0.
+  Two things the gate does *not* soften. An unreachable `targetRepoRemote`, or a default
+  branch it cannot resolve, **aborts the whole run before anything is claimed** rather
+  than failing one task. And `node scripts/batch.js show`'s `ready` verdict, below, is
+  still Beads-only: it does not yet know this rule, so an id can read `ready` there and
+  be refused at dispatch (a follow-up task; §4.12 records the gap).
+- **Every frozen suite carries its `.freeze-gate.json`, and it is pushed with the suite**
+  (§4.12's third admission rule, change-log row `repo-isq`). The freeze gate writes that
+  receipt beside the suite on a verdict that proceeds — `red` (exit 0) or `half-proven`
+  (exit 4) — and the runner now recomputes the suite's hash from the integration branch and
+  refuses anything that does not match: `no-receipt` for a suite the gate never blessed,
+  `receipt-mismatch` for one edited after the gate blessed it, and `half-proven` for a red
+  freeze no probe was ever run against, unless the run config sets `allowHalfProven: true`.
+  So: re-run the gate after *any* edit to a frozen suite, however small — a comment reflow
+  moves the hash — and commit the receipt in the same commit as the suite. The refusal names
+  the remedy in the run report, but it still costs that task its slot in the batch.
 - The per-project image exists; Docker Desktop is running.
 - Anything the task needs to *know* (API details, conventions) is in the repo or attached
-  to the issue — the container has no internet beyond the Anthropic endpoints (§4.8).
+  to the issue — the container has no internet beyond the selected provider's own
+  allowlisted endpoints (§4.8, §6.5).
+- **Last act: write the batch marker** (§3.9) — one JSON object at
+  `runs/batches/<project>-<YYYY-MM-DD>.json` **in this repo** (git-ignored; never in the
+  target's tree, since it names a project and its issue ids). Required keys: `runConfig`
+  (the `run.config.<project>.json` the launch will type), `frozenAt` (an **instant**, e.g.
+  `2026-08-19T21:40:00Z` — a bare date cannot be compared with a run's UTC `startedAt`),
+  and `issues` as `[{id, title}]` in the intended priority order. Optional and printed when
+  present: `integrationBranch`, `freezeCommit`, `intent` (one line in the user's words) and
+  `approvedBy` (hard rule 4's split). Write it here, in this session, while you still know
+  the answers — the launch only ever reads. The marker is **immutable and never a queue
+  item**: nothing stamps it launched, and nothing in `runner/` or `pipeline/` reads it.
+  Confirm it with `node scripts/batch.js show`, which prints the marker and, per id,
+  `worked` or `not-worked` against the run corpus **and** `ready` or `not-ready` against the
+  live queue — plus one `stray` line for anything the queue offers that this batch never
+  named. That is the first bullet of this checklist, automated: it reads the
+  `run.config.<project>.json` the marker points at for its `targetRepoPath`, asks that
+  working copy, and applies the runner's own `epic` filter, so a parent in the list is not
+  reported as a stray. It is **evidence, never a gate** — it exits 0 on findings and changes
+  nothing. Where a link of that join cannot be made it prints `unreconciled` with the reason
+  (`run-config-absent`, `bd-unavailable` or `bd-unreadable`) and says nothing at all about
+  the queue; in that case, do the first bullet by eye.
 
 Then start the runner. From here the implementation phase is autonomous; the next human
 touchpoint is the run report (§5).
@@ -309,6 +919,13 @@ against the playbook rather than following it, and the next one may guess the ot
 wrong" during a run is a first-class result that lands in review — never a reason for
 anything to edit specs or tests mid-run. If the cause is architectural, amend the design
 doc (change-log row) so the doc never silently drifts from reality.
+
+The rows live in **`docs/change-log.md`**, not in `DESIGN.md`; section 12 of the design doc
+holds the convention and points at the file. Append at the bottom. That file — and only that
+file — is marked `merge=union` in the repo-root `.gitattributes`, which is what lets the
+task branches of one batch each append a row and merge without a person hand-resolving the
+same conflict N-1 times. It is safe there because rows are appended and never edited, so
+never extend the attribute to `DESIGN.md` or another prose file.
 
 A change-log row is identified by a **slug** in its `Ref` column, never a version number:
 a row a pipeline task produced takes that task's issue id, and a row a planning session

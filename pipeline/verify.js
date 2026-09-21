@@ -11,7 +11,8 @@
 //   2. Tamper check: diff tests/acceptance/ + config.frozenPaths against the fork
 //      point; untracked additions count. Any difference → "tampered", tests not run.
 //   3. Run `<verifyCommand> tests/acceptance/<ISSUE_ID>/` — the authoritative gate.
-//   4. Run regressionCommand when present — recorded evidence only, never the gate.
+//   4. Run regressionCommand when present — the verifier records evidence; the host's
+//      fork-point regressionPolicy decides whether publication requires an exact pass.
 //   5. Write /workspace/.run/verify.json (schema: schemas/verify.schema.json).
 //
 // Exit codes (the entrypoint maps these to its §4.11 codes):
@@ -20,6 +21,15 @@
 const { execSync, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+
+// The verdict rule lives in its own file so a test can reach it without running the
+// verifier, and so nothing here keeps a second copy of it (change-log row
+// `verify-nobuffer`): a killed run is an error, never a failure.
+const { classify, MAX_BUFFER, RUN_TIMEOUT_MS } = require('./verify-classify.js');
+// Git-authoritative executable modes (DESIGN.md §4.4, repo-3ec): where the workspace cannot
+// represent modes faithfully (a Windows bind mount, core.filemode=false), the acceptance gate
+// judges a native POSIX materialization of the candidate rather than the untrusted worktree.
+const { fileModeUntrusted, materializeCandidate } = require('./materialize.js');
 
 const WS = process.env.WORKSPACE || '/workspace';
 const OUT_DIR = path.join(WS, '.run');
@@ -86,18 +96,79 @@ if (tampered.size > 0) {
 }
 
 // --- Acceptance run: the authoritative gate. ---
+// The gate must judge the tree that will actually be published, by both its contents and its
+// GIT-authoritative modes. On a faithful worktree (core.filemode trusted) that is the workspace
+// itself, exactly as before. Where the worktree bit cannot be trusted (a Windows bind mount,
+// core.filemode=false) the candidate is laid down on a native POSIX filesystem and the unchanged
+// acceptance command runs THERE — so an explicit `--chmod=+x` is honoured and a 100644
+// executable-required file is refused, with no in-place chmod of the untrusted workspace. The
+// materialization's tree id is written beside the evidence so the host can reject stale evidence
+// after a post-verification content/mode change. Materialization failure fails closed (exit 4).
 const testDir = `tests/acceptance/${result.issueId}/`;
+let runDir = WS;
+let candidate = null;
+const cleanupCandidate = () => { if (candidate && candidate.cleanup) candidate.cleanup(); };
+if (fileModeUntrusted(WS)) {
+  candidate = materializeCandidate(WS);
+  if (!candidate.ok) {
+    cleanupCandidate();
+    result.error = `cannot materialize candidate for verification: ${candidate.error}`;
+    writeResult(result, 4);
+  }
+  runDir = candidate.dir;
+  // Bind the evidence to this exact candidate (content + Git modes). A later amend that changes
+  // either yields a different tree id, and the host refuses the stale pass (no verified success,
+  // no PR). Kept out of verify.json — its schema is frozen — in an adjacent .run/ artifact.
+  // Correction 2: when materialization ran, this binding is REQUIRED — a verification that
+  // cannot record it must not be publishable, so a write failure fails closed (exit 4) rather
+  // than being swallowed, and the host separately refuses a mode-untrusted pass with no binding.
+  try { fs.mkdirSync(OUT_DIR, { recursive: true }); fs.writeFileSync(path.join(OUT_DIR, 'verified-tree'), candidate.tree + '\n'); }
+  catch (e) {
+    cleanupCandidate();
+    result.error = `cannot bind verification evidence to the candidate tree: ${e && e.message ? e.message : e}`;
+    writeResult(result, 4);
+  }
+}
+// Correction 4: both verification layers must judge the SAME authoritative candidate. The
+// acceptance command runs in the materialized candidate; the regression command below runs in
+// the SAME `runDir`, and the candidate is not cleaned up until after both — so an executable
+// predicate in a required regressionCommand cannot pass against the untrusted workspace modes.
 const acc = spawnSync('sh', ['-c', `${config.verifyCommand} ${testDir}`],
-  { cwd: WS, encoding: 'utf8', timeout: 15 * 60 * 1000 });
-result.acceptance = acc.status === 0 ? 'pass' : 'fail';
+  { cwd: runDir, encoding: 'utf8', timeout: RUN_TIMEOUT_MS, maxBuffer: MAX_BUFFER });
+const accVerdict = classify(acc);
+result.acceptance = accVerdict.verdict;
 result.acceptanceOutput = TAIL((acc.stdout || '') + (acc.stderr || ''), 4000);
-
-// --- Regression run: evidence only (§4.4) — result never changes the exit code. ---
-if (config.regressionCommand) {
-  const reg = spawnSync('sh', ['-c', config.regressionCommand],
-    { cwd: WS, encoding: 'utf8', timeout: 15 * 60 * 1000 });
-  result.regressions = reg.status === 0 ? 'pass' : 'fail';
-  result.regressionOutput = TAIL((reg.stdout || '') + (reg.stderr || ''), 2000);
+// A killed run exits 4, the code the entrypoint already routes to its internal-error
+// path (§4.11) rather than to the retry loop. Retrying would spend the attempt cap on a
+// harness fault and end as "stuck", which is the unactionable overnight failure §3.5
+// exists to prevent; and the feedback fed to the next attempt would be a truncated tail
+// naming nothing. Stop, and say which of the harness's own limits was hit.
+if (accVerdict.verdict === 'error') {
+  cleanupCandidate();
+  result.error = `acceptance run produced no verdict: the suite ${accVerdict.why}`;
+  writeResult(result, 4);
 }
 
+// --- Regression run: evidence (§4.4) — result never changes the verifier exit code. ---
+// The host publication boundary may still require this evidence to be an exact `pass`.
+// Correction 4: run it against the SAME materialized candidate as acceptance (`runDir`), so a
+// required regression executable predicate is judged by the candidate's Git-authoritative modes,
+// not the untrusted Windows bind-mount modes of the workspace.
+if (config.regressionCommand) {
+  const reg = spawnSync('sh', ['-c', config.regressionCommand],
+    { cwd: runDir, encoding: 'utf8', timeout: RUN_TIMEOUT_MS, maxBuffer: MAX_BUFFER });
+  const regVerdict = classify(reg);
+  result.regressions = regVerdict.verdict;
+  result.regressionOutput = TAIL((reg.stdout || '') + (reg.stderr || ''), 2000);
+  // Evidence, so a killed regression run is recorded and never fatal. It must not read
+  // 'fail' (that downgrades a passing task to `partial` — §4.11 — on a harness fault)
+  // and must not read 'absent' either, which means "no regressionCommand configured" and
+  // would silently upgrade it instead. It gets its own word.
+  if (regVerdict.verdict === 'error') {
+    result.regressionOutput = `regression run produced no verdict: the suite ${regVerdict.why}\n`
+      + result.regressionOutput;
+  }
+}
+
+cleanupCandidate();
 writeResult(result, result.acceptance === 'pass' ? 0 : 1);

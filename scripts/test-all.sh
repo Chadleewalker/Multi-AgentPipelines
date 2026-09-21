@@ -17,9 +17,11 @@
 #   bash scripts/test-all.sh --list           # print the plan and exit
 #   bash scripts/test-all.sh --timeout 1200   # per-suite kill, seconds (default 900)
 #
-# Discovery is dynamic — scripts/test-*.sh in sorted order, then e2e.sh last (slowest,
-# and the only one that touches live GitHub). A suite added later is swept without
-# anyone remembering to edit this file, which is the entire point.
+# Discovery is dynamic — leaf scripts/test-*.sh in sorted order, then e2e.sh last
+# (slowest, and the only one that touches live GitHub). Aggregate entry points
+# (test-all.sh and test-ci.sh) are excluded so a sweep cannot recursively duplicate
+# the suites they select. A leaf suite added later is swept without anyone remembering
+# to edit this file, which is the entire point.
 #
 # Suites share one Docker network (§4.8) and must never run concurrently: a lock
 # directory enforces that. After EVERY suite — not only a timed-out one, and whether or
@@ -78,7 +80,9 @@ done
 PLAN=()
 for f in "$ROOT"/scripts/test-*.sh; do
   [ -e "$f" ] || continue
-  case "$(basename "$f")" in test-all.sh) continue ;; esac
+  case "$(basename "$f")" in
+    test-all.sh|test-ci.sh) continue ;;
+  esac
   PLAN+=("$f")
 done
 [ -e "$ROOT/scripts/e2e.sh" ] && PLAN+=("$ROOT/scripts/e2e.sh")

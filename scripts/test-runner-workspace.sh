@@ -28,6 +28,21 @@ if command -v cygpath >/dev/null 2>&1; then TGTW="$(cygpath -m "$TGT")"; REMOTEW
 BD=(docker run --rm -v "$TGTW:/repo" -w /repo pipeline-base:local bd)
 bdq() { MSYS_NO_PATHCONV=1 "${BD[@]}" "$@" 2>/dev/null | tr -d '\r'; }
 bdq init >/dev/null
+
+# Every issue the runner may dispatch needs a frozen suite ON THE INTEGRATION BRANCH
+# (DESIGN.md 4.12, change-log row `dispatch-gate`): the ready queue refuses an issue whose
+# tests/acceptance/<id> is absent from the branch task containers fork from, and a refused
+# issue never reaches a container — so without this every check below would fail for a
+# reason unrelated to what it tests. PUSHED, not merely committed: freezing locally is not
+# freezing, and the gate reads the remote.
+freeze() {
+  mkdir -p "$TGT/tests/acceptance/$1"
+  echo "exit 0" > "$TGT/tests/acceptance/$1/t.sh"
+  node "$ROOT/scripts/write-fixture-receipt.js" "$TGT" "$1" >/dev/null
+  git -C "$TGT" add -A >/dev/null 2>&1
+  git -C "$TGT" commit -qm "planning: freeze $1" >/dev/null 2>&1
+  git -C "$TGT" push -q origin main >/dev/null 2>&1
+}
 cd "$ROOT"
 
 CFG="$TMP/run.config.json"
@@ -49,7 +64,14 @@ exit 30
 EOF
 
 I1=$(bdq create "first task" -d x --acceptance ok --design "design-ref: 4.2" -p 0 --silent)
-run() { PIPELINE_EXEC_STUB="$1" RUN_ID="$2" PIPELINE_KEEP_WORKSPACE=1 node runner/run.js --config "$CFG" 2>&1; }
+freeze "$I1"
+FIXTURE_TOKEN="runner-workspace-fixture-token-never-used"
+run() {
+  # A verified commit must open a PR before the settlement can close Beads. The workspace
+  # suite uses a local bare remote, so isolate it from live GitHub through the host seam.
+  CLAUDE_CODE_OAUTH_TOKEN="$FIXTURE_TOKEN" PIPELINE_EXEC_STUB="$1" PIPELINE_GH_CMD="printf 'https://example.test/pr/1\\n'" \
+    RUN_ID="$2" PIPELINE_KEEP_WORKSPACE=1 node runner/run.js --config "$CFG" 2>&1
+}
 
 # 1. Fresh clone from the remote, branch task/<id> off canonical main.
 OUT=$(run "$TMP/stub-work.sh" t13-basic)
@@ -87,6 +109,7 @@ echo "$OUT" | grep -q "exit 0 -> done" && pass "outcome derived from collected v
 
 # 8. No-commit task: nothing to push.
 I2=$(bdq create "no-work task" -d x --acceptance ok --design "design-ref: 4.6" -p 0 --silent)
+freeze "$I2"
 OUT=$(run "$TMP/stub-nowork.sh" t13-nowork)
 echo "$OUT" | grep -q "no commits (nothing to push)" && pass "empty branch reported as nothing to push" || fail "empty-branch detection failed"
 
@@ -104,14 +127,41 @@ git -C "$REMOTE" rev-parse "task/$I2" >/dev/null 2>&1 && pass "earlier remote br
 WS1=$(echo "$OUT" | grep -o "workspace kept at .*" | head -1 | sed 's/workspace kept at //')
 [ ! -f "$WS1/new-file.txt.bak" ] && [ -f "$WS1/file.txt" ] && pass "each task gets a clean checkout" || fail "workspace contamination"
 
-# 11. Clone failure is a task failure, not a run failure.
+# 11. An unreachable remote is a RUN abort, not a per-task failure.
+#
+# THIS CHECK WAS REWRITTEN, NOT ADDED (DESIGN.md §4.12, change-log row `dispatch-gate`).
+# It used to assert the opposite: the clone failed inside prepare(), the task was reported
+# "workspace preparation failed", and the run carried on at exit 0. The dispatch gate
+# reaches that same remote FIRST — before anything is claimed — so an unreachable remote now
+# ends the run, which is the better report: every task would have failed at clone seconds
+# later, and eight task-level clone failures are a worse artifact than one abort naming the
+# remote. A tested property that stops being true and takes its own test with it is
+# indistinguishable from one that was never tested, so the check asserts the new behaviour
+# rather than being deleted.
 BADCFG="$TMP/bad.json"
 printf '{"targetRepoPath":"%s","targetRepoRemote":"%s/nope.git","image":"pipeline-base:local"}\n' "$TGTW" "$REMOTEW" > "$BADCFG"
+# Keep this a transport-failure discriminator, not a repository-identity mismatch: both config
+# sides name the same now-unreachable locator, so identity passes and the dispatch fetch is the
+# gate that must abort.
+git -C "$TGT" remote set-url origin "$REMOTEW/nope.git"
 I3=$(bdq create "unclonable" -d x --acceptance ok --design "design-ref: 4.2" -p 0 --silent)
-# tee to stderr streams the run live; stdout still captured, pipefail preserves RC.
-OUT=$(set -o pipefail; PIPELINE_EXEC_STUB="$TMP/stub-work.sh" RUN_ID=t13-badremote node runner/run.js --config "$BADCFG" 2>&1 | tee /dev/stderr); RC=$?
-echo "$OUT" | grep -q "workspace preparation failed" && pass "clone failure reported per task" || fail "clone failure not handled"
-[ "$RC" = 0 ] && pass "run continues after a task-level clone failure" || fail "run aborted on task failure (rc=$RC)"
+freeze "$I3"
+OUT=$(CLAUDE_CODE_OAUTH_TOKEN="$FIXTURE_TOKEN" PIPELINE_EXEC_STUB="$TMP/stub-work.sh" RUN_ID=t13-badremote node runner/run.js --config "$BADCFG" 2>&1); RC=$?
+[ "$RC" = 1 ] && pass "unreachable remote aborts the run" || fail "unreachable remote did not abort (rc=$RC)"
+echo "$OUT" | grep -q "nope.git" && pass "the abort names the remote it could not reach" \
+  || fail "the abort does not name the remote"
+# Its own channel: reporting a git failure as a Beads failure sends a person to the wrong
+# system, and that is the whole reason readyQueue() returns a cause field.
+echo "$OUT" | grep -q "cannot read the Beads ready queue" \
+  && fail "a git failure was reported as a Beads failure" \
+  || pass "the abort is reported in its own channel, not as a Beads failure"
+# Nothing was launched, and nothing was claimed: the gate runs before claim().
+echo "$OUT" | grep -q "workspace preparation failed" \
+  && fail "a task was launched after the gate should have aborted the run" \
+  || pass "no task was launched"
+bdq show "$I3" 2>/dev/null | grep -qi "in_progress" \
+  && fail "an aborted run left an issue in_progress" \
+  || pass "Beads untouched: the issue is still open for the next run"
 
 if [[ $FAIL -eq 0 ]]; then echo "== ALL T13 CHECKS PASSED =="; else echo "== T13 CHECKS FAILED =="; fi
 exit $FAIL

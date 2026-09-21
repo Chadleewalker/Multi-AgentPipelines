@@ -14,23 +14,36 @@ Beads queue is the join between them.
 ```mermaid
 flowchart TB
   A["Design doc — DESIGN.md"] --> B["Decompose into task-sized specs"]
-  B --> C["Critics, sized to difficulty<br/>none · light · full panel"]
+  B --> C["Critics, sized to difficulty<br/>light · full panel"]
   SP1["SLOT 1 — domain critic<br/>physics · aesthetic · security<br/>attacks the spec, finds the holes"] -.-> C
   C --> D["Write acceptance tests<br/>before any code exists"]
   SP2["SLOT 2 — domain test author<br/>writes the domain's own checks<br/>energy conserved · contrast ratio"] -.-> D
   D --> E["Coverage check<br/>every criterion has a test"]
-  E --> F{"You approve intent"}
+  E --> FG["Freeze gate — the tests must FAIL at the fork point and PASS in a probe<br/>red 0 · green 1 · indeterminate 2 · unreachable 3 · half-proven 4 · stale-guard 5<br/>deterministic, never an LLM"]
+  FG -.-> SG["Guard subset — every test file declaring itself &#91;guard&#93; in its first<br/>ten comment lines, run ALONE against the fork point and required GREEN there<br/>red = stale-guard 5, never a pass · beats 0/3/4 · short-circuits the probe"]
+  FG -.-> BL["Brittleness lint — the same run reads the suite's TEXT<br/>literal-name-list · literal-count · literal-digest · branch-self-diff<br/>count printed even at zero · skips named · never the exit code"]
+  SG -.-> F
+  BL -.-> F
+  FG --> F{"You approve intent"}
   F -->|"needs changes"| B
   F -->|"approved"| G["Freeze — tests committed<br/>to the integration branch"]
   G --> H[("Beads issue = the task spec")]
-  H --> I["Runner drains the ready queue<br/>epics skipped · priority, then FIFO"]
-  I --> J["One fresh container per task<br/>1 at a time by default · up to 3 with the knob"]
+  G -.-> BM["Batch marker, written at freeze — runs/batches/&lt;project&gt;-&lt;date&gt;.json<br/>read back with node scripts/batch.js show · pending · never a queue item"]
+  H --> I["Runner drains the ready queue<br/>epics skipped · unfrozen and ungated refused · priority, then FIFO"]
+  I -.-> UD["Refused before claim — no-suite · no-receipt · receipt-mismatch · half-proven<br/>one git fetch of targetRepoRemote per run · per candidate: ls-tree -d, then .freeze-gate.json vs the branch's blobs<br/>run.json row, outcome undispatchable + the refusal kind · Beads untouched, issue stays open"]
+  UD -.-> G
+  I -->|"a worker is free and the queue is empty"| FEED["Live queue feed — re-read the ready queue<br/>OFF unless feedIdleGraceMinutes &gt; 0 · a failed re-poll is never fatal<br/>ends: drained · idle · stopped (runs/&lt;runId&gt;/stop) · halted"]
+  FEED -->|"new work, or a refusal that has cleared"| I
+  G -.->|"frozen mid-run, suite pushed"| FEED
+  I --> J["One fresh container per task<br/>1 at a time by default · N with the concurrency knob"]
   J --> K["Run report + pull requests<br/>ordered by scrutiny needed"]
   K --> L{"Merge, or send back"}
   L -->|"send back as a new task"| B
   L -->|"either way, one line per PR"| VD["Record the verdict — merged or rejected, and why<br/>runs/&lt;runId&gt;/tasks/&lt;id&gt;/verdict.json · evidence, never a gate"]
   K -.-> AUD["Across ALL past runs — node scripts/audit-runs.js<br/>joins the corpus, prints one report, changes nothing"]
   AUD -.-> B
+  J -.-> DASH["While THIS run is in flight — node scripts/dashboard.js<br/>localhost only · serves /state from runs/ · changes nothing"]
+  J -.-> LED["Every run.log line, structured — runs/&lt;runId&gt;/events.jsonl<br/>one writer, one timestamp · named typed events · schemas/events.schema.json<br/>plus three facts no other artifact holds: queue.read + task.undispatched,<br/>attempt.finished (verifier result + failing check names), concern.raised<br/>host-only · append-only · no reader reads it yet"]
 
   classDef specialist fill:#fdf4e3,stroke:#a86c17,stroke-width:1.5px,stroke-dasharray:5 3,color:#14181d
   class SP1,SP2 specialist
@@ -40,6 +53,97 @@ The dotted branch off the run report is the only reader that spans runs (§5, ch
 row `repo-73k`). It is post-hoc and host-only: nothing in a run waits on it, it gates
 nothing, and what it finds reaches the pipeline the same way any other observation does —
 through a human, into a planning session.
+
+The dotted branch off the run itself is its live sibling (§5, change-log row `repo-kfg`):
+`node scripts/dashboard.js` reads the same `runs/` tree while a run is still in flight and
+serves it as `/state` on loopback. Both arrows are dotted for the same reason and no arrow
+leaves either node — a watcher that could reach a run would be a route around hard rule 1,
+and one that could gate would violate hard rule 5. The dashboard's own page is not built
+yet; the frozen JSON contract it serves is.
+
+The third dotted branch off the run is `events.jsonl` (§4.12, change-log rows
+`events-ledger-design` and `repo-qzy`). It is drawn as a *sibling* of the two readers rather
+than as something either of them consumes, because no arrow reaches it yet: `runner/log.js`
+writes one JSON object per `run.log` line — from the same call and the same clock read, so the
+two cannot disagree — and every existing reader still parses the prose. That is deliberate.
+The lines those readers match by prefix are now also named events with typed fields, so each
+reader can move across on its own, in its own task, keeping its own suite green; a flag day
+would have put three readers and the writer in one change nobody could review. The container
+side of the diagram is untouched: nothing in a task container writes an event, and nothing
+in `pipeline/` knows the file exists.
+
+Change-log row `repo-3xw` gave the node its second line: **three facts that reach no other
+artifact at all**, which is what makes the ledger worth reading rather than merely a second
+copy of `run.log`.
+
+* **The queue read, with every refusal and its reason** — `queue.read`, the structured twin
+  of the `ready queue: ` line, carrying ids and never issue objects; and `task.undispatched`,
+  one per issue the dispatch gate refused, traced to that issue so a reader asking about it
+  finds the reason rather than an empty answer. Both are emitted by exported helpers in
+  `runner/queue.js`, because `main()` sits behind the token load and the Docker preflight
+  where no Docker-free suite can reach it.
+* **Each attempt's verifier result and failing check names** — `attempt.finished`, one per
+  attempt in the collected status file, emitted once per task *after* the relaunch loop
+  rather than per collection: a parked task collects its status again on every relaunch, and
+  emitting inside the loop would make the attempt count depend on how the subscription window
+  fell. The names come from `failingChecks` in `scripts/sweep-assertions.js`, the one file
+  that owns this repo's assertion-line vocabulary. `failingChecks` has three answers and they
+  are three facts: `[]` nothing failed, a list these failed, `null` nothing is known — the
+  last being an attempt that failed and whose output did not survive.
+* **Each spec concern** — `concern.raised`, one per `specConcerns` entry, verbatim. Evidence
+  only, exactly like every other surface §3.7's channel reaches: it cannot move an outcome.
+
+All three are *ledger-only* (`msg: null`): they are never echoed and never reach `run.log`,
+which stays byte-identical for the human reading it. That is the property the ledger was
+built to have — a place to record things too structured to be prose without changing a byte
+of what a person sees.
+
+The dotted branch off the freeze gate is its second, textual pass (§3.2 "below the panel",
+moves 1 and 6; change-log rows `freeze-gate-red` and `repo-uw6`). The solid path is the
+verdict — `red` 0, `green` 1, `indeterminate` 2, `unreachable` 3, `half-proven` 4 — and it is
+the only thing that reaches the exit code. The last two arrive with `--green <probe-dir>`
+(change-log row `repo-inj`): the same suite is run a second time in a throwaway tree where the
+criteria are already satisfied, because a suite that discriminates and a suite whose own
+fixture is broken are the same observation from the fork point alone. `unreachable` is red
+there too and is never a pass; `half-proven` is red with no probe supplied, which is legal and
+proceeds, carried into the approval pass beside the guard count. A **broken** probe is
+`indeterminate`, never `unreachable` — exit 3 is reachable only behind a green probe control.
+
+The upper dotted branch is the guard subset (§3.2 "the stale guard"; change-log rows
+`stale-guard-design` and `repo-i4b`). It is dotted like the lint because it is a second pass
+over the same suite, and unlike the lint it *does* reach the exit code — `stale-guard` 5, the
+sixth verdict and the only one the whole-suite run cannot produce. A guard is the one kind of
+criterion that is supposed to be green before any work exists, so red there means the pin has
+already moved rather than that the implementation is missing; it beats `red`, `unreachable`
+and `half-proven` and short-circuits the probe, because no probe result can change what a
+stale pin at the fork point means. A guard subset that could not *run* is `indeterminate`
+naming the guard side, on exactly the reasoning that keeps a broken probe off exit 3.
+The lint hangs off the gate dotted because it decides nothing: a red test can still be the wrong
+test, so the same run names the assertions whose *expected side is a literal the author
+typed*, and each finding takes a disposition in the planning draft the way a critic's does.
+It arrives at the approval pass as evidence, never as a gate — findings cannot fail a
+freeze, and a clean pass cannot rescue a green verdict.
+
+A verdict that *proceeds* — `red` 0 or `half-proven` 4 — also leaves a **receipt** in the
+suite it just judged, `tests/acceptance/<issue-id>/.freeze-gate.json` (§3.2; change-log rows
+`receipt-design`, `repo-erq` and `repo-isq`). It is not drawn as a node of its own, because
+what it changes is one box to the right: the receipt is committed with the tests in step 6,
+and the queue's admission now reads it. §4.12's third admission rule refuses a candidate whose
+suite carries no receipt, whose recorded hash disagrees with the branch, or whose verdict is
+`half-proven` on a run that has not set `allowHalfProven` — which is why the refusal box names
+four kinds and the freeze box is where all four arrows go back to.
+
+The dotted branch off the freeze is the handoff between the two halves of the process (§3.9,
+change-log rows `batch-ready-marker`, `repo-0b3` and `repo-8v0`). A planning session's last act
+writes the marker; a later, different session reads it back — `node scripts/batch.js show` to
+confirm what it is about to launch, `pending` to see a batch frozen days ago and never run.
+**No arrow leaves it**: nothing in `runner/` or `pipeline/` reads `runs/batches/`, a missing
+marker does not stop a launch and a disagreeing one does not refuse it. The marker is what was
+*intended*; the Beads queue on the solid path is what actually runs — and `show` now reads
+that queue too, through the run config the marker names, reporting each id `ready` or
+`not-ready` and each entry the batch never named a `stray` (or `unreconciled` with one reason,
+where a link of that join cannot be made). It reads the queue the runner will drain; it never
+changes it.
 
 Slots 1 and 2 need **no pipeline code**: they are prompts you run during a planning
 session, before anything is frozen. Slot 2 is the higher-leverage of the two — a domain
@@ -66,13 +170,36 @@ flowchart TB
   V -->|"fail, attempts &lt; 3"| FB["Commit the attempt<br/>feed failure output forward"]
   FB --> C1
   V -->|"fail on the 3rd attempt"| ST["Commit WIP + stuck state<br/>exit 10 — stuck"]
-  V -->|"pass"| ADV["SLOT 3 — declared advisors<br/>inspect the finished change<br/>notes only, cannot fail the task"]
-  ADV --> DP["Docs phase<br/>writes the change summary"]
-  DP --> OK["exit 0 — verified"]
+  V -->|"pass"| IC["Implementation commit<br/>verified recovery point"]
+  IC --> ADV["SLOT 3 — declared advisors<br/>inspect the finished change<br/>notes only, cannot fail the task"]
+  ADV --> DP["Docs phase<br/>root/docs Markdown only"]
+  DP --> FV{"Path boundary + final verifier<br/>judge the publishable tree"}
+  FV -->|"pass"| DC["Deterministic docs commit"]
+  FV -->|"docs error · forbidden path · final red"| RB["Restore implementation commit<br/>and verifier evidence"]
+  DC --> OK["exit 0 — verified"]
+  RB --> OK
 
   classDef specialist fill:#fdf4e3,stroke:#a86c17,stroke-width:1.5px,stroke-dasharray:5 3,color:#14181d
   class ADV specialist
 ```
+
+**Each of the three boundaries above also writes itself down.** On *entry* to the code,
+verify and docs phases the entrypoint sets `status.json`'s `phase` — `code` / `verify` /
+`docs`, the only values there are — through `pipeline/status.js`, which stays the sole
+writer of that file (change-log row `repo-bmd`). It is the live feed §5's dashboard reads
+to tell a task that is working from one that is being judged; the write is non-fatal and
+nothing in the diagram branches on it, so the arrows are unchanged by it.
+
+**A documentation-prohibited task skips the docs phase outright** (change-log row
+`repo-062`). When the host derives a preserve-documentation scope from a task's immutable
+kickoff intent — activated only when an entire element of the original `constraints` or
+`nonGoals` array exactly equals one of two directive strings — it transports that scope
+into the container, and the entrypoint exits `0` immediately after the implementation
+commit: the `DP` docs node above never runs and no docs worktree is created. The verified
+implementation summary stands as the change summary, and the intentional omission is
+recorded honestly — a bounded run-log line and an explicit PR-body note — never as a
+`docsPhaseError`, because a scope decision is not a documentation failure. Every other task
+takes the docs phase exactly as drawn.
 
 Slot 3 is the one that needs building, and the sockets are already in place: the
 `advisories` array exists in `status.schema.json` (typed, and documented as evidence
@@ -101,12 +228,12 @@ flowchart LR
     G{"0 · Admit<br/>run-level pause gate"}
     A["1 · Claim<br/>status → in progress"]
     C["2 · Collect<br/>exit code + status.json"]
-    D["3 · Finish<br/>append notes,<br/>then close or block"]
+    D["3 · Finish<br/>append notes, then terminal status<br/>+ clear runner ownership"]
     R["Refused — never launched<br/>paused row, issue untouched"]
     Q[("Task list")]
   end
   subgraph CONT["Container — no queue access"]
-    B["code · verify · docs"]
+    B["code · verify · implementation commit<br/>docs-only · final verify · docs commit"]
   end
   G -->|"window open"| A
   G -->|"run-level cap fired"| R
@@ -129,17 +256,54 @@ launches and the queue is never touched, so its issue stays `open` for the next 
 than stranded `in_progress`. It still gets a `paused` row in the manifest, because a task
 missing from `run.json` after an unattended overnight run is a hole in the record.
 
-The claim in step 1 is what stops a task being picked twice, and it is why a crashed run
-leaves issues stranded `in progress` — the next run's preflight sweeps those back to
-`open`. The claim only holds while there is one writer, so preflight's **first** gate is a
-lock on the target repo: a second run against the same project is refused by name before
-it can read the queue, and a lock whose owning process is gone is taken over (change-log
-row `repo-os9`).
+The claim in step 1 is Beads' atomic `--claim`, with a unique run actor and owner token in
+the same transaction. A crash can therefore leave an issue `in progress`, but the next
+run reopens it only when actor, run id and token still match a lock owner proven dead — it
+never mass-resets human work. Preflight's first **acquiring** gate is a host-global lock on the
+target repo: a second run is refused even from another pipeline checkout. `runs/locks/` retains
+an observer mirror for local readers, not a second authority (change-log row
+`global-run-ownership-and-atomic-claims`).
+
+One check runs even earlier, before preflight is entered at all: **write-protection
+admission** (§4.12, §6.3, change-log row `repo-324`). A dispatch clones and mutates the
+integration checkout, so the runner first asks whether that checkout carries staged,
+unstaged or untracked changes to protected product, configuration, control or frozen paths
+that no plan and no frozen suite accounts for. If it does, the run stops with those paths
+named and nothing else touched — no lock taken, no Beads write, no network, and nothing
+reset, cleaned, stashed or moved. It sits ahead of the lock for the same reason the lock
+sits ahead of Docker: it acquires nothing, so its refusal has nothing to compensate for.
+`scripts/freeze.js` and `scripts/prepare-batch.js` run the identical check before their own
+first write, which is what makes it a backstop rather than a fourth opinion.
+
+Inside preflight, one gate now sits ahead of the lock as well: **child admission** (§3.10,
+change-log row `repo-rj7`), because it decides *which* exclusion applies. It asks whether this
+canonical target is under a live project supervisor and whether this run was granted scoped
+`implementation` authority by it, reading that authority from `PIPELINE_CHILD_AUTHORITY`. With
+no supervisor and nothing presented the answer is `standalone` and the lock does the rest
+exactly as drawn. With a supervisor live and no authority, the run is refused by that
+supervisor's name having acquired nothing. With valid authority it proceeds under its parent's
+lease and takes no lock of its own, so neither its exit handler nor its teardown boundary
+releases a lease it never took. `scripts/prepare-batch.js` asks the identical question for the
+`preparation` scope before its own gates. Preparation then checks, in bounded fail-fast
+order, Docker daemon reachability, configured image presence, configured host shell and
+author/probe-provider authentication; only then does it reach write-protection admission and
+the project lock or delegated supervisor ownership. A refusal writes no batch or attempt state.
+The implementation runner's full order remains: write-protection admission, child admission,
+the project lock, repository identity, host shell, Docker, image, network, egress,
+stale-issue recovery.
+
+Before the shell/Docker/network gates, preflight also proves the local checkout's fetch
+remote and `targetRepoRemote` reduce to the same repository identity. This binds the task
+list the host writes to the code the runner fetches and publishes; a mismatch stops before
+Beads recovery, queue reads or workspace creation. Step 3 clears the unique runner assignee
+and both ownership metadata keys in the same transaction as `closed` or `blocked`, so a later
+reopen can be claimed atomically rather than inheriting a dead actor.
 
 The same drawing holds at `concurrency` > 1: **one** runner process holds up to N task
-containers of its project at once (default 1, ceiling 3 — change-log row `repo-teq`), and the
-host box is still the single writer. Never N runner processes against one queue — the claim
-in step 1 and the lock above it both assume one. Tasks in flight together share this diagram;
+containers of its project at once (default 1, no configured ceiling — change-log rows
+`repo-teq`, `concurrency-uncapped`), and the
+host box is still the single writer. The global lock excludes N runner processes against one
+queue, while atomic claim remains the final compare-and-set guard. Tasks in flight together share this diagram;
 the runner hands their results back in ready-queue order, so the manifest reads the same at
 any depth.
 
@@ -158,6 +322,7 @@ stateDiagram-v2
   in_progress --> blocked: stuck · tampered · failed
   in_progress --> in_progress: rate limit — parked, then resumed
   open --> open: refused — the run-level pause cap had already fired
+  open --> open: not dispatched — the frozen suite is missing, ungated or changed
   blocked --> open: you fix the spec and unblock it
   closed --> [*]
 ```
@@ -165,14 +330,48 @@ stateDiagram-v2
 `blocked` is doing quiet but critical work: it removes failed work from the ready queue.
 Without it a task that cannot pass would be picked up again on every run, forever.
 
-The `open → open` self-loop is the run-level park's refused population: the gate is
-consulted before the claim, so a task the fired cap turns away never enters the diagram's
-`in_progress` half at all and the next run picks it up untouched.
+Both `open → open` self-loops are populations that never enter the diagram's `in_progress`
+half, because both gates are consulted **before the claim**. The first is the run-level
+park's refusal: the pause cap had already fired, so nothing launched. The second is the
+ready queue's dispatchability gate (§4.12, change-log rows `dispatch-gate` and `repo-isq`) —
+the issue's frozen acceptance suite is not on the branch its container would fork from, or it
+is there and nothing records that the freeze gate ever blessed *that* version of it, so the
+verifier could only ever have exited 1 three times over. Neither is blocked and neither is
+failed; one is waiting for a usage window and the other for a freeze session, and both are
+picked up untouched by the next run.
 
 An **epic** never enters this diagram at all. `bd ready` returns it alongside its children
 and never closes it when they close, so the runner filters ready entries typed `epic` out
 before the loop and names them in its queue-summary line — skipped, but never silently
 (§3.1, §4.12).
+
+The type filter is no longer the only thing that keeps a ready entry out of the loop. The
+**dispatchability gate** is the second admission rule, and it asks a question Beads cannot
+answer, because Beads tracks issues and not freezes: *is this task's frozen acceptance suite
+on the branch its container will fork from?* Once per run, `git fetch <targetRepoRemote>
+<branch>` into a throwaway repository under the OS temp dir; then, per candidate,
+`git ls-tree -d --name-only FETCH_HEAD -- tests/acceptance/<issue-id>`. Empty output, not
+dispatchable. The gate goes to the **remote by URL and reads `FETCH_HEAD`** — never
+`origin/…`, never the working tree, never a local branch — because freezing locally is not
+freezing, and because `targetRepoPath` and `targetRepoRemote` are independent config keys
+nothing relates. It is **lazy** (a queue with no candidates neither fetches nor aborts), it
+is **per issue** (three frozen tasks and one unfrozen one runs the three), and a fetch that
+fails, hangs past `gitTimeoutMs`, or resolves no branch **aborts the run in its own channel**
+rather than dispatching blind. Like the type skip, refusals are named in the queue-summary
+line — with the remedy, because until this shipped they appeared in the report as
+three-attempt failures indexed under the agent's name rather than under the missing freeze.
+
+The **third admission rule** (change-log row `repo-isq`) asks the question the second one
+cannot: the suite is *there*, but was it ever *gated*? Same fetch, same `FETCH_HEAD`, two more
+reads per surviving candidate — `git show FETCH_HEAD:tests/acceptance/<issue-id>/.freeze-gate.json`
+for the receipt the freeze gate wrote, and `runner/suite-hash.js` over that branch's blob ids
+for what the suite is *now*. Four refusals in a fixed order, first one winning: `no-suite`,
+`no-receipt` (never gated, or a receipt unparseable, of an unknown version or verdict, or
+recording no digest), `receipt-mismatch` (edited after the gate blessed it — a comment reflow is
+enough), and `half-proven` (red with no probe ever run against it, admitted only where the run
+config says `allowHalfProven: true`). The kind rides on the manifest row as `refusal` and keys
+the report's heading, body and remedy, so each refusal names its own fix rather than one
+sentence covering four different mistakes.
 
 ## Where the walls are
 
@@ -187,9 +386,20 @@ both dotted, which made a wall look like a doorway.)
 flowchart LR
   subgraph HOST["Your PC"]
     direction TB
+    HS{"Host shell preflight<br/>Windows: Git Bash + exact host Node"}
+    ABORT["Preflight abort — no task launched<br/>project lock released"]
     R["Runner — timers, budgets, kill switch"]
+    PB{"Bounded host process contract<br/>Git / Docker / GitHub / shell<br/>timeout → status 124"}
+    WD["Per-container deadline watchdog<br/>independent worker clock"]
+    FIN["Finally cleanup<br/>network down → lock release"]
     GH["git push + gh pr create"]
+    RG{"Fork-point regression policy<br/>required → exact pass"}
+    CS{"Introduced-object credential scan<br/>commits + trees + blobs"}
+    AC{"Runtime artifact contracts<br/>schemas + issue identity"}
     BD[("Task list")]
+    SET["Settlement — notes + terminal Beads transition"]
+    CLEAN["Discard host workspace"]
+    REC["Completion pending — issue stays in progress<br/>error + recoveryWorkspace in report<br/>workspace retained"]
   end
   subgraph NET["Sandbox — no route out"]
     direction TB
@@ -197,14 +407,32 @@ flowchart LR
     PX["Allowlist proxy"]
     REG["SLOT 3 registry, read-only"]
   end
+  HS -->|"verified before Docker / network / Beads"| R
+  HS -.->|"unsupported shell or Node toolchain"| ABORT
+  R -.->|"every short host call"| PB
+  R -->|"arm for each live task"| WD
+  WD --x|"active budget expires: bounded docker kill"| T
+  R -->|"normal return or exception"| FIN
   R -->|"fresh clone + issue.md + memory.md"| T
   T -->|"commits land on your disk"| R
+  T -->|"status.json + verify.json"| AC
+  AC -->|"valid structured values"| R
+  AC -.->|"invalid exit-0 claim → failed"| R
   T -->|"every request"| PX
-  PX -->|"allowed"| AN["The three anthropic.com endpoints"]
+  PX -->|"allowed"| AN["The selected provider's endpoints only"]
   PX --x BL["Refused — github.com, npm, everything else"]
   REG -.-> T
-  R --> GH
-  R --> BD
+  R --> RG
+  RG -->|"pass, or evidence policy"| CS
+  RG -.->|"required verdict unavailable"| REC
+  CS -->|"clean"| GH
+  CS -.->|"finding or scan unavailable"| REC
+  R -->|"claim + issue export"| BD
+  GH -->|"publication durable"| SET
+  SET --> BD
+  SET -->|"all writes durable"| CLEAN
+  GH -.->|"push / required PR fails"| REC
+  SET -.->|"note / transition fails"| REC
 
   classDef specialist fill:#fdf4e3,stroke:#a86c17,stroke-width:1.5px,stroke-dasharray:5 3,color:#14181d
   classDef blocked fill:#f7e2df,stroke:#9d3a2f,stroke-width:2px,color:#14181d
@@ -216,28 +444,128 @@ The sandbox is **per project**. The network and the proxy take their names from 
 config — derived from the project segment of `run.config.<project>.json` when it names
 neither — so two runner processes against two projects draw two copies of this diagram
 side by side, and neither one's `up` or `down` touches the other's plumbing (change-log
-row `repo-jur`). The proxy *image* is shared; only the running container and the network
-are per project.
+row `repo-jur`). The proxy *image* is shared within a provider profile — `docker/proxy` for
+Claude, `docker/proxy-codex` for Codex, each carrying only its own vendor's endpoints; only
+the running container and the network are per project.
+
+Codex authentication is a separate serialization boundary. API-key mode passes only the
+named key, while ChatGPT mode holds one saved login as one exclusive lane across task-cache
+staging, Codex execution and atomic refresh write-back. A task sees only its private writable
+handoff; the entrypoint stages it into `/root/.codex`, runs Codex as `node`, and runs the
+repository verifier as `nobody` with every Codex credential variable unset. Consequently,
+raising the worker-pool concurrency does not make one subscription login concurrent;
+`codexAuthCacheRoots` supplies independently authenticated private lanes for parallel ChatGPT
+workers. Preflight validates the full non-overlapping roster before target mutation and
+quarantines an invalid or busy lane without disabling healthy siblings. Credential jobs wait
+FIFO and never exceed the healthy lane count, while credential-free stage caps continue
+independently. Failed refresh persistence retains both copies; recovery reacquires that exact
+lane lock and writes once only if the durable source version is unchanged.
+
+The shell node is a Windows host-identity gate, not merely a check that some executable
+named `bash` exists (change-log row `verified-host-shell`). The runner proves the shell is
+Git Bash-compatible and can launch the exact host Node binary before it creates Docker or
+Beads side effects, then reuses that resolved command throughout the run. A configured
+shell is authoritative and fails explicitly; automatic discovery may skip the WSL launcher
+and continue to a verified Git for Windows installation. Linux keeps the portable `bash`
+default with the same Node capability check.
+
+The process boundary and watchdog are separate on purpose (change-log row
+`bounded-lifecycle-and-independent-deadlines`). `gitTimeoutMs` bounds all Git work;
+`lifecycleTimeoutMs` bounds short Docker, GitHub and shell calls; both normalize timeout
+to status 124 with a named diagnostic. Synchronous orchestration can still serialize a
+worker briefly, but it cannot delay another task's active budget because that clock and
+bounded `docker kill` live in an independent worker thread. Every post-preflight exit crosses
+the cleanup node: network teardown is attempted first and lock release is in a nested
+`finally`, including when task/report code or teardown itself throws.
+
+The completion fan-out is deliberately asymmetric (change-log row
+`transactional-task-completion`). Git publication happens before the terminal Beads write;
+there is no cross-system atomic commit. The recovery invariant is instead that neither
+failure is reported as terminal success and neither permits the only host workspace to be
+discarded. A failed push does not close the issue; a failed Beads write may leave an already
+durable branch or PR, but the issue remains in progress and the report names the retained
+workspace.
+
+The pre-push scan is deliberately a history scan, not a working-tree scan (change-log row
+`credential-disclosure-publication-gate`). The range is the immutable fork point through
+the task tip, so historical baseline objects do not block a branch, but an introduced secret
+cannot be hidden by deleting it in a later commit. A refusal crosses the same recoverable
+settlement edge as a rejected push and never includes the matched bytes in logs.
+
+A documentation-prohibited task carries **one extra pre-push gate**, ahead of the
+credential scan (change-log rows `repo-062` and `repo-062-review-corrections`). The host
+inspects the candidate delta against its pinned integration baseline with byte-safe Git
+path handling — `git --no-replace-objects diff --name-status -M -z`, so a container-writable
+`refs/replace` baseline cannot mask a change and paths are taken literally from the `-z`
+bytes — and refuses any addition, modification, deletion, index-mode change or rename into
+or out of the protected Markdown surface (root-level Markdown and Markdown beneath `docs/`,
+case-insensitive extension, whitespace-bearing paths included). An inspection that cannot
+succeed, including a non-timeout Git process error at exit status 0, refuses the same way
+rather than parsing a partial delta. Refusal is zero push and zero PR with the workspace and
+evidence retained, exactly like the credential scan's recoverable settlement edge. The scope
+is the host-owned snapshot derived from canonical exported issue data; no container-editable
+issue file or environment artifact can relax it.
+
+The artifact contract node is a host trust boundary (change-log row
+`runtime-artifact-schema-gate`). Invalid bytes remain evidence on disk, but only a
+schema-valid artifact whose issue identity matches the claimed task becomes structured
+input. Exit 0 with either contract unavailable—or with acceptance other than exact pass—
+enters the ordinary failed/blocked row, never done/closed.
 
 A specialist that needs a different model or a different tool changes nothing structural:
 the coding agent is already swappable through `agentCommand` → `PIPELINE_AGENT_CMD`, and
-the contract is only "a shell command that reads a prompt on stdin and edits files." A
-non-Anthropic tool would additionally need its domain added to the allowlist — the one
-place the closed-network policy would have to be revisited deliberately.
+the contract is only "a shell command that reads a prompt on stdin and edits files." Claude
+and Codex are first-class selections rather than overrides — `provider` in the run config
+picks the credential, the container command and the egress profile together (DESIGN.md
+§6.5). Any *third* tool would still need its own allowlist profile, carrying only its own
+endpoints; widening an existing profile to cover it is the one thing the closed-network
+policy does not allow.
 
 ## What each outcome does
 
-| Outcome | Exit | Report status | Beads | Branch pushed | PR |
-|---|---|---|---|---|---|
-| Acceptance pass, regressions pass or absent | 0 | done | closed | yes | yes |
-| Acceptance pass, regressions fail | 0 | partial | closed | yes | yes, flagged |
-| Bailed after 3 attempts | 10 | stuck | blocked | yes, WIP | no |
-| Frozen tests modified | 11 | tampered | blocked | yes, WIP | no |
-| Usage limit hit | 20 | paused | stays in progress | not yet | not yet |
-| Internal error | 30 | failed | blocked | if commits exist | no |
-| Wall-clock kill | — | failed | blocked | if commits exist | no |
+The exact exit-code, report-status, Beads-status, PR-eligibility and memory-eligibility
+vocabularies live in `contracts/control-plane.json`; runtime modules consume that file and
+the mandatory contract suite pins its task statuses to `schemas/run.schema.json`. This
+section explains the exceptional paths without maintaining a second executable-looking
+table. Use `bash scripts/test-ci.sh --list` for the current regression roster and inspect
+the JSON contract for the current enumerable policy (change-log row `repo-tg8-10`).
 
-The table is unchanged by the run-level park, deliberately — parking is *scheduling*, never
+The outcome mapping assumes settlement succeeds. If publication or a terminal Beads write fails, the
+execution outcome remains unchanged, but Beads stays in progress, the manifest/report
+adds the error and `recoveryWorkspace`, and the host workspace is retained for recovery.
+With `regressionPolicy: required`, fail, absent, error or missing regression evidence takes
+that recovery path before push; only an exact regression pass may settle. Any branch that
+would otherwise push must then pass the introduced-object credential scan.
+
+The two exit-0 rows also assume schema-valid `status.json` and `verify.json`, matching issue
+identities, and `acceptance: pass`. Without those prerequisites the outcome is failed, the
+issue is never closed, and no PR is opened.
+
+The acceptance gate judges the candidate by its Git-authoritative executable modes, not an
+untrusted worktree bit (change-log row `repo-3ec`). Where the worktree cannot represent modes
+faithfully — a Windows-hosted Docker bind mount reports `core.filemode=false` — the verifier
+lays the git-authoritative candidate down on a native POSIX filesystem (`pipeline/materialize.js`)
+and runs the unchanged acceptance command there, binding its evidence to that tree id in
+`.run/verified-tree`; a materialization fault fails closed. The same rule governs the
+`scripts/freeze-gate.js` two-direction gate, whose materialization failure fails closed to
+`indeterminate`. Before a PR-eligible verified success publishes, the host recomputes the branch
+tip's tree and refuses the outcome and its PR if a post-verification amend made the pass stale —
+a named failed/blocked outcome whose branch may still push as recoverable evidence.
+
+`undispatchable` is the one outcome here that touches Beads **not at all** (§4.11, §4.12,
+change-log rows `dispatch-gate` and `repo-isq`). The ready queue's second and third admission
+rules refuse the issue before `claim()`, so it is never in progress, never blocked, and the
+next run picks it up unchanged the moment its suite — and its receipt — are pushed. The row
+carries the `refusal` kind that decided it, which is what lets the report name one remedy of
+four. It is a row in the manifest and not a hole — a
+refused task that produced no row is, after the unattended run where nobody watched it
+happen, indistinguishable from a task nobody queued — and it ranks second in scrutiny order
+behind `tampered`, because a batch that could not run is the first thing a person opening
+the report needs to see. Unlike the park's refusal below, it is a distinct outcome rather
+than a reuse of an existing one: parking is scheduling, and this is a statement about the
+work itself.
+
+The outcome taxonomy is unchanged by the run-level park, deliberately — parking is *scheduling*, never
 *judgment*. A task the fired pause cap refused adds no outcome: it reports the existing
 `paused` status, and the only difference from the row above is that it never launched, so
 Beads is untouched and its issue stays `open` rather than in progress (§4.7).

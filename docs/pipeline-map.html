@@ -233,8 +233,12 @@
        element — circular, and it destabilises under page zoom. An aspect ratio keeps
        the frame's proportions fixed at every zoom level; only its size changes. */
     width: 100%;
-    aspect-ratio: 16 / 9;
-    min-height: 17rem;
+    /* Roughly the map's own proportions. The frame letterboxes whatever it does not
+       match: a 2.6:1 drawing in a 16:9 frame has to shrink to fit the width, and the
+       height it doesn't use becomes empty band above and below. Keep this near the
+       diagram's aspect ratio — check it after any change that alters the map's shape. */
+    aspect-ratio: 3.4 / 1;
+    min-height: 13rem;
     overflow: hidden;
     touch-action: pan-y;
     cursor: grab;
@@ -715,19 +719,27 @@
   </section>
 
   <section>
-    <h2><span class="phase p-all">The whole map</span> Everything, in one picture</h2>
+    <h2><span class="phase p-all">The whole map</span> The shape of it, in one picture</h2>
     <p>
-      Every box on this page, once. At <code>fit</code> this is a shape, not a reading —
-      what you see is the four bands and where the arrows cross them. For the labels, hit
-      <code>plan</code>, <code>run</code> or <code>review</code> to land on that stretch
-      of the timeline at a legible scale, then drag and scroll from there. Node names are
-      abbreviated here; the eight diagrams below spell each one out.
+      Sixteen boxes — the whole system at the altitude where it still fits in one
+      reading. This is the overview, not the inventory: each box here is a stage that the
+      eight diagrams below open up. Scroll to zoom and drag to pan for a closer look, or
+      hit <code>plan</code>, <code>run</code> or <code>review</code> to land on one
+      stretch of it.
     </p>
     <ul class="key">
-      <li><span class="sw human"></span><span><b>Bands are trust domains</b> — who is allowed to touch a thing. The interesting events are all band crossings.</span></li>
-      <li><span class="sw script"></span><span><b>Left to right is time</b> — a project's whole life, from “create it” to “merge it”.</span></li>
+      <li><span class="sw human"></span><span><b>Colour and shape say whose domain a box is in</b> — you, the host, the container, outside. Blue diamonds are the two decisions that are yours; the double-edged box is the sandbox itself.</span></li>
+      <li><span class="sw script"></span><span><b>Roughly left to right is the order things happen</b>, from a design doc to a merged pull request. Not a strict timeline: you appear near the start and again at the end, and the two dotted returns go backwards on purpose.</span></li>
       <li><span class="sw store"></span><span><b>Arrows are flow only.</b> Solid = something moves. Dotted = read-only or reference. <b>—✕</b> = refused at the wall.</span></li>
     </ul>
+    <p class="note">
+      <strong>Why the trust domains are not drawn as boxes here.</strong> They were, and
+      they had to go: mermaid clips any arrow crossing a group boundary <em>at</em> that
+      boundary, so 13 of this map's 19 arrows stopped in mid-air — the worst 501 pixels
+      short of the box it pointed at. That does not draw “approve intent, then freeze the
+      tests”; it draws one big rectangle wired to another. Every arrow here now runs box
+      to box, and the walls are named in the labels instead.
+    </p>
     <div class="plate canvas" tabindex="0" role="group"
          aria-label="Master pipeline map. Scroll to zoom, drag to pan, arrow keys to move, plus and minus to zoom, 0 to reset.">
       <span class="canvashint">scroll to zoom · drag to pan</span>
@@ -742,163 +754,85 @@
         <button type="button" data-zoom="fit" class="zoomlevel" aria-label="Reset to fit">fit</button>
       </div>
 <pre class="mermaid">
-%%{init: {"flowchart": {"rankSpacing": 44, "nodeSpacing": 150, "padding": 12, "subGraphTitleMargin": {"top": 8, "bottom": 16}}}}%%
+%%{init: {"flowchart": {"rankSpacing": 65, "nodeSpacing": 40, "padding": 10}}}%%
+%% NO SUBGRAPHS, and that is the whole point. Mermaid clips any edge that crosses a
+%% subgraph boundary AT the boundary, so with the four trust-domain bands this map used
+%% to have, 13 of its 19 arrows ended in mid-air — the worst 501px from the box it was
+%% meant to point at, which reads as "the You rectangle is wired to the Your PC
+%% rectangle". Without clusters every edge is drawn node to node, always. Trust domain
+%% is carried by node colour and shape instead, per the key above the diagram.
 flowchart LR
-  subgraph YOU["You"]
-    direction LR
-    DESIGN["Design doc"]
-    SCAF["scaffold"]
-    ONBD["pipeline-onboard"]
-    LABEL{"Difficulty label"}
-    APPR{"Approve intent"}
-    MERGE{"Merge or<br/>send back"}
-  end
+  DESIGN["Design doc"]
+  PLAN["Plan — specs,<br/>critics, tests"]
+  APPR{"You approve<br/>intent"}
+  FROZEN[("Frozen tests<br/>+ config")]
+  DB[("Beads database<br/>queue + memory")]
+  RUNNER["Runner"]
+  CONT[["Container — one per task,<br/>no route to a git host"]]
+  CODE["Code phase"]
+  PROXY["Proxy — allowlist"]
+  ANTH["anthropic.com"]
+  BLOCKED["Everything else"]
+  VERIFY{"Verifier"}
+  RESULT[("Commits +<br/>status.json")]
+  FILE["Collect, report,<br/>push, open PR"]
+  GHUB["GitHub PR"]
+  MERGE{"You merge or<br/>send back"}
 
-  subgraph HOST["Your PC — the host"]
-    direction LR
-    REPO[("This repo<br/>*.md checklists")]
-    SPECS["Task-sized specs"]
-    CRITICS["Critics"]
-    SLOT1["SLOT 1 critic"]
-    TESTS["Tests +<br/>coverage check"]
-    SLOT2["SLOT 2 tests"]
-    FREEZE["Freeze"]
-    FROZEN[("tests/acceptance/<br/>frozen test files")]
-    CFG[("pipeline.config.json<br/>Dockerfile · image")]
-    CLAUDEMD[("CLAUDE.md")]
-    DB[("Beads database<br/>queue + memory")]
-    RUNNER["Runner"]
-    PREP["Workspace prep"]
-    WS[("Workspace folder<br/>the container's disk")]
-    COLLECT["Collect + finish"]
-    PUBLISH["Push + PR"]
-    REPORT["Run report"]
-  end
-
-  subgraph SBX["Sandbox — one container per task"]
-    direction LR
-    ISSUE[("issue.md<br/>memory.md")]
-    CODE["Code phase"]
-    VERIFY{"Verifier"}
-    FEEDBACK["Retry"]
-    ADV["SLOT 3 advisors"]
-    REG["Registry"]
-    DOCS["Docs phase"]
-    STATUS[("status.json<br/>+ verify.json")]
-    OK["exit 0 verified"]
-    STUCK["exit 10 stuck"]
-    TAMP["exit 11 tampered"]
-    PAUSE["exit 20 paused"]
-    PROXY["Proxy"]
-    MORE[["⋯ N at once<br/>V2 knob"]]
-  end
-
-  subgraph OUT["Outside"]
-    direction LR
-    ANTH["anthropic.com ×3"]
-    GHUB["GitHub PR"]
-    BLOCKED["Refused"]
-  end
-
-  REPO -.-> ONBD
-  SCAF --> CLAUDEMD
-  ONBD --> CFG
-  ONBD --> FROZEN
-  ONBD --> CLAUDEMD
-  ONBD --> DB
-  REPO -.-> SPECS
-  REPO -.-> SLOT1
-  REPO -.-> REG
-
-  DESIGN --> SPECS
-  SPECS --> LABEL
-  LABEL -->|"medium · hard"| CRITICS
-  LABEL -->|"trivial"| TESTS
-  SLOT1 -.-> CRITICS
-  CRITICS -->|"advisory"| TESTS
-  SLOT2 -.-> TESTS
-  TESTS --> APPR
-  APPR -->|"not yet"| SPECS
-  APPR -->|"approved"| FREEZE
-  FREEZE --> FROZEN
-  FREEZE -->|"open"| DB
-
+  DESIGN --> PLAN
+  PLAN --> APPR
+  APPR -.->|"not yet"| PLAN
+  APPR -->|"approved"| FROZEN
+  APPR -->|"approved · open"| DB
   DB --> RUNNER
-  RUNNER -->|"claim"| DB
-  RUNNER --> PREP
-  RUNNER -.-> MORE
-  PREP --> WS
-  PREP --> ISSUE
-  DB -.->|"memory.md"| ISSUE
-  CLAUDEMD -.-> WS
-  WS --- CODE
-
-  ISSUE --> CODE
-  CODE -->|"usage limit"| PAUSE
+  RUNNER --> CONT
+  CONT --> CODE
   CODE --> VERIFY
   FROZEN -.->|"diffed"| VERIFY
-  CFG -.->|"fork commit"| VERIFY
-  VERIFY -->|"tampered"| TAMP
-  VERIFY -->|"fail"| FEEDBACK
-  FEEDBACK --> CODE
-  VERIFY -->|"cap"| STUCK
-  VERIFY -->|"pass"| ADV
-  REG -.-> ADV
-  ADV --> DOCS
-  DOCS --> OK
-  CODE -.-> STATUS
-  ADV -.-> STATUS
+  VERIFY -.->|"fail · retry ≤ 3"| CODE
+  VERIFY --> RESULT
   CODE -->|"every request"| PROXY
   PROXY -->|"allowed"| ANTH
   PROXY --x BLOCKED
-  CODE -.->|"commits"| WS
-
-  OK --> COLLECT
-  STUCK --> COLLECT
-  TAMP --> COLLECT
-  PAUSE --> COLLECT
-  STATUS --> COLLECT
-  COLLECT -->|"closed · blocked"| DB
-  WS --> PUBLISH
-  COLLECT --> PUBLISH
-  COLLECT --> REPORT
-  PUBLISH --> GHUB
-  REPORT --> MERGE
-  MERGE -->|"send back"| SPECS
-  MERGE -.-> CLAUDEMD
+  RESULT --> FILE
+  FILE -->|"closed · blocked"| DB
+  FILE --> GHUB
+  FILE --> MERGE
+  MERGE -.->|"send back"| PLAN
 
   classDef agent stroke-width:1.75px
   classDef script stroke-width:1.25px
   classDef human stroke-width:2px
-  classDef slot stroke-dasharray:5 3,stroke-width:1.5px
   classDef store stroke-width:1.25px
   classDef external stroke-width:1.25px,stroke-dasharray:2 2
   classDef blocked stroke-width:2px
   classDef db stroke-width:3.25px
-  class DESIGN,SCAF,ONBD,LABEL,APPR,MERGE human
-  class SPECS,CRITICS,TESTS,CODE,DOCS agent
-  class FREEZE,RUNNER,PREP,COLLECT,PUBLISH,REPORT,VERIFY,FEEDBACK,OK,STUCK,TAMP,PAUSE,PROXY script
-  class REPO,CFG,CLAUDEMD,FROZEN,WS,ISSUE,STATUS store
+  classDef cont stroke-width:1.5px
+  class DESIGN,APPR,MERGE human
+  class PLAN,CODE agent
+  class RUNNER,FILE,VERIFY,PROXY script
+  class FROZEN,RESULT store
   class DB db
-  class SLOT1,SLOT2,ADV,REG,MORE slot
+  class CONT cont
   class ANTH,GHUB external
   class BLOCKED blocked
 </pre>
     </div>
     <div class="gloss">
-      <p><strong>Four boxes here replace fourteen below</strong>, and the merges are the
-      point. <b>The queue and project memory are one store</b> — the same database, the
-      same sole-writer rule, which is why an agent's insight and an agent's task travel
-      the same path home. <b>The runner is one script</b> that claims the task, prepares
-      the clone, waits, collects, and files the result: it is the only thing in the system
-      touching both sides of the freeze. <b>The workspace folder is the container's
-      disk</b>, which is why commits are on your PC the instant they're written and
-      killing a container never loses work.</p>
-      <p><strong>Read the band crossings first.</strong> Only four kinds of thing cross
-      into the sandbox: a fresh clone, two read-only files, one credential, and requests
-      to three hostnames. Only three kinds come back: commits in a shared folder, a status
-      file, and an exit code. Everything else on this page is arranged so that those lists
-      stay that short.</p>
+      <p><strong>Every box here is a stage, not a step</strong>, and the merges are the
+      point. <b>“Plan” is a whole session</b> — drafting task-sized specs, putting them
+      through a critic panel, writing the acceptance tests, and checking each test back
+      against the spec; it gets its own diagram below. <b>The queue and project memory are
+      one store</b> — the same database, the same sole-writer rule, which is why an
+      agent's insight and an agent's task travel the same path home. <b>“Collect” is one
+      script</b> that gathers the result, files it, pushes the branch and opens the pull
+      request: it is the only thing in the system touching both sides of the freeze.</p>
+      <p><strong>Count what crosses into the container.</strong> Only four kinds of thing
+      do: a fresh clone, two read-only files, one credential, and requests to three
+      hostnames. Only three kinds come back: commits in a shared folder, a status file,
+      and an exit code. Everything else on this page is arranged so that those lists stay
+      that short — and the container's own diagram, further down, draws that wall
+      properly.</p>
       <p><strong>What the arrows deliberately don't show.</strong> There is no arrow from
       any agent to the queue, none from the container to a git host, and none from the
       verifier back to anything the agent can reach. Those absences are the design; the
@@ -909,7 +843,8 @@ flowchart LR
       its own diagram further down.</p>
     </div>
     <p>
-      Every cylinder on the map, and what it actually is. Only one of them is a database —
+      Every cylinder on this page, and what it actually is — the overview above shows
+      three of them; the rest appear in the diagrams below. Only one is a database —
       the rest are files, and that is deliberate: state you can read in a text editor and
       diff in a commit is state you can audit.
     </p>
@@ -1971,23 +1906,51 @@ flowchart LR
       // Fit to the ink, not to the declared viewBox. Mermaid's viewBox carries dead
       // space, and fitting to it throws away scale the reader needs — measure what is
       // actually drawn and fit to that instead.
-      // Measured, not read off the viewBox: mermaid's viewBox carries dead space, and
-      // fitting to it throws away scale. The margin is proportional because getBBox
-      // measures declared boxes while label text may overflow its foreignObject, so the
-      // real extent runs past the measurement — vertical gets more, since the band stack
-      // is where that shows.
+      //
+      // Measure it from the SHAPES, not from svg.getBBox(). On the root element that
+      // call is unreliable: it ignores the transform on the inner group mermaid wraps
+      // everything in, so it reported this map as 520 units tall against a real extent
+      // of 881 — a 40% under-read, which "fit" then turned into a drawing occupying a
+      // third of the frame with empty band above and below. Every node and cluster is
+      // measured through boxIn(), which resolves each element's own transform matrix,
+      // and getBBox stays as the fallback for a browser where that fails.
+      // Edges count as ink. Several links in this map swing well above the boxes they
+      // join, and measuring only the boxes fitted the view to a drawing 5.2:1 when the
+      // real one is 2.6:1 — the arcs were then drawn outside the fitted box, and the
+      // frame's whole lower half sat empty to make room for them.
+      function inkBox() {
+        var boxes = [];
+        svg.querySelectorAll("g.node, g.cluster, .edgePaths path, path.flowchart-link")
+          .forEach(function (el) {
+            var b = boxIn(el);
+            if (b) boxes.push(b);
+          });
+        if (!boxes.length) return null;
+        var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+        boxes.forEach(function (b) {
+          x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y);
+          x1 = Math.max(x1, b.x + b.w); y1 = Math.max(y1, b.y + b.h);
+        });
+        return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+      }
+
+      // The margin is proportional because a measured box covers declared shapes while
+      // label text may overflow its foreignObject, so the real extent runs a little past
+      // the measurement.
       function measure() {
         var c = { x: vb[0], y: vb[1], w: vb[2], h: vb[3] };
         try {
-          var ink = svg.getBBox();
+          var ink = inkBox() || svg.getBBox();
           if (ink && ink.width > 8 && ink.height > 8) {
-            // Deliberately lopsided. The resting view is this box, so where the drawing
-            // sits inside the frame is decided here: a deep bottom margin pushes the
-            // drawing UP, which is what keeps the last band off the bottom edge. Nothing
-            // else in the file positions the view at rest.
-            var mx = Math.max(20, ink.width * 0.035);
-            var top = Math.max(24, ink.height * 0.08);
-            var bottom = Math.max(80, ink.height * 0.30);
+            // Slightly lopsided. The resting view is this box, so where the drawing sits
+            // inside the frame is decided here: a deeper bottom margin pushes the drawing
+            // UP. Nothing else in the file positions the view at rest. These were much
+            // larger when the map was a tall stack of bands and the bottom one needed
+            // keeping off the edge; the map is now wide and short, and a 30% bottom
+            // margin on it is simply a third of the frame spent on nothing.
+            var mx = Math.max(20, ink.width * 0.03);
+            var top = Math.max(20, ink.height * 0.06);
+            var bottom = Math.max(28, ink.height * 0.10);
             c = {
               x: ink.x - mx, y: ink.y - top,
               w: ink.width + mx * 2, h: ink.height + top + bottom
@@ -1996,7 +1959,11 @@ flowchart LR
         } catch (err) {}
         return c;
       }
-      var content = measure();
+      // NOTE: do not try to set plate.style.aspectRatio from `content` here to make the
+      // frame follow the drawing. It is a ResizeObserver feedback loop — the style write
+      // resizes the plate, the observer fires refit(), and the renderer locks up hard
+      // enough that the tab stops responding. The frame's proportions live in the
+      // stylesheet, where changing them cannot feed back into a measurement.
       var fit = { x: content.x, y: content.y, w: content.w, h: content.h };
       var touched = false;   // has the reader moved the view themselves yet?
       var cur = { x: fit.x, y: fit.y, w: fit.w, h: fit.h };

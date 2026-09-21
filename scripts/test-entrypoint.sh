@@ -36,11 +36,22 @@ done
 [ "$N" -ge 8 ] && echo "PASS  all $N scenario status files schema-checked" \
                || { echo "FAIL  expected >=8 status files, found $N"; FAIL=1; }
 
-# 4.3: default agent command is headless claude with permissions bypassed; the
-# override seam is the PIPELINE_AGENT_CMD env var.
-grep -q 'PIPELINE_AGENT_CMD:-claude -p --dangerously-skip-permissions' "$ROOT/pipeline/entrypoint.sh" \
-  && echo "PASS  default agent cmd: headless claude, permissions bypassed, seam via env" \
-  || { echo "FAIL  default agent command wrong"; FAIL=1; }
+# 4.3 / 6.5: provider selection, defaults, and the command override are one
+# structural contract. Keep these assertions beside the in-image behavior check
+# so a provider-aware entrypoint cannot drift back to one hard-coded command.
+grep -qF 'PROVIDER="${PIPELINE_PROVIDER:-claude}"' "$ROOT/pipeline/entrypoint.sh" \
+  && grep -qF 'AGENT_DEFAULT="claude -p --dangerously-skip-permissions${MODEL_ARG}"' "$ROOT/pipeline/entrypoint.sh" \
+  && grep -qF 'AGENT_CMD="${PIPELINE_AGENT_CMD:-$AGENT_DEFAULT}"' "$ROOT/pipeline/entrypoint.sh" \
+  && echo "PASS  default provider: headless claude, permissions bypassed, seam via env" \
+  || { echo "FAIL  default Claude provider contract wrong"; FAIL=1; }
+grep -qF 'codex exec${MODEL_ARG}' "$ROOT/pipeline/entrypoint.sh" \
+  && grep -qF 'model_reasoning_effort=\"$EFFORT\"' "$ROOT/pipeline/entrypoint.sh" \
+  && grep -qF 'shell_environment_policy.ignore_default_excludes=false' "$ROOT/pipeline/entrypoint.sh" \
+  && grep -qF 'shell_environment_policy.filters.CODEX_API_KEY=\"exclude\"' "$ROOT/pipeline/entrypoint.sh" \
+  && grep -qF -- '--approve-for-me --ephemeral --ignore-user-config' "$ROOT/pipeline/entrypoint.sh" \
+  && grep -qF -- '--ignore-rules --strict-config --json -' "$ROOT/pipeline/entrypoint.sh" \
+  && echo "PASS  Codex provider: pinned noninteractive security contract" \
+  || { echo "FAIL  Codex provider contract wrong"; FAIL=1; }
 grep -qE '\bclaude\b' "$ROOT/pipeline/status.js" \
   && { echo "FAIL  status.js invokes claude"; FAIL=1; } \
   || echo "PASS  status helper is scaffolding (no LLM)"

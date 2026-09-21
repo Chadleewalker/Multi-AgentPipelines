@@ -6,26 +6,72 @@
 // prove the allowlist holds, assert the image exists, recover stale in-progress
 // issues, and tear the network down at run end.
 'use strict';
-const { spawnSync } = require('child_process');
 const path = require('path');
 const { bd, bdJson } = require('./bd');
 const { deriveNames } = require('./config');
-const { acquire, release } = require('./lock');
+const {
+  acquire, release, clearRecoveryOwner, OWNER_TOKEN_KEY, OWNER_RUN_KEY,
+} = require('./lock');
+const { resolveHostShell, commandFor } = require('./host-shell');
+const { runSync, failureText } = require('./process');
+const { verifyRepoIdentity } = require('./repo-identity');
+const { admitEntry } = require('./supervisor');
+const {
+  normalizeProvider, providerFor, missingCodexCapabilities,
+} = require('./agent-provider');
+const codexAuth = require('./codex-auth');
+const { sandboxSecurityArgs } = require('./container');
 
 // The historical shared pair, which is what a config with no project segment gets.
 // Asked for by name rather than spelled out again, so the two files cannot drift.
 const SHARED = deriveNames('run.config.json');
 
-const sh = (cmd, args, opts = {}) =>
-  spawnSync(cmd, args, { encoding: 'utf8', ...opts });
+const sh = (cfg, cmd, args, opts = {}) =>
+  runSync(cmd, args, { cfg, kind: 'lifecycle', ...opts });
 
-function dockerAvailable() {
-  const r = sh('docker', ['info', '--format', 'ok']);
-  return r.status === 0;
+function dockerAvailable(cfg) {
+  return sh(cfg, 'docker', ['info', '--format', 'ok'], { label: 'Docker daemon probe' });
 }
 
-function imageExists(image) {
-  return sh('docker', ['image', 'inspect', image]).status === 0;
+function imageExists(image, cfg) {
+  return sh(cfg, 'docker', ['image', 'inspect', image], { label: 'Docker image inspection' });
+}
+
+// Does the task image actually carry a usable CLI for the SELECTED provider (§4.12)?
+// `image inspect` proves the image is present, not that it can run this run's agent — an
+// image built before the Codex pin, or with an older CLI, passes that gate and then fails
+// inside every task container with no host-side diagnostic.
+//
+// Isolated on purpose: `--network none` so a capability probe cannot reach a model
+// endpoint, and `--entrypoint` so the image's own entrypoint is not what answers.
+function imageSupportsProvider(cfg, provider, execute = sh) {
+  const image = cfg && cfg.image;
+  if (normalizeProvider(provider) === 'codex') {
+    const probe = execute(cfg, 'docker',
+      ['run', '--rm', '--network', 'none', '--entrypoint', 'codex', image, 'exec', '--help'],
+      { label: 'Codex CLI capability probe' });
+    if (!probe || probe.status !== 0) return false;
+    return missingCodexCapabilities(`${probe.stdout || ''}${probe.stderr || ''}`).length === 0;
+  }
+  const probe = execute(cfg, 'docker',
+    ['run', '--rm', '--network', 'none', '--entrypoint', 'claude', image, '--version'],
+    { label: 'Claude CLI capability probe' });
+  return !!probe && probe.status === 0;
+}
+
+// `codex exec --help` proves the CLI contract, but not that the host kernel and Docker policy
+// let the pinned CLI create the workspace-write sandbox it will use for model commands. This
+// credential-free command probe uses a stricter outer boundary than a task: read-only root, no
+// capabilities, no-new-privileges, non-root uid, no network, and bounded resources.
+function codexSandboxAvailable(cfg, execute = sh) {
+  const probe = execute(cfg, 'docker', [
+    'run', '--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL',
+    '--security-opt', 'no-new-privileges', ...sandboxSecurityArgs('codex'),
+    '--pids-limit', '64', '--memory', '256m', '--memory-swap', '256m', '--cpus', '1',
+    '--tmpfs', '/tmp:rw,nosuid,nodev,size=32m', '-e', 'HOME=/tmp/home',
+    '--user', 'node', '--entrypoint', 'codex', cfg.image, 'sandbox', '--', 'true',
+  ], { label: 'Codex workspace sandbox capability probe' });
+  return !!probe && probe.status === 0;
 }
 
 // The network, the proxy sidecar and its port are per project (§4.8 — `config.js`
@@ -42,6 +88,9 @@ function netEnv(cfg) {
     PIPELINE_NET: cfg.network,
     PIPELINE_PROXY: cfg.proxyName,
     PIPELINE_PROXY_PORT: String(cfg.proxyPort),
+    // Which allowlist the sidecar is built from and which endpoint the gate proves
+    // reachable. One profile per provider — never one profile widened to both.
+    PIPELINE_PROXY_PROFILE: providerFor(cfg),
   };
 }
 
@@ -57,43 +106,142 @@ function networkUp(repoRoot, cfg, log, traceId) {
     log.info(traceId, `task network ${cfg.network} + proxy sidecar ${cfg.proxyName} (${cfg.proxyUrl}) coming up`
       + (shared ? ' — the shared default pair (this config names no project segment), so a second run on it would collide' : ''));
   }
-  const r = sh('bash', [path.join(repoRoot, 'scripts', 'pipeline-net.sh'), 'up'], { env });
+  const r = sh(cfg, commandFor(cfg), [path.join(repoRoot, 'scripts', 'pipeline-net.sh'), 'up'], {
+    env,
+    label: 'network/sidecar startup',
+  });
   return { ok: r.status === 0, output: (r.stdout || '') + (r.stderr || '') };
 }
 
 function networkDown(repoRoot, cfg) {
-  sh('bash', [path.join(repoRoot, 'scripts', 'pipeline-net.sh'), 'down'], { env: netEnv(cfg) });
+  const r = sh(cfg, commandFor(cfg), [path.join(repoRoot, 'scripts', 'pipeline-net.sh'), 'down'], {
+    env: netEnv(cfg),
+    label: 'network/sidecar teardown',
+  });
+  return { ok: r.status === 0, output: (r.stdout || '') + (r.stderr || ''), result: r };
 }
 
 function egressCheck(repoRoot, cfg) {
   // Aimed at the same network, proxy and port the tasks will use — a gate that passes
   // against a different network proves nothing about this run.
-  const r = sh('bash', [path.join(repoRoot, 'scripts', 'egress-check.sh')], { env: netEnv(cfg) });
+  const r = sh(cfg, commandFor(cfg), [path.join(repoRoot, 'scripts', 'egress-check.sh')], {
+    env: netEnv(cfg),
+    label: 'egress allowlist check',
+  });
   return { ok: r.status === 0, output: (r.stdout || '') + (r.stderr || '') };
 }
 
-// Beads is host-side and the runner is its sole writer (§4.10). An issue left
-// in_progress by an abnormal earlier end (operator stop, crash) is stranded —
-// the ready queue would never surface it again. Reset it to open with a note.
-function recoverStaleIssues(cfg, log, traceId) {
-  const res = bdJson(cfg, ['list', '--status', 'in_progress']);
+function metadataOf(issue) {
+  const raw = issue && issue.metadata;
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw;
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+    } catch { /* malformed metadata proves no ownership */ }
+  }
+  return {};
+}
+
+function issueFromShow(data) {
+  return Array.isArray(data) ? data[0] : data;
+}
+
+function ownedBy(issue, owner) {
+  const metadata = metadataOf(issue);
+  return !!issue && issue.status === 'in_progress'
+    && issue.assignee === owner.actor
+    && metadata[OWNER_TOKEN_KEY] === owner.token
+    && metadata[OWNER_RUN_KEY] === owner.runId;
+}
+
+// Recovery is no longer a mass reset. The global lock carries the owner tokens of runs
+// proven dead or cleanly released with unfinished claims; Beads carries the same token,
+// actor and run id from the atomic claim transaction. All four facts must still agree.
+// A human's in-progress issue, or one reclaimed by a later run, is therefore untouchable.
+function recoverStaleIssues(cfg, log, traceId, ownership, io = {}) {
+  const owners = Array.isArray(ownership && ownership.recoveryOwners)
+    ? ownership.recoveryOwners.filter((o) => o && o.token && o.actor && o.runId) : [];
+  if (!owners.length) return { recovered: [] };
+  const readJson = io.bdJson || bdJson;
+  const write = io.bd || bd;
+  const clearOwner = io.clearRecoveryOwner || clearRecoveryOwner;
+  const res = readJson(cfg, ['list', '--status', 'in_progress']);
   if (!res.ok) return { recovered: [], error: res.error };
   const recovered = [];
-  for (const issue of res.data) {
-    bd(cfg, ['update', issue.id, '--status', 'open']);
-    bd(cfg, ['note', issue.id, 'runner: reset in_progress -> open at run start (previous run ended abnormally)']);
+  const errors = [];
+  const entries = Array.isArray(res.data) ? res.data : [];
+  for (const entry of entries) {
+    if (!entry || !entry.id) continue;
+    const shown = readJson(cfg, ['show', entry.id]);
+    if (!shown.ok) {
+      errors.push(`cannot verify ownership of ${entry.id}: ${shown.error}`);
+      continue;
+    }
+    const issue = issueFromShow(shown.data);
+    const owner = owners.find((candidate) => ownedBy(issue, candidate));
+    if (!owner) continue;
+    const result = write(cfg, [
+      'update', issue.id,
+      '--status', 'open',
+      '--assignee', '',
+      '--unset-metadata', OWNER_TOKEN_KEY,
+      '--unset-metadata', OWNER_RUN_KEY,
+      '--append-notes', `runner: recovered ownership from dead run ${owner.runId}`,
+      '--actor', ownership.actor,
+    ]);
+    if (result.status !== 0) {
+      errors.push(`cannot recover ${issue.id}: ${String(result.stderr || result.stdout || `status ${result.status}`).trim()}`);
+      continue;
+    }
     recovered.push(issue.id);
-    log.info(traceId, `recovered stale in_progress issue ${issue.id} -> open`);
+    log.info(traceId, `recovered runner-owned in_progress issue ${issue.id} from dead run ${owner.runId} -> open`);
   }
-  return { recovered };
+  if (!errors.length) {
+    for (const owner of owners) {
+      try { clearOwner(ownership, owner.token); }
+      catch (e) { errors.push(`cannot settle recovery proof for run ${owner.runId}: ${e && e.message ? e.message : e}`); }
+    }
+  }
+  return { recovered, ...(errors.length ? { error: errors.join('; ') } : {}) };
 }
 
 // Full pre-run sequence. Returns {ok, reason} — ok:false means ABORT THE RUN.
 // Every gate after the lock can leave something behind, so each of them releases it on
 // the way out: an abort at preflight must leave the project free (§4.12).
-function preflight(cfg, repoRoot, log) {
+function preflightAfterAuth(cfg, repoRoot, log, deps = {}) {
   const t = `${log.runId}/preflight`;
-  const abort = (reason) => { release(repoRoot, cfg.targetRepoPath); return { ok: false, reason }; };
+
+  // ---- child admission: ahead of the project lock itself (§3.10) ----
+  // Ahead of the lock because it decides WHICH exclusion applies. With no supervisor on this
+  // canonical target and no child authority presented, it answers `standalone` and everything
+  // below is exactly today's behaviour. With a supervisor live, an unrelated run is refused by
+  // that supervisor's name before it can take a lock, probe Docker, create a network or write
+  // to Beads; with valid implementation authority, the run proceeds under its parent's
+  // ownership and takes no target lock of its own.
+  const admitChild = deps.admitEntry || admitEntry;
+  const entry = admitChild('implementation', {
+    targetRepoPath: cfg.targetRepoPath, repoRoot, env: deps.env || process.env,
+  });
+  if (!entry.ok) {
+    return {
+      ok: false,
+      locked: true,                    // nothing was started — run.js skips teardown
+      childAuthorityRefused: true,
+      reason: `child authority refused (${entry.reason}): ${entry.message}`,
+    };
+  }
+  const child = entry.mode === 'supervisor-child' ? entry.admission : null;
+  if (child) {
+    // The same line a standalone run writes, because the project lock IS held for this target
+    // — by the parent, not by this process. Saying anything else would leave the dashboard's
+    // live view unable to tell a supervised run from one that never got the project at all.
+    log.info(t, `project lock held for ${cfg.targetRepoPath} by supervisor ${child.parent.id}`
+      + ` (pid ${child.parent.pid}); admitted as its child under grant ${child.nonce}`
+      + `${child.issueId ? ` for ${child.issueId}` : ''}, so this run takes no lock of its own`,
+    { event: 'lock.held', data: { path: cfg.targetRepoPath } });
+    return childPreflight(cfg, repoRoot, log, deps, t, child);
+  }
 
   // ---- the project lock: FIRST, ahead of every other gate (§4.12) ----
   // First and not merely early. It is the only purely local check — everything after it
@@ -114,30 +262,276 @@ function preflight(cfg, repoRoot, log) {
   }
   if (held.tookOver) {
     log.info(t, `project lock: took over the lock on ${cfg.targetRepoPath} left by run ${held.previous.runId}`
-      + ` (pid ${held.previous.pid}) — that process is gone`);
+      + ` (pid ${held.previous.pid}) — that process is gone`,
+    { event: 'lock.tookOver', data: { path: cfg.targetRepoPath } });
   }
-  log.info(t, `project lock held for ${cfg.targetRepoPath}`);
-
-  if (!dockerAvailable()) return abort('Docker daemon not reachable (is Docker Desktop running?)');
-  log.info(t, 'docker daemon reachable');
-
-  if (!imageExists(cfg.image)) {
-    return abort(`image '${cfg.image}' not found — build it during planning (§3.4); the runner never builds`);
-  }
-  log.info(t, `image ${cfg.image} present`);
-
-  const net = networkUp(repoRoot, cfg, log, t);
-  if (!net.ok) return abort(`network/sidecar failed to start: ${net.output.trim()}`);
-  log.info(t, 'network + proxy sidecar up');
-
-  const eg = egressCheck(repoRoot, cfg);
-  if (!eg.ok) return abort(`egress check failed — allowlist not in force: ${eg.output.trim()}`);
-  log.info(t, 'egress check passed (allowlist in force)');
-
-  const stale = recoverStaleIssues(cfg, log, t);
-  if (stale.error) log.error(t, `stale-issue recovery skipped: ${stale.error}`);
-
-  return { ok: true, recovered: stale.recovered || [] };
+  log.info(t, `project lock held for ${cfg.targetRepoPath}`,
+    { event: 'lock.held', data: { path: cfg.targetRepoPath } });
+  const gates = deps.managedAuthReadiness ? startupGatesManaged : startupGates;
+  return gates(cfg, repoRoot, log, deps, t, {
+    ownership: held.ownership,
+    lockOwned: true,
+    releaseOwnership: () => release(repoRoot, cfg.targetRepoPath, held.ownership),
+  });
 }
 
-module.exports = { preflight, networkUp, networkDown, egressCheck, imageExists, dockerAvailable, recoverStaleIssues };
+// A supervisor child runs exactly the same gates in exactly the same order, and owns exactly
+// the same compensation for the plumbing it starts. The one difference is ownership: the
+// parent's lease already excludes every other coordinator from this canonical target, so the
+// child takes no lock and must never release the one it was let in under.
+function childPreflight(cfg, repoRoot, log, deps, t, child) {
+  const gates = deps.managedAuthReadiness ? startupGatesManaged : startupGates;
+  return gates(cfg, repoRoot, log, deps, t, {
+    ownership: null,
+    lockOwned: false,
+    childAdmission: child,
+    releaseOwnership: () => {},
+  });
+}
+
+// Everything after admission and the lock. Extracted so the standalone and supervisor-child
+// paths cannot drift apart in gate ORDER — the order is the contract (§4.12): identity, shell,
+// Docker, image, network, egress, stale-issue recovery, and a compensating teardown on every
+// unsuccessful path.
+function startupGates(cfg, repoRoot, log, deps, t, owned) {
+  let keepOwnership = false;
+  let networkAttempted = false;
+  try {
+    const checkDocker = deps.dockerAvailable || dockerAvailable;
+    const checkImage = deps.imageExists || imageExists;
+    const startNetwork = deps.networkUp || networkUp;
+    const checkEgress = deps.egressCheck || egressCheck;
+    const recover = deps.recoverStaleIssues || recoverStaleIssues;
+    // The local checkout owns Beads while the configured remote owns every dispatch fetch,
+    // workspace and publication. Prove they identify the same repository before either side
+    // can be mutated. The lock stays first so two contenders cannot race this or any later gate.
+    const checkIdentity = deps.verifyRepoIdentity || verifyRepoIdentity;
+    const identity = checkIdentity(cfg);
+    if (!identity.ok) return { ok: false, identityMismatch: true, reason: identity.reason };
+    log.info(t, `repository identity verified via '${identity.remoteName}' (${identity.identity})`);
+
+    // Before Docker, networking, or Beads: on Windows `bash` may be WSL, which cannot launch
+    // this process's Windows Node toolchain. Resolve one shell, prove the exact Node binary
+    // through it, and reuse that identity for every host-side shell call in the run.
+    const resolveShell = deps.resolveHostShell || resolveHostShell;
+    const shell = resolveShell(cfg.hostShell, { timeoutMs: cfg.lifecycleTimeoutMs });
+    if (!shell.ok) return { ok: false, reason: shell.reason, shellUnavailable: true };
+    cfg.hostShell = shell.command;
+    log.info(t, `host shell verified (${shell.kind}): ${shell.command}`);
+
+    const daemon = checkDocker(cfg);
+    if (daemon.status !== 0) {
+      return {
+        ok: false,
+        reason: daemon.timedOut
+          ? failureText(daemon)
+          : 'Docker daemon not reachable (is Docker Desktop running?)',
+      };
+    }
+    log.info(t, 'docker daemon reachable');
+
+    const image = checkImage(cfg.image, cfg);
+    if (image.status !== 0) {
+      return {
+        ok: false,
+        reason: image.timedOut ? failureText(image)
+          : `image '${cfg.image}' not found — build it during planning (§3.4); the runner never builds`,
+      };
+    }
+    log.info(t, `image ${cfg.image} present`);
+
+    // Only for a non-default provider: a Claude run's image gate is exactly the presence
+    // check above, as it has always been, so an untouched run config launches nothing new.
+    const provider = providerFor(cfg);
+    if (provider !== 'claude') {
+      const supports = (deps.imageSupportsProvider || imageSupportsProvider)(cfg, provider);
+      if (!supports) {
+        return {
+          ok: false,
+          reason: `image '${cfg.image}' has no usable ${provider} CLI with every required`
+            + ` capability — rebuild the pinned base image during planning (§3.4); the runner never builds`,
+        };
+      }
+      log.info(t, `image ${cfg.image} runs the selected ${provider} CLI`);
+      // Existing deterministic fixtures replace imageSupportsProvider as the complete provider
+      // seam. Production, and a fixture explicitly supplying the new seam, additionally proves
+      // the real sandbox command before network startup or any Beads mutation.
+      if ((!deps.imageSupportsProvider || deps.codexSandboxAvailable)
+          && !(deps.codexSandboxAvailable || codexSandboxAvailable)(cfg)) {
+        return {
+          ok: false,
+          reason: `image '${cfg.image}' cannot start the Codex workspace sandbox as its non-root`
+            + ' task user — the Docker runtime must permit the provider-specific unprivileged'
+            + ' namespace policy; no task was started',
+        };
+      }
+      if (!deps.imageSupportsProvider || deps.codexSandboxAvailable) {
+        log.info(t, `image ${cfg.image} starts the Codex workspace sandbox as node`);
+      }
+    }
+
+    // Set before invoking `up`: the script can create the network and then fail. Any
+    // attempted startup therefore owns a compensating `down` on every non-success path.
+    networkAttempted = true;
+    const net = startNetwork(repoRoot, cfg, log, t);
+    if (!net.ok) return { ok: false, reason: `network/sidecar failed to start: ${net.output.trim()}` };
+    log.info(t, 'network + proxy sidecar up');
+
+    const eg = checkEgress(repoRoot, cfg);
+    if (!eg.ok) return { ok: false, reason: `egress check failed — allowlist not in force: ${eg.output.trim()}` };
+    log.info(t, 'egress check passed (allowlist in force)');
+
+    const stale = recover(cfg, log, t, owned.ownership);
+    if (stale.error) log.error(t, `stale-issue recovery skipped: ${stale.error}`);
+
+    keepOwnership = true;
+    return {
+      ok: true,
+      recovered: stale.recovered || [],
+      networkOwned: true,
+      lockOwned: owned.lockOwned,
+      ownership: owned.ownership,
+      ...(owned.childAdmission ? { childAdmission: owned.childAdmission } : {}),
+    };
+  } catch (e) {
+    return { ok: false, unexpected: true, reason: `preflight failed unexpectedly: ${e && e.message ? e.message : e}` };
+  } finally {
+    if (!keepOwnership) {
+      try {
+        if (networkAttempted) {
+          const down = (deps.networkDown || networkDown)(repoRoot, cfg);
+          if (down && down.ok === false) {
+            log.error(t, `preflight cleanup could not tear down network plumbing: ${String(down.output || '').trim() || 'no diagnostic'}`);
+          }
+        }
+      } catch (e) {
+        log.error(t, `preflight cleanup threw while tearing down network plumbing: ${e && e.message ? e.message : e}`);
+      } finally {
+        owned.releaseOwnership();
+      }
+    }
+  }
+}
+
+// The managed lane has one asynchronous gate that must run after this run's network/proxy
+// exists and before stale Beads recovery. The legacy gate above remains synchronous so Claude
+// and API-key callers retain their established interface.
+async function startupGatesManaged(cfg, repoRoot, log, deps, t, owned) {
+  let keepOwnership = false;
+  let networkAttempted = false;
+  try {
+    const checkDocker = deps.dockerAvailable || dockerAvailable;
+    const checkImage = deps.imageExists || imageExists;
+    const startNetwork = deps.networkUp || networkUp;
+    const checkEgress = deps.egressCheck || egressCheck;
+    const recover = deps.recoverStaleIssues || recoverStaleIssues;
+    const identity = (deps.verifyRepoIdentity || verifyRepoIdentity)(cfg);
+    if (!identity.ok) return { ok: false, identityMismatch: true, reason: identity.reason };
+    log.info(t, `repository identity verified via '${identity.remoteName}' (${identity.identity})`);
+
+    const shell = (deps.resolveHostShell || resolveHostShell)(cfg.hostShell, { timeoutMs: cfg.lifecycleTimeoutMs });
+    if (!shell.ok) return { ok: false, reason: shell.reason, shellUnavailable: true };
+    cfg.hostShell = shell.command;
+    log.info(t, `host shell verified (${shell.kind}): ${shell.command}`);
+
+    const daemon = checkDocker(cfg);
+    if (daemon.status !== 0) return { ok: false,
+      reason: daemon.timedOut ? failureText(daemon) : 'Docker daemon not reachable (is Docker Desktop running?)' };
+    log.info(t, 'docker daemon reachable');
+    const image = checkImage(cfg.image, cfg);
+    if (image.status !== 0) return { ok: false,
+      reason: image.timedOut ? failureText(image)
+        : `image '${cfg.image}' not found — build it during planning (§3.4); the runner never builds` };
+    log.info(t, `image ${cfg.image} present`);
+
+    const provider = providerFor(cfg);
+    const supports = (deps.imageSupportsProvider || imageSupportsProvider)(cfg, provider);
+    if (!supports) return { ok: false,
+      reason: `image '${cfg.image}' has no usable ${provider} CLI with every required capability`
+        + ' — rebuild the pinned base image during planning (§3.4); the runner never builds' };
+    log.info(t, `image ${cfg.image} runs the selected ${provider} CLI`);
+    if ((!deps.imageSupportsProvider || deps.codexSandboxAvailable)
+        && !(deps.codexSandboxAvailable || codexSandboxAvailable)(cfg)) {
+      return { ok: false,
+        reason: `image '${cfg.image}' cannot start the Codex workspace sandbox as its non-root`
+          + ' task user — the Docker runtime must permit the provider-specific unprivileged'
+          + ' namespace policy; no task was started' };
+    }
+    if (!deps.imageSupportsProvider || deps.codexSandboxAvailable) {
+      log.info(t, `image ${cfg.image} starts the Codex workspace sandbox as node`);
+    }
+
+    networkAttempted = true;
+    const net = startNetwork(repoRoot, cfg, log, t);
+    if (!net.ok) return { ok: false, reason: `network/sidecar failed to start: ${net.output.trim()}` };
+    log.info(t, 'network + proxy sidecar up');
+    const eg = checkEgress(repoRoot, cfg);
+    if (!eg.ok) return { ok: false, reason: `egress check failed — allowlist not in force: ${eg.output.trim()}` };
+    log.info(t, 'egress check passed (allowlist in force)');
+
+    // Older injected auth objects intentionally remain structural-only. Production and this
+    // task's real module both expose refreshReadiness, so no legacy fixture gains a Docker call.
+    const refresh = deps.refreshReadiness
+      || (deps.codexAuth && deps.codexAuth.refreshReadiness)
+      || (!deps.codexAuth && codexAuth.refreshReadiness);
+    if (refresh) {
+      const auth = await Promise.resolve(refresh({
+        cfg, env: deps.env || process.env, fs: deps.fs,
+        cacheRoot: cfg.codexAuthCacheRoot, lanes: cfg.codexAuthLanes,
+        network: cfg.network, proxyUrl: cfg.proxyUrl, image: cfg.image,
+        targetRepoPath: cfg.targetRepoPath, repoRoot,
+      }));
+      if (!auth || !auth.ok) return { ok: false, authRefused: true,
+        reason: auth && auth.reason || 'managed ChatGPT refresh readiness failed; no healthy credential lane remains' };
+      if (Array.isArray(auth.lanes)) cfg.codexAuthLanes = auth.lanes;
+      log.info(t, 'managed ChatGPT refresh readiness passed');
+    }
+
+    const stale = recover(cfg, log, t, owned.ownership);
+    if (stale.error) log.error(t, `stale-issue recovery skipped: ${stale.error}`);
+    keepOwnership = true;
+    return { ok: true, recovered: stale.recovered || [], networkOwned: true,
+      lockOwned: owned.lockOwned, ownership: owned.ownership,
+      ...(owned.childAdmission ? { childAdmission: owned.childAdmission } : {}) };
+  } catch (e) {
+    return { ok: false, unexpected: true, reason: `preflight failed unexpectedly: ${e && e.message ? e.message : e}` };
+  } finally {
+    if (!keepOwnership) {
+      try {
+        if (networkAttempted) {
+          const down = (deps.networkDown || networkDown)(repoRoot, cfg);
+          if (down && down.ok === false) {
+            log.error(t, `preflight cleanup could not tear down network plumbing: ${String(down.output || '').trim() || 'no diagnostic'}`);
+          }
+        }
+      } catch (e) {
+        log.error(t, `preflight cleanup threw while tearing down network plumbing: ${e && e.message ? e.message : e}`);
+      } finally { owned.releaseOwnership(); }
+    }
+  }
+}
+
+// Managed ChatGPT state is checked before every lock and mutable gate. Legacy modes stay synchronous.
+function preflight(cfg, repoRoot, log, deps = {}) {
+  if (providerFor(cfg) !== 'codex' || cfg.codexAuth !== 'chatgpt') return preflightAfterAuth(cfg, repoRoot, log, deps);
+  const env = deps.env || process.env;
+  return Promise.resolve((deps.codexAuth || codexAuth).preflight({
+    mode: 'chatgpt', codexHome: env.CODEX_HOME,
+    ...(cfg.codexAuthCacheRoots ? { cacheRoots: cfg.codexAuthCacheRoots }
+      : { cacheRoot: env.PIPELINE_CODEX_CACHE }),
+    targetRepoPath: cfg.targetRepoPath, repoRoot,
+  })).then((auth) => {
+    if (!auth || !auth.ok) return { ok: false, authRefused: true, reason: auth && auth.reason || 'ChatGPT authentication unavailable' };
+    if (Array.isArray(auth.lanes)) cfg.codexAuthLanes = auth.lanes;
+    else {
+      cfg.codexAuthCacheRoot = auth.cacheRoot;
+      cfg.codexAuthLanes = [{ id: 'lane-1', cacheRoot: auth.cacheRoot, healthy: true }];
+    }
+    return preflightAfterAuth(cfg, repoRoot, log, { ...deps, managedAuthReadiness: true });
+  });
+}
+
+module.exports = {
+  preflight, networkUp, networkDown, egressCheck, imageExists, imageSupportsProvider,
+  codexSandboxAvailable, dockerAvailable, recoverStaleIssues, metadataOf, ownedBy, verifyRepoIdentity,
+};

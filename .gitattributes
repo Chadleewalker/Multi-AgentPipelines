@@ -1,2 +1,12 @@
 # Shell scripts run inside Linux containers; never commit or check out CRLF blobs.
 *.sh text eol=lf
+
+# The change log is an APPEND-ONLY table: rows are added at the bottom and never edited or
+# renumbered (DESIGN.md section 12). Union merge keeps both sides instead of conflicting,
+# which is the answer a person was always going to give when two task branches each append
+# a row. That safety comes entirely from the append-only rule, so this attribute belongs on
+# this one file and must NEVER be pointed at DESIGN.md or any other prose document: prose is
+# amended in place, and union merge would silently keep both copies of an amended paragraph
+# rather than ask. Its one blind spot — two branches rewriting the SAME row — surfaces as a
+# duplicate Ref, which scripts/test-changelog.sh fails on.
+docs/change-log.md merge=union

@@ -1,169 +1,230 @@
 # SETUP.md — Getting a New Person Running the Pipeline
 
-This is the once-per-**person, per-machine** setup. It is the checklist form of DESIGN.md
-§6 (environment and host prerequisites); when that section changes, this file changes with
-it.
+Once per **person, per machine**. Budget half a day, most of it waiting on downloads and
+test suites; under an hour of it is you typing.
 
-Three setup documents exist and they answer different questions. Read them in this order:
+Three setup documents, in order:
 
 | File | Answers |
 |---|---|
-| **This file** | *My machine has never seen this pipeline. What do I install and how do I know it works?* — once per person |
+| **This file** | *My machine has never seen this pipeline.* — once per person |
 | `ONBOARDING.md` | *I want the pipeline to work on project X.* — once per project, ever |
 | `PLANNING.md` | *I want it to build a feature.* — every time, forever |
 
-**What you have when you finish this file:** a machine that can run the pipeline, proven
-by its own test suites, pointed at nothing yet. Onboarding a project is the next document.
+The reasoning behind any decision here lives in `DESIGN.md` (§6 for the environment) and
+`docs/change-log.md`. This file is the checklist only.
 
-Budget half a day for the first pass, most of it waiting on downloads and test suites.
+**What you are signing up for:** the pipeline works through a queue of tasks unattended,
+each in a locked-down container, and hands back pull requests. Your involvement is two
+moments — a planning session before a run where you approve what "done" means, and a PR
+review after. Nothing in between is interactive, and nothing that runs unattended can
+change what "done" means.
 
----
-
-## What you're signing up for
-
-The pipeline works through a queue of development tasks unattended — each task inside a
-locked-down container — and hands back pull requests for you to review. Your involvement
-is exactly two moments:
-
-- **Before a run** — a planning session with Claude Code (an AI assistant that runs in your
-  terminal) where you and it agree what "done" means for each task. That definition is
-  frozen before anything runs.
-- **After a run** — reviewing the pull requests it produced, like any other code review.
-
-Nothing in between is interactive, and nothing that runs unattended can change what "done"
-means. **You approve the *what*; the machinery owns the *how*.**
-
-Setting a project up in the first place (Part D) is interactive too — a few one-time
-sessions where Claude Code drives and you decide. After that, every feature is just the two
-moments above.
+> **Were you told to use the pinned "safe-v1" version?** This file describes the *latest*
+> pipeline. If someone pointed you at the known-good **safe-v1** snapshot instead, do the
+> clone in B1 below, then immediately run `git checkout safe-v1-branch` and follow the
+> `SETUP.md` you find *in that checkout* — not this one. That snapshot is a simpler,
+> Claude-only pipeline (no Codex, no write-protection or session guards), and its own
+> SETUP.md is the accurate guide for it. Don't mix the two docs. Everything below this
+> box assumes the latest `main`.
 
 ---
 
-## Part A — Accounts and tools (once per machine)
+## Part 0 — What whoever is bringing you in must supply
 
-Everything below was built and proven on **Windows 11 with Docker Desktop**. Nothing in
-the design requires Windows, but nothing else has been tried — if you are on a Mac or
-Linux, expect to be the first, and say so before you start so someone can watch.
+None of these can be self-served, and each fails late:
 
-### A1. Accounts — sort these before touching the PC
+1. **Your own Claude Pro or Max subscription** — not a shared login. Every task spends the
+   allowance of whoever's token is in `.env.pipeline`; two people on one subscription starve
+   each other.
+2. **Which GitHub account to use**, and write access to the target repos.
+3. **The contents of `.sanitize-denylist`** — the private names that must never appear in
+   this public repo. Git-ignored, so it cannot arrive with a clone. Without it the sanitize
+   suite prints a `NOTE` and looks like a pass.
+4. **Which projects are already onboarded, and which is yours.** Onboarding is once per
+   project *ever* — redoing it is wasted work.
+5. **A recent green sweep summary from a working machine**, to compare yours against.
+6. **A seat at one planning session and one PR review** before running your own.
 
-- **A Claude account with a Pro or Max subscription** ([claude.ai](https://claude.ai)). The
-  pipeline authenticates with a personal subscription token. See A7 for why it is one per
-  person and never shared.
-- **A GitHub account with write access to the repositories you'll point it at.** Results
-  come back as pull requests; no repo access means no way to receive work.
+---
 
-### A2. Docker Desktop
+## Part A — Install the tools
 
-[docker.com](https://www.docker.com/products/docker-desktop) — install it and **leave it
-running**. This is what actually isolates each task: every task
-gets its own container — a throwaway sealed box holding a fresh copy of the code — that
-can reach three Anthropic addresses and nothing else on the internet.
+Proven on **Windows 11 + Docker Desktop** only. Mac or Linux: you are the first, say so.
 
-The runner checks Docker is up before it does anything and stops immediately if it isn't.
+**You install three things by hand; Claude Code installs the rest.** Order is not
+negotiable: **accounts → Node → Claude Code → everything else.**
 
-Docker Desktop may install its own WSL plumbing during setup. That is fine and expected —
-the rule in A3 is about which *terminal you type in*, not what Docker uses internally.
+### A1. Accounts
 
-### A3. Git, and specifically Git Bash
+A Claude account with Pro or Max ([claude.ai](https://claude.ai)), and a GitHub account with
+write access to your targets.
 
-Install Git for Windows ([git-scm.com](https://git-scm.com)), accepting the defaults. It
-comes with **Git Bash**, a Unix-style terminal.
+### A2. Node.js — by hand, because Claude Code is written in it
 
-**Every command in this project's docs is run from Git Bash, never from WSL.** WSL is
-Windows' built-in Linux; on the reference machine its Linux distro has no connection to
-Docker Desktop, so Docker commands from there fail in confusing ways. Use Git Bash.
-PowerShell is fine for git, but not for anything that runs a `.sh` script.
+```powershell
+winget install --id OpenJS.NodeJS.LTS --exact
+```
 
-Then tell git who you are — this name lands on every commit the pipeline makes on your
-behalf:
+Then **close and reopen the terminal**, or the next command reports "not recognised".
+
+### A3. Claude Code — by hand, for the same reason
+
+```powershell
+npm install -g @anthropic-ai/claude-code
+```
+
+Run `claude` in any folder and sign in with the A1 account.
+
+Claude is the default provider and the only one this setup needs. A run or planning stage
+that selects `"provider": "codex"` also needs the Codex CLI on the host — install it the
+same way (`npm install -g @openai/codex`, matching the pin in `docker/base/Dockerfile`) and
+either run `codex login` for managed subscription authentication or supply `CODEX_API_KEY`
+at B2 for explicit API-key authentication.
+
+One lane is Codex whatever `provider` says: the proposal conveyor's specification planner
+(`scripts/specify-proposal.js`, driven by `scripts/proposal-supervisor.js`). If you intend to
+use durable kickoff intake, install the Codex CLI and run `codex login` for a saved ChatGPT
+session even on an all-Claude config — an API key is not a substitute, and the supervisor
+refuses up front without it. Skip this only if you never run the conveyor.
+
+### A4. Let Claude Code install the rest
+
+Start `claude` anywhere — you do not need the clone yet — and give it this:
+
+> Install the tools I need, checking first what is already present, and tell me if any is
+> already installed at a different version:
+>
+> - Git for Windows, including Git Bash
+> - the GitHub CLI (gh)
+> - Docker Desktop
+> - Beads, pinned to exactly 1.1.0: npm install -g @beads/bd@1.1.0
+>
+> Use winget for the first three. Do not use WSL. Do not attempt any browser sign-in — list
+> those for me to do myself.
+
+Package ids, verified against `winget` 1.29: `Git.Git`, `GitHub.cli`, `Docker.DockerDesktop`.
+
+Four rules:
+
+1. **Approve installs one at a time.** You are letting a program install software; read each
+   command. Some raise a Windows elevation prompt only you can click.
+2. **Never paste a credential into a session.** Everything you type is sent to the model. The
+   token goes in a file, by your hand, at B2.
+3. **`bd` must be exactly 1.1.0.** Asked to "install beads" any agent fetches the newest, and
+   a newer one has broken host scripts by changing its output by one blank line.
+4. **Git Bash, never WSL** — say it in the prompt. This machine's WSL has no Docker Desktop
+   integration, and Claude Code cannot know that unless told.
+
+When it hands a command back to you, type `!` followed by the command to run it inside the
+session, so it can read the error with you.
+
+Three things it will not think to tell you:
+
+- **Docker Desktop must be left running.** It is what isolates each task: a throwaway
+  container that reaches the handful of addresses its own model provider needs and nothing
+  else. The runner checks it is up and stops if not. Its installer wants a reboot and may add its own WSL plumbing — both
+  fine; rule 4 is about the terminal *you* type in.
+- **Every `.sh` script in this project runs from Git Bash.** PowerShell is fine for `git` and
+  the `winget` lines above, nothing else.
+- **Do not rely on the `bd` inside the container image.** That fallback starts a container per
+  call, deadlocks against the test suites, and gets killed at 900 seconds while erroring
+  nowhere.
+
+### A5. Tell git who you are
 
 ```bash
 git config --global user.name "Your Name"
 git config --global user.email "you@example.com"
 ```
 
-### A4. Node.js
+This lands on every commit the pipeline makes for you.
 
-Install a current LTS release ([nodejs.org](https://nodejs.org)). Node is the language the host-side runner is written in —
-plain JavaScript with zero third-party packages, so there is nothing to `npm install`.
-
-(The container's Node is pinned separately at 22.23.1 inside the image. Your host version
-does not have to match it.)
-
-### A5. The GitHub CLI (`gh`), authenticated
-
-Install it ([cli.github.com](https://cli.github.com)), then in Git Bash:
+### A6. Sign in to `gh` — yours, in a browser
 
 ```bash
-gh auth login          # GitHub.com → HTTPS → login with a browser
+gh auth login          # GitHub.com → HTTPS → browser
 ```
 
-The pipeline hands work back as **pull requests**, and `gh` is what opens them. Log in as
-yourself — the PRs will carry your name, which is correct: you approved the task and you
-review the result.
+**If this machine has two GitHub logins, find out now which one you need.** A private repo
+the active account cannot see reports **"Repository not found"**, identical to a typo.
+`gh auth status` names it; `gh auth switch` changes it.
 
-You also need push access to whatever repositories you will point the pipeline at.
-
-### A6. Beads (`bd`) — the task queue
-
-```bash
-npm install -g @beads/bd@1.1.0
-```
-
-Beads is the issue tracker the pipeline reads its work from. It stores issues in a small
-database inside the repo rather than on a website.
-
-**Pin the version to `1.1.0`** — that is what the container image carries, and matching
-them keeps host and container behaviour identical. A newer `bd` has broken host scripts
-before by changing its output format by one blank line.
-
-**Do not skip this on the grounds that the runner can fall back to the copy inside the
-container image.** It can, and that fallback is the worst kind of working: it starts one
-container per `bd` call, deadlocks against suites that drive their own containers, and gets
-killed at the 900-second timeout — while erroring nowhere, because the fallback is
-fail-safe (`runner/bd.js` documents the episode). Step B4 also needs host `bd` to fetch the
-issue database at all.
-
-### A7. The Claude Code CLI and your own token
-
-```bash
-npm install -g @anthropic-ai/claude-code
-```
-
-Run `claude` once in any folder and sign in with the account from A1. This is the agent you
-do planning sessions with. Then:
+### A7. Your pipeline token — yours, and never shared
 
 ```bash
 claude setup-token
 ```
 
-This prints a long-lived token. Keep it — Part B puts it where the runner can find it.
+A long-lived token, separate from the A3 sign-in. Keep it to copy once at B2. Do not paste it
+into a session. One subscription per person: at your limit a run parks itself, waits for the
+window to reopen, and carries on. A Codex run parks the same way. In `chatgpt` mode it uses
+the saved session from `codex login`; in `api-key` mode its credential is the
+`CODEX_API_KEY` copied once at B2.
 
-**Each person needs their own Claude subscription and their own token.** The token is not
-shareable and should not be. Every task the pipeline runs spends *your* usage allowance:
-when you hit your limit, the run parks itself, waits for your window to reopen, and
-carries on. Two people cannot run off one subscription without starving each other.
+### A8. The harness plugin — optional, and not a clone
+
+A companion Claude Code plugin adds `/pipeline-onboard`, `/scaffold`, `/design`, `/review`
+and `/harness-check`. It lives in a **separate, private repository**, so it is not named
+here — this document is public and the plugin repository is not. If you have access, ask
+the person who gave you this repo for the one marketplace line, then, inside `claude`:
+
+```
+/plugin marketplace add <the line you were given>
+/plugin install harness-pipeline
+```
+
+Claude Code fetches and updates it; it lives under `~/.claude/plugins`, not your projects
+folder. **Nothing in this document requires it** — if you have no access, skip A8 and
+carry on at A9; every instruction here works without it. It carries its own version, and
+if a plugin command and this document disagree, this document and `DESIGN.md` win.
+
+### A9. `/profile` — after the clone, and do not skip it
+
+Start `claude` inside the clone and run `/profile`. It interviews you and writes
+`~/.claude/CLAUDE.md`, which tells every agent on this machine how to pitch things to you.
+Skipping it breaks nothing loudly — you just get months of explanations at the wrong level.
+Per person, not per project.
 
 ---
 
-## Part B — Get the pipeline itself working (once per clone)
+## Part B — Get the pipeline working (once per clone)
 
-### B1. Clone this repository
+Claude Code can drive all of this except B2, and is worth using for B4, whose failure mode is
+a command that succeeds and produces nothing.
+
+### B1. Clone, then restart `claude` inside it
 
 ```bash
 git clone https://github.com/Chadleewalker/Multi-AgentPipelines.git
 cd Multi-AgentPipelines
 ```
 
-### B2. Put your token where the runner looks
+Restart the session in the clone so it picks up this repo's `CLAUDE.md`.
+
+### B2. Your token — by hand, not through Claude Code
 
 ```bash
-echo 'CLAUDE_CODE_OAUTH_TOKEN=<paste the token from A7>' > .env.pipeline
+echo 'CLAUDE_CODE_OAUTH_TOKEN=<token from A7>' > .env.pipeline
 ```
 
-`.env.pipeline` is **git-ignored** — it never gets committed and it must stay that way. The
-token is handed to each container by name at launch and is never baked into an image.
+Git-ignored, and must stay that way. Passed to containers by name at launch, never baked into
+an image.
+
+The same file holds `CODEX_API_KEY=<key>` on its own line only when a Codex run selects
+`"codexAuth": "api-key"`. For `"codexAuth": "chatgpt"`, run `codex login` instead; preflight
+accepts only a managed ChatGPT session with a refresh token and seeds a private durable
+cache from it once. It never replaces that durable cache with the original login after
+Codex has refreshed it. A missing `codexAuth` retains legacy `api-key` behavior, and there
+is no fallback between modes or providers.
+
+For parallel ChatGPT subscription work, add `codexAuthCacheRoots` to the host-local run
+config. Its value is a nonempty array of canonical absolute directories, each already
+populated by a separate Codex login; the runner never clones the ambient login into this
+roster. Keep every directory private and outside this checkout, the target repository, task
+workspaces, and every other lane. Preflight checks the complete roster before target mutation,
+quarantines invalid or busy sessions individually, and proceeds when at least one lane is
+healthy.
 
 ### B3. Install the git hooks
 
@@ -171,267 +232,234 @@ token is handed to each container by name at launch and is never baked into an i
 bash scripts/install-hooks.sh
 ```
 
-**Run this once per clone, on every machine, and don't skip it.** The issue database
-travels on a separate git reference that a normal `git pull` does not fetch. Without these
-hooks you pull the code, keep a *stale task queue*, and nothing warns you. This repo lost
-its issues that way once already.
+**Do not skip this.** The issue database travels on a git reference `git pull` does not fetch,
+so without the hooks you pull code and keep a stale task queue with no warning. This repo lost
+its issues that way once. Host-only, never committed. If you ever update the code by some
+route other than `git pull`, run `bd dolt pull` by hand.
 
-The hooks are installed on your machine only, never committed.
-
-### B4. Get the task queue itself
+### B4. Get the task queue
 
 ```bash
-bd ready
+bd ready       # if it reports no database:  bd init && bd dolt pull
+bd stats       # how much is open, blocked, closed
+bd memories    # must list notes, not nothing
 ```
 
-If that reports no database, initialise and then pull:
-
-```bash
-bd init
-bd dolt pull
-```
-
-**Check what arrived before moving on:**
-
-```bash
-bd ready       # should list open issues
-bd memories    # should list notes, not nothing
-```
-
-An empty `bd memories` is the failure to catch here. Those notes are exported into every
-container as project memory; if the list is empty, every task silently runs with no
-accumulated context and nothing anywhere reports an error. If it comes back empty, stop
-and ask — don't work around it.
+**An empty `bd memories` is the failure to catch.** Those notes are exported into every
+container as project memory; empty means every task runs with no context and nothing reports
+it. Stop and ask. (`bd ready` returning nothing is different and may be correct — `bd stats`
+tells you which.)
 
 ### B5. Build the base image
 
 ```bash
 docker build -t pipeline-base:local docker/base
+bash scripts/test-base-image.sh      # expect every line PASS
 ```
 
-The base image is the sealed box every task runs in: Node, git, the Claude CLI and `bd`,
-all at pinned versions, and **no credentials and no pipeline code**. The pipeline's own
-scripts are mounted in fresh at run time, so changing them never means rebuilding this.
+Node, git, the Claude CLI, the Codex CLI and `bd` at pinned versions, with no credentials and
+no pipeline code. The Codex pin proves its own `codex exec` capabilities during the build, so
+a bad pin fails here rather than inside every task container. The network gatekeeper image
+builds itself on first run — one image per provider profile, whichever the run selects.
 
-Then prove it is right:
+### B6. `cp .worktree-carry.example .worktree-carry`
+
+Thirty seconds now; **ignore the rest of this until you run two agent sessions at once.** Then:
+each session gets its own git worktree — its own folder, its own branch, one shared history
+(`node scripts/worktree.js new <name>`, `list`, `remove`). Three sessions in one folder are
+three agents typing into one set of files. `.worktree-carry` names which git-ignored files a
+new worktree is given.
+
+### B7. Install the write guards — once per machine, not per clone
 
 ```bash
-bash scripts/test-base-image.sh
+node scripts/install-session-guard.js      # one session, one folder
+node scripts/write-protection.js install   # pipeline-first writes, Claude and Codex
+node scripts/write-protection.js status    # what is enforced, honestly
 ```
 
-Expect every line to say `PASS`. This checks the pinned versions are actually the pinned
-versions and that no credential ended up inside the image.
+Two different rules at the same enforcement point. The first keeps two sessions out of one
+folder. The second keeps an agent session from changing an onboarded project by hand at all:
+a checkout carrying `pipeline.config.json` is pipeline-first, so product, configuration,
+control and frozen-path writes are refused and reading is untouched. Neither says anything in
+a project that does not carry them, so your other repositories are unaffected.
 
-The second image — the network gatekeeper that blocks everything except the Anthropic
-addresses — builds itself the first time a run needs it. You don't build it by hand.
+`status` will tell you enforcement is **not** complete, and that is correct rather than a
+setup error: these hooks live in configuration files on this machine, so whoever is sitting
+here can disable them. Codex also reports `untrusted` rather than `enforced` for a
+correctly shaped, non-managed hook until you run its interactive `/hooks` command to trust
+both installed definitions and record that with
+`node scripts/write-protection.js review --client codex`; that record stops being honoured
+the moment either definition changes. The layer that does not depend on a hook is admission — the freeze,
+batch preparation and the runner each re-check the real checkout before they mutate it. If
+one of them ever refuses with a list of paths, nothing was deleted or reverted; run
+`node scripts/write-protection.js recover --target <dir>` to give that work a Git-registered
+worktree of its own. To work by hand deliberately, grant yourself
+`node scripts/write-protection.js allow-writes --target <dir> --session <id>` and `revoke`
+when you are done.
 
 ---
 
 ## Part C — Prove it works before you trust it
 
-Do not skip this part. The whole value of the pipeline is that you can leave it alone
-overnight, and that is only worth anything if the scaffolding around it is provably
-working on *your* machine.
-
-### C1. The fast suites (seconds, no Docker)
+The value of the pipeline is leaving it alone overnight, which is worth nothing unless the
+scaffolding is provably working on *your* machine.
 
 ```bash
-bash scripts/test-changelog.sh
+bash scripts/test-changelog.sh      # seconds, no Docker
 bash scripts/test-sanitize.sh
 bash scripts/test-lock.sh
-```
 
-These read files and run plain Node. If they fail, something is wrong with the clone
-itself, not with your Docker setup.
-
-### C2. The full sweep (about ten minutes when healthy)
-
-```bash
+# setup pass without the fixture-backed e2e suite
 bash scripts/test-all.sh --skip e2e --timeout 300
 ```
 
-This runs every suite in the repo, one at a time, and prints a summary table. It writes
-per-suite logs under `runs/sweeps/<timestamp>/`.
+A healthy sweep is green in roughly eight to twelve minutes and writes per-suite logs under
+`runs/sweeps/<timestamp>/`. The sweep discovers its suite plan dynamically. A sweep taking
+an hour is suites *hanging* and being killed, not doing more work; `--timeout 300` caps that
+loss and `--skip e2e` drops the one suite needing a fixture repo.
 
-**A healthy sweep is all green in roughly eight to twelve minutes** — the reference host's
-2026-08-03 sweep ran 32 suites green in 8:09. A sweep that takes an hour is not doing more
-work; it is suites *hanging* and being killed at the per-suite cap. Hence the two flags:
-`--timeout 300` turns a hang into a five-minute loss instead of fifteen (the slowest healthy
-suite on record is 1:32), and `--skip e2e` leaves out the one suite needing the fixture repo
-from C3. Drop both flags once you have a fixture and a baseline you trust.
+- **Never run the sweep while a real run is in flight.** It cleans up after each suite, and a
+  live run's container looks exactly like something to clean up.
+- **If several `test-runner-*` suites go red at once, check `.env.pipeline` first.** They call
+  no model, but the runner refuses to start without a token, so a missing one produces
+  realistic-looking nonsense. The tell is few assertions, not many failures.
+- **`TIMEOUT` and `FAIL` are different facts.** A timed-out suite judged nothing.
+- **Compare against the known-good summary from Part 0** before concluding anything is yours.
+- **Hand a red suite's log to Claude Code** — reading 900 lines for the one assertion that
+  matters is what it is good at. It does not get to *decide*: the exit code is the verdict, and
+  "probably environmental" is not evidence.
 
-Four things to know about it:
-
-- **Never run it at the same time as anything else that uses Docker for this project.** It
-  cleans up after each suite, and a live run's container looks exactly like something it
-  should clean up. That collision once cost a session of debugging that blamed Docker.
-- **A red suite is not always a broken pipeline.** Read the log before concluding anything.
-- **If several `test-runner-*` suites go red at once**, check `.env.pipeline` first. Those
-  suites don't call any model, but the runner refuses to start without a token, so a
-  missing token makes them fail with realistic-looking but meaningless errors. The tell is
-  that they report very few assertions rather than many failures.
-- **`TIMEOUT` and `FAIL` are different facts.** A timed-out suite hung; it did not judge the
-  thing it tests. And before concluding anything is *your* machine, compare against the
-  latest sweep on a machine known to be working — a suite that is red there too is not
-  yours.
-
-### C3. The end-to-end pass — optional, and only if you'll develop the pipeline itself
-
-`bash scripts/e2e.sh` drives three complete scenarios — a success, a failure, and an
-attempted tamper — through real containers, the real sealed network, and live GitHub,
-using scripted stand-ins instead of a real model so it costs nothing and always gives the
-same answer.
-
-It needs a **disposable private GitHub repo of your own** set up as a fixture, which is
-real work: `scripts/test-fixture.sh` defines exactly what makes one valid, and
-`bash scripts/test-fixture.sh` tells you whether yours qualifies. Then copy
-`run.config.example.json` to `run.config.fixture.json` and point it at that repo.
-
-If you are only going to *use* the pipeline on your own projects, skip this. If you are
-going to *change* the pipeline, do it — it is the only thing that exercises the whole path
-at once.
+`bash scripts/e2e.sh` drives three full scenarios through real containers with scripted
+stand-ins instead of a model. It needs a disposable private fixture repo
+(`bash scripts/test-fixture.sh` says whether yours qualifies). Skip it unless you are going to
+change the pipeline itself. Once that fixture is configured, the routine complete host pass is
+`node scripts/fast-full-sweep.js --repo .`; it runs the mandatory profile once, then delegates
+only the remaining Docker/live suites to the canonical sweep. Use `bash scripts/test-all.sh`
+directly when you need its per-suite diagnostic logs and timings.
 
 ---
 
 ## Part D — Point it at a project
 
-### D1. Onboard the project
-
-**You don't work through this checklist by hand.** Start `claude` from inside the project
-and tell it to follow the pipeline repo's `ONBOARDING.md` (or run the `pipeline-onboard`
-command if you have the harness plugin). Claude Code drives; you make the decisions. The
-same is true of scaffolding a brand-new project — start `claude` in an empty folder and
-describe what you want built.
-
-`ONBOARDING.md` covers
-the GitHub remote, the frozen-test folder, the project's config file and image, its issue
-database, and the rewrite of its instructions file so agents know they are running in a
-sealed container.
-
-If the project is older code rather than something scaffolded this month, do its Stage 0
-assessment first. The question it asks is not "can this repo be configured?" — any repo
-can — but "can a task in this repo be *verified* by a fast, deterministic test with no
-network?" A repo that can't produce such a test doesn't fail loudly; it produces runs
-nobody can interpret, which is worse.
-
-### D2. Add the runner config, named after the project
-
-```bash
-cp run.config.example.json run.config.myproject.json
-```
-
-Then edit it: the path to the project on your disk, its remote URL, and its image name.
-
-**Name the file after the project — never plain `run.config.json`.** The runner derives
-that run's private network and gatekeeper names from the `<project>` part of the filename.
-Two configs both called `run.config.json` share one network, so starting the second run
-destroys the first run's route out.
-
-These configs are **git-ignored**: they name a path on your disk and a remote that may be
-private.
-
-### D3. If you work on private things, add the publication denylist
-
-```bash
-cp .sanitize-denylist.example .sanitize-denylist
-```
-
-Then list the client names, project names and hosts that must never appear in this
-repository's tracked files.
-
-**This repository is public and is used on private work.** The rule that keeps both true:
-it documents the *machinery*, never the *work done with it*. Worked examples say "the first
-real project", never its name. `bash scripts/test-sanitize.sh` enforces the generic half
-(paths, addresses, credentials) always, and this denylist enforces the naming half. The
-denylist itself is git-ignored — committing a list of things you mustn't mention would
-publish exactly what it protects — so it does not arrive with a clone. You add it.
-
-Run `bash scripts/test-sanitize.sh` before you push anything to this repo.
-
-### D4. Run a queue
-
-```bash
-node runner/run.js --config run.config.myproject.json
-```
-
-**One run per project at a time.** A second run against the same project is refused by
-name before anything starts. A lock left behind by a run you killed is taken over
-automatically by the next one — never delete it by hand.
+1. **Onboard it** — do not work the checklist by hand. Start `claude` in the project and tell
+   it to follow this repo's `ONBOARDING.md`, or run `/pipeline-onboard`. Once per project,
+   ever. Existing codebases do its Stage 0 assessment first: the question is not "can this be
+   configured" but "can a task here be verified by a fast, deterministic test with no
+   network?"
+2. **Add the runner config**: `cp run.config.example.json run.config.myproject.json`, then set
+   the project's path, remote and image name. **Name it after the project, never plain
+   `run.config.json`** — the private network name comes from that segment, so two configs
+   sharing a name means the second run destroys the first one's route out. Git-ignored.
+   Three fields worth knowing: **`proxyPort` is not tunable** (the gatekeeper hard-codes 3128
+   and nothing validates your file against it — changing it kills preflight with no hint);
+   `feedIdleGraceMinutes: 0` means the live queue feed is off; `concurrency` has no ceiling,
+   so start at 1. For Codex, choose `codexAuth: "chatgpt"` to use the saved login or
+   `codexAuth: "api-key"` to use `.env.pipeline`; the example declares dormant ChatGPT
+   auth while retaining the canonical Claude/opus defaults. One saved login is one exclusive
+   worker lane regardless of `concurrency`; configure separate, independently authenticated
+   lanes with `codexAuthCacheRoots` for parallel subscription workers. Credential jobs wait
+   FIFO and use no more than the healthy lane count; a bad lane is quarantined without
+   stopping healthy siblings. A fifth if you ever hit it:
+   `allowHalfProven: false` is the default and means the runner refuses a suite the freeze
+   gate found red with no probe supplied — set it
+   to `true` only if you accept dispatching suites whose green side has never been seen
+   (§4.12's third admission rule).
+3. **`cp .sanitize-denylist.example .sanitize-denylist`** if you touch private work, then list
+   the names that must never appear here. This repo is public and is used on private work; it
+   documents the machinery, never the work. Run `bash scripts/test-sanitize.sh` before you push.
+4. **Run it**: `node runner/run.js --config run.config.myproject.json`. One run per project at
+   a time; a second is refused by name, and a lock left by a killed run is taken over
+   automatically — never delete it by hand.
 
 ---
 
 ## Part E — The rhythm from here on
 
-**Before your first planning session**, in this order — no installs, and worth the hour:
+Before your first planning session: run `/profile`, open
+[`docs/pipeline-map.built.html`](docs/pipeline-map.built.html) (the whole system on one page —
+**the `.built.html` copy**, not `pipeline-map.html`, which draws no diagrams by itself), and
+read `CLAUDE.md`, `PLANNING.md`, and `DESIGN.md` §4.11 and §3.1. The change log is
+`docs/change-log.md`, not `DESIGN.md`.
 
-- Open [`docs/pipeline-map.html`](docs/pipeline-map.html) in a browser. The whole system on
-  one page, written for a reader rather than a maintainer. Start here.
-- Read `CLAUDE.md` (the rules), `PLANNING.md` (how a planning session goes), and
-  `ONBOARDING.md`'s "Starting from nothing" section. In `DESIGN.md`, §4.11 (what outcomes a
-  run can have) and §3.1 (how a task gets specified and frozen) carry the most weight per
-  line — skip the rest until you need it.
-- Sit in on one planning session and one onboarding run by someone who has done them
-  before, then do your own.
+**This is the whole method and it has not changed.** You open `claude` in this repo, say which
+project to work on, plan with it, and it launches the run. There is no newer front end: the
+live queue feed, concurrency above 1, and worktrees are all off or irrelevant by default.
 
-Then the loop: plan → run → review in the morning → merge or send back.
+Then: **plan → run → review in the morning → merge or send back.**
 
-1. **Plan** (with you, interactive): follow `PLANNING.md`. You approve a plain-English
-   "Done means" list; the tests get written *before any code exists* and then frozen.
-2. **Run** (unattended): the command in D4. Walk away.
-3. **Review** (with you): each finished task arrives as a pull request carrying the spec,
-   a summary of what changed, and the verification evidence. Failed work arrives as a
-   pushed branch with its full attempt history. The run report orders them by how much
-   scrutiny each needs.
+1. **Plan** (interactive): follow `PLANNING.md`. You approve a plain-English "Done means"
+   list; tests are written before any code exists, then frozen. **Then push the branch.** A
+   frozen suite that exists only on your disk is never dispatched — the task comes back
+   `undispatchable`, which looks like nothing happened.
+2. **Run** (unattended): the command above. Walk away. `node scripts/dashboard.js` in a second
+   terminal serves a read-only view on `127.0.0.1`.
+3. **Review**: each finished task is a PR carrying the spec, a summary and the verification
+   evidence; failed work is a pushed branch with its full attempt history. The PRs are
+   siblings, not a stack.
 4. **Record your verdict**, one line per PR:
 
    ```bash
    node scripts/verdict.js record <issue-id> <merged|rejected> "<why>"
-   node scripts/verdict.js pending    # anything still unjudged
+   node scripts/verdict.js pending
    ```
 
    Merge-or-send-back is the one signal the pipeline cannot generate about itself, and it
-   exists only for as long as you are looking at the PR. A green run that you rejected is
-   the most valuable row in the record and the easiest one to lose.
+   exists only while you are looking at the PR.
 
-Onboarding a project happens once, ever. Everything after that is planning sessions.
+Adding a feature later is a planning session, not a re-onboarding.
 
 ---
 
-## Part F — The things that will cost you a day if nobody tells you
+## Part F — The things that will cost you a day
 
-1. **Use Git Bash, not WSL.** Docker commands from WSL fail on the reference machine.
-2. **A missing token makes six test suites lie to you.** They report plausible assertion
-   failures rather than "no token". Check `.env.pipeline` before debugging anything else.
-3. **Never run the test sweep while a real run is in flight.** A task container dying with
-   no output and no explanation is almost always this, not Docker running out of memory.
-   Check `docker ps` and `runs/locks/` before blaming Docker.
-4. **A fresh clone does not carry the issue database automatically.** Step B3 and B4 are
-   what fetch it. Skipping them gives you a stale queue and no warning.
-5. **Test suites go stale silently.** Run `bash scripts/test-all.sh` after merging a batch
-   of PRs, before an overnight run, and when picking up a branch you haven't touched in a
-   while. One suite that nobody re-ran accumulated three separate bugs before anyone
-   looked.
-6. **Anything a container needs must be in the repository.** The container has no internet
-   beyond Anthropic — no package installs, no documentation lookups. If an agent keeps
-   failing because it didn't know an API, the answer is to vendor those docs into the repo,
-   never to open the network.
+1. **Git Bash, not WSL.** Docker commands from WSL fail on the reference machine.
+2. **A missing token makes six suites lie to you.** Check `.env.pipeline` before debugging
+   anything else.
+3. **Never sweep while a run is in flight.** A container dying with no output is almost always
+   this, not Docker running out of memory. Check `docker ps` and `runs/locks/`.
+4. **A fresh clone does not carry the issue database.** B3 and B4 are what fetch it.
+5. **Suites go stale silently.** Sweep after merging a batch of PRs, before an overnight run,
+   and when picking up a cold branch. One suite nobody re-ran accumulated three bugs.
+6. **Anything a container needs must be in the repository.** No internet beyond the model
+   provider's own endpoints. If an agent keeps failing for want of an API reference, vendor
+   the docs in — never open the network, and never widen one provider's allowlist to carry
+   another's.
+7. **"Repository not found" usually means the wrong GitHub account is active**, not a typo.
+8. **Read `docs/pipeline-map.built.html`**, not `pipeline-map.html`.
+9. **A frozen suite you committed but did not push does not run.** Confirm it is on the remote:
+
+   ```bash
+   git ls-tree -d --name-only origin/<default-branch> -- tests/acceptance/<issue-id>
+   ```
+
+   Silence means it is not there. **Do not use `scripts/batch.js show` for this** — it predicts
+   the queue from the type filter only, does not know about the dispatch gate, and reports an
+   unpushed task as `ready`.
+10. **`proxyPort` is not tunable.** See Part D2.
+11. **Launch runs from the main checkout, never a worktree.** A worktree gets its own
+    git-ignored `runs/`, so its own lock — and the lock is the only thing stopping two runners
+    draining one queue.
+12. **The run lock is per machine, not per project.** It cannot see another person's computer.
+    Two people pointing the pipeline at one project each drain their own copy of the queue and
+    both push branches for the same work, with nothing reporting it. **One project has one
+    owner** — settle that before you start.
+13. **Claude Code can install your tools; it must not hold your credentials.**
 
 ---
 
 ## What to ask about rather than work around
 
-Four rules exist because removing them makes the pipeline untrustworthy unattended, not
-because they're conventions. If one of them is in your way, that is a conversation, not a
-workaround:
+Four rules exist because removing them makes the pipeline untrustworthy unattended. If one is
+in your way, that is a conversation, not a workaround:
 
-- **Nothing during a run may change what "done" means.** A task that needs its spec changed
-  is a result to report, not a problem to fix mid-run.
+- **Nothing during a run may change what "done" means.** A task needing its spec changed is a
+  result to report, not a problem to fix mid-run.
 - **The thing that judges the work is a plain script, never an AI.** It reads the tests as
-  they were frozen, not as they are now.
-- **The container gets one credential and no route out.** Don't add network access to make
-  something convenient — bake it into the image at planning time instead.
+  frozen, not as they are now.
+- **The container gets one credential — the selected provider's — and no route out.** Bake
+  dependencies into the image at planning time instead.
 - **The approval points are the design, not friction.** You approve intent before a run and
-  results after. Never route around one to save a step.
+  results after. Never route around one.
 
-`CLAUDE.md` states these as hard rules with the full reasoning; `DESIGN.md` is the
-authority behind all of it.
+`CLAUDE.md` states these as hard rules with full reasoning; `DESIGN.md` is the authority.

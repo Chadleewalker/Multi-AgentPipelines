@@ -20,16 +20,33 @@ NET="${PIPELINE_NET:-pipeline-net}"
 PROXY_NAME="${PIPELINE_PROXY:-pipeline-proxy}"
 PROXY_PORT="${PIPELINE_PROXY_PORT:-3128}"
 PROXY="http://$PROXY_NAME:$PROXY_PORT"
+# The allowed endpoint is the SELECTED provider's, because each provider has its own
+# deny-by-default profile (DESIGN.md 6.8). Proving api.anthropic.com reachable on a run
+# that will talk to OpenAI proves nothing about that run — and vice versa. The two blocked
+# hosts and the no-direct-egress assertion are the same for both profiles.
+PROFILE="${PIPELINE_PROXY_PROFILE:-claude}"
+case "$PROFILE" in
+  codex) ALLOWED_URL="https://api.openai.com/"; OAUTH_URL="https://auth.openai.com/oauth/token" ;;
+  claude|'') ALLOWED_URL="https://api.anthropic.com/" ;;
+  *) echo "unknown proxy profile '$PROFILE' (expected claude or codex)" >&2; exit 2 ;;
+esac
 
 PROBE_CMD='
   code() { curl -s -m 10 -o /dev/null -w "%{http_code}" "$1" 2>/dev/null || true; }
-  A=$(code https://api.anthropic.com/)
+  A=$(code "$ALLOWED_URL")
+  O=200
+  if [ "$PIPELINE_PROXY_PROFILE" = codex ]; then O=$(code "$OAUTH_URL"); fi
   B=$(code https://github.com/)
   C=$(code https://registry.npmjs.org/)
   D=$(env -u HTTPS_PROXY -u HTTP_PROXY sh -c \
       "curl -s -m 8 -o /dev/null -w \"%{http_code}\" https://github.com/ 2>/dev/null" || true)
-  echo "allowed=${A:-000} blocked1=${B:-000} blocked2=${C:-000} direct=${D:-000}"
+  if [ "$PIPELINE_PROXY_PROFILE" = codex ]; then
+    echo "profile=$PIPELINE_PROXY_PROFILE allowed=$ALLOWED_URL:${A:-000} oauth=${O:-000} blocked1=${B:-000} blocked2=${C:-000} direct=${D:-000}"
+  else
+    echo "profile=$PIPELINE_PROXY_PROFILE allowed=$ALLOWED_URL:${A:-000} blocked1=${B:-000} blocked2=${C:-000} direct=${D:-000}"
+  fi
   [ -n "$A" ] && [ "$A" != 000 ] || exit 1     # allowed endpoint must be reachable
+  [ "$PIPELINE_PROXY_PROFILE" != codex ] || { [ -n "$O" ] && [ "$O" != 000 ]; } || exit 1
   [ -z "$B" ] || [ "$B" = 000 ] || exit 1      # github.com must be blocked
   [ -z "$C" ] || [ "$C" = 000 ] || exit 1      # registry.npmjs.org must be blocked
   [ -z "$D" ] || [ "$D" = 000 ] || exit 1      # no direct egress without the proxy
@@ -39,6 +56,7 @@ PROBE_CMD='
 run_probes() {
   docker run --rm --network "$NET" \
     -e HTTPS_PROXY="$PROXY" -e HTTP_PROXY="$PROXY" -e NO_PROXY=localhost,127.0.0.1 \
+    -e ALLOWED_URL="$ALLOWED_URL" -e OAUTH_URL="${OAUTH_URL:-}" -e PIPELINE_PROXY_PROFILE="$PROFILE" \
     "$BASE_IMG" sh -c "$PROBE_CMD"
 }
 
@@ -47,6 +65,7 @@ run_probes() {
 if command -v timeout >/dev/null 2>&1; then
   timeout "$BOUND" docker run --rm --network "$NET" \
     -e HTTPS_PROXY="$PROXY" -e HTTP_PROXY="$PROXY" -e NO_PROXY=localhost,127.0.0.1 \
+    -e ALLOWED_URL="$ALLOWED_URL" -e OAUTH_URL="${OAUTH_URL:-}" -e PIPELINE_PROXY_PROFILE="$PROFILE" \
     "$BASE_IMG" sh -c "$PROBE_CMD"
 else
   run_probes

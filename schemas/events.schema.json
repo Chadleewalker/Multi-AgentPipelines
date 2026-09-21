@@ -1,0 +1,312 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/chadleewalker/multi-agent-pipelines/schemas/events.schema.json",
+  "title": "Run event ledger line",
+  "description": "One line of runs/<runId>/events.jsonl — the structured twin of a run.log line, appended by runner/log.js from the same timestamp (DESIGN.md 4.12, change-log rows `events-ledger-design`, `repo-qzy` and `repo-3xw`). A line with a string `msg` has a run.log line at the same index; a line with `msg: null` is ledger-only and was never echoed. The envelope is CLOSED: a reader may rely on these eight keys and nothing else appearing. Three facts here reach no other artifact: the queue read with every refusal and its reason (queue.read, task.undispatched), each attempt's verifier result and failing check names (attempt.finished), and each spec concern (concern.raised).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["ts", "level", "runId", "issueId", "trace", "event", "msg", "data"],
+  "properties": {
+    "ts": {
+      "type": "string",
+      "format": "date-time",
+      "description": "The single instant both records share. Not two clock reads."
+    },
+    "level": {
+      "type": "string",
+      "enum": ["INFO", "ERROR"],
+      "description": "The run.log level of the twin line. Ledger-only events are always INFO."
+    },
+    "runId": { "type": "string" },
+    "issueId": {
+      "type": ["string", "null"],
+      "description": "The trace's tail after '<runId>/'. Null for the `preflight` and `feed` pseudo-tasks, which are run-level work rather than Beads issues, and null when there is no trace."
+    },
+    "trace": {
+      "type": ["string", "null"],
+      "description": "The trace id as run.log prints it between brackets, or null."
+    },
+    "event": {
+      "type": "string",
+      "description": "The event name. Enumerated INLINE rather than behind a $ref: this is the list a reader validates against, and one indirection is one more thing a hand-written validator — the kind the frozen suites use, with no dependencies — has to resolve before it can say yes or no.",
+      "enum": [
+        "log",
+        "run.target",
+        "lock.held",
+        "lock.tookOver",
+        "queue.read",
+        "task.undispatched",
+        "task.started",
+        "attempt.finished",
+        "concern.raised",
+        "workspace.ready",
+        "container.launched",
+        "container.ran",
+        "task.rateLimited",
+        "park.opened",
+        "park.reopened",
+        "park.waiting",
+        "task.finished",
+        "run.finished",
+        "task.refused",
+        "task.relaunched",
+        "feed.on",
+        "feed.pickedUp",
+        "feed.closed"
+      ]
+    },
+    "msg": {
+      "type": ["string", "null"],
+      "description": "Byte-identical to the run.log line's message, or null for a ledger-only event."
+    },
+    "data": {
+      "type": "object",
+      "description": "The event's typed fields. Empty for `log`. $defs.events is a MAP keyed by event name and holds nothing else — every one of its keys is a member of the event enum — so a reader can look a shape up directly."
+    }
+  },
+  "$defs": {
+    "events": {
+      "log": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {},
+        "description": "A run.log line whose call site named no event. Empty data by construction — nothing infers an event from a message prefix."
+      },
+      "run.target": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["url"],
+        "properties": {
+          "url": { "type": "string", "description": "The configured targetRepoRemote." }
+        }
+      },
+      "lock.held": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path"],
+        "properties": {
+          "path": { "type": "string", "description": "The target working copy the per-project run lock is held for (4.12)." }
+        }
+      },
+      "lock.tookOver": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path"],
+        "properties": {
+          "path": { "type": "string", "description": "The target working copy whose lock was left by a run whose process is gone." }
+        }
+      },
+      "queue.read": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ready", "skipped", "refused"],
+        "description": "What the run decided about its own ready queue, paired with the `ready queue: ` prose line from one call in `runner/queue.js`'s logQueueRead (change-log row `repo-3xw`). IDS, NEVER ISSUE OBJECTS: a bd issue carries a title, a description and whatever a future bd adds, so embedding one would grow every line without anyone deciding to, and would put issue prose into the artifact whose value is that it reads by machine. The title is in run.json.",
+        "properties": {
+          "ready": {
+            "type": "array",
+            "description": "The ids the run will dispatch, in dispatch order.",
+            "items": { "type": "string" }
+          },
+          "skipped": {
+            "type": "array",
+            "description": "One entry per issue the epic filter removed. The type is carried because it is WHY the entry went: an id alone would say an issue vanished without saying what removed it.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "type"],
+              "properties": {
+                "id": { "type": "string" },
+                "type": { "type": "string", "description": "The issue type as bd reports it, lower-cased and trimmed (runner/queue.js's typeOf); '' when it carries none." }
+              }
+            }
+          },
+          "refused": {
+            "type": "array",
+            "description": "One entry per issue the dispatch gate refused (4.12's second admission rule), with the reason a human reads.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "reason"],
+              "properties": {
+                "id": { "type": "string" },
+                "reason": { "type": "string", "description": "The sentence the run.log line carries." },
+                "refusal": { "type": "string", "description": "The refusal KIND — a short machine token, where `reason` is prose. Present only when the refusing code named one; the gate has one way to refuse today, so nothing sets it yet." }
+              }
+            }
+          }
+        }
+      },
+      "task.undispatched": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "reason"],
+        "description": "One issue the dispatch gate refused, paired with its `not dispatched: ` ERROR line. Traced to the ISSUE rather than to preflight, so the ledger's issueId files it under the task a reader will ask about. Beads was never touched and the issue stays open.",
+        "properties": {
+          "id": { "type": "string" },
+          "reason": { "type": "string" },
+          "refusal": { "type": "string", "description": "The refusal kind, when the refusing code named one. See queue.read.refused." }
+        }
+      },
+      "task.started": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["priority", "title"],
+        "properties": {
+          "priority": { "type": "integer", "description": "The issue's priority, or 2 when it carries none — the number the line printed." },
+          "title": { "type": "string" }
+        }
+      },
+      "attempt.finished": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["issueId", "number", "verifierResult", "failingChecks"],
+        "description": "LEDGER-ONLY (msg: null): one per attempt in the collected status file, emitted once per task after the relaunch loop rather than per collection — a parked task collects its status again on every relaunch, and emitting there would make the attempt count depend on how the subscription window fell.",
+        "properties": {
+          "issueId": { "type": "string", "description": "Carried in data as well as in the envelope, so a reader extracting attempt rows need not know that the envelope's issueId is derived from the trace." },
+          "number": { "type": ["integer", "null"], "description": "The attempt number the container recorded; null when it recorded none." },
+          "verifierResult": { "type": ["string", "null"], "description": "pass or fail, as the status file recorded it; null when it recorded none." },
+          "failingChecks": {
+            "type": ["array", "null"],
+            "description": "The names of the checks that failed, sorted and de-duplicated by scripts/sweep-assertions.js's failingChecks. THREE ANSWERS, three different facts: [] means text was there and nothing failed; a list means text was there and these failed; null means there is no text at all, so nothing is known either way. The text is the attempt's own feedback, or — for the FINAL attempt only, and only when it recorded none — verify.json's acceptanceOutput, which describes the last attempt because the verifier wrote it last.",
+            "items": { "type": "string" }
+          }
+        }
+      },
+      "concern.raised": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["text"],
+        "description": "LEDGER-ONLY (msg: null): one per specConcerns entry in the collected status file, verbatim — 3.7's 'this spec is wrong' channel. Evidence only: like every other surface this channel reaches, it cannot change an outcome (3.5).",
+        "properties": {
+          "text": { "type": "string", "description": "The concern as the agent wrote it. Never summarised and never counted: the text is the whole content of a concern." }
+        }
+      },
+      "workspace.ready": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["dir", "branch", "forkPoint"],
+        "properties": {
+          "dir": { "type": "string", "description": "The per-task clone on the host." },
+          "branch": { "type": "string", "description": "The task branch, task/<issueId> unless one already existed on the remote." },
+          "forkPoint": {
+            "type": "string",
+            "description": "The FULL fork-point commit. run.log abbreviates it to eight characters for a human; the ledger does not, because a later reader may not have the repository to resolve it against."
+          }
+        }
+      },
+      "container.launched": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "budgetMinutes"],
+        "properties": {
+          "name": { "type": "string", "description": "The docker container name — unique across relaunches (4.7)." },
+          "budgetMinutes": { "type": "integer", "description": "Remaining ACTIVE wall-clock budget for this launch; paused time never counts (4.6)." }
+        }
+      },
+      "container.ran": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["seconds", "killed", "activeSeconds"],
+        "properties": {
+          "seconds": { "type": "integer", "description": "This launch's duration." },
+          "killed": { "type": "boolean", "description": "True when the host wall-clock timer killed it at budget." },
+          "activeSeconds": { "type": "integer", "description": "Active total for the task across every relaunch so far." }
+        }
+      },
+      "task.rateLimited": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["pause"],
+        "properties": {
+          "pause": { "type": "integer", "description": "This TASK's relaunch count. The run-level wait-cycle count is a different quantity and lives on park.opened (7)." }
+        }
+      },
+      "park.opened": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["cycles", "max"],
+        "properties": {
+          "cycles": { "type": "integer", "description": "Run-level wait cycles already spent when this wait opened." },
+          "max": { "type": "integer", "description": "The run-level cap (config.js DEFAULTS.maxPauseCycles unless overridden)." }
+        }
+      },
+      "park.reopened": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {},
+        "description": "The shared run-level wait ended and the window is open again."
+      },
+      "park.waiting": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["until"],
+        "properties": {
+          "until": { "type": "string", "description": "The reset time the container reported. Recorded as the string it was reported as — an unparseable one is evidence, not a reason to record nothing." }
+        }
+      },
+      "task.finished": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["exitCode", "outcome", "beads"],
+        "properties": {
+          "exitCode": {
+            "description": "The container's exit code; the string 'killed' when the host timer fired and there is none (4.11), and null when a signal ended it without one.",
+            "oneOf": [
+              { "type": "integer" },
+              { "const": "killed" },
+              { "type": "null" }
+            ]
+          },
+          "outcome": { "type": "string", "description": "The 4.11 outcome: done, partial, failed, stuck, tampered, paused." },
+          "beads": {
+            "type": ["string", "null"],
+            "description": "The Beads transition the outcome carries, or null when the issue stays in_progress."
+          }
+        }
+      },
+      "run.finished": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["dir"],
+        "properties": {
+          "dir": { "type": "string", "description": "The run folder holding every artifact, including this ledger." }
+        }
+      },
+      "task.refused": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {},
+        "description": "The run-level rate-limit cap had already fired, so this task never launched: Beads is untouched and the issue stays open (7)."
+      },
+      "task.relaunched": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {},
+        "description": "A parked task resuming in a fresh container against the same workspace; the attempt counter carries over."
+      },
+      "feed.on": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {},
+        "description": "The live queue feed is on for this run (4.12, change-log row `live-queue-feed`)."
+      },
+      "feed.pickedUp": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["added"],
+        "properties": {
+          "added": { "type": "integer", "description": "Issues this poll added that the run had not already dispatched." }
+        }
+      },
+      "feed.closed": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["polls", "ending"],
+        "properties": {
+          "polls": { "type": "integer", "description": "Re-reads of the ready queue over the whole run." },
+          "ending": { "type": "string", "description": "How the feed closed — the runner/feed.js ENDINGS vocabulary, normalised the same way run.json's feed block normalises it." }
+        }
+      }
+    }
+  }
+}

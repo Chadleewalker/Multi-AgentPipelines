@@ -8,9 +8,15 @@
 const fs = require('fs');
 const path = require('path');
 
-// Scrutiny order (§4.9): tampered > stuck > partial > failed > done-with-retries >
-// done-first-try, ties broken by attempt count then diff size.
-const RANK = { tampered: 0, stuck: 1, partial: 2, failed: 3, paused: 4, done: 5 };
+// Scrutiny order (§4.9): tampered > undispatchable > stuck > partial > failed >
+// done-with-retries > done-first-try, ties broken by attempt count then diff size.
+//
+// `undispatchable` (§4.11, §4.12) ranks second, behind `tampered`: a batch that could not
+// run at all is the first thing a person opening the report needs to see. Its rank is
+// INSERTED FRACTIONALLY and never renumbered — `scrutinyKey`'s fallback for an unknown
+// outcome is the literal rank `failed` holds, so renumbering would silently re-home every
+// future unknown outcome, which is not this table's to do.
+const RANK = { tampered: 0, undispatchable: 0.5, stuck: 1, partial: 2, failed: 3, paused: 4, done: 5 };
 
 function scrutinyKey(t) {
   const base = RANK[t.outcome] === undefined ? 3 : RANK[t.outcome];
@@ -42,7 +48,52 @@ const LABEL = {
   tampered: 'TAMPERED — frozen tests were modified',
   failed: 'FAILED',
   paused: 'PAUSED — usage window did not reopen',
+  // A label of its own, because the fallback below prints the bare outcome word (§4.12). This
+  // is the HISTORIC sentence and it stays the default: a row carrying no `refusal` — a manifest
+  // written before §4.12's third admission rule, or any other writer of this outcome — is the
+  // second admission rule's refusal and nothing else, and renders exactly as it always did.
+  undispatchable: 'UNDISPATCHABLE — no frozen acceptance suite on the integration branch',
 };
+
+// §4.12's four refusal kinds, in the heading. One phrase each, and DISTINCT: the heading is
+// what a person skimming a report of thirty tasks reads, and four different failures under one
+// sentence send three of them to the wrong remedy. The vocabulary is `runner/queue.js`'s
+// `REFUSAL` and `run.schema.json`'s enum; an unknown kind falls back to the historic label
+// rather than inventing a heading for a value this report does not understand.
+const UNDISPATCHABLE_LABEL = {
+  'no-suite': LABEL.undispatchable,
+  'no-receipt': 'UNDISPATCHABLE — the frozen suite carries no freeze receipt',
+  'receipt-mismatch': 'UNDISPATCHABLE — the frozen suite has changed since its receipt was written',
+  'half-proven': 'UNDISPATCHABLE — the freeze receipt records a half-proven freeze',
+};
+
+// The body paragraph, keyed by the same four. Every one of them opens on the fact that makes
+// this outcome unlike all the others — Beads was never touched — and then names the remedy for
+// THAT kind and no other.
+const NOT_DISPATCHED = 'so Beads was never touched and it is still `open`';
+const UNDISPATCHABLE_BODY = {
+  'no-suite': (id) => 'Freeze its acceptance suite at '
+    + `\`tests/acceptance/${id}/\` on the branch task containers fork from and **push it** — `
+    + 'freezing locally is not freezing — then re-run.',
+  'no-receipt': (id) => `The suite at \`tests/acceptance/${id}/\` is on the branch, but nothing `
+    + 'beside it records that it was ever gated: there is no receipt, or the one there is '
+    + 'cannot be read. Run the freeze gate over that suite and push the `.freeze-gate.json` it '
+    + 'writes, together with the suite, then re-run.',
+  'receipt-mismatch': (id) => `The suite at \`tests/acceptance/${id}/\` carries a receipt, but `
+    + 'the branch no longer holds the suite that receipt was written for — it was edited after '
+    + 'the gate blessed it, so what a container would be judged against has never been gated. '
+    + 'Run the freeze gate over it again and push the suite and its fresh receipt together, '
+    + 'then re-run.',
+  'half-proven': (id) => `The gate found the suite at \`tests/acceptance/${id}/\` red at the `
+    + 'fork point but was given no probe, so the green side has never been seen and nothing '
+    + 'has shown an implementation can satisfy it — the class that produced seven of twelve '
+    + 'stuck tasks in one fortnight. Re-gate it with a probe (`--green <probe-dir>`), or set '
+    + '`allowHalfProven: true` in the run config if a half-proven freeze is good enough for '
+    + 'this run, then re-run.',
+};
+
+const refusalKindOf = (t) => (
+  Object.prototype.hasOwnProperty.call(UNDISPATCHABLE_LABEL, t.refusal) ? t.refusal : 'no-suite');
 
 function renderReport(manifest) {
   const L = [];
@@ -61,18 +112,49 @@ function renderReport(manifest) {
   L.push(`**${manifest.tasks.length} task(s)**: ` +
     (Object.keys(counts).sort().map((k) => `${counts[k]} ${k}`).join(' · ') || 'none'));
   L.push('');
+
+  // §3.7 (the readership amendment), at RUN level and UNCONDITIONAL. The per-task block
+  // further down is right for one concern and wrong for seven: what a reader needs is not a
+  // concern but the same concern arriving n times, and that fact exists only across tasks —
+  // where, until this line, no artifact looked. So the count prints for every manifest,
+  // including a clean one where the news is the zero, rather than behind the per-task
+  // truthiness guard, which would go silent on exactly the runs a reader can stop reading.
+  //
+  // It is a count and nothing else. A concern is evidence, never a gate (hard rule 5,
+  // §3.5): nothing here consults an outcome and nothing here can change one. A malformed
+  // `specConcerns` counts as zero — the manifest is not schema-validated at render time,
+  // and `(t.specConcerns || []).length` would score the string 'nope' as four.
+  //
+  // Bold, never `## `: scripts/test-report.sh reads task order with
+  // `grep -o '^## [a-z0-9-]*'`, so a run-level `## ` heading injects a phantom task there.
+  const concernCount = (t) => (Array.isArray(t.specConcerns) ? t.specConcerns.length : 0);
+  const raisers = manifest.tasks.filter((t) => concernCount(t) > 0);
+  const concernTotal = raisers.reduce((n, t) => n + concernCount(t), 0);
+  L.push(`**Spec concerns: ${concernTotal} raised by ${raisers.length} of ` +
+    `${manifest.tasks.length} tasks.** Evidence only — none of them changed an outcome `
+    + 'above (DESIGN.md §3.7); a spec may be changed in a planning session and nowhere else.');
+  L.push('');
+
   L.push('Ordered by how much scrutiny each item needs.');
   L.push('');
 
   for (const t of manifest.tasks) {
-    L.push(`## ${t.issueId} — ${LABEL[t.outcome] || t.outcome}`);
+    const label = t.outcome === 'undispatchable'
+      ? UNDISPATCHABLE_LABEL[refusalKindOf(t)]
+      : (LABEL[t.outcome] || t.outcome);
+    L.push(`## ${t.issueId} — ${label}`);
     L.push('');
     if (t.title) L.push(`**${t.title}**`);
     L.push('');
     const facts = [];
-    if (t.branch) facts.push(`Branch: \`${t.branch}\`${t.pushed ? '' : ' (not pushed — no commits)'}`);
+    if (t.branch) {
+      const notPushed = t.pushed ? ''
+        : (t.recoveryWorkspace ? ' (not pushed — completion failed)' : ' (not pushed — no commits)');
+      facts.push(`Branch: \`${t.branch}\`${notPushed}`);
+    }
     if (t.prUrl) facts.push(`PR: ${t.prUrl}`);
     else if (t.pushed) facts.push('PR: none — review the branch directly');
+    if (t.recoveryWorkspace) facts.push(`Recovery workspace: \`${t.recoveryWorkspace}\``);
     if (t.attempts !== undefined) facts.push(`Attempts: ${t.attempts}`);
     if (t.pauses) facts.push(`Rate-limit pauses: ${t.pauses}`);
     if (t.activeSeconds !== undefined) facts.push(`Active time: ${t.activeSeconds}s`);
@@ -80,6 +162,17 @@ function renderReport(manifest) {
     if (t.model) facts.push(`Model: ${t.model}`);
     for (const f of facts) L.push(`- ${f}`);
     L.push('');
+
+    // §4.12's refusal, stated even for a row carrying nothing else. The remedy is the whole
+    // point of the row — a reader who learns only that a task did not run learns nothing
+    // actionable — and it must not depend on the manufactured fields being present, because
+    // an older manifest, or any other writer of this outcome, carries none of them.
+    if (t.outcome === 'undispatchable') {
+      L.push('**Not dispatched.** The ready queue refused this issue before anything was '
+        + `claimed, ${NOT_DISPATCHED}. `
+        + UNDISPATCHABLE_BODY[refusalKindOf(t)](t.issueId));
+      L.push('');
+    }
 
     // §3.7, ABOVE "what changed" AND ON PURPOSE. A concern cannot change an outcome, so a
     // task that raises one still sorts by its outcome — and `done` sorts LAST. The first
@@ -96,6 +189,19 @@ function renderReport(manifest) {
         L.push('> ' + String(c).trim().split('\n').join('\n> '));
         L.push('');
       }
+    }
+
+    // §4.3/§4.11, ABOVE "what changed" and for the same reason §3.7's block sits there: the
+    // docs phase is non-fatal, so this row keeps its outcome — but the summary underneath is
+    // then the implementation agent's and nothing in this task updated the documentation.
+    // Bold, never `## `: scripts/test-report.sh reads task order with `grep -o '^## …'`.
+    if (t.docsPhaseError) {
+      L.push('**⚠ Documentation phase warning** — the implementation is verified and the '
+        + 'outcome above stands, but the documentation phase did not complete: no '
+        + 'documentation change is included and the summary below is the implementation\'s own.');
+      L.push('');
+      L.push('> ' + String(t.docsPhaseError).trim().split('\n').join('\n> '));
+      L.push('');
     }
 
     L.push('**What changed**');

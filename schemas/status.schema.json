@@ -55,6 +55,10 @@
       "description": "The model the agent phases ran on, pinned by the runner (4.3). Recorded so a run is reproducible and so review can tell what built a change.",
       "type": "string"
     },
+    "phase": {
+      "description": "The last phase boundary the entrypoint reached, written on entry to each one (4.3): 'code' while an agent invocation is building the change, 'verify' while the frozen verifier is judging it, 'docs' from the docs phase onward. Optional and additive - a status file written before this field existed, or one from a task that died before the first boundary, stays valid without it. A live reader (DESIGN.md 5) uses it to tell a task that is working from one that is being judged; it is never an outcome, and nothing in the pipeline branches on it.",
+      "enum": ["code", "verify", "docs"]
+    },
     "memoryNotes": {
       "description": "Insights the coding or docs agent proposes for the project's memory (DESIGN.md 3.6, out-channel). Agents propose; after container exit the host - the sole Beads writer - files each note via 'bd remember'. Advisory only: nothing here can change the exit code.",
       "type": "array",

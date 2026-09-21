@@ -1,0 +1,392 @@
+# Running several agent sessions on one project
+
+**One folder per session. Never two sessions in one folder.**
+
+This is the working guide. The design record is `DESIGN.md` §6.2; the tool is
+`scripts/worktree.js`; the tool's own checks are `scripts/test-worktree.sh`.
+
+---
+
+## 1. Why this exists
+
+If you open three agent sessions and point all three at the same `MyProject` folder, they
+are not three workspaces. They are three agents typing into **one** set of files with
+**one** staging area between them.
+
+What that costs, in the order it tends to happen:
+
+- Session B runs `git add -A` and commits. Git stages *the folder*, not *B's work* — so
+  session A's four half-finished files go into B's commit, under B's message about
+  something else. Nothing is lost, but the history now says something untrue, and the next
+  person to read it (including a future agent) is misled.
+- Session C runs `git checkout -- some/file.gd` to test a hunch. That command means "throw
+  away the edits to this file". A's uncommitted work in that file is gone, with no
+  recovery — it was never committed, so git never had a copy.
+- Two sessions edit the same file seconds apart. The second write wins silently. Neither
+  agent sees a conflict, because there is no merge — it is one file on one disk.
+
+The first two have already happened here. The fix is not "be careful"; careful is what
+fails at 11pm on the fourth session. The fix is to make the collision **impossible**.
+
+## 2. What a worktree is
+
+Git can keep **one history** while checking it out into **several folders at once**, each
+folder on its own branch. Each folder has its own files and its own staging area. They
+share commits, branches and tags.
+
+```
+MyProject/                        <- the main checkout. Shared history lives here.
+    .worktrees/
+        flight-tuning/            <- session A. Branch: flight-tuning
+        save-format/              <- session B. Branch: save-format
+```
+
+They sit **inside** the project, in one directory, because twenty session folders spilled
+across the projects directory is its own kind of unusable and every one of them is a copy of
+this project anyway. One line in `.gitignore` covering `.worktrees/` is what makes that safe:
+without it, every file in every session folder would show up as untracked in the main
+checkout's `git status`, which is exactly the noise that gets `git add -A` typed. The tool
+checks that the ignore is really in place before it creates anything there, and refuses with
+the remedy if it is not — so the arrangement cannot quietly stop being safe.
+
+`--root <dir>` still puts a folder outside the project if you want one there; it keeps the
+project name in the folder name, since a folder sitting beside unrelated projects has to say
+which one it belongs to.
+
+Session A cannot see, stage, commit or delete session B's files, because they are not in
+its folder. `git add -A` in A stages A's folder and nothing else. `git checkout --` in A
+reaches A's copy and nothing else. Both were verified rather than assumed —
+`scripts/test-worktree.sh` runs exactly those two commands across two worktrees and checks
+that neither reaches the other.
+
+It is **not** a second clone. There is one `.git`, one history, one set of branches. A
+commit made in A is immediately visible to B as a commit on A's branch. Disk cost is one
+extra copy of the working files, not of the history.
+
+## 3. Start a session
+
+From the main checkout:
+
+```bash
+node scripts/worktree.js new flight-tuning
+```
+
+Name it after **the idea**, not the date or the agent. That name becomes both the folder
+name and the branch name, so it is what you will see in `git log`, in the PR list, and in
+the folder picker at 11pm.
+
+It prints the folder it made. **Open your agent session with that folder as its working
+directory** — that is the whole point; an agent started in the main checkout is back to the
+original problem.
+
+Options you will rarely need:
+
+| Flag | What it does |
+|---|---|
+| `--from <branch>` | Branch from something other than the project's default branch. Needed only if the tool cannot work the default out, in which case it says so rather than guessing. |
+| `--root <dir>` | Put the folder outside the project instead of under `.worktrees/`. |
+
+## 4. Work in it
+
+Normally. It is an ordinary checkout of the project.
+
+Two things are different, and both are consequences of the folder being new:
+
+- **The agent will re-ask for permissions.** Claude Code keeps per-folder approvals in
+  `.claude/settings.local.json`, which is git-ignored and therefore not in a new worktree.
+  Expect a burst of prompts on the first run and none after.
+- **Build caches and installed packages are not there.** They are git-ignored, so git does
+  not check them out. Whatever your project does on a cold checkout — `npm install`, a
+  first-run asset import, a compile — it will do once in each new worktree. See §7.
+
+## 5. Get the work back
+
+Unchanged from how it works today, and deliberately so:
+
+```bash
+git push -u origin flight-tuning     # from inside the worktree
+gh pr create                         # or open it in the browser
+```
+
+**You merge. The agent never does.** A PR is the handoff boundary — it is the point where
+you see what the session actually did before it becomes part of the project. That rule
+predates worktrees and worktrees do not relax it.
+
+**One file will not conflict, by construction.** If your session amends `DESIGN.md` it also
+appends a change-log row — and those rows live in `docs/change-log.md`, which the repo-root
+`.gitattributes` marks `merge=union`. N sessions each appending a row all merge clean and
+keep every row, instead of the first merging free and the rest waiting for a person to give
+the answer that was always *keep both*. Append at the bottom and never edit an existing row:
+that rule is the whole reason the attribute is safe there, and two branches rewriting one row
+would keep both copies silently (caught afterwards as a duplicate `Ref` by
+`scripts/test-changelog.sh`, but not at merge time).
+
+For this repo specifically, there is a second reason to merge promptly: a task's frozen
+acceptance tests must be on the branch the pipeline's containers fork from, or the dispatch
+gate refuses to dispatch that task (`DESIGN.md` §4.12). A spec frozen on an unmerged
+worktree branch is invisible to a run. Freeze, PR, merge, *then* run — or, if a run is
+already going and feeding is on, push the branch and the running batch will pick it up at
+the next free worker.
+
+## 6. Close a session down
+
+```bash
+node scripts/worktree.js list        # what is open, and what still holds work
+node scripts/worktree.js remove flight-tuning
+```
+
+`remove` **refuses** while the folder still holds anything: uncommitted changes, untracked
+files, or commits that exist on no remote. It names what it found. That refusal is the
+feature — it is the same protection as everything else here, pointed at the tidying-up step,
+which is when work is most likely to be thrown away by accident.
+
+`--force` overrides it and destroys the work. There is no undo.
+
+**The branch outlives the folder.** Removing the worktree does not delete the branch, and
+the tool says so. Deleting a branch is a separate, irreversible act and belongs to whoever
+merged the PR.
+
+---
+
+## 7. What is shared, what is copied, what you must not copy
+
+A worktree checks out **tracked files only**. Anything git-ignored — every local config,
+every secret, every build cache — is simply absent from a new one. Below is what that means
+in practice, all of it verified on this machine rather than reasoned about.
+
+### Shared automatically, nothing to do
+
+| Thing | Why it is fine |
+|---|---|
+| Commits, branches, tags, remotes | One `.git`. That is what a worktree is. |
+| **The Beads issue database** | **Verified.** Beads finds its database through git's *common directory*, so every worktree reads and writes the **one** database in the main checkout. `bd count` returns the same number from a worktree and from the main checkout, and running `bd` in a worktree creates no second database there. This is the answer to the question that mattered most: N worktrees do **not** mean N issue queues, so the work queue cannot fork the way the code does. `bd worktree info` will tell you what a given folder resolved to. |
+
+That Beads result also means the reverse: two sessions writing issues at the same moment
+are writing to the same database, and Beads serialises them with its own lock files. That
+concurrency already happens today under the operator/working-session split, and change-log
+row `live-queue-feed` records it being sized and dismissed on the evidence. Worktrees do
+not add to it.
+
+### Absent from a new worktree — copy if the session needs it
+
+Verified by listing both folders: present in the main checkout, absent in a fresh worktree.
+
+| Path | What it is | Carry it? |
+|---|---|---|
+| `.env.pipeline` | the Claude subscription token | only for a session that launches runs — and those belong in the main checkout anyway |
+| `run.config.*.json` | per-project runner config | same |
+| `.sanitize-denylist` | the host-only publication denylist | **yes** — without it `scripts/test-sanitize.sh` skips its project-specific checks and passes something it should have caught |
+| `docs/user-profile.md` | your profile | not needed; the live copy is at `~/.claude/CLAUDE.md` |
+| `.claude/settings.local.json` | per-folder tool approvals | no — let it rebuild, or you inherit approvals granted for different work |
+| `tools/mapbuild/node_modules` | the mermaid renderer, **388 MB** | **no.** Redraw the reader's map from the main checkout instead. |
+
+Declare what to copy in a file called **`.worktree-carry`** at the repo root — one path per
+line, `#` for comments. `scripts/worktree.js new` copies each one and reports what it
+carried, what was missing, and what it refused. See `.worktree-carry.example`.
+
+### Never copy
+
+| Path | Why |
+|---|---|
+| **`runs/`** | It holds every manifest, report and task artifact plus the local observer mirror of the host-global project lock (`runs/locks/`, `DESIGN.md` §4.12). Copying it forks the evidence corpus and gives dashboard/sweep readers a false lock view. `scripts/worktree.js` refuses this entry by name and prints the reason; it is not a matter of remembering. |
+
+**Consequence, and it is a rule, not a preference: launch pipeline runs from the main
+checkout only.** The host-global authority prevents a duplicate target run, but `runs/` is
+where every report, manifest
+and artifact lands, so a run launched from a worktree writes its history into a folder that
+`verdict.js`, `batch.js`, `audit-runs.js` and the dashboard will never look in. The run
+would work and its results would be invisible.
+
+This lines up with how you already work: the **operator** session lives in the main
+checkout and launches things; **working** sessions live in worktrees and never do.
+
+### The category to check on any new project
+
+The four above are this repo's instances of three general categories. On a project that is
+not this one, walk the same three:
+
+1. **Build or import caches** — `node_modules/`, `.godot/`, `target/`, `__pycache__`,
+   `.gradle/`. Git-ignored, so absent, so rebuilt once per worktree. The question is only
+   *how long that takes*, and the answer is a property of the project, not of worktrees.
+   Measure it once, write the number in the project's own CLAUDE.md, and if it is
+   genuinely painful, add it to `.worktree-carry` — a stale cache that gets rebuilt is
+   cheap; a 388 MB copy per session is not.
+2. **Host-only config and secrets** — anything git-ignored that the project needs to
+   *run*. These are the ones that fail confusingly ten minutes in rather than immediately.
+   List them in `.worktree-carry`.
+3. **Anything enforcing "only one of these at a time"** — a lock file, a PID file, a port
+   file, a local database. Ask whether the tool finds it via the *repository* (safe to
+   share, like Beads) or via the *current folder* (duplicated, and the guarantee it
+   provides quietly stops holding). This is the category that bites, and it never announces
+   itself.
+
+Environment variables — a `GODOT` pointing at an engine binary, a `JAVA_HOME` — are a
+non-issue: they belong to the shell, not the folder, and an absolute path works from any
+worktree.
+
+---
+
+## 8. The rules that make this hold
+
+These are in `CLAUDE.md` so every agent session reads them. They are short because they
+have to survive being followed at speed:
+
+- Stage **named paths**. Never `git add -A`, `git add .`, or `git commit -a`.
+- Never run a command that discards work you did not write: `git checkout --`,
+  `git restore`, `git stash`, `git reset --hard`, `git clean`.
+- If `git status` shows changes you did not make, **stop and report**. Do not commit them,
+  revert them, or move them.
+
+Worktrees make the *blast radius* of breaking these rules your own folder instead of
+someone else's. That is a large improvement and it is not a licence — inside one folder,
+`git add -A` will still sweep up whatever you left half-done an hour ago.
+
+### The part prose could not do
+
+Everything above makes the collision impossible **once a session is in its own folder**. It
+says nothing about how a session gets there, and that step was advice.
+
+Advice loses in one specific way, and it is not carelessness. A session is handed a change
+it judges too small to be worth a frozen spec and a pipeline run. The pipeline is the
+expensive path, the file is right in front of it, and editing the checkout it is already
+standing in is locally the reasonable thing to do. At two sessions you get away with that.
+At twenty it is the ordinary case, and the three failures in §1 come straight back.
+
+So the rule now sits at the write:
+
+```bash
+node scripts/install-session-guard.js            # once per machine
+node scripts/install-session-guard.js --status   # is it on?
+```
+
+Once per **machine**, not once per worktree — a guard the twentieth session has to opt into
+is a guard the twentieth session does not have. It installs into your agent CLI's own
+configuration directory, so a worktree you create an hour from now is already covered with
+nothing to set up. It stays silent in every project that does not carry
+`scripts/session-guard.js`, so your other repositories are unaffected.
+
+What it refuses:
+
+| Where | What | Why |
+|---|---|---|
+| The main checkout | Writing a file git tracks, or would track | Everyone else has that file open in that same folder |
+| A worktree | Writing back into the main checkout | Same collision, approached from the other side |
+| Anywhere | Writing into another session's folder | That folder is git-ignored, so "would git track this?" says no for every file in it — and someone is working in there right now |
+| Anywhere | `git add -A` / `.`, `git commit -a`, `git checkout --`, `git restore`, `git stash`, `git reset --hard`, `git clean` | The list above, made mechanical |
+
+What it does **not** touch. Host-only paths in the main checkout stay writable — `runs/`,
+the local configs, everything `.gitignore` covers. Those are what an operator session
+legitimately writes, and none of them merge, so none of them can collide. Anything outside
+the repository is none of its business. And inside your own worktree you work normally: that
+is the whole point of having one.
+
+It judges the **write**, not the tool, so a `sed -i` or a `>` redirect into the shared
+checkout is refused exactly as an editor write is. It **fails open** — if it cannot parse a
+command, or git is unavailable, or it crashes, the write goes through. A checker that fails
+closed stops every session on its first bad day and gets uninstalled that afternoon, and
+then nothing is watching at all.
+
+It also carries a short list of refusals that have nothing to do with this project and
+everything to do with the machine: force-pushing, deleting a home directory or a whole
+drive, formatting a disk. Those hold in **every** folder — a project that carries no guard
+of its own, a folder that is not a repository at all, and a folder that has switched the
+one-folder rule off, because the off marker was never meant to exempt formatting a disk.
+That coverage is why installing puts a copy of the guard beside the bridge as well: it is
+what answers in your other projects.
+
+Everything is matched on parsed words rather than on text. That distinction is the reason
+this replaced an earlier check: `rm -rf /tmp/scratch` contains the characters `rm -rf /`,
+and a document that *quotes* a dangerous command is a document, not a command. Both used to
+be refused. Here-document bodies are skipped for the same reason — writing this project's
+own pull-request description was refused once, because the description contains a table
+listing the commands the guard blocks.
+
+If it is wrong about your folder, put a file named `.session-guard-off` in that folder and
+it stands down there. That file is git-ignored, so the exemption is yours and travels
+nowhere. To take it off the machine entirely:
+
+```bash
+node scripts/install-session-guard.js --uninstall
+```
+
+It is a guard, not a sandbox. It stops the honest default and names the command that fixes
+it; a session determined to route around it can, and that is not what it is for. The checks
+are `bash scripts/test-session-guard.sh`, and half of them assert that ordinary work still
+goes through — a guard that refused everything would pass every "it blocks X" case and be
+worthless.
+
+## 9. The folder rule is not the pipeline rule
+
+§8 keeps two sessions out of one folder. It has nothing to say about the question one layer
+up: whether a session should be changing this project by hand **at all**.
+
+Those are different failures and they need different answers. A session that takes a
+worktree and implements a feature in it has broken no rule in §8 — every file it touched
+was its own, on its own branch, colliding with nobody. It has still bypassed the pipeline,
+and with it the frozen spec, the deterministic verifier, the evidence and the review that
+are the only reasons to trust what came back. A worktree is **isolation, not authority**.
+
+So a second rule sits beside the first, at the same place — the write:
+
+```bash
+node scripts/write-protection.js install     # both clients' hooks, once per machine
+node scripts/write-protection.js status      # what is enforced, and what is not
+```
+
+The marker is `pipeline.config.json` at the selected integration fork point. A checkout
+that carries it is **pipeline-first** by default, in the shared checkout and in every
+ordinary worktree alike: product, configuration, control and frozen-path writes are
+refused, and read-only inspection is untouched. A checkout without it is exactly as
+unprotected as it was before — the same "silent in every project that does not carry it"
+property §8's guard has, and for the same reason. Deleting the file from your working tree
+does not help: the fork point is what counts, and no tracked or model-editable marker opts
+out.
+
+**Authority is a host record.** `write-protection.js lease --grant` writes one outside every
+repository, binding a role to one canonical target, its Git common directory, the issue and
+run identity, the controlling process and its start identity, the allowed path classes, an
+expiry and an unguessable token. A lease a model could write is not a lease, so nothing
+inside a repository is ever read as one. The pipeline grants its own leases; you will not
+normally type that command.
+
+**The one way out is yours to give.** When you genuinely want to work by hand for a while:
+
+```bash
+node scripts/write-protection.js allow-writes --target <dir> --session <id> --minutes 60
+node scripts/write-protection.js revoke --target <dir> --session <id>
+```
+
+It is scoped to one repository and one session, expires on its own, is listed by `status`,
+and lives on the host where no session can grant itself one. That is deliberately unlike
+`.session-guard-off`: the folder rule's exemption is a local judgement about a folder, and
+this one is a decision about a project, so it is not a file in the project.
+
+**Hooks are prevention, not a perimeter, and the tool says so.** A local hook can be
+switched off, a client can be configured without one, and a specialized tool path can go
+uncovered — so `status` reports each client as `enforced`, `degraded`, `disabled`,
+`unsupported`, `uninstalled` or `untrusted`, and refuses to call enforcement complete while
+any of that is true. `untrusted` names a Codex-specific gap: activation is not trust, and a
+correctly shaped, non-managed Codex hook stays `untrusted` until a person runs the
+interactive `/hooks` command and `node scripts/write-protection.js review --client codex`
+binds a digest to the exact reviewed definitions. The layer that is not optional is
+**admission**: `scripts/freeze.js`,
+`scripts/prepare-batch.js` and `runner/run.js` each run the same check over the real
+integration checkout before they mutate it, and a protected path that is staged, unstaged
+or untracked with no matching planning or frozen-test provenance stops the operation and is
+named exactly.
+
+**Nothing is ever taken away from you.** A refusal resets, cleans, stashes, overwrites,
+commits and moves precisely nothing; your files stay where you left them. When you have
+edits that admission will not carry:
+
+```bash
+node scripts/write-protection.js recover --target <dir> --issue <id>
+```
+
+That creates a dedicated Git-registered worktree — `git worktree list` can find it, its
+branch reviews and merges like any other — plus a patch/copy manifest naming every file it
+carried across. Untracked bytes are copied verbatim, because a patch cannot represent a file
+git has never seen. Run it as often as you like: each run takes a fresh home and never
+overwrites an earlier one, and the only thing it changes in the target is the worktree
+registry inside the Git common directory. The index, the working tree, HEAD, the stash stack
+and every original file are exactly as they were.

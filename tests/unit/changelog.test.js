@@ -10,9 +10,18 @@
 // this is what stops the convention drifting back.
 //
 // Docker-free and network-free: it reads markdown and nothing else. The file under test is
-// `CHANGELOG_FILE` when set, otherwise <repo>/DESIGN.md — that seam is how the negative
-// cases (a duplicate ref, a version-numbered row) are exercised against fixtures, without
-// which "exits 0 on the good file" would be satisfied by a checker that checks nothing.
+// `CHANGELOG_FILE` when set, otherwise <repo>/docs/change-log.md — that seam is how the
+// negative cases (a duplicate ref, a version-numbered row) are exercised against fixtures,
+// without which "exits 0 on the good file" would be satisfied by a checker that checks
+// nothing.
+//
+// The rows moved out of DESIGN.md §12 into docs/change-log.md, which is marked `merge=union`
+// in the repo-root .gitattributes so parallel task branches can each append a row without
+// conflicting. The section anchor below therefore accepts BOTH headings — the new
+// file's `# Change Log` and the old `## 12. Change Log`. Keep it that way: the frozen
+// tests/acceptance/repo-006 suite writes its negative-case fixtures with the old heading and
+// drives this checker over them through CHANGELOG_FILE, so narrowing the anchor to the new
+// form alone turns a frozen sibling suite red, and it cannot be edited to compensate.
 //
 // The cross-document citation checks only run against the real DESIGN.md: a fixture has no
 // living documents pointing at it, so running them there would be red for the wrong reason.
@@ -23,9 +32,16 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..', '..');
-const DEFAULT_FILE = path.join(ROOT, 'DESIGN.md');
+const DEFAULT_FILE = path.join(ROOT, 'docs', 'change-log.md');
 const FILE = process.env.CHANGELOG_FILE ? path.resolve(process.env.CHANGELOG_FILE) : DEFAULT_FILE;
+// True only for the repo's own change log: a fixture has no living documents pointing at it.
+// Both halves of this comparison must move together — pointing FILE at the new file while
+// DEFAULT_FILE still named DESIGN.md would switch the eleven citation checks below off on
+// every run while still exiting 0.
 const IS_REAL_DESIGN = path.resolve(FILE) === path.resolve(DEFAULT_FILE);
+// `# Change Log` (docs/change-log.md) or `## 12. Change Log` (the old DESIGN.md section, and
+// the heading the frozen repo-006 fixtures still write). `\s*$` tolerates a CRLF checkout.
+const SECTION = /^#{1,2}\s*(?:12\.\s*)?Change Log\s*$/;
 
 // The five documents a human actually reads while working, all of which used to cite
 // change-log rows by version number.
@@ -71,8 +87,8 @@ if (text === null) {
 console.log(`== repo-006 checks: change-log identity convention (${path.relative(ROOT, FILE) || FILE}) ==`);
 
 const lines = text.split('\n');
-const start = lines.findIndex((l) => /^##\s*12\.\s*Change Log/.test(l));
-if (!check('the §12 change log section exists', start >= 0)) process.exit(1);
+const start = lines.findIndex((l) => SECTION.test(l));
+if (!check('the change log section exists', start >= 0)) process.exit(1);
 
 const header = lines.slice(start).find((l) => /^\|\s*Date\s*\|/.test(l));
 check('the table header names a Ref column: | Date | Ref | What changed | Why |',

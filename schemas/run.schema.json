@@ -16,6 +16,44 @@
       "type": "integer",
       "minimum": 1
     },
+    "allowHalfProven": {
+      "description": "Whether this run admitted a frozen suite whose freeze receipt records a 'half-proven' verdict - red at the fork point with no probe supplied (DESIGN.md 4.12's third admission rule, change-log row `repo-isq`). The effective setting, defaulted to false. Recorded because it changes which tasks were ELIGIBLE, so two runs over the same queue are not comparable without it. Optional: manifests written before the rule existed carry no such field.",
+      "type": "boolean"
+    },
+    "feed": {
+      "description": "The live queue feed (DESIGN.md 4.12, change-log row `live-queue-feed`). Present on every manifest written since the feed shipped, whether or not it was enabled; absent means a manifest written before it existed. When enabled is false the run read its roster once at startup - the pre-feed behaviour, and the default. When true the run re-read the ready queue while in flight, so 'tasks' is in DISPATCH order and its length is not knowable from the startup queue-summary line.",
+      "type": "object",
+      "required": ["enabled"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "idleGraceMinutes": {
+          "description": "How long the run stays up with nothing to do before closing out. 0 means the feed is off.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "polls": {
+          "description": "How many times the ready queue was re-read. A run whose workers were never idle re-reads zero times.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "ending": {
+          "description": "Why the run stopped taking work. 'drained' = the roster was spent, which is always the answer when the feed is off; 'idle' = the grace window expired with nothing new; 'stopped' = the runs/<run-id>/stop sentinel appeared; 'halted' = the run-level rate-limit cap fired, so nothing further could be launched.",
+          "enum": ["drained", "idle", "stopped", "halted"]
+        }
+      }
+    },
+    "queue": {
+      "description": "Final ready-queue disposition for this run. Optional on manifests written before refused-exit-design. ready is the number of dispatchable plus still-refused candidates when the run closed; dispatched and refused partition it.",
+      "type": "object",
+      "required": ["ready", "dispatched", "refused"],
+      "additionalProperties": false,
+      "properties": {
+        "ready": { "type": "integer", "minimum": 0 },
+        "dispatched": { "type": "integer", "minimum": 0 },
+        "refused": { "type": "integer", "minimum": 0 }
+      }
+    },
     "abortedReason": {
       "description": "Present when the run ended before draining the queue (preflight failure, operator stop).",
       "type": "string"
@@ -30,8 +68,12 @@
           "issueId": { "type": "string" },
           "title": { "type": "string" },
           "outcome": {
-            "description": "Report status from the 4.11 table.",
-            "enum": ["done", "partial", "stuck", "tampered", "failed", "paused"]
+            "description": "Task status from contracts/control-plane.json. 'undispatchable' is the one value that touches Beads not at all: the ready queue refused the issue before claim() because its frozen acceptance suite is absent from the branch its container would fork from (4.12), so it stays open.",
+            "enum": ["done", "partial", "stuck", "tampered", "failed", "paused", "undispatchable"]
+          },
+          "refusal": {
+            "description": "Why the ready queue refused this issue, present only on an 'undispatchable' row (DESIGN.md 4.12). 'no-suite' = no frozen acceptance suite on the integration branch; 'no-receipt' = a suite the freeze gate never blessed, or a receipt that is unparseable, of an unknown version or of an unknown verdict; 'receipt-mismatch' = the suite changed after the gate passed; 'half-proven' = the gate saw it red with no probe, and this run did not set allowHalfProven. Absent on a row written before the third admission rule existed, which renders as 'no-suite'.",
+            "enum": ["no-suite", "no-receipt", "receipt-mismatch", "half-proven"]
           },
           "exitCode": {
             "description": "Container exit code, or 'killed' for a host wall-clock kill (which produces no code).",
@@ -55,7 +97,7 @@
             "additionalProperties": false,
             "properties": {
               "acceptance": { "enum": ["pass", "fail", "tampered", "error"] },
-              "regressions": { "enum": ["pass", "fail", "absent"] },
+              "regressions": { "enum": ["pass", "fail", "absent", "error"] },
               "evidence": { "type": "string" }
             }
           },
@@ -64,11 +106,19 @@
             "items": { "type": "string" }
           },
           "stuckState": { "type": "string" },
+          "docsPhaseError": {
+            "description": "Verbatim copy of the container's status-file docsPhaseError (DESIGN.md 4.3, 4.11). The docs phase is non-fatal after a verified implementation, so this QUALIFIES an outcome rather than changing one: the task is done and its documentation phase is not. Carried so the report and the PR body can say so, because a blocked docs phase that settles as an unqualified 'done' is indistinguishable from a task whose documentation was never needed. Optional: absent whenever the docs phase completed normally.",
+            "type": "string"
+          },
           "specConcerns": {
             "description": "Verbatim copy of the container's status-file specConcerns (DESIGN.md 3.7), carried so the report and PR body can surface them. Same bounds as status.schema.json. Evidence only (3.5): present or absent, it never affects outcome or scrutiny order.",
             "type": "array",
             "maxItems": 5,
             "items": { "type": "string", "maxLength": 1000 }
+          },
+          "recoveryWorkspace": {
+            "description": "Host workspace retained because publication or the terminal Beads transition did not complete. The issue remains in_progress and this path is the recovery source.",
+            "type": "string"
           },
           "error": { "type": "string" }
         }

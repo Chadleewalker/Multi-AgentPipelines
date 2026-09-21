@@ -52,6 +52,24 @@ ck "gate runs before approval"       "before.*the approval pass"
 ck "gate: red proceeds"              "exit 0 — red"
 ck "gate: green is a spec bug"       "exit 1 — green"
 ck "gate: indeterminate is not a pass" "exit 2 — could not tell"
+# The green side (change-log row `repo-inj`). Red at the fork point and a suite whose own
+# fixture is broken are the same observation, so the playbook has to say how to prove the other
+# half — and what each of the two new exits means, since an exit code with no stated meaning
+# sends a reader to the source.
+# `[-]-green` rather than `--green`: the pattern is an argument to grep, and a pattern that
+# begins with a dash is read as an option before it is read as a pattern.
+ck "gate: the probe invocation is given" "[-]-green"
+ck "gate: unreachable is not a pass"  "exit 3 — unreachable"
+ck "gate: half-proven proceeds"       "exit 4 — half-proven"
+# The stale guard (change-log rows `stale-guard-design`, `repo-i4b`). A guard is the one
+# criterion that is SUPPOSED to be green at the fork point, so a red one has exactly one
+# meaning and the playbook has to state it — an exit code with no stated meaning sends a
+# reader to the source, and this one is the reader's only instruction to go and re-pin.
+ck "gate: stale-guard is a verdict"   "exit 5 — stale-guard"
+ck "gate: stale-guard is never a pass" "stale-guard[^|]*never a pass"
+ck "what declares a test file a guard" "first ten lines"
+ck "what a probe actually is"         "repo-shaped tree"
+ck "half-proven reaches the approval pass" "half-proven"
 ck "guards are labelled and counted" "\[guard\]"
 
 # Criteria drafted against the code, in fresh context (move 5).

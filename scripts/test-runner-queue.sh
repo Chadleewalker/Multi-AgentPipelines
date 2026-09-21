@@ -28,11 +28,30 @@ BD=(docker run --rm -v "$TGTW:/repo" -w /repo pipeline-base:local bd)
 bdq() { MSYS_NO_PATHCONV=1 "${BD[@]}" "$@" 2>/dev/null | tr -d '\r'; }
 bdq init >/dev/null
 
+# Every issue the runner may dispatch needs a frozen suite ON THE INTEGRATION BRANCH
+# (DESIGN.md 4.12, change-log row `dispatch-gate`): the ready queue refuses an issue whose
+# tests/acceptance/<id> is absent from the branch task containers fork from, and a refused
+# issue never reaches a container — so without this every check below would fail for a
+# reason unrelated to what it tests. PUSHED, not merely committed: freezing locally is not
+# freezing, and the gate reads the remote.
+freeze() {
+  mkdir -p "$TGT/tests/acceptance/$1"
+  echo "exit 0" > "$TGT/tests/acceptance/$1/t.sh"
+  node "$ROOT/scripts/write-fixture-receipt.js" "$TGT" "$1" >/dev/null
+  git -C "$TGT" add -A >/dev/null 2>&1
+  git -C "$TGT" commit -qm "planning: freeze $1" >/dev/null 2>&1
+  git -C "$TGT" push -q origin main >/dev/null 2>&1
+}
+
 # Created out of priority order on purpose; B blocks C.
 A=$(bdq create "low prio task"  -d "third" --acceptance ok --design "design-ref: 4.1" -p 3 --silent)
+freeze "$A"
 B=$(bdq create "high prio task" -d "first"  --acceptance ok --design "design-ref: 4.2" -p 0 --silent)
+freeze "$B"
 C=$(bdq create "blocked task"   -d "gated"  --acceptance ok --design "design-ref: 4.3" -p 0 --deps "$B" --silent)
+freeze "$C"
 D=$(bdq create "mid prio task"  -d "second" --acceptance ok --design "design-ref: 4.4" -p 1 --silent)
+freeze "$D"
 cd "$ROOT"
 
 CFG="$TMP/run.config.json"
@@ -73,10 +92,10 @@ EOF
 
 # tee to stderr streams the run live to the terminal; stdout is still captured for the
 # assertions, and pipefail keeps the runner's exit code from being masked by tee's.
-# This suite in particular must never run silent: when its pause scenario regressed it
-# looped forever, and with no streamed output the only symptom was a suite that appeared
-# to hang — the relaunch spam was visible solely in a run log recovered afterwards.
-runq() { ( set -o pipefail; PIPELINE_EXEC_STUB="$1" RUN_ID="$2" node runner/run.js --config "$CFG" 2>&1 | tee /dev/stderr ); }
+# The suite-level sweep timeout bounds a wedged scenario; direct capture avoids relying on
+# /dev/stderr, which is not a usable tee target on every supported Git Bash host.
+FIXTURE_TOKEN="runner-queue-fixture-token-never-used"
+runq() { CLAUDE_CODE_OAUTH_TOKEN="$FIXTURE_TOKEN" PIPELINE_EXEC_STUB="$1" RUN_ID="$2" node runner/run.js --config "$CFG" 2>&1; }
 st() { bdq show "$1" --json | grep '"status"' | head -1; }
 
 # 1. Ordering: priority first (0,1,3), FIFO within ties; blocked task excluded.
@@ -86,7 +105,7 @@ echo "$ORDER" | grep -q "$B, $D, $A" && pass "ready queue ordered by priority (0
   || fail "ordering wrong: $ORDER"
 echo "$ORDER" | grep -q "$C" && fail "blocked task appeared in the ready queue" \
   || pass "dependency-gated task excluded from ready queue"
-echo "$OUT" | grep -q "ready queue: 3 task" && pass "queue size correct (3 of 4)" || fail "queue size wrong"
+echo "$OUT" | grep -q "ready queue: 3 of 3 dispatchable" && pass "queue size correct (3 of 4)" || fail "queue size wrong"
 
 # 2. Sequential execution: one task at a time, in order, all three ran.
 [ "$(echo "$OUT" | grep -c 'starting task')" = 3 ] && pass "all ready tasks ran sequentially" || fail "task count wrong"
@@ -102,17 +121,19 @@ bdq show "$B" --json | grep -q "outcome done" && pass "attempt notes appended to
 
 # 5. Drained queue is empty next run (closed issues leave ready).
 OUT2=$(runq "$TMP/stub-success.sh" t12-empty)
-echo "$OUT2" | grep -q "ready queue: 1 task" && pass "unblocked dependent task now ready (C after B closed)" \
+echo "$OUT2" | grep -q "ready queue: 1 of 1 dispatchable" && pass "unblocked dependent task now ready (C after B closed)" \
   || fail "dependency did not unlock: $(echo "$OUT2" | grep -o 'ready queue: .*')"
 
 # 6. Partial: acceptance pass + regressions fail -> partial, still closed.
 E=$(bdq create "partial task" -d x --acceptance ok --design "design-ref: 4.4" -p 0 --silent)
+freeze "$E"
 OUT=$(runq "$TMP/stub-partial.sh" t12-partial)
 echo "$OUT" | grep -q "exit 0 -> partial" && pass "regressions fail -> partial (verify.json decides)" || fail "partial not derived"
 st "$E" | grep -q closed && pass "partial -> issue closed" || fail "partial transition wrong"
 
 # 7. Stuck: exit 10 -> blocked, and blocked never returns to the ready queue.
 F=$(bdq create "stuck task" -d x --acceptance ok --design "design-ref: 4.6" -p 0 --silent)
+freeze "$F"
 OUT=$(runq "$TMP/stub-stuck.sh" t12-stuck)
 echo "$OUT" | grep -q "exit 10 -> stuck" && pass "exit 10 -> stuck" || fail "stuck status wrong"
 st "$F" | grep -q blocked && pass "stuck -> issue blocked" || fail "stuck transition wrong: $(st "$F")"
@@ -123,6 +144,7 @@ echo "$OUT" | grep -o "ready queue: .*" | grep -q "$F" \
 
 # 8. Paused: exit 20 -> stays in_progress, not closed, not blocked.
 G=$(bdq create "paused task" -d x --acceptance ok --design "design-ref: 4.7" -p 0 --silent)
+freeze "$G"
 OUT=$(runq "$TMP/stub-paused.sh" t12-paused)
 echo "$OUT" | grep -q "exit 20 -> paused" && pass "exit 20 -> paused" || fail "paused status wrong"
 echo "$OUT" | grep -q "issue stays in_progress" && pass "paused issue left in_progress (runner parks it)" || fail "paused transition wrong"
@@ -148,6 +170,25 @@ ISSUE_MD=$(find "$ROOT/runs/t12-order/tasks" -name issue.md | head -1)
 
 # 11. The container never touches Beads: no bd invocation outside the runner.
 grep -rq "bd " "$ROOT/pipeline/" && fail "container-side code invokes bd" || pass "container never writes Beads"
+
+# 12. Keep one deliberately UNRECEIPTED fixture. The shared generator above restores every
+# task this suite intends to dispatch; this one proves that doing so did not erase the rule
+# that prompted the repair. It is committed and pushed, so only the receipt is missing.
+H=$(bdq create "unreceipted task" -d x --acceptance ok --design "design-ref: 4.12" -p 0 --silent)
+mkdir -p "$TGT/tests/acceptance/$H"
+echo "exit 0" > "$TGT/tests/acceptance/$H/t.sh"
+git -C "$TGT" add -A >/dev/null 2>&1
+git -C "$TGT" commit -qm "planning: deliberately unreceipted $H" >/dev/null 2>&1
+git -C "$TGT" push -q origin main >/dev/null 2>&1
+OUT=$(runq "$TMP/stub-success.sh" t12-no-receipt)
+echo "$OUT" | grep -q "$H" && echo "$OUT" | grep -qi "no freeze receipt" \
+  && pass "a suite with no receipt is still reported undispatchable" \
+  || fail "the no-receipt refusal disappeared"
+echo "$OUT" | grep "starting task" | grep -q "$H" \
+  && fail "an unreceipted fixture reached the task runner" \
+  || pass "the unreceipted fixture was never dispatched"
+st "$H" | grep -q open && pass "the no-receipt refusal leaves Beads untouched" \
+  || fail "the refused issue did not stay open: $(st "$H")"
 
 if [[ $FAIL -eq 0 ]]; then echo "== ALL T12 CHECKS PASSED =="; else echo "== T12 CHECKS FAILED =="; fi
 exit $FAIL

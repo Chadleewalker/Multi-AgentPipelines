@@ -68,8 +68,12 @@ check('executeTask is a function', typeof executeTask === 'function');
 // =====================================================================================
 // The knob — loaded, defaulted and bounded by name (§7, §4.12)
 // =====================================================================================
-const { loadConfig, MAX_CONCURRENCY } = require(path.join(ROOT, 'runner', 'config.js'));
-check('runner/config.js exports the concurrency ceiling', MAX_CONCURRENCY === 3);
+// The knob has no ceiling (change-log row `concurrency-uncapped`): the export is null, and a
+// value well past the old literal 3 must load. The pool checks below still use a fixed width,
+// because what they prove is the BOUND — in-flight peaks at exactly N — not any particular N.
+const { loadConfig, MAX_CONCURRENCY: CEILING } = require(path.join(ROOT, 'runner', 'config.js'));
+check('runner/config.js exports no concurrency ceiling', CEILING === null);
+const MAX_CONCURRENCY = 3;
 
 function cfgFile(name, extra) {
   const p = path.join(TMP, name);
@@ -86,14 +90,14 @@ function loaded(name, extra) {
 
 const dflt = loaded('run.config.json', {});
 check('an unset concurrency defaults to 1', dflt.ok && dflt.cfg.concurrency === 1);
-for (const good of [1, 2, MAX_CONCURRENCY]) {
+for (const good of [1, 2, MAX_CONCURRENCY, 4, 16, 100]) {
   const r = loaded(`run.config.ok-${good}.json`, { concurrency: good });
   check(`concurrency ${good} loads and wins`, r.ok && r.cfg.concurrency === good);
 }
 // Every rejection has to NAME the field: the runner's contract with its operator is that
 // a bad config fails before anything starts and says which line is wrong.
 for (const [label, bad] of [
-  ['zero', 0], ['negative', -1], ['above the ceiling', MAX_CONCURRENCY + 1],
+  ['zero', 0], ['negative', -1],
   ['fractional', 1.5], ['a string', '2'], ['null', null], ['true', true],
   ['NaN', Number.NaN], ['Infinity', Number.POSITIVE_INFINITY], ['an array', [2]],
 ]) {

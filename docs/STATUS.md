@@ -1,10 +1,11 @@
-# Status
+# Historical Status Archive
 
-Where the build actually is. Update this when something changes — it is the file a new
-session reads to pick up the thread, and unlike a machine-local memory folder it travels
-with the repo.
+This is the former live status narrative, retained in place so old links and incident
+references remain valid. It is no longer an operating source and should not receive new
+"current state" sections. Use `docs/control-plane.md` for current operator and agent
+guidance, checked-in contracts for machine policy, and Beads for live work state.
 
-_Last updated: 2026-08-04_
+_Last updated: 2026-08-28_
 
 ## Where things stand
 
@@ -203,6 +204,68 @@ real use. All are fixed.
     `docs/IDEAS.md`. Until it is, **check `docker ps` and `runs/locks/` before blaming
     Docker for a 137.**
 
+12. **The verifier fails a task whose tests all passed, when the suite prints more than
+    1 MiB** (found 2026-08-11 by a coding agent on a real target task, and raised
+    through the concern channel — §3.3 working exactly as designed, on the one target the
+    agent is otherwise forbidden to touch). `pipeline/verify.js` runs both the acceptance
+    and the regression command through `spawnSync` **without passing `maxBuffer`**, so
+    Node's 1 MiB default applies. On overflow `spawnSync` kills the child and returns
+    `status: null` with `error.code === 'ENOBUFS'`; the very next line reads
+    `acc.status === 0 ? 'pass' : 'fail'`, so a suite that passed every test is recorded as
+    an acceptance **failure**. That task's first attempt emitted 1,058,241 bytes and burned an attempt
+    on correct work; the agent reproduced it byte-for-byte against the recorded tail before
+    filing.
+
+    This is the "plausible and wrong" family again (defects 2, 5, 7, 8), but it is the
+    worst-shaped instance so far, for three reasons.
+
+    - **It is the verifier.** Hard rule 2 says the verifier is the one thing an agent
+      cannot influence; the price of that authority is that its verdict has to be about the
+      code. A verdict that is really about stdout volume is not a verdict.
+    - **The evidence actively misleads.** `acceptanceOutput` keeps only the last 4 KB of a
+      *truncated* capture, so the artifact a human reads at 2 AM is a log stopping
+      mid-sentence with no `FAIL:` line and nothing naming a cause — the unactionable
+      overnight failure §3.5 exists to prevent, arriving through the gate rather than
+      through an LLM judge.
+    - **It scales with the target, not with the fault.** A chatty suite (Godot prints a
+      resource error per missing asset per boot) can cross the ceiling on a task that
+      touches none of this, burn all three attempts, and report `stuck`. Nothing in the
+      artifacts would say why.
+
+    Note what it did to the *target* repo: the agent's fix was to memoize
+    a repeated resource-loading call in the target's own source — a sound change
+    on its merits, made for the wrong reason, in a file the task was already editing. A
+    harness defect that pressures agents into unrelated target-code changes is buying its
+    own invisibility.
+
+    **Fixed 2026-08-11 (change-log row `verify-nobuffer`), at Chad's direction in the same
+    session.** Both `spawnSync` calls pass an explicit 64 MiB `maxBuffer`, and the verdict
+    rule moved to `pipeline/verify-classify.js` as a pure `classify()` — exit 0 is `pass`,
+    any *numeric* nonzero exit is `fail`, and `status === null` is `error` with a `why`
+    naming the limit hit. Acceptance `error` exits 4 into the entrypoint's existing
+    internal-error path, so a harness fault stops and says so instead of spending the
+    attempt cap and landing on `stuck`.
+
+    **What the new suite proves, and why it is the pair rather than the single case.**
+    `scripts/test-verify-buffer.sh` (the fifteenth Docker-free suite) builds throwaway
+    repositories whose acceptance command prints a chosen number of bytes and exits with a
+    chosen code. Two fixtures differ *only* in exit code, both printing 1.2 MiB: the
+    passing one must read `pass` — the old code said `fail` — and the failing one must
+    still read `fail`. That second case is the one that matters most, because the obvious
+    careless fix for this defect (treat a killed run as benign, or stop trusting a nonzero
+    exit that came with a big log) would buy the first case by breaking hard rule 2. The
+    suite was verified by reverting the fix behind a backup and re-running: it reproduces
+    the exact defect signature, `acceptance=fail rc=1` on a suite where every assertion
+    passed, plus the truncated-evidence symptom.
+
+    The lesson worth carrying past this defect: **a default is a decision nobody wrote
+    down.** Nothing in this file was configured wrongly — 1 MiB was simply what Node picks
+    when you say nothing, and it silently became the pipeline's policy on how loud a test
+    suite may be. That is why the shell wrapper asserts on the *source* that both calls
+    still pass an explicit `maxBuffer`: a behavioural check alone would go quiet again the
+    moment a future edit dropped the argument, and stay quiet until some target's suite
+    happened to get chatty.
+
 ## Gotchas that cost real time
 
 - **MSYS path conversion.** Git Bash rewrites container-side paths in `docker` arguments
@@ -231,11 +294,13 @@ real use. All are fixed.
   are why every runner Beads call is now bounded (`repo-sls`, above). If you write a new
   host-side `bd` invocation, put it through `runner/bd.js` — a bare `spawnSync('bd', …)`
   elsewhere is unbounded again, and the failure it produces is a run that parks silently.
-- **The Claude CLI writes chatter around its output**, and a warning line on stdout is
-  enough to break a whole-file `JSON.parse`. Never parse an agent log as one document:
-  `pipeline/envelope.js` scans lines bottom-up for the first that parses to an object with
-  a string `result`. The rule is structural on purpose — no list of known warning strings
-  to maintain when a CLI upgrade invents new noise. Untrusted-workspace warnings are also
+- **Agent CLIs write record streams, not trustworthy prose summaries.** A Claude warning
+  line on stdout is enough to break a whole-file `JSON.parse`, while Codex JSONL also carries
+  command records and intermediate messages that must not become the PR body. Never parse an
+  agent log as one document: `pipeline/envelope.js` scans bottom-up for the first supported
+  human result, either a Claude object with a string `result` or a completed Codex
+  `agent_message`. The rule is structural on purpose — no list of known warning strings to
+  maintain when a CLI upgrade invents new noise. Untrusted-workspace warnings are also
   removed at source: the entrypoint seeds `hasTrustDialogAccepted` /
   `hasCompletedOnboarding` for `$WS` into `$HOME/.claude.json` before the first agent call.
 - **Test suites share one Docker network.** Run them one at a time; concurrent runs tear
@@ -312,10 +377,11 @@ Planned from the shadow-run artifacts rather than the backlog.
 |---|---|---|---|
 | `repo-52m` | clean contract artifacts from agent CLI noise (§4.3, §4.11) | 1 | **Done** — `pipeline/envelope.js`, `status.js summary`, entrypoint trust seeding |
 
-**`repo-52m` fixed defect 5 above at both ends.** `pipeline/envelope.js` is the single
-reader of the CLI's `--output-format json` envelope: `parse(text)` scans lines bottom-up
-and returns `{result, model}` from the first that parses to an object with a string
-`result` (`model` selected from `modelUsage` per §4.3 — see defect 8 below; else null),
+**`repo-52m` fixed defect 5 above at both ends; `repo-djf.19` extended the same contract to
+Codex JSONL.** `pipeline/envelope.js` is the single reader of agent contract artifacts:
+`parse(text)` scans lines bottom-up and returns `{result, model}` from the first supported
+human result — a Claude object with a string `result` or a completed Codex `agent_message`
+(`model` selected from Claude `modelUsage` per §4.3 — see defect 8 below; else null) —
 and `node envelope.js flatten <file> [expected-alias]` rewrites a log to just its result
 text while printing the resolved model — a log with no envelope is left byte-identical and
 prints nothing, so stubs and caller-supplied commands need no special case. `status.js summary <file>` sets
@@ -392,6 +458,34 @@ having: the frozen test required one member name to be answerable as a method *a
 property, which the target language cannot do from one class, and the agent measured that
 the method-only reading hung the engine when the value was iterated rather than erroring.
 That spec would have timed the runner out instead of reporting red.
+
+**And then the channel failed one level up** (change-log row `concern-repeat-surfacing`).
+Across two consecutive runs against one target, seven task agents independently diagnosed
+the same host-side fault — correctly, with evidence, naming each other by issue id — and
+nothing consumed any of them; the second run repeated the first's mistake at eight times
+the scale and spent 3h11m recording eight `stuck`. Every one of those concerns was
+surfaced exactly as the paragraph above describes, as a section of the task that raised
+it, which is right for one concern and wrong for seven.
+
+**The run-level headline shipped** (change-log row `repo-uig`). `runner/report.js` now
+prints one line between the outcome counts and the first task heading, for every manifest:
+`Spec concerns: <total> raised by <k> of <n> tasks`. Three things about it are load-bearing
+and each is pinned by `tests/acceptance/repo-uig/`. It is **unconditional** — a clean run
+reads `0 raised by 0 of 6`, and the wrong build everyone reaches for first is the per-task
+guard `if (t.specConcerns && t.specConcerns.length)` hoisted to run level, which prints
+nothing on a clean run and passes every fixture that has concerns. A malformed
+`specConcerns` counts as **zero**, via `Array.isArray` — `(x || []).length` scores the
+string `'nope'` as four raised by one, which is non-empty, well-formed and false
+(`repo-iok`'s case one level up). And the heading is **bold, never `## `**, because
+`scripts/test-report.sh` reads task order with `grep -o '^## [a-z0-9-]*'` and a run-level
+`## ` would inject a phantom task into that assertion.
+
+Gap worth knowing: this is the first half only. The grouping-by-shape half — cluster a
+run's concerns, and count how many prior runs against the same target carry each shape —
+is not built, and nothing in this half reads `runs/`, deliberately: the frozen suite
+renders the same manifest from an empty cwd and from one holding a populated `runs/` and
+requires the two to be byte-identical, so the reproducibility claim in `runner/report.js`'s
+footer stays as strong as it was.
 
 ## Change-log rows are identified by a slug (`repo-006`, 2026-07-26)
 
@@ -942,7 +1036,1078 @@ none of them yet shows the verdict being written down; `docs/pipeline-diagram.md
 task docs phases *do* keep current, has the node. Nothing else is outstanding: the recorder
 needs no Docker, no network and no target repo.
 
+## The status file says which phase a task is in (`repo-bmd`, 2026-08-11)
+
+`status.json` carries a `phase` — `code`, `verify` or `docs` — written by
+`pipeline/entrypoint.sh` on *entry* to each boundary through `pipeline/status.js`. It is
+the one deterministic feed DESIGN.md §5's live dashboard needed that the pipeline was not
+already writing (change-log rows `live-dashboard` and `repo-bmd`); the other half of that
+batch is `repo-kfg`, the `/state` reader. The draft's second half — a workspace-path log
+line — was dropped in fresh-context review, because `runner/workspace.js` already logs
+`workspace ready:` for every prepared workspace. **No `run.log` wording changed and
+nothing under `runner/` was touched**, so the Docker suites that grep those lines are
+unaffected.
+
+**Three properties are load-bearing, and each has a plausible wrong version.** The write is
+on *entry*, not exit: a single write at the end produces a final file that reads `docs`
+exactly as a correct implementation does, while leaving the field dark for the whole time a
+watcher would be looking at it — defect 8's shape, non-empty and false. It is **non-fatal**,
+styled on the `model` write (`2>/dev/null`, never `die30`): an unwritable status file must
+not turn a task into an internal error. And it is **not an outcome** — nothing in the
+runner, the verifier or the report branches on it, which is what keeps a watcher a reader
+(hard rules 5 and 7).
+
+**Two insertion hazards worth carrying forward**, because both are silent. The code- and
+docs-phase boundaries sit immediately above `{ … } > "$RUN/prompt-*.md"` blocks, so a write
+placed one line low runs *inside* the redirect and becomes part of the agent's prompt
+instead of the status file — the frozen suite checks the captured prompt for exactly that.
+And nothing may go between `node "$PIPE/verify.js"` and the `VRC=$?` that captures its exit
+code, or every outcome below is decided on the wrong number.
+
+**Coverage:** `tests/acceptance/repo-bmd/` (43 assertions, Docker-free) drives the real
+entrypoint against stub agents and stub verifiers, observing the phase *from inside* it —
+the agent and verify stubs snapshot `status.json` mid-phase — and checks every terminal
+path (10, 11, 20, and 0 with a docs-phase error) plus a drive where every `set phase` call
+fails outright. It is a frozen artifact of this task, so nothing re-runs it; the schema
+addition is additive (`required` and `additionalProperties` untouched), which is what keeps
+every status file in the existing corpus valid.
+
+**Host obligation, one:** hand-update `docs/pipeline-map.html` if the phase feed belongs on
+a panel — CLAUDE.md exempts it from task docs phases and nothing else updates it.
+`docs/pipeline-diagram.md` already names the three phases it draws, and this task changed
+no shape there.
+
+## A run can be watched while it happens (`repo-kfg`, 2026-08-11)
+
+`scripts/dashboard.js` ships — the reader half of the live dashboard DESIGN.md §5 declared
+in change-log row `live-dashboard`, and now change-log row `repo-kfg`. Run
+`node scripts/dashboard.js` and open the one line it prints
+(`dashboard: http://127.0.0.1:4770/`); `DASHBOARD_RUNS_DIR` re-aims the runs root and
+`DASHBOARD_PORT` moves the port (`0` for an ephemeral one). `GET /state` is the frozen JSON
+contract — projects, the run each is showing, its park, its queue and its tasks with phase,
+attempt, workspace and PR — assembled per request from `runs/locks/*.lock`, `run.log`,
+`run.json` and the status files. `GET /` is a **placeholder page**: the visible view is
+interactive work against that contract and is the piece still outstanding.
+
+**Why the reader is the pipeline task and the page is not** is the split the planning
+session took on the scope critic's argument: JSON is a thing frozen tests can pin exactly,
+and a look is a thing you review by looking at it, which a three-attempt unattended
+container cannot do.
+
+**Two derivations are worth knowing, because both cheap answers are wrong.** The run a
+project shows is picked by **the held lock's `runId`**, not by which directory under
+`runs/` is newest — a live run is routinely not the newest directory, so "newest wins" goes
+dark exactly when someone is watching. And a run directory with **no `run.json` is a
+`no-manifest` run, never a skipped one**: the manifest is written when a run *ends*, so
+`verdict.js`'s rule of skipping such a directory would hide every run in flight. Both are
+pinned by fixtures the wrong reading cannot pass (the newest directory in the frozen suite
+is a decoy).
+
+**What it deliberately is not:** anything that can touch a run. It writes nothing anywhere,
+spawns nothing, holds no `bd` and no Docker, requires only node built-ins, and has no route
+by which to reach a container — the audit's contract (change-log row `repo-73k`) applied to
+a live tree. It binds `127.0.0.1` and nothing else, because the page names target repos, PR
+URLs and issue titles: that bind is the machinery/work boundary this repo is public on
+account of. Malformed artifacts render as named terms in a closed `degraded` vocabulary at
+their own level rather than as a 500 or a dropped project — a watcher at 2 AM needs the
+missing thing named, not a blank screen.
+
+**Host obligations, two.** Run `bash scripts/test-all.sh` on the reference host — the new
+suite is swept by glob and has never run there. *(Done 2026-08-11: 36 of 36 suites green in
+9:28.)* And hand-update `docs/pipeline-map.html`, which CLAUDE.md exempts from task docs
+phases and which nothing else updates: its end-to-end panels draw the run and the post-hoc
+audit, and none of them yet shows the live reader hanging off the run in flight.
+`docs/pipeline-diagram.md`, which task docs phases *do* keep current, has the node. Nothing
+else is outstanding — the reader needs no Docker, no network and no target repo.
+
+## The live view ships, and looking at it found two things (`live-dashboard-page`, 2026-08-11)
+
+`GET /` now serves the real page, which closes the live-dashboard feature declared in
+change-log row `live-dashboard`. `node scripts/dashboard.js`, open the one line it prints.
+The look is the house palette from `docs/pipeline-map.html` — teal flow, amber "the task is
+here" lamps — and the page renders exactly the brief: run header, the queue with each
+in-flight task at its node, a code/verify/docs strip per running task with the current phase
+lit, elapsed computed browser-side from the server's `now`, the storage row, the queued
+strip.
+
+**Why this was an interactive session and not a pipeline task** is settled by what building
+it found, because neither defect is reachable from a frozen test. The first: the contract's
+`attempt` is `status.attempts.length`, and that array gains an entry only once the verifier
+has **judged** an attempt — so a task working its first attempt reports `0`, and the page
+would have read "attempt 0/3" for most of a task's life. The implementation matches its
+frozen test exactly; the **spec** is what is wrong, so the re-freeze is parked at the top of
+`docs/IDEAS.md` and the page computes `attempt + 1` for an in-flight task in the meantime.
+The second was invisible until someone looked: the two-second poll rebuilds the whole list,
+which threw away the open/closed state of every panel, so an expanded project **snapped shut
+within two seconds of being opened**. Open panels are now keyed by project key across
+repaints, and an unchanged tree with no live project is not repainted at all.
+
+**One view decision worth knowing.** Idle projects collapse to a single line, expandable.
+The corpus on the reference host holds 34 projects, 28 of them historical e2e fixture targets
+all named `target`; a full card each buries the run someone opened the page to watch. The
+fixtures are **not** special-cased — that would be a lie about what the tree holds, and the
+handoff explicitly ruled it out. Live projects sort first and render full; everything else is
+one row until asked. Degraded terms follow the same principle: `no-manifest` on a *running*
+run and `workspace-missing` on a *finished* one are ordinary states, so they render muted,
+and red is kept for what a watcher can actually act on.
+
+**Proven against three trees, because a page that only works on fixtures is not proven:** the
+reference host's real 34-project corpus, a synthetic multi-task live fixture (two tasks in
+different phases, one queued, park absent), and a genuine live run in flight — the phase lamp,
+the container node and `attempt 1/3` all read correctly against a real container.
+
+## The batch marker has a reader (`repo-0b3`, 2026-08-20)
+
+`scripts/batch.js` ships — the first half of DESIGN.md §3.9's planning-to-launch handoff
+(change-log row `batch-ready-marker`, now `repo-0b3`). A planning session's last act writes
+`runs/batches/<project>-<YYYY-MM-DD>.json`; a later session reads it back with
+`node scripts/batch.js show` (the newest marker, **launched or not**, with `worked` /
+`not-worked` per id) or `node scripts/batch.js pending` (batches no run has worked since
+their freeze, newest freeze first). `BATCH_RUNS_DIR` re-aims the root. The marker shape is
+pinned here: `runConfig`, `frozenAt` and `issues[{id,title}]` required, `integrationBranch`,
+`freezeCommit`, `intent` and `approvedBy` optional and printed only when present.
+
+**The `bd ready` reconciliation was not wired in this half** — that is `repo-8v0`, below,
+split out by the panel because it adds a host dependency, a second join through a git-ignored
+run config, and a degraded vocabulary of its own. The split bought a property worth keeping:
+this half **spawns nothing at all**, so the suite proving it cannot pass vacuously on a host
+where `bd` was never installed — and `pending`, which is all of this half, still spawns
+nothing now that the other half has landed.
+
+**Two derivations, both of whose cheap answers are wrong.** A run's clock is `startedAt` from
+`run.json` *when there is one*, else the leading instant on the first line of `run.log` — 74
+of the reference host's 272 run directories have no manifest, and `verdict.js`'s rule of
+skipping such a directory (correct for its own purpose) would report an interrupted run's
+batch as never launched. And a run datable by neither **counts as having worked** the ids it
+names, labelled `run-time-unknown`: a false "pending" invites a double launch, a false
+"launched" only sends someone to look. The frozen fixture that pins this is one manifest-less
+run dated once before and once after the same freeze, which a `verdict.js`-shaped join gets
+wrong the same way in both halves.
+
+**The filename's date is naming only.** `frozenAt` is the clock; the stem is anchored at both
+ends with the project taken greedily, so `orbit-lab-2026-08-19` is the project `orbit-lab`
+rather than `orbit`, a file that is only a date is not a marker, and anything else under
+`batches/` — a `.txt`, truncated JSON, a JSON array — is skipped silently rather than crashed
+on, because a human writes into that directory too.
+
+**One known and accepted consequence:** `scripts/audit-runs.js` counts `batches/` under its
+Corpus **other entries**. That is expected — it is not a run directory and the audit says so
+correctly — and re-teaching the audit about a directory it has no other reason to know is
+parked in `docs/IDEAS.md`. The `repo-0b3` guard excludes exactly that accounting and pins
+everything else the audit prints as unchanged, along with byte-identical `verdict.js pending`
+output and a deep-equal dashboard `/state`.
+
+**Host obligation, one:** run `bash scripts/test-all.sh` on the reference host — the new
+suite is swept by glob and has never run there. Nothing else is outstanding; the reader needs
+no Docker, no network, no target repo and, in this half, no `bd`.
+
+## The marker is reconciled against the live queue (`repo-8v0`, 2026-08-20)
+
+The second half ships, closing change-log row `batch-ready-marker`. `node scripts/batch.js
+show` now answers the question the marker exists for: **does the queue this run will drain
+match what was frozen?** Per id, `ready` or `not-ready`; per queue entry the batch never
+named, one `stray` line. That check has no other detector — the runner has no picker (§4.12)
+and drains whatever it finds, so an issue nobody meant to include simply runs and a blocked
+one silently does not, and nothing else in the pipeline holds the *intent* to compare a queue
+against. `PLANNING.md` step 8's first bullet is now automated; the CLAUDE.md entry and the
+step 8 line that said otherwise are corrected.
+
+**One spawn, and only under `show`.** The marker's `run.config.<project>.json` is resolved
+from `BATCH_CONFIG_DIR` (else this repo's root, never the cwd) and read by plain `JSON.parse`
+for `targetRepoPath` alone — deliberately not `runner/config.js`'s loader, which validates a
+whole run and would turn an unrelated missing key into an unactionable `unreconciled`. Then
+one `-C <targetRepoPath> ready --json` through the **existing `PIPELINE_BD_CMD`** seam,
+bounded by that config's `bdTimeoutMs`, read-only (hard rule 1). `pending` still spawns
+nothing, which is what keeps this bounded rather than absorbed.
+
+**Two rules are imported, not copied**, and both were exported for this: `EXCLUDED_TYPES`
+with `typeOf` from `runner/queue.js`, so an epic parent — which `bd ready` returns by design —
+is never called a stray, and `hostBdSpec` from `runner/bd.js`, so npm's shim pair resolves
+the one way this host resolves it. The report's whole value is that it predicts what the
+runner will drain; a private second copy of either rule predicts a runner that no longer
+exists the day one of them changes (the call `sweep-trustworthy` made for `isHolderLive`).
+
+**Three gotchas worth carrying forward.**
+- A call killed at the bound is **`bd-unreadable`, not `bd-unavailable`** — `bd` was there
+  and did not answer, which sends a person somewhere different from `bd` not being installed.
+- `spawnSync` reports a **capture overflow and a timeout identically**: null status, the same
+  kill signal, and only `error.code` (`ENOBUFS` vs `ETIMEDOUT`) between them. The ceiling is
+  raised to 8 MiB — a real ready queue can exceed the 1 MiB default — and tested for *before*
+  the bound, or a query that answered at once is reported as one that never answered.
+- The vector handed to the seam **leads with a throwaway program slot** (`bd`), the slot the
+  Windows shim path fills with the resolved `bd.js`. Node's own parser owns `-C` as the short
+  form of `--conditions` and eats a leading `-C <path>` before a stubbed seam ever sees it —
+  which repo was consulted would stop being observable to the only suites that can prove it.
+
+**Both halves of the vocabulary are load-bearing together.** The degraded fixtures alone pass
+a tool that always says `unreconciled`; a reconciling fixture alone passes a tool that never
+notices `bd` is dead. `tests/unit/batch.test.js` grew section G for exactly this and now runs
+67 checks; it drives everything through the seam against a stand-in, so it still needs no
+`bd`, no network and no target repo.
+
+**Host obligations, two.** Run `bash scripts/test-all.sh` on the reference host — `runner/bd.js`
+and `runner/queue.js` gained exports, and `scripts/test-runner-queue.sh`, `test-bd-seams.sh`
+and `test-bd-shim.sh` all drive real Docker and could not run in the container. And this is
+the first `scripts/` reader that reaches into `runner/`, so the "node built-ins only" line in
+`README.md`'s layout table (if it still reads that way) wants a second look.
+
+## The ready queue refuses an unfrozen task (`repo-5yu`, 2026-08-21)
+
+**Built.** The dispatchability gate ships, closing the declaration in change-log row
+`dispatch-gate` (DESIGN.md §4.12's second admission rule, §4.11's `undispatchable` row,
+change-log row `repo-5yu`). Until now the type filter was the ready queue's *only* admission
+rule, so a run's answer to "should this go out?" was "`bd ready` returned it and it is not an
+epic" — and Beads tracks issues, not freezes. Two consecutive runs against one target
+dispatched fourteen tasks of which eight could never have passed, the second spending 3h11m
+to record eight `stuck`.
+
+`readyQueue()` now returns a third population beside `skipped`, keyed `undispatchable`. After
+the type filter, and only when candidates remain, one `git fetch <targetRepoRemote> <branch>`
+into a throwaway repository under the OS temp dir, then one
+`git ls-tree -d --name-only FETCH_HEAD -- tests/acceptance/<issue-id>` per candidate. Empty
+output, not dispatchable: the issue is dropped from `issues` before `claim()`, named in the
+queue-summary line with the remedy, and manufactured by the exported pure
+`undispatchableRow()` into a `run.json` row. Beads is untouched — no note, no status change,
+no attempt-log line — so a refused issue stays `open` for a freeze session to pick straight
+up.
+
+**The two fixtures that carry the result**, both in `tests/unit/dispatch-gate.test.js` as well
+as the frozen directory, and both chosen so a plausible wrong implementation *fails* rather
+than merely being exercised:
+
+- **A target working copy whose `origin` holds the suite while `targetRepoRemote` does not,
+  plus its exact mirror.** Every other fixture in either suite is refused by a working-tree
+  check too, so only that pair discriminates the shipped design from the one it replaces.
+  `targetRepoPath` and `targetRepoRemote` are independent config keys `runner/config.js` never
+  relates, and five of the seven observed failures had their suite present *locally* — in an
+  unpushed commit, or untracked. Freezing locally is not freezing.
+- **A `master` project carrying no `pipeline.config.json`.** The only fixture that catches a
+  branch chain ending at the literal `'main'` — which is `runner/workspace.js`'s
+  `detectDefaultBranch`, correct there (it only runs against a fresh clone where `origin/HEAD`
+  is always set) and catastrophic here, where guessing `main` empties `ls-tree` for *every*
+  issue and refuses the whole queue with a confident wrong reason. The chain here is
+  `pipeline.config.json`, else `git ls-remote --symref`, else abort. No literal last resort.
+
+Both were proven in both directions before shipping, and so was everything else load-bearing:
+mutating the source to drop the `-d`, to spawn without the options builder, to skip cleanup on
+the abort path, to fetch without a refspec, to read the working copy instead of `FETCH_HEAD`,
+or to end the branch chain at `main` turns the suite red in each case.
+
+**The bound and the channel.** Every `git` spawn in `runner/queue.js` is built from the
+exported `gitSpawnOptions(cfg)`, whose `timeout` is a new `gitTimeoutMs` (default 60000,
+validated by `loadConfig` exactly as `bdTimeoutMs` is, present in `run.config.example.json`) —
+an exported builder some spawn ignores is scaffolding, and that is checked structurally as
+well as behaviourally. `readyQueue()` reports failure as `{ ok: false, cause: 'git' | 'bd',
+error }` and `run.js` branches on the **field**, never the wording: a fetch failure logged as
+"cannot read the Beads ready queue" sends a person to the wrong system, and the run's own log
+line lives behind `main()` where no Docker-free test can reach it.
+
+**One shipped property was repealed, and its test rewritten rather than deleted.** An
+unreachable `targetRepoRemote` used to be a *task* failure at exit 0 — the clone failed inside
+`prepare()`, the task was reported, the run carried on — asserted as such by
+`scripts/test-runner-workspace.sh`'s check 11. The gate reaches that remote first, so it is
+now a run abort before anything is claimed. That check now asserts the abort, that it names
+the remote, that it is not reported in the Beads channel, that no task launched, and that the
+issue is still `open`. A tested property that stops being true and takes its own test with it
+is indistinguishable from one that was never tested.
+
+**Host obligations, two.** Run `bash scripts/test-all.sh` on the reference host:
+`scripts/test-runner-workspace.sh` and `scripts/test-runner-queue.sh` both need Docker and
+could not be run from the container, and check 11 above was edited blind — it is the one part
+of this task no frozen test could verify. And `docs/pipeline-map.html` is exempt from task
+docs phases and nothing else updates it (CLAUDE.md), so its runner panels still draw the type
+filter as the only thing keeping an entry out of the loop; `docs/pipeline-diagram.md` was
+amended here and the map was not. Editing it means re-running
+`node scripts/build-pipeline-map.js`, which needs `tools/mapbuild/node_modules` and therefore
+a host.
+
+## One folder per agent session (`parallel-sessions`, 2026-08-25)
+
+**Proven.** `scripts/worktree.js` + `docs/parallel-sessions.md` + a "Commit hygiene" section
+in CLAUDE.md. Interactive-session practice only; no run executes differently.
+
+The problem was several agent sessions pointed at one checkout. That is not several
+workspaces — it is several agents typing into one set of files with one staging area, and
+git cannot tell their work apart. Two failures, both being the correct behaviour of the
+command involved: a `git add -A` swept four files belonging to another session into an
+unrelated commit (nothing lost, history wrong — the worse half, since later sessions read
+it as fact), and a `git checkout -- <path>` was run against a file another session was
+editing, where only timing prevented permanent loss. Rules against both are now written and
+are also the layer that fails at the fourth session at 11pm; the worktree is what makes the
+collision impossible rather than discouraged.
+
+**What the investigation actually found**, since three of the four answers were not the
+expected ones:
+
+- **Beads needs nothing done to it.** It resolves its database through git's *common
+  directory*, so every worktree reads and writes the ONE database in the main checkout —
+  `bd count` agrees across folders, and running `bd` in a worktree creates no second
+  database there. So N sessions do not mean N queues and hard rule 1 survives untouched.
+  This was the question that could have sunk the design: a forked queue is precisely what
+  that rule exists to prevent. `bd worktree info` reports what a folder resolved to.
+- **`runs/` is the one thing that must never be duplicated.** `runs/locks/` is the local
+  observer mirror of §4.12's host-global lock, so a copy gives dashboard/sweep readers a
+  false ownership view. It is also where every manifest and report lands, so a run launched from a
+  worktree would *work* and write its history where `verdict.js`, `batch.js`,
+  `audit-runs.js` and the dashboard never look — invisible, not broken, which is worse.
+  Hence: launch runs from the main checkout only. The tool refuses that carry entry by name.
+- **Seven host-only paths are present in the main checkout and absent from a fresh
+  worktree** — `.env.pipeline`, `.sanitize-denylist`, `run.config.*.json`, `runs/`,
+  `tools/mapbuild/node_modules`, `.claude/settings.local.json`, `.beads/embeddeddolt`. One
+  is 388 MB, which is why `.worktree-carry` is a declared list and not a blanket copy. The
+  one that matters is `.sanitize-denylist`: absent, `test-sanitize.sh` silently skips its
+  project-specific checks and passes a tree it should have failed.
+- **Environment variables are a non-issue** — they belong to the shell, not the folder.
+
+**The mutation pass paid for itself twice.** The suite was green on its first run, which is
+when to be suspicious. Measuring dirtiness with `git diff` (tracked files only) and dropping
+the main checkout from `remove`'s candidate filter BOTH left it green — because `git worktree
+remove` has guards of its own, so an exit-code-only assertion is satisfied by a broken
+implementation that git happened to catch. Two checks now pin *this tool's* refusal message
+rather than the exit code. Six mutations, six kills after the fix.
+
+## The freeze gate reads the suite's text (`repo-uw6`, 2026-08-26)
+
+**Proven.** `scripts/freeze-gate.js` grows `brittleFindings(text, file)` and
+`lintSuite(dirOrFile)`; the report gains a `brittleness findings: <n>` block below the
+verdict, in every verdict and with or without `--spec`. `PLANNING.md` step 4 gains the
+disposition instruction, step 5's disposition paragraph now names the lint beside the panel,
+and the coverage is re-runnable: `tests/unit/freeze-gate.test.js` 46 → 100 checks,
+`scripts/test-freeze-gate.sh`'s floor 40 → 90. §3.2's move 6, built.
+
+The gate answered one question — are these tests red at the fork point? — and **an entire
+class of bad frozen test answers it correctly.** A criterion that pins a list of names,
+asserts an exact count, hashes a whole build or diffs the branch against its own fork point
+is red *and* discriminating at freeze, and then goes red again for every later task that
+legitimately grows the thing it enumerated. One target repo has lost at least eight frozen
+files across six suites to it. The worst shape **inverts** — it goes red precisely because
+an unrelated later task did its job correctly — and no amount of red at freeze can detect
+that, because at freeze it is genuinely red for the right reason.
+
+**The panel renamed the rule, and that is the whole design.** The shapes were first named
+after hashing and enumerating, which this repo's own frozen suites do — correctly. Six of
+them hash a walked tree as the "writes nothing" guard and `repo-1cy` diffs against a
+merge-base in the way CLAUDE.md cites as *correct*. What those seven share is that they
+compare two values **computed in the same run**, and nothing later work does can move a
+before/after snapshot. So the rule became:
+
+> A guard is brittle when the **expected side of the assertion is a literal the author
+> typed**, and the population it describes is one **later work is licensed to grow**.
+
+A tool can check the first half exactly and the second half not at all — which is why every
+finding is a question, and why the lint cannot touch the exit code in either direction. A
+lint that can fail a freeze is a gate on spec *authoring*, and the way past a gate that can
+fail you is to reword until it passes (hard rule 5).
+
+**Why the near-miss pairs are the coverage and the positive cases are not.** A detector
+keyed on `createHash` or on `git diff` fires on all seven house patterns — and scores full
+marks on every "does the shape fire" check that exists. So the re-runnable suite leads with
+the pairs, verbatim from this repo's own suites, before anything that merely exercises the
+code. Run against the real `tests/acceptance/` tree the shipped lint returns 59 candidates
+and leaves all six digest-snapshot guards and `repo-1cy`'s merge-base clean.
+
+**Nine mutations, nine kills** — dropping the binary sniff, letting findings `return 1`,
+keying the digest shape on the digest alone, keying the branch shape on `git diff` alone,
+pinning every finding to line 1, disabling continuation joining, admitting counts of 0 and
+1, dropping the assertion requirement from the name-list shape, and printing `0` where
+`unavailable` belongs. **The last is caught only by the re-runnable suite**, because the
+frozen criterion accepts either form — which is the concrete argument for why "extend
+`tests/unit/`" was a deliverable of this task and not a nicety.
+
+**Gap worth knowing, found while doing this and deliberately not fixed here.**
+`scripts/test-freeze-gate.sh` is missing from the "All but N drive real Docker"
+exception list below *and* from the suite table, and so are `scripts/test-spec-lint.sh` and
+`scripts/test-planning-playbook.sh` — all three were run Docker-free inside a task container
+during this task (46/28/42 checks, all green), so the real count is three higher than
+whatever that sentence says.
+Fixing the number needs the whole list re-derived rather than three names appended, which is
+a different piece of work; the count sentence is left alone rather than made confidently
+wrong. `test-planning-playbook.sh` additionally needs `bash`, not `sh` — under dash it dies
+on `[[` at line 98 and prints `CHECKS FAILED`, a broken harness that reads as a real
+regression.
+
+**Host obligation.** `docs/pipeline-diagram.md` gained the freeze-gate node and its dotted
+lint branch in this PR. `docs/pipeline-map.html` is exempt from task docs phases (CLAUDE.md)
+and nothing else updates it, so its planning panel still shows the approval pass with no
+freeze gate at all — one move behind before this task and two behind after it. Redraw with
+`node scripts/build-pipeline-map.js` after editing; the builder needs
+`tools/mapbuild/node_modules` and cannot run in a container.
+
+## The freeze gate proves the green side too (`repo-inj`, 2026-08-27)
+
+**Proven.** `scripts/freeze-gate.js` gains `--green <probe-dir>`: the same suite is run a
+second and third time in a *probe* — a throwaway, repo-shaped tree in which the criteria are
+already satisfied, by any means however crude — with cwd inside the probe, the **same**
+repo-relative test-directory string as the fork-point run, and a control resolved against the
+probe's own root. `verifyCommand` and `defaultBranch` are still read from the target's
+`pipeline.config.json` and never the probe's: a probe-side config would be an editable thing
+deciding how the probe is judged. The table gains `unreachable` (exit 3) and `half-proven`
+(exit 4); 0, 1 and 2 keep their meanings, and the `red` token is deliberately kept for exit 0
+because `scripts/test-freeze-gate.sh` greps the report for `RED:`. `tests/unit/freeze-gate.test.js`
+100 → 170 checks, `scripts/test-freeze-gate.sh`'s floor 90 → 110.
+
+**Why: red is only half the proof.** A suite that discriminates and a suite whose own fixture
+is broken are **the same observation** — non-zero — so the gate had never once seen the thing
+it blesses pass. It has cost two tasks three attempts each. `repo-8v0` froze with 11 of 29
+checks unreachable by any implementation, because a `NODE_OPTIONS=--require` stub reached the
+child the suite spawned and killed it before its first line. `repo-cfe` froze with the
+criterion the task existed for calling `git init -q -c …`, where `-c` is a global option that
+must precede the subcommand — so no repository was ever created, and its two neighbouring
+checks passed *vacuously*, the file appends landing regardless and the control "conflicting"
+only because git had errored. Both were diagnosed by the task agent through the concern
+channel, in a container, at attempt three.
+
+**A broken probe is `indeterminate`, never `unreachable`.** Exit 3 is reachable only behind a
+green probe control, for the same reason the fork point's red means nothing when its own
+control fails. That pair is the load-bearing fixture in both suites — a naive implementation
+answers 3 for both, and only running both tells them apart — and every exit-2 detail now names
+which side is broken: the fork point, the probe, the probe's control, or the arguments.
+`half-proven` **proceeds**: a freeze with no probe stays legal, and the state is carried into
+the approval pass the way the guard count is.
+
+**Two defects fixed on the way past.** `runVerify` had no `maxBuffer`, so Node's 1 MiB default
+applied and `spawnSync` killed the child on overflow — change-log row `verify-nobuffer`
+recurring inside the gate that judges the freeze, and a passing probe is verbose by
+definition. It now uses the `MAX_BUFFER` **imported** from `pipeline/verify-classify.js`, and
+the suite pins both halves: the value, and that no line retypes it. The empty-directory
+control's name was keyed on the pid alone, which was one name per process — with two trees in
+play, the second call's `finally` deleted the first call's directory out from under it.
+
+**Nine mutations, nine kills** — dropping the `maxBuffer`, swapping the `probe`/`probeControl`
+argument order, letting a broken probe read as `unreachable`, handing the probe run an
+absolute path into its own tree, resolving the probe's control against the target root,
+keying the control directory on the pid alone, linting the probe's suite as well, removing the
+suite comparison, and exiting 0 where `half-proven`'s 4 belongs. Two of them are caught by
+*paired* fixtures and by nothing else: the probe-control one needs a probe that carries a
+`_control` fixture beside a target that does not (with both trees shaped alike the wrong
+answer is invisible), and the absolute-path one needs the stub to record which tree it woke up
+in by dropping a **marker file**, never by string-comparing `process.cwd()` — on the reference
+host a temp path can be an 8.3 short name, and Git Bash and the child disagree on separators
+and case.
+
+**The frozen `repo-uw6` suite is now red, by design.** Five of its checks assert the *old*
+three-verdict table — `verdictFor` answering "all nine rows", the CLI answering 0/1/2 where a
+probe-less red run now answers 4, and `RED:` appearing in output from runs that no longer
+produce it (every one of them omits `--green`). The repeal is deliberate and is recorded in
+change-log row `repo-inj`; the token itself survives and is pinned by both re-runnable suites.
+Nothing re-runs a frozen directory — the verifier runs only the task's own — so this costs
+nothing today, and it is the same shape `repo-iok` left behind in `repo-1cy`. It is also the
+argument for extracting coverage into `tests/unit/` stated once more.
+
+**Known gap, deliberate.** Constraint 4 asked for the probe's copy of the suite to be
+compared byte for byte and any mismatch refused with exit 2. What ships refuses a probe that
+does not carry the suite at all and one that **deleted** a file of it, and *names* every file
+whose bytes differ in the report without moving the exit code — because criterion 6's frozen
+fixture supplies a probe whose copy of the suite deliberately differs from the fork point's
+and requires exit 0, so a strict byte-equality gate would make that criterion unsatisfiable.
+Raised as a spec concern on the run. The cheapest way to close it later is to fix the fixture,
+not the tool.
+
+**Host obligation.** `docs/pipeline-map.html` is exempt from task docs phases (CLAUDE.md) and
+nothing else updates it; its planning panel still shows the approval pass with no freeze gate
+at all, and is now three moves behind. Redraw with `node scripts/build-pipeline-map.js` after
+editing; the builder needs `tools/mapbuild/node_modules` and cannot run in a container.
+
+## Every `run.log` line has a structured twin (`repo-qzy`, 2026-08-28)
+
+`runner/log.js` now appends `runs/<runId>/events.jsonl` beside `run.log`: one JSON object per
+line, **written by the same call from the same clock read** (§4.12, change-log rows
+`events-ledger-design` and `repo-qzy`). The envelope is closed and always eight keys — `ts`,
+`level`, `runId`, `issueId`, `trace`, `event`, `msg`, `data` — with
+`schemas/events.schema.json` as the contract. `info()` and `error()` take an optional third
+argument `{event, data}` and default to `event: "log"` with empty `data`; `event()` records a
+fact with no prose form (`msg: null`, never echoed, always INFO), and **that task emitted
+none** — the channel existed for the task that would carry the queue read, the per-attempt
+verifier result and the spec concerns across, which is `repo-3xw` in the section below.
+
+Every line the dashboard's prefix table parses is now a named typed event. `queue.read` was
+**declared in the schema and emitted by nothing**, reserved for that next task; the unit suite
+asserted the absence on purpose, so "no call site writes it" read as the design rather than as
+a hole. (Both halves of that reservation have since been honoured and the assertion is now its
+mirror image — see below.)
+`run.log` is byte-identical, the container writes none of this, and the only reader edit
+is `scripts/dashboard.js` exporting its prefix table `P` — no reader reads the ledger yet, and
+each will move across in its own task with its own suite staying green.
+
+**Three things worth carrying forward.**
+
+*The timestamp guarantee is cheaper to hold than to check.* Two writers with two clocks would
+have to be joined back together by a value neither of them owns. One function, one
+`new Date()`, both appends — and the property is then true by construction rather than
+asserted. The frozen suite compares the two `ts` values for equality, which two clock reads a
+microsecond apart satisfy on most machines; `tests/unit/events.test.js` replaces `Date` for
+the length of one call with a counter that answers a **different** instant every time it is
+constructed, so a two-read writer is red every run instead of on an unlucky one.
+
+*Events are named at call sites, never inferred from message prefixes.* Inferring would have
+moved the fragility the ledger exists to remove — from three readers into one writer — and it
+would have made the ledger wrong in exactly the situation it is for. The cost is that a
+reworded message and a stale prefix table can drift apart silently, so the suite reads the
+source: for every named event, the dashboard's prefix for it must appear in the text of the
+call that emits it. That check is why `scripts/dashboard.js` exports `P` at all.
+
+*A suite proves what it opens.* "`run.log` is unchanged" is a claim about files
+`tests/unit/events.test.js` never reads, so `scripts/test-events.sh` runs
+`test-dashboard.sh`, `test-batch.sh` and `test-audit-runs.sh` from inside itself, with
+`NODE_OPTIONS` and every `PIPELINE_*` and `BD_*` variable stripped from the child environment
+first — an inherited `--require` stub preloads into every one of their node children and kills
+them before their first line.
+
+**Seven mutations, seven kills**, each on a copy of the implementation: two clock reads, a
+reworded `task.started` message, the abbreviated fork point in `data`, the pseudo-tasks
+recorded as issue ids, the ledger rewritten rather than appended, the third argument dropped
+on the floor, and the dashboard's `P` export removed.
+
+**A frozen criterion that diffs a *committed range* sees nothing, and this task's did.**
+Criterion 5 asked that `git diff <merge-base integration HEAD>..HEAD -- runner/` remove no
+line containing `log.info(` or `log.error(`. In a task container the host commits the agent's
+work only *after* the container exits — this workspace's reflog holds exactly one commit,
+authored `pipeline` and timestamped after the run — so at verify time `HEAD` **is** the fork
+point, that diff is empty, and the check passes having observed nothing. Run against the
+committed branch afterwards it fails instead, because `git diff` is line-based: a call site
+that gains the permitted third argument emits a `-` line carrying `log.info(` beside a `+`
+line with the same wording, so the guard contradicts the constraint it exists to protect
+(*"a call site may gain a third argument and nothing else"*). Both readings are wrong in the
+same place. The property itself holds and is proved elsewhere in the same criterion — the
+`log.info(`/`log.error(` count is identical file by file across all seven changed `runner/`
+files, and A5's literal whole-`run.log` expectation is what actually pins the wording. Two
+rules for the next spec: a criterion about what the change did to tracked files reads the
+**working tree** (`git diff <fork>`, no `..HEAD`), never a committed range; and "the diff
+removes no line matching X" is the wrong shape even when it can see the diff — assert
+per-file counts of X, or pair each removed line with an added one carrying the same message.
+This is the vacuous-pass family from CLAUDE.md reached from its other side: not a plausible
+wrong artifact, but an empty one read as proof.
+
+**Known-stale, not fixed here.** `docs/pipeline-map.html` is exempt from task docs phases and
+nothing else updates it; none of its panels show the ledger. `docs/pipeline-diagram.md` gained
+its node in this PR. Two suites — `test-feed.sh` and `test-worktree.sh` — had shipped with no
+row in the table below and got one here, which is the same rot repo-4d8 recorded: grep the
+table for every `scripts/test-*.sh` that exists, because a missing row is invisible to a
+count.
+
+## The ledger carries three facts no other artifact holds (`repo-3xw`, 2026-08-28)
+
+**Proven.** The ledger stopped being a second copy of `run.log` (§4.12, §5, change-log row
+`repo-3xw`). Three facts that reached no artifact at all now do:
+
+* **The queue read and its refusals.** `runner/queue.js` exports `logQueueRead(log, q)` and
+  `logUndispatched(log, u)`; `main()` calls both. The `ready queue: ` line and its `queue.read`
+  twin come from **one call and one timestamp**, and `queueSummary` is no longer called
+  separately in `run.js` — two call sites would be two chances for the prose and the event to
+  describe different queues. Data is **ids, never issue objects**: `ready: [id]`,
+  `skipped: [{id, type}]` (the type is *why* the entry went), `refused: [{id, reason,
+  refusal?}]`. `task.undispatched` is traced to its own issue, so `issueId` — the trace's tail
+  — files each refusal where a reader asking about that issue will look.
+* **Each attempt's verifier result and failing check names.** `attempt.finished`, ledger-only,
+  one per attempt in the collected status file, emitted **after** the relaunch loop.
+* **Each spec concern.** `concern.raised`, ledger-only, one per `specConcerns` entry, verbatim.
+
+`scripts/sweep-assertions.js` gained `failingChecks(logText) → string[]` — sorted,
+de-duplicated, and built from the same constants `countAssertions` matches plus a colon form
+(`FAIL: <text>`) that is `failingChecks`' alone. `schemas/events.schema.json` enumerates the
+four events with typed `data`; `run.log` is byte-identical and nothing under `pipeline/`
+moved. `tests/unit/events.test.js` went from 45 checks to 101, and `scripts/test-events.sh`'s
+floor moved with it.
+
+**Four things worth carrying forward.**
+
+*A "not built yet" declaration has to be repealed by the task that builds it, in the suite as
+well as the doc.* `repo-qzy` asserted `queue.read` was **declared and emitted by nothing** so
+the hole would read as design. That assertion is now the exact obstacle to shipping the
+feature, which is the point: the check flipped to its mirror (`queue.read` has a call site, in
+`queue.js`) rather than being deleted, so the declaration cannot quietly be left empty a
+second time. Anything declared-then-built should leave a check of that shape behind.
+
+*The third answer is the one that gets collapsed.* `failingChecks` per attempt is `[]`, a
+list, or `null`, and `null` — *nothing is known* — is the state of an attempt that failed with
+its output lost to a kill (`collectArtifacts` drops a half-written `verify.json` on purpose).
+Read as `[]` it says the attempt failed nothing, and a reader asking "did the last two
+attempts fail the same checks?" scores two attempts that recorded nothing as identical. There
+is a second, honest route to `[]` that needs no text at all: an attempt the verifier called a
+**pass** failed zero checks by definition, and answering `null` there would be a small lie
+about something the run does know. The unit suite plants both beside each other, because they
+are the pair a lazy implementation cannot tell apart.
+
+*A prefix table entry for an event that writes no line would match nothing forever.* The
+ledger's drift guard rests on a bijection between `scripts/dashboard.js`'s `P` and the event
+names, and ledger-only events have no line to prefix. So the suite now holds **two** maps —
+prose-paired and ledger-only — asserts they do not overlap, asserts their union plus `"log"`
+is exactly the schema enum, and scans for the *other* call form (`log.event(trace, '<name>')`)
+to prove every ledger-only event has a call site. Without the second scan a ledger-only event
+is invisible to every structural check in the file.
+
+*A schema's `items` is decoration until a validator descends into it.* `queue.read`'s whole
+contract is that `ready` holds ids and never issue objects, and the unit suite's `typeOk`
+stopped at "it is an array" — so the rule was stated in the schema and enforced by nothing.
+It now checks array item types and nested object shapes, which is what makes the five planted
+`queue.read` rejections mean anything.
+
+**A frozen fixture can be unable to reach the path its own check names.** Criterion 3's last
+check is labelled *"the passing final attempt has no feedback, so its checks come from
+`verify.acceptanceOutput`"* — but the fixture's stub writes `verify.json` with a `printf`
+whose `\n` becomes a real newline inside a JSON string, so the document does not parse,
+`collectArtifacts` drops it (deliberately — §4.11), and `verify` is `null` by the time
+anything reads it. The same stub writes `status.json` through a heredoc, where `\n` stays two
+characters and the JSON is valid, which is why the feedback-driven attempts work. The
+implementation ships **both** rules the criterion implies and the pass-driven one is what
+carries that check; the `acceptanceOutput` fallback is real, is what production actually uses
+(only a *failing* attempt records feedback — `pipeline/entrypoint.sh` writes it from
+`verify.json` on verifier exit 1), and is pinned in `tests/unit/events.test.js` against a
+valid verify object whose output **carries a failure**, so an implementation that skipped the
+fallback answers `null` and is caught. Raised through §3.3's concern channel. The general
+rule: a stub that writes JSON from a shell must use a heredoc or a `node -e`, never `printf`,
+the moment any value contains an escape.
+
+**Two frozen structural pins are deliberately repealed**, and both say the same thing:
+`tests/acceptance/repo-4l8`'s *"run.js calls queueSummary on a non-comment line"* (F6) and
+`tests/acceptance/repo-teq`'s `[guard]` twin of it. `run.js` no longer calls `queueSummary` —
+`logQueueRead` does, which is the whole content of "one call, one timestamp" — so both are red
+by design, exactly as `repo-inj` repealed five checks in `repo-uw6`. Nothing re-runs a frozen
+directory, so it costs nothing today, and it is the standing argument for extracting coverage
+into `tests/unit/`. The property both pins guarded is **not** lost: `tests/unit/dispatch-gate.
+test.js`'s G9d moved with it and now spans both files — `run.js` hands the whole queue result
+to `logQueueRead`, and `logQueueRead` hands all three populations to `queueSummary`. Asserting
+only the first would pass a helper that dropped the refusals on the floor. Every Docker-free
+suite is green; the two Docker suites that grep the run's OUTPUT for `ready queue: `
+(`test-runner-queue.sh`, six sites) are unaffected, because the line is byte-identical.
+
+**A compatibility break the ledger's own suite caught, in the file none of the affected suites
+names.** `info`/`error`'s third argument has always been absent-safe, which is what lets four
+suites hand `runOneTask` a bare `{info, error}` stand-in. `event()` is a different shape and
+cannot be ignored the same way: calling a method that is not there **throws**, from inside the
+task body, after the container has run and before the outcome is written. The first draft did
+exactly that, and `tests/acceptance/repo-qzy`'s *"runOneTask driven with the existing fake log
+object still completes"* plus four checks in `repo-t3h` went red together. Both emitters now
+ask for the writer before using it — its ABSENCE is checked, never its failure — and
+`tests/unit/events.test.js` pins it, because the frozen suite that caught it will not run
+again. Any future ledger-only emitter inherits the same rule.
+
+**Known-stale, not fixed here.** `docs/pipeline-map.html` is exempt from task docs phases and
+nothing else updates it; none of its panels show the ledger, let alone these three facts.
+`scripts/test-status-schema.sh` cannot be run in a container at all — it shells
+`npx --yes -p ajv-cli` and the egress allowlist blocks the npm registry — so it fails
+identically at the fork point and after this change; it is a host obligation for the sweep,
+and nothing here touches `schemas/status.schema.json`.
+
+## A `[guard]` test red at the fork point is a stale pin (`repo-i4b`, 2026-08-28)
+
+**Proven.** `scripts/freeze-gate.js` gains `guardFiles(dir)`, `withGuardDir(...)`, a sixth
+`verdictFor` argument and the sixth verdict: `stale-guard`, exit 5. A test file declaring
+itself a guard — the literal `[guard]` token, any case, on a comment line within its first
+ten lines — is copied into `<parent of --tests>/.freeze-gate-guards-<pid>-<seq>/` and run
+**alone** through the project's own verify command. Green there is the only acceptable
+answer. Red is exit 5, it beats `red`, `unreachable` and `half-proven`, and it
+short-circuits the probe, so a stale guard with `--green` is three invocations rather than
+five. The subset runs once, only from a fork point red at exactly 1 on a green control, and
+reuses that tree's control result. A subset that could not run — above 1, killed, a failed
+spawn, a copy that threw — is `indeterminate` naming the guard side, never 5.
+`tests/unit/freeze-gate.test.js` 170 → 243 checks, `scripts/test-freeze-gate.sh` 37 → 47 of
+its own and its floor 110 → 170. §3.2's stale guard, built; the receipt writer beside it
+landed the same day (`repo-erq`, below).
+
+**Why the whole-suite red cannot see it.** A guard is the one criterion that is *supposed*
+to be green before any work exists, which is exactly what makes a red one invisible: one
+ordinary criterion failing makes the run non-zero, and the stale guard hides inside that
+number. Four of the twelve suites that reached `stuck` in one fortnight were guards pinned
+to something that had already moved before the task was frozen — and no amount of
+suite-level red could have said so, because the suite was correctly red either way. Running
+the guards alone is the only observation that separates "the implementation is missing"
+from "there is nothing left for this to be waiting for".
+
+**Two decisions that read as details.** The subset directory is a **sibling** of the suite
+at the same depth, not a temp directory: every frozen suite resolves its own root as
+`path.resolve(__dirname, '..', '..', '..')`, so a guard judged from anywhere else resolves a
+different tree and fails for a reason unrelated to its pin. The acceptance suite's
+real-runner criterion is a pair written as one criterion for exactly this — the same guard
+file, green then red, in the same tree — and a sibling-depth mistake fails only its green
+half. And a guard that is absent, green, or a call made with five arguments all answer
+identically, which is what lets the frozen `repo-inj` suite (which pins the five-verdict
+table and cannot be edited) go on meaning what it meant. It is still green.
+
+**A criterion this task could not satisfy as written, and why it is not a defect.**
+Criterion 6 asks for "a `FREEZE_GATE_CMD` naming a command that does not exist behind a
+red-on-green fork point → 2 naming the guard side". One environment variable drives all four
+invocations, so a genuinely missing command takes the fork point down with it and the guard
+side is never reached — that state is unreachable from a command line by construction. The
+frozen suite does not ask for it (its A6 covers the guard-broken shape only). What ships
+covers the branch from both sides instead: `verdictFor` is driven with an errored, a
+signalled, a null-status and an exit-127 guard run, and the CLI is driven with a stub that
+answers the subset exactly as `sh -c` answers a missing command — 127 on stderr. Raised as a
+spec concern on the run.
+
+**Host obligation.** `docs/pipeline-map.html` is one further move behind: its planning panel
+now omits the guard subset as well as the gate itself.
+## The freeze gate leaves a receipt (`repo-erq`, 2026-08-28)
+
+**Proven.** On a verdict that *proceeds* — `red` (0) or `half-proven` (4) — `scripts/freeze-gate.js`
+writes `tests/acceptance/<issue-id>/.freeze-gate.json` and names it on the last lines of its
+report. Eight fields: `gateVersion` (1), `verdict`, `probeSupplied`, `suiteHash`, `gateHead`,
+`guards`, `brittleness`, `writtenAt`. Exits 1, 2 and 3 write nothing and leave an existing
+receipt byte-identical — a stale receipt beside a failing verdict is evidence, and it is the
+dispatch gate's hash comparison that turns it into a refusal. `tests/unit/freeze-gate.test.js`
+170 → 237 checks, `scripts/test-freeze-gate.sh`'s floor 110 → 220.
+
+**The hash is over git blob ids, and the formula lives in one file.** `runner/suite-hash.js`
+is new, host-only and node-built-ins-only: `suiteHash(entries)` sorts bytewise by suite-relative
+path and hashes `path\0blob\n` with sha256, `workingTreeEntries` reads the planning checkout
+(`git ls-files --cached --others --exclude-standard`, then `git hash-object --path`), and
+`treeEntries` reads a commit, which is the side §4.12's third admission rule will use. Blob
+ids rather than bytes because the reference host's checkout is CRLF and the committed blob is
+LF: a byte hash would disagree with the branch on **every** freeze and the dispatch gate would
+refuse every task it exists to admit. Both re-runnable suites carry the CRLF pair — the
+filtered blob id beside the raw-byte one — because it is the only fixture that tells the two
+implementations apart, and every other fixture in the file answers the same way for both.
+
+**Taken before the suite is run.** A suite is entitled to write beside itself while it
+executes, and those files are untracked entries inside the suite directory by the time the
+runs are over; hashed afterwards, the receipt would pin a state only this machine has ever
+seen. The frozen suite proves it with a stub that drops a file into the directory it is
+judging, and the unit suite proves the same fact from the other side — that such a file *would*
+move the hash.
+
+**Two new refusals, both at exit 2.** A `--repo` that is not a git repository is refused before
+a single verify run: every value on the receipt comes from git, so the alternative is a receipt
+that hashes nothing — present, well-formed and meaningless. And a receipt that cannot be
+written fails the whole invocation rather than warning under a passing verdict, naming the
+path, because a verdict nothing recorded is a freeze the runner would refuse anyway.
+
+**`compareSuites` now excludes the receipt.** It is written into the fork point's suite and
+never into the probe, so from the second run onwards an unfiltered comparison would call it a
+file the probe is *missing* and refuse — turning every re-run of a gated suite into an exit 2.
+Excluded on both sides, since a probe copied from a gated tree carries a stale one.
+
+**The reader landed a task later** (`repo-isq`, below): §4.12's third admission rule now refuses
+a candidate whose suite carries no receipt or whose receipt does not match the branch. That
+split is exactly why the coverage is re-runnable: `tests/acceptance/repo-erq/` gated the writer
+once and never runs again, and the enforcer landed against a file this task defined.
+
+**Host obligation.** `docs/pipeline-map.html` is exempt from task docs phases and nothing else
+updates it; its planning panel now trails the freeze gate by four moves. Redraw with
+`node scripts/build-pipeline-map.js` after editing; the builder needs
+`tools/mapbuild/node_modules` and cannot run in a container.
+
+## A frozen suite without a matching receipt is never dispatched (`repo-isq`, 2026-08-28)
+
+**Proven.** The receipt stopped being a note and became a gate. `runner/queue.js` reads
+`tests/acceptance/<issue-id>/.freeze-gate.json` from the branch it already fetches, recomputes
+the suite's hash from that branch's blobs through `runner/suite-hash.js` — the same formula the
+freeze gate wrote it with — and refuses in four named kinds, checked in order, first refusal
+winning: `no-suite` (as before), `no-receipt`, `receipt-mismatch`, `half-proven`. A candidate
+that survives all four is dispatched exactly as before. Beads is untouched on every one of
+them, so a refused issue stays `open` for the next run.
+
+**`no-receipt` is four different files, deliberately collapsed into one refusal.** A receipt
+that is absent, unparseable, of a `gateVersion` this runner does not know, of a verdict the gate
+never writes a receipt for, or recording no digest at all are all *a receipt the runner cannot
+interpret* — and interpreting one anyway is how a suite nobody gated reaches a container. The
+one deliberate split: a `suiteHash` that is not a digest is `no-receipt` and **not**
+`receipt-mismatch`, because junk compares unequal to everything and the lazy reading would send
+a person to re-gate a suite whose real problem is the file beside it.
+
+**`half-proven` refuses by default, and the knob is per project.** `allowHalfProven` is
+validated by name at config load, defaults to `false`, ships in `run.config.example.json` and is
+written top-level into the manifest — because it changes which tasks were *eligible*, so two
+runs over the same queue are not comparable without it. With it on, exactly one of the four
+refusals moves; a suite it also admitted an ungated or a changed version of would be an off
+switch for the whole rule wearing the name of one refusal, and `G10o` in the unit suite is the
+check that says so.
+
+**The branch, never the working copy** — the pair that matters. `targetRepoPath` and
+`targetRepoRemote` are independent config keys the loader never relates, so a gate reading the
+working copy passes every fixture where the two agree and then fails the two that count: an
+uncommitted edit made beside a live run refuses a correctly frozen queue, and a pristine
+checkout admits a suite whose *pushed* form nobody gated. Both directions are fixtures in the
+frozen suite and in `tests/unit/dispatch-gate.test.js` (`G10q`/`G10r`), which grew 64 → 103
+checks; every receipt in them is written by `runner/suite-hash.js` rather than by a formula the
+test carries, since a second copy would agree with a wrong implementation and disagree with the
+real gate.
+
+**The kind travels.** `refusal` is on the manifest row (schema enum of exactly those four),
+through `runner/feed.js`'s live refusal map — so a task refused at 14:05 and gated at 14:20
+still runs — and into `runner/report.js`'s heading, body paragraph and remedy, all four keyed by
+it, with the negative half asserted per kind: the `no-suite` texts never mention the freeze
+gate, the receipt ones never offer `--green` or `allowHalfProven`, and the `half-proven` one
+never claims a missing suite. A row carrying no kind renders the historic sentence byte for
+byte, which is what an older manifest gets.
+
+**Deliberately not changed:** the queue-summary log line's `NOT DISPATCHABLE` clause still
+speaks only of a missing suite. Naming the kind there belongs to the follow-up that teaches
+`scripts/batch.js show` this rule; the critic panel cut it from this task's spec precisely so
+one string and its six grep sites do not move twice in two consecutive runs.
+
+**Host obligations, three.** (1) **Re-gate every open frozen suite before the next batch** —
+any suite frozen before `repo-erq` carries no receipt at all and is now refused per issue, and
+any suite edited after its gate run needs `node scripts/freeze-gate.js` run over it again with
+the fresh receipt committed *and pushed* beside the suite; `PLANNING.md` step 8 now carries this
+as a checklist bullet, but nothing re-gates an existing suite for you and the first batch after
+this merges is where that bites. **And re-gating a pre-receipt suite can only yield `half-proven`**:
+no green probe exists for a task not yet built, so the run config that drains those suites must set
+`allowHalfProven: true` (decided 2026-08-28: existing suites are admitted half-proven; suites frozen
+from here on need the full red-and-green proof). This repo has one such suite, re-gated that day. (2) Run `bash scripts/test-all.sh` on the reference host: the
+gate is on the path of every run and the Docker suites that merely *touch* `runner/queue.js`
+have not seen it. (3) `docs/pipeline-map.html` is exempt from task docs phases and nothing else
+updates it; its dispatch panel now trails the queue by two admission rules.
+
+## The published branch is now the branch the verifier judged (`repo-tg8.1`, 2026-08-28)
+
+The docs agent used to run after the only authoritative verification with the same writable
+workspace as the code agent, followed by `git add -A`. That let a nominal documentation pass
+change source—or even commit it—and still exit 0 without another test. The implementation
+commit is now a recovery point. Deterministic scaffolding accepts only regular root-level
+Markdown and regular Markdown beneath `docs/`, rejects the entire delta if any other path or
+symlink changed, reruns the authoritative verifier over an allowed final tree, and collapses
+any agent-authored commit into one scaffolding-authored docs commit. A docs error, boundary
+violation, final-verifier failure or commit failure restores the implementation commit and its
+original verifier evidence, records `docsPhaseError`, and preserves the verified success.
+
+`scripts/test-entrypoint.sh` plants both discriminators: a docs agent changes source while
+leaving acceptance green, and an allowed README-only edit makes acceptance red. Neither delta
+survives; the ordinary README update still does. DESIGN.md records the boundary in change-log
+row `final-verification-boundary`.
+
+## Failed completion is now recoverable (`repo-tg8.2`, 2026-08-28)
+
+Task completion used to be three unrelated best-effort calls: `git push` / PR creation,
+Beads notes and terminal transition, then unconditional workspace deletion. A rejected push
+could therefore close a successful issue and erase its only local branch; a failed `bd close`
+was ignored and logged as if it succeeded. The runner now settles those systems in order:
+publication first, checked Beads writes second, cleanup last. Publication failure skips the
+terminal transition. Any publication or Beads failure emits an ERROR `task.finished` event
+with `beads: null`, leaves the issue in progress, records the cause plus
+`recoveryWorkspace` in the manifest/report, and retains that directory.
+
+`scripts/test-events.sh` proves both recoverable paths through the real task runner with a
+local bare remote: one server-side hook rejects the push, while a second fixture publishes
+the branch and PR before its Beads close is forced to fail. The first never attempts close;
+both retain the committed workspace and name it. `scripts/test-report.sh` additionally
+proves a failed push is not rendered as the valid “no commits” case. DESIGN.md records the
+boundary in change-log row `transactional-task-completion`.
+
+## The standard regression layer is now mandatory (`repo-tg8.3`, 2026-08-28)
+
+This repository no longer relies on someone remembering the full control-plane regression
+set. `scripts/test-ci.sh` is an explicit, fail-fast profile of the Docker-free leaf suites;
+the same command runs in GitHub Actions on every push and pull request and runs inside the
+pipeline verifier. `pipeline.config.json` sets `regressionPolicy: required`, read from the
+task's fork point, so anything other than an exact regression pass stops publication before
+push, leaves Beads in progress and retains the recovery workspace. The profile and every
+helper it executes are frozen paths, so a task cannot edit its mandatory discriminator.
+
+The receipt migration that exposed this gap is repaired at the fixture boundary rather than
+by weakening dispatch. `scripts/write-fixture-receipt.js` creates test-only receipts with the
+same shared blob-hash implementation as the runner. The five local runner fixtures generate
+and commit them before dispatch; the live e2e reset path does the same and pushes that fixture
+commit before taking its baseline. `test-runner-queue` deliberately keeps one unreceipted
+suite and proves it is still refused. The helper's unit suite proves exact fields, hash
+agreement, idempotence and regeneration after a suite edit.
+
+Validation on the reference host: all 31 mandatory Docker-free suites passed, followed by
+all five repaired local Docker suites (`runner-container`, `runner-pause`, `runner-publish`,
+`runner-queue`, `runner-workspace`). The external e2e fixture was not mutated during this
+repair; that final live run remains a separately authorized validation step. The full sweep
+also excludes aggregate entry points (`test-all.sh`, `test-ci.sh`) from dynamic leaf-suite
+discovery, preventing the CI profile from recursively duplicating its own children.
+
+## Publication now rejects credentials anywhere in introduced history (`repo-tg8.9`, 2026-08-28)
+
+The runner's credentialed host now scans the complete Git object graph introduced between a
+task's immutable fork point and `HEAD` immediately before every push. That distinction is
+the security boundary: a token committed once and deleted in a later commit is absent from
+the final checkout but remains in the historical blob a branch push publishes. Commit
+messages and raw tree objects are scanned too, so neither prose nor a tracked filename is an
+escape hatch. The exact OAuth value injected into the task container is the primary
+discriminator; high-confidence private-key, GitHub, AWS, Anthropic, OpenAI and bearer-token
+shapes provide defense in depth.
+
+Findings return only a credential kind, Git object type and abbreviated object id. Matching
+bytes never enter the result, error or log. Invalid fork points, Git failures, timeouts,
+malformed/truncated batches, object-count overflow and output-size overflow all fail closed.
+Rejection uses the transactional completion path: nothing is pushed, no terminal Beads
+transition is attempted, and the workspace remains named and recoverable. The scanner, its
+wrapper and its unit suite are frozen mandatory inputs.
+
+`scripts/test-credential-scan.sh` proves 19 cases against real temporary repositories and a
+bare remote: a credential committed then deleted, a credential in a tracked filename, one
+in a commit message, every provider-shaped discriminator, no false finding for ordinary
+credential vocabulary, malformed fork-point refusal, result/log redaction, absence of the
+rejected remote ref, and a clean control branch that still publishes. The existing event
+and settlement suite also passes with the scan in the real task path.
+
+## Runtime artifacts are enforced contracts (`repo-tg8.8`, 2026-08-28)
+
+`status.json` and `verify.json` are no longer parsed best-effort and then trusted. The host
+validates both at collection time against the checked-in schemas, including nested required
+fields, closed object shapes, enums, bounds and RFC3339 timestamps, then separately binds
+each artifact's `issueId` to the task being settled. No package download is involved: the
+runner carries the deliberately small JSON Schema subset these two contracts use, so the
+same check works on a fresh or closed-network host.
+
+Raw invalid files remain copied into `runs/<runId>/tasks/<issueId>/` as forensic evidence,
+but structured consumers receive `null` plus a named contract state: `missing`, `malformed`,
+`schema-invalid` or `issue-mismatch`. Most importantly, container exit 0 is no longer enough
+to become `done`: both contracts must be valid and the authoritative acceptance verdict must
+be exactly `pass`. Any other exit-0 claim becomes `failed`, cannot open a PR, and blocks
+rather than closes the issue. Existing valid `done` and failing-regression `partial` paths
+are unchanged, as are nonzero stuck/tampered/paused/failed outcomes.
+
+`scripts/test-artifact-contracts.sh` covers 55 schema and admission cases without Docker.
+The real task fixture adds four settlement checks proving missing verification on exit 0
+publishes only a failed evidence branch, opens no PR and writes `blocked`, never `close`.
+The schema module plus both input schemas are frozen mandatory inputs.
+
+## Windows startup now proves Git Bash and host Node agree (`repo-tg8.7`, 2026-08-28)
+
+Runner startup no longer assumes that an executable named `bash` is the right shell. On
+Windows that name commonly resolves to the WSL launcher, which cannot see the host's Node
+installation or Windows paths. Preflight now verifies both shell identity and capability:
+the candidate must be Git Bash-compatible and must launch the exact `process.execPath`
+used by the runner. A configured `hostShell` is authoritative; otherwise standard Git for
+Windows locations and then PATH candidates are tried in deterministic order. Linux retains
+the portable `bash` default with the same host-Node probe.
+
+Resolution happens after the project lock but before Docker, network, Beads recovery, or
+task launch. Failure releases the lock, skips teardown for infrastructure that never
+started, and names the precise Git for Windows or `hostShell` remedy. Success is stored in
+the loaded run configuration and reused by task execution, egress probes, pause handling,
+and PR publication, eliminating later drift back to whichever `bash` happens to be first
+on PATH. The shell resolver and its 27-check suite are frozen mandatory inputs.
+
+## Lifecycle calls are bounded and cleanup survives exceptions (`repo-tg8.6`, 2026-08-28)
+
+All short-lived runner subprocesses now have an explicit configuration boundary. Git clone,
+branch inspection, diff, push and dispatch use `gitTimeoutMs` (default 60 seconds); Docker
+probes, network scripts, host-shell/rate-limit probes and GitHub publication use
+`lifecycleTimeoutMs` (default 120 seconds). The shared result contract turns a kernel timeout
+into status 124 with `timedOut: true` and a bounded diagnostic naming the command, duration
+and config key. Workspace and publication paths consume that failure instead of treating an
+empty result as “no commits,” an evidence policy, or another successful no-op.
+
+Container active-time enforcement no longer depends on the orchestration event loop. Each
+live task has an independent worker-thread watchdog which owns the deadline and a bounded
+`docker kill`; a clone, Beads write, or other synchronous host operation in a sibling worker
+cannot delay it. The 29-check Docker-free suite proves this by blocking the main thread for
+400 ms while a 50 ms watchdog action still fires, and separately proves the watchdog's own
+wedged action normalizes to timeout 124. The real `runner-container` sweep passed all 21
+checks, including an actual hanging container killed at its active budget.
+
+Preflight now compensates any attempted network startup in `finally`, including partial
+startup followed by an exception, before releasing its project lock. Once preflight passes,
+the entire queue/report lifecycle has a second `finally`: bounded network teardown runs
+first and lock release is nested so even teardown failure cannot strand it. A cleanup failure
+makes the run nonzero and suppresses the success event. The process helper, watchdog, wrapper
+and unit suite are frozen mandatory inputs.
+
+## Global ownership and proof-scoped recovery (`repo-tg8.4`, 2026-08-28)
+
+The project lock's authority no longer lives inside one pipeline checkout. It is now stored
+once per user/host outside every checkout and keyed by the canonical target path, so two
+pipeline clones that point at the same target contend on the same exclusive file. The
+launching checkout still receives a `runs/locks/` mirror for the dashboard, sweep and human
+inspection. That mirror is observational; it cannot grant ownership.
+
+Queue claims now use Beads' atomic `--claim`. The same transaction assigns a unique run
+actor and writes `pipeline_owner_token` plus `pipeline_run_id` metadata. The lock records the
+issue only after that transaction wins, and removes it only after a terminal Beads write
+succeeds. Paused tasks and recoverable publication/tracking failures therefore make clean
+shutdown retain a released owner record; a crash naturally leaves its live record behind.
+
+Takeover carries those dead-owner tokens forward. Preflight may list in-progress issues, but
+it reopens only a row whose current status, unique assignee and both metadata fields still
+match one of them, clearing the proof in the same update. Human work, newer run ownership and
+legacy unproven rows are untouched. A read or write failure retains the recovery token for a
+later run rather than widening the reset.
+
+Validation: the Docker-free ownership suite is 32/32; the existing lock suite is 49/49;
+the event/task-body suite is 124/124 plus all three reader suites; and all 33 mandatory
+regression suites pass. Docker sweep `20260828-143133` is 20/20 and proves one owned row
+reopens while a human in-progress row does not. Sweep `20260828-143228` is 27/27 and proves
+terminal claims settle while a paused claim is handed to the next run and recovered. The
+publication sweep `20260828-144253` is 26/26 across done, stuck and partial outcomes.
+
+## Repository-bound control and publication planes (`repo-tg8.5`, 2026-08-28)
+
+Preflight now proves that the checkout named by `targetRepoPath` and the publication locator
+named by `targetRepoRemote` identify the same Git repository. It asks Git to expand configured
+URL aliases, enumerates every local fetch remote, and compares credential-free canonical
+identities. Local path and `file://` spellings match; GitHub HTTPS and SSH spellings match;
+credentials, transport and a network URL's conventional trailing `.git` do not become
+identity. Filesystem siblings `repo` and `repo.git` remain distinct. A checkout with no fetch
+remote is unprovable and is refused rather than trusted by proximity.
+
+This gate runs immediately after the host-global project lock and before the host-shell probe,
+Docker, networking, Beads recovery or queue reads. A mismatch therefore cannot claim, reopen,
+close or block an issue, and cannot create a task workspace or publish a branch. The 20-check
+Docker-free fixture runs the full runner against two real unrelated remotes and proves the
+local `.beads` tree is byte-for-byte unchanged and the controlled temp root has no workspace.
+
+The atomic-claim change exposed one adjacent lifecycle defect during the real workspace sweep:
+a terminal issue retained its unique runner assignee and owner metadata, so reopening it made
+the next `--claim` refuse an apparently already-owned row. Terminal status and ownership
+cleanup now share one Beads update. Ownership coverage is 32/32, event/task-body coverage
+remains 124/124, Docker bootstrap sweep `20260828-145326` is 20/20, and Docker workspace
+sweep `20260828-145751` is 23/23 including a settled issue reopened onto an `-r2` branch.
+Docker queue sweep `20260828-150141` is 27/27, publication sweep `20260828-150407` is
+26/26, and all 33 mandatory Docker-free suites pass.
+
+## One supervisor, scoped children (`repo-rj7`, 2026-09-09)
+
+`runner/supervisor.js` lets one live project supervisor authorize preparation and
+implementation children under its own ownership instead of having those commands compete
+with it, and with each other, as unrelated coordinators (DESIGN.md §3.10, change-log row
+`repo-rj7`).
+
+The decision that made everything else fall out: **the supervisor lease is the existing
+host-global target lock**, taken with the supervisor id as the record's run id. So a second
+supervisor, an unrelated `runner/run.js`, an unrelated `prepare-batch`, `author-tests` and
+`prove-tests` are all refused by the supervisor's own name with no code of their own and no
+second exclusion primitive to keep in step, and canonicalisation, liveness falsification,
+crash takeover and preparation uncertainty are inherited rather than reimplemented. A sidecar
+record beside that lock marks the holder as a supervisor and carries the lease token.
+
+Three things worth knowing before touching this layer:
+
+- **The channel is `PIPELINE_CHILD_AUTHORITY` and no command line changed.**
+  `scripts/prepare-batch.js` asks `admitEntry('preparation', …)` and `runner/preflight.js`
+  asks `admitEntry('implementation', …)`, each as the first thing it does — ahead of the
+  lock, write-protection's read-only backstop excepted, and ahead of Docker, the network and
+  every Beads call. With no supervisor present and nothing in the environment the answer is
+  `standalone`, which is why every existing suite stayed green without a compatibility
+  branch anywhere.
+- **An admitted child takes no lock and releases none.** That is what `lockOwned: false` on
+  the preflight result means, and both `runner/run.js`'s exit handler and
+  `cleanupOwnedLifecycle` now honour it. `cleanupOwnedLifecycle` treats an *absent*
+  `lockOwned` as owned, deliberately: `tests/unit/lifecycle-bounds.test.js` calls it with no
+  ownership at all and requires the release to happen, and that suite is frozen.
+- **Two independent critical sections replace what the lock used to serialize.**
+  `beads-write` and `integration-publish`, keyed on (canonical target, section), one child
+  inside each at a time, a provably dead holder taken over on §4.12's evidence. `run.js`
+  reaches them through `withSection`, which is a straight passthrough when
+  `cfg.childAdmission` is null — so a standalone run's behaviour is unchanged by
+  construction rather than by testing.
+
+**Gap worth knowing, and it is a host obligation:** `runner/supervisor.js` has no re-runnable
+suite, and no task can give it one. Both `tests/unit/` and `scripts/test-*.sh` are frozen
+paths in this repository's own `pipeline.config.json`, so the only coverage is
+`tests/acceptance/repo-rj7/` — a frozen artifact of a finished task that nothing runs again
+(the `repo-dhp` lesson, one layer further out: there the fix was to extract into
+`tests/unit/`, and here that door is shut from inside a run). Extracting `test.js`'s 150
+checks into `tests/unit/supervisor.test.js` plus a `scripts/test-supervisor.sh` wrapper is
+work for an interactive session, and until it happens a change to the lease, grant, admission
+or section logic is judged by nothing.
+
 ## What's next
+
+**The live queue feed shipped on 2026-08-25** — a run re-reads the ready queue while it is
+in flight, so an issue frozen mid-run is picked up by the next free worker (change-log rows
+`live-queue-feed`, `feed-readers`; §4.12). OFF by default: `feedIdleGraceMinutes` is 0 unless
+a config asks otherwise, and at 0 the queue is read once exactly as before. **Two things a
+task could not do for itself follow the merge**, and both are open as of this writing:
+merge PR #47 (until it is in, `scripts/batch.js pending` reports a fed run's batch as
+un-launched, and the cost of that wrong answer is a batch launched twice — so do not enable
+the feed for any project first), and **run `bash scripts/test-all.sh`**, because two PRs
+changed `runner/run.js`'s task loop and two readers with no Docker suite run against either.
+The full picture, including how to use the feed and the two defects the work turned up, is in
+`docs/handoff-2026-08-25-live-queue-feed.md`.
 
 **The queue drained again on 2026-07-26**, after `repo-4l8` (the epic filter, planned and
 frozen in the fifth planning session that day) ran and passed on attempt 1.
@@ -1064,11 +2229,23 @@ design's central bet, and it is the first day it paid out repeatedly.
   starts, so two tasks touching the same file produce a conflict once the first merges
   (seen with PRs #2 and #3). Options: fork from latest, or partition concurrency by
   declared path ownership. Needed before any large wave.
+  **Partly closed 2026-08-26: the worst offender was the change log.** Every task amends
+  `DESIGN.md`, so every task appended a row to the same table at the same place — four of
+  four PRs merged on 2026-08-25/26 needed a person, and three of the four were resolved
+  identically (*keep both rows*). The rows now live in `docs/change-log.md`, which the
+  repo-root `.gitattributes` marks `merge=union`: both sides are kept and nothing conflicts.
+  That is safe on an append-only table and on nothing else — union merge on a prose file
+  would silently keep both copies of an amended paragraph, which is why the attribute names
+  that one path and must never be pointed at `DESIGN.md`. Its one blind spot, two branches
+  rewriting the same row, lands as a duplicate `Ref` and `scripts/test-changelog.sh` fails
+  on it. Files that are genuinely edited in place still collide, so the options above are
+  still open — there is just one less collision per task.
 - **Concurrency *within* a run is opt-in and small** — the runner defaults to the
   sequential loop. Since `repo-jur` several runner processes, one per project, can be in
   flight at once (each over its own queue), and since `repo-os9` a second run against the
   *same* project is refused rather than trusted not to happen; since `repo-teq` one runner
-  works up to `concurrency` tasks of one project at once (default 1, ceiling 3); and since
+  works up to `concurrency` tasks of one project at once (default 1; the ceiling of 3 was
+  lifted by change-log row `concurrency-uncapped`); and since
   `repo-i9y` a usage limit parks the whole run rather than each task separately. §7 is
   built. Note that none of it multiplies subscription capacity: N containers exhaust the
   same usage window N times faster, then the run parks as a whole — concurrency buys
@@ -1084,12 +2261,15 @@ design's central bet, and it is the first day it paid out repeatedly.
 
 ## Test suites
 
-All but twelve drive real Docker and share one network, so they must never run concurrently
+All but twenty-one drive real Docker and share one network, so they must never run
+concurrently
 (`test-runner-memory.sh`, `test-changelog.sh`, `test-sanitize.sh`,
 `test-agent-hooks.sh`, `test-network-names.sh`, `test-lock.sh`,
 `test-sweep-hygiene.sh`, `test-concurrency.sh`, `test-pause-gate.sh`,
-`test-sweep-assertions.sh`, `test-trace.sh`, `test-verdict.sh` and `test-audit-runs.sh` are the exceptions —
-see below; they need neither).
+`test-sweep-assertions.sh`, `test-trace.sh`, `test-verdict.sh`, `test-audit-runs.sh`,
+`test-dashboard.sh`, `test-verify-buffer.sh`, `test-pipeline-map.sh`,
+`test-batch.sh`, `test-dispatch-gate.sh`, `test-feed.sh`, `test-worktree.sh` and
+`test-events.sh` are the exceptions — see below; they need neither).
 **`scripts/test-all.sh` is the sweep** — it holds a lock, runs every suite sequentially,
 kills one that hangs (`--timeout`, default 900s), **reclaims what each suite leaked after
 every suite** (change-log row `repo-zje`), and writes per-suite logs plus a summary table
@@ -1113,20 +2293,30 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-report.sh` | manifest schema, scrutiny ordering, idempotency |
 | `scripts/test-isolation.sh` | no push, read-only scaffolding, no egress, one credential |
 | `scripts/test-fixture.sh` | the fixture repo is a valid pipeline target |
-| `scripts/test-changelog.sh` | `DESIGN.md` §12 row identity — slug refs, uniqueness, citations |
+| `scripts/test-changelog.sh` | `docs/change-log.md` row identity — slug refs, uniqueness, citations (the convention they obey is `DESIGN.md` §12) |
 | `scripts/test-sanitize.sh` | publication hygiene — no machine paths, emails, credentials or denylisted names in the tracked tree |
 | `scripts/test-agent-hooks.sh` | container hygiene — no tracked file configures an agent hook |
 | `scripts/test-network-names.sh` | per-project network and proxy names — derivation, and that they reach the scripts |
 | `scripts/test-lock.sh` | the per-project run lock — refusal, path identity, takeover, release |
+| `scripts/test-ownership.sh` | host-global run ownership, atomic Beads claims, and exact dead-owner recovery |
 | `scripts/test-sweep-hygiene.sh` | sweep hygiene — what the sweep reclaims after a suite, what it must never touch, and that reclaiming changes no verdict |
 | `scripts/test-concurrency.sh` | the §7 `concurrency` knob — the bound, the worker pool, ready-queue result ordering, and the asynchronous execution seam |
 | `scripts/test-pause-gate.sh` | the §7 run-level rate-limit park — one shared wait, one run-level cycle cap, the three admission states, and a refused task that never touches Beads |
 | `scripts/test-sweep-assertions.sh` | the sweep's `PASSED` column — both assertion vocabularies, one honest total from a log carrying both, and "could not tell" rendered apart from a zero |
 | `scripts/test-trace.sh` | the traceability ledger (change-log row `trace-ledger`) — checkbox/ref parsing on both line endings, the three report lists, and backfill that recovers the ticking commit through later prose edits and refuses to guess |
 | `scripts/test-verdict.sh` | the review verdict recorder (change-log row `repo-1ie`) — which run a verdict lands in, what counts as PR-bearing, every refusal writing nothing, and the recorder staying self-contained |
-| `scripts/test-audit-runs.sh` | the run-history audit (change-log row `repo-73k`) — the three-bucket corpus taxonomy, `startedAt` joins, the `specConcerns` channel keys, nearest-rank quantiles, and the pure-reader contract checked by content hash |
+| `scripts/test-audit-runs.sh` | the run-history audit (change-log row `repo-73k`) — the three-bucket corpus taxonomy, `startedAt` joins, the `specConcerns` channel keys, nearest-rank quantiles, the per-model cross-tab (change-log row `model-crosstab`) whose two fixture models disagree on first-attempt rate, and the pure-reader contract checked by content hash |
+| `scripts/test-dashboard.sh` | the live run dashboard (change-log row `repo-kfg`) — the lock-to-run join, the run pick against its three wrong answers, the closed degraded vocabulary at each level, the loopback server contract, and the pure-reader contract checked by content hash |
+| `scripts/test-verify-buffer.sh` | the verifier's capture limit (change-log row `verify-nobuffer`) — a loud passing suite is a pass, a loud failing one is still a fail |
+| `scripts/test-pipeline-map.sh` | the reader's map drawn at build time (change-log row `map-prerender`) — a good SVG's stylesheet versus a real error card, neither check meaning anything alone |
+| `scripts/test-batch.sh` | the batch marker reader (change-log rows `repo-0b3`, `repo-8v0`) — the marker name anchored at both ends, the manifest-less run dated from `run.log`, the conservative `run-time-unknown` direction, the degraded labels, byte-identical repeat output, the pure-reader contract checked by sha1 snapshot and parsed `require` specifiers, and the live-queue reconciliation driven through the `PIPELINE_BD_CMD` seam: the runner's own epic filter, the `-C` slot, a queue past 1 MiB, and every degraded reason against the reconciled one |
+| `scripts/test-freeze-gate.sh` | the fork-point red gate, its GREEN-side probe, its guard subset, its receipt and its brittleness lint (change-log rows `freeze-gate-red`, `repo-uw6`, `repo-inj`, `repo-i4b`) — every verdict from a real command line including `unreachable` 3, `half-proven` 4 and `stale-guard` 5, the broken-probe/red-probe **pair** that separates 2 from 3, a probe refused by name for every unusable path, a probe missing the runner under the REAL verify command, and — the nine-row decision table from every side, the control convention, the empty-probe fallback cleaned up even on a throw, and for the lint the **near-miss pairs first**: two computed digests and git against a self-created ref (the house patterns a `createHash`- or `git diff`-keyed detector flags), `> 0` / `=== 0` / `=== 1` against `=== N`, an input list against an expected one, plus line numbers over CRLF, a split assertion reported where it starts, the three skip reasons, and a lint that throws printing `unavailable` rather than a `0`; and for the guard subset the near-miss pairs again — a token on the tenth line against one on the eleventh, a token on a comment line against the same token inside a STRING (which is what a test *about* guards looks like), a nested file against a top-level one, and a binary file against a readable one — plus the invocation counts that are the only evidence the subset ran at all (three without a probe, five with, three again behind a stale guard) and `guard files: 0` printed for a suite that has none |
+| `scripts/test-dispatch-gate.sh` | the ready queue's second **and third** admission rules (change-log rows `dispatch-gate`, `repo-5yu`, `repo-isq`) — the origin-versus-`targetRepoRemote` pair that discriminates this design from a working-tree check, the `ls-remote --symref` link of the branch chain against a `master` project, an unresolvable branch aborting rather than guessing, a sibling id that merely extends another, the `-d`, the throwaway repository removed on the abort path too, `gitTimeoutMs` at the spawn and at config load, and every `spawnSync` in `runner/queue.js` built from one exported builder; then the receipt — all four refusal kinds in their fixed order, the branch-not-working-copy **pair** (an uncommitted edit beside a matching branch dispatches, a pristine checkout beside a moved branch does not), the four unreadable receipts that collapse to `no-receipt`, `allowHalfProven` moving exactly one of them, the kind riding the manifest row and the report's heading, body and remedy with a negative assertion per kind, and every receipt in the fixtures written by `runner/suite-hash.js` rather than by a second copy of its formula |
+| `scripts/test-feed.sh` | the live queue feed (change-log row `live-queue-feed`) — a poll that keeps returning an already-dispatched issue, one idle worker beside a working one at concurrency 2, a throwing poll beside one returning `ok:false`, and the manifest's `feed` block against the ending vocabulary; `now` and `wait` injected, so nothing turns on wall clock |
+| `scripts/test-worktree.sh` | one folder per agent session (change-log row `parallel-sessions`) — a worktree dirty with only an untracked file beside one with a tracked modification, a clean worktree holding a commit on no remote, `new` invoked from inside a worktree, and two refusals pinned by *this tool's* message rather than by an exit code git would have produced anyway |
+| `scripts/test-events.sh` | the event ledger (change-log rows `events-ledger-design`, `repo-qzy`, `repo-3xw`) — the twin-per-line join including `ts`, a `Date` replaced by a counter so one clock read is proved rather than coincided into, `issueId` null for the two pseudo-tasks, the park's three events from the real gate and the feed's from a real poll, a type-checking validator against `schemas/events.schema.json` (array items and nested objects included) with eight planted envelope rejections and seven more over the new events, the source-level guard that every emitting call site carries the dashboard prefix its event claims plus the second scan that reaches the ledger-only call form, the queue read and its refusals through `runner/queue.js`'s exported emitters, the `[]`/list/`null` attempt trichotomy driven directly, the verbatim spec-concern channel with hostile interleaved entries, `failingChecks`' three failure forms, and the three `run.log` reader suites run from inside it |
 
-**`scripts/test-runner-memory.sh` is one of the twelve suites that need no Docker**
+**`scripts/test-runner-memory.sh` is one of the twenty-one suites that need no Docker**
 (repo-dhp): it
 drives both §3.6 memory channels plus the `shouldFileMemory` outcome gate through the
 `PIPELINE_BD_CMD` seam, so it runs anywhere — including inside a task container, where
@@ -1142,7 +2332,12 @@ and red in the host sweep. The stub is preloaded into node with
 works because node runs preloads before it resolves the main module.
 
 **`scripts/test-changelog.sh` is the second** (repo-006): it reads markdown and nothing
-else, so it needs no Docker, no network and no target repo. It checks §12's table shape
+else, so it needs no Docker, no network and no target repo. The table it reads now lives in
+`docs/change-log.md` rather than in DESIGN.md §12, and the checker's section anchor accepts
+both headings deliberately — the frozen `tests/acceptance/repo-006` suite writes its
+negative-case fixtures with `## 12. Change Log` and drives the checker over them through
+`CHANGELOG_FILE`, so narrowing the anchor to the new form alone would turn a frozen sibling
+suite red. It checks that table's shape
 (four cells per row, counted *after* masking backtick spans — one row carries
 `done|partial|failed|stuck` in a code span and so has three pipes that are not cell
 boundaries), that every ref is a unique kebab-case slug and never a bare date, that no
@@ -1294,6 +2489,20 @@ checker does not find it, so that specific blindness cannot come back. This is t
 "assert the artifact is *right*, not merely present" rule (§3.6) applied to an audit: a
 scanner reporting zero findings and a scanner that cannot see the file look identical.
 
+**The third leak arrived as an instruction, and the suite never ran** (change-log row
+`setup-plugin-name`). `SETUP.md`’s A8 named the private plugin repository in a
+`/plugin marketplace add` line. The two earlier leaks came in as *evidence* — a project
+named in a change-log row, a side project in a worked example — and that is the shape
+§3.6’s rule describes. This one came in as a working command, where naming the repository
+is the entire point of the line, so it read as correct to every human who looked at it.
+Only the host-only denylist knows the name, so only the checker could have caught it.
+
+**It was green the whole time and nobody ran it.** `test-sanitize.sh` is in the sweep and
+the sweep is a manual step; nothing runs it on a pull request. The boundary that lets this
+repo be public while the work is private is therefore enforced by whoever remembers. That
+is the open gap, and it is a bigger one than any single leak: the two automated halves
+(generic patterns, denylisted names) both work, and neither is a gate.
+
 **`scripts/test-concurrency.sh` is the eighth** (`repo-teq`): it requires `runner/run.js` as
 a module and drives the exported `drainQueue` directly, plus the `PIPELINE_EXEC_STUB` branch
 of `executeTask` with shell stubs of its own — no Docker, no daemon, no target repo. Its
@@ -1385,6 +2594,33 @@ type-7 interpolation (816, a number no run ever produced) — interpolation is w
 quietly break byte-determinism. It also pins the structural constraints no behaviour can
 see: every `require` target a node built-in, no `child_process`, no `fs` write API, because
 the script is meant to be copied and that property decays silently.
+
+**`scripts/test-dashboard.sh` is the fourteenth** (change-log row `repo-kfg`): it covers
+`scripts/dashboard.js`, the live run dashboard's reader. It needs node only, builds
+throwaway runs roots under the OS temp directory, and drives the real file two ways — as a
+required module (`main()` sits behind `require.main === module`, the `repo-teq` shape) and
+as a server on an ephemeral loopback port through the `DASHBOARD_RUNS_DIR` /
+`DASHBOARD_PORT` seams — so it reads neither this repo's tree nor the real corpus.
+**Why it is re-runnable rather than left frozen**: what the reader answers is a set of
+JOINS over artifacts four other modules write — the lock record's shape, `run.log`'s line
+wording, `run.json`'s field names and `status.json`'s keys — and any of the four can be
+changed by a later task that has never heard of the dashboard. The failure is silent: a
+well-formed, empty, plausible picture, which is defect 8's shape pointed at a screen
+someone watches at 2 AM.
+Three fixtures are discriminating rather than merely realistic. The **run pick** has three
+plausible wrong answers on a real tree (readdir order, runId sort, directory mtime — the
+`repo-1ie` finding), so one project's correct run is the *first* directory name and
+another's is the *last*: no single wrong reading passes both. The **lock-to-run join** puts
+a newer, manifest-less decoy directory beside the run the held lock names, so an
+implementation that picks by recency instead of by `runId` renders the wrong run rather
+than no run. And the **degraded vocabulary** is planted one term at a time as unparseable
+bytes or a directory where a file belongs — never `chmod`, which is a no-op for root and on
+the Windows host — with the untouched project asserted intact in the same response, because
+the failure worth catching is the blanket catch that drops a whole project quietly. It also
+pins the structural constraints no behaviour can see: every `require` target a node
+built-in and no `child_process`, since the file has to work as a copy from any repo-shaped
+root and its lock-liveness logic is re-implemented inline rather than required from
+`runner/lock.js`.
 
 **A full sweep ran** after the five dogfood/queue PRs merged to `main`: all 18
 suites green, including `e2e.sh` (32 assertions, real PR opened and cleaned up). Two were

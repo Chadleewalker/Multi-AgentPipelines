@@ -49,6 +49,10 @@ const tasks = [
   { issueId: "i-tamp", title: "edited frozen tests", outcome: "tampered", exitCode: 11, branch: "task/i-tamp",
     pushed: true, prUrl: null, attempts: 1, pauses: 0, activeSeconds: 8, diffLines: 2,
     verification: { acceptance: "tampered", regressions: "absent" }, attemptNotes: ["run x: outcome tampered"] },
+  { issueId: "i-recover", title: "push rejected", outcome: "done", exitCode: 0, branch: "task/i-recover",
+    pushed: false, prUrl: null, attempts: 1, pauses: 0, activeSeconds: 10, diffLines: 5,
+    recoveryWorkspace: "C:/tmp/pipeline-i-recover", error: "publication incomplete: push rejected",
+    verification: { acceptance: "pass", regressions: "pass" }, attemptNotes: ["run x: outcome done"] },
 ];
 const { manifest } = writeManifest(dir, { runId: "t17-synth", startedAt: "2026-07-25T20:00:00Z",
   finishedAt: "2026-07-25T21:00:00Z", targetRepo: "https://example.test/repo.git", tasks });
@@ -70,10 +74,10 @@ fi
 
 # 2. Scrutiny ordering: tampered > stuck > partial > failed > done-with-retries > done-first-try.
 ORDER=$(grep -o '^## [a-z0-9-]*' "$REP" | sed 's/## //' | tr '\n' ' ')
-[ "$ORDER" = "i-tamp i-stuck i-part i-fail i-retry i-done1 " ] \
+[ "$ORDER" = "i-tamp i-stuck i-part i-fail i-retry i-recover i-done1 " ] \
   && pass "report ordered by scrutiny needed" || fail "ordering wrong: $ORDER"
 MORDER=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).tasks.map(t=>t.issueId).join(" "))' "$MAN")
-[ "$MORDER" = "i-tamp i-stuck i-part i-fail i-retry i-done1" ] \
+[ "$MORDER" = "i-tamp i-stuck i-part i-fail i-retry i-recover i-done1" ] \
   && pass "manifest itself is stored in scrutiny order" || fail "manifest order wrong: $MORDER"
 
 # 3. done-with-retries outranks done-first-try (the tie-break inside 'done').
@@ -99,7 +103,23 @@ grep -q "PR: none — review the branch directly" "$REP" && pass "pushed-but-unP
 grep -q "not pushed — no commits" "$REP" && pass "empty branch marked not pushed" || fail "no-commit note missing"
 grep -q "bailed after 3 failed verification attempts" "$REP" && pass "stuck state surfaced" || fail "stuck state missing"
 grep -q "Rate-limit pauses: 1" "$REP" && pass "rate-limit pauses reported" || fail "pause count missing"
-grep -q "6 task(s)" "$REP" && pass "summary counts tasks" || fail "summary missing"
+grep -q "7 task(s)" "$REP" && pass "summary counts tasks" || fail "summary missing"
+
+# A publication/Beads settlement failure is not an empty branch. The report must name both
+# the failure and the retained recovery source so an unattended run can be resumed safely.
+node -e '
+const { renderReport } = require(process.argv[1] + "/runner/report");
+process.stdout.write(renderReport({ runId: "recover", startedAt: "2026-08-28T00:00:00Z",
+  finishedAt: "2026-08-28T00:01:00Z", targetRepo: "https://example.test/repo.git", tasks: [{
+    issueId: "i-recover", outcome: "done", branch: "task/i-recover", pushed: false,
+    prUrl: null, recoveryWorkspace: "C:/tmp/pipeline-i-recover", error: "publication incomplete: push rejected"
+  }] }));
+' "$ROOT" > "$TMP/recovery-report.md"
+grep -q "not pushed — completion failed" "$TMP/recovery-report.md" \
+  && grep -q 'Recovery workspace: `C:/tmp/pipeline-i-recover`' "$TMP/recovery-report.md" \
+  && grep -q "publication incomplete: push rejected" "$TMP/recovery-report.md" \
+  && pass "recoverable completion failure names its cause and retained workspace" \
+  || fail "recoverable completion failure is not actionable in the report"
 
 # 5b. Spec concerns reach the report (§3.7). Until this existed the host-side half of the
 # channel was unbuilt and a concern reached only the status file — the agent could say "this

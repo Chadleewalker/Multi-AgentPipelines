@@ -26,6 +26,10 @@ cat > tests/acceptance/T-3/test.sh <<'EOF'
 #!/bin/sh
 [ -f out.txt ] || { echo "out.txt missing"; exit 1; }
 grep -q done out.txt || { echo "out.txt lacks 'done'"; exit 1; }
+if [ -f README.md ] && grep -q BREAK_VERIFICATION README.md; then
+  echo "README carries the planted post-docs verification failure"
+  exit 1
+fi
 EOF
 git add -A && git commit -qm "planning: frozen tests + config"
 
@@ -61,6 +65,27 @@ cat > /tmp/stub-docsfail.sh <<'EOF'
 PROMPT=$(cat)
 case "$PROMPT" in
   *"change summary"*) exit 1 ;;
+  *)                  echo done > out.txt ;;
+esac
+EOF
+# A docs agent that crosses into source. The changed out.txt still satisfies the
+# acceptance test, so only an enforced docs boundary can prevent it reaching HEAD.
+cat > /tmp/stub-docs-source.sh <<'EOF'
+PROMPT=$(cat)
+case "$PROMPT" in
+  *"change summary"*) printf 'done\nunverified docs-phase source mutation\n' > out.txt
+                      echo "docs updated too" >> README.md
+                      printf 'Changed documentation and source.' ;;
+  *)                  echo done > out.txt ;;
+esac
+EOF
+# An allowed Markdown-only edit that makes the authoritative suite red. A path
+# allowlist alone would publish it; the second verification must reject and restore it.
+cat > /tmp/stub-docs-breakverify.sh <<'EOF'
+PROMPT=$(cat)
+case "$PROMPT" in
+  *"change summary"*) echo BREAK_VERIFICATION >> README.md
+                      printf 'Updated README.' ;;
   *)                  echo done > out.txt ;;
 esac
 EOF
@@ -168,12 +193,121 @@ grep -q '"changeSummary": "Created out.txt' /out/e7-docs.json \
 (cd /tmp/ws7 && git show --stat HEAD | grep -q README.md) \
   && pass "docs: README update committed" || fail "docs: README not committed"
 
+# 7b. The disposable docs workspace must be enterable by an identity other than the one that
+# allocated it. `mktemp -d` hands back mode 0700 owned by the allocator, and on the managed
+# ChatGPT path the allocator is root while the docs agent runs as the image's unprivileged
+# user — a root-owned 0700 parent that cost three consecutive runs their documentation phase.
+# The mode is the reproducible half of that here (this image runs the checks unprivileged, so
+# it cannot create a root-owned parent), and it fails against the pre-repair entrypoint.
+# Cleanup scope is asserted in the same scenario: the allocated root and nothing beside it.
+cat > /tmp/stub-docs-probe.sh <<'EOF'
+PROMPT=$(cat)
+case "$PROMPT" in
+  *"change summary"*)
+    PARENT=$(cd .. && pwd)
+    { echo "worktree=$PWD"; echo "parent=$PARENT"; echo "parentmode=$(stat -c %a "$PARENT")"; } \
+      > /tmp/docs-probe.txt
+    echo "docs updated" >> README.md
+    printf 'Probed the disposable docs workspace and updated README.' ;;
+  *)                  echo done > out.txt ;;
+esac
+EOF
+rm -f /tmp/docs-probe.txt
+rm -rf /tmp/docs-neighbour; mkdir -p /tmp/docs-neighbour; echo keep > /tmp/docs-neighbour/keep.txt
+new_ws /tmp/ws7b; run_ep /tmp/ws7b /tmp/stub-docs-probe.sh
+cp /tmp/ws7b/.run/status.json /out/e7b-docs-traversal.json 2>/dev/null
+[ "$RC" = 0 ] && pass "docs-traversal: exit 0" || fail "docs-traversal: rc=$RC"
+DOCS_PARENT=$(sed -n 's/^parent=//p' /tmp/docs-probe.txt 2>/dev/null)
+DOCS_PARENT_MODE=$(sed -n 's/^parentmode=//p' /tmp/docs-probe.txt 2>/dev/null)
+case "$DOCS_PARENT" in
+  */pipeline-docs.*) pass "docs-traversal: docs agent ran inside the disposable workspace" ;;
+  *) fail "docs-traversal: docs agent cwd was not the disposable workspace ($DOCS_PARENT)" ;;
+esac
+# Traverse permission for everyone else, and no more than that: 0711, not 0700 and not 0755.
+case "$DOCS_PARENT_MODE" in
+  *1|*3|*5|*7) pass "docs-traversal: allocated docs root is traversable ($DOCS_PARENT_MODE)" ;;
+  *) fail "docs-traversal: allocated docs root blocks traversal (mode $DOCS_PARENT_MODE)" ;;
+esac
+case "$DOCS_PARENT_MODE" in
+  *4|*5|*6|*7) fail "docs-traversal: allocated docs root is world-readable ($DOCS_PARENT_MODE)" ;;
+  *) pass "docs-traversal: traversal was granted without granting a listing" ;;
+esac
+[ -n "$DOCS_PARENT" ] && [ ! -e "$DOCS_PARENT" ] \
+  && pass "docs-traversal: cleanup removed the allocated docs root" \
+  || fail "docs-traversal: allocated docs root survived cleanup ($DOCS_PARENT)"
+[ -f /tmp/docs-neighbour/keep.txt ] && [ -d /tmp/ws7b ] && [ -d "${TMPDIR:-/tmp}" ] \
+  && pass "docs-traversal: cleanup stayed scoped to what this phase allocated" \
+  || fail "docs-traversal: cleanup reached beyond the allocated docs root"
+grep -q '"changeSummary": "Probed the disposable docs workspace' /out/e7b-docs-traversal.json \
+  && pass "docs-traversal: accepted docs delta supersedes the seeded summary" \
+  || fail "docs-traversal: docs summary missing"
+(cd /tmp/ws7b && git log --format=%s | grep -q "^Task T-3: docs$") \
+  && pass "docs-traversal: docs commit reached the branch tip" || fail "docs-traversal: docs commit missing"
+
+# 7c. A zero-exit docs invocation that authors no documentation cannot publish its prose as
+# the product change summary, and must say so rather than settling as an unqualified success.
+# This is the observed failure exactly: a blocked docs agent asked for traverse permission to
+# be restored, and that request replaced the implementation's own change summary.
+cat > /tmp/stub-docs-noop.sh <<'EOF'
+PROMPT=$(cat)
+case "$PROMPT" in
+  *"change summary"*) printf 'Please authorize restoring traverse permission on the docs workspace.' ;;
+  *)                  echo done > out.txt
+                      printf 'Created out.txt with the done marker.' ;;
+esac
+EOF
+new_ws /tmp/ws7c; run_ep /tmp/ws7c /tmp/stub-docs-noop.sh
+cp /tmp/ws7c/.run/status.json /out/e7c-docs-noop.json 2>/dev/null
+[ "$RC" = 0 ] && pass "docs-noop: verified implementation still exits 0" || fail "docs-noop: rc=$RC"
+grep -q '"changeSummary": "Created out.txt with the done marker."' /out/e7c-docs-noop.json \
+  && pass "docs-noop: the implementation change summary survives the docs phase" \
+  || fail "docs-noop: docs prose replaced the implementation change summary"
+grep -q 'traverse permission' /out/e7c-docs-noop.json \
+  && fail "docs-noop: a permission request became the product change summary" \
+  || pass "docs-noop: no permission request reached the change summary"
+grep -q '"docsPhaseError"' /out/e7c-docs-noop.json \
+  && pass "docs-noop: the docs phase is qualified, not silently successful" \
+  || fail "docs-noop: docs phase settled with nothing recorded"
+
 # 8. Docs phase errors after verified success (T9): non-fatal, exit stays 0.
 new_ws /tmp/ws8; run_ep /tmp/ws8 /tmp/stub-docsfail.sh
 cp /tmp/ws8/.run/status.json /out/e8-docsfail.json 2>/dev/null
 [ "$RC" = 0 ] && pass "docs-fail: exit still 0 (success stands)" || fail "docs-fail: rc=$RC"
 grep -q '"docsPhaseError"' /out/e8-docsfail.json \
   && pass "docs-fail: docsPhaseError recorded" || fail "docs-fail: error not recorded"
+
+# 8b. Docs phase crosses the documentation boundary: discard every docs-phase change,
+# keep the verified implementation, and explain why success contains no docs commit.
+new_ws /tmp/ws8b; run_ep /tmp/ws8b /tmp/stub-docs-source.sh
+cp /tmp/ws8b/.run/status.json /out/e8b-docs-source.json 2>/dev/null
+[ "$RC" = 0 ] && pass "docs-boundary: verified implementation still exits 0" \
+  || fail "docs-boundary: rc=$RC"
+grep -q '"docsPhaseError".*non-documentation' /out/e8b-docs-source.json \
+  && pass "docs-boundary: violation recorded" || fail "docs-boundary: error not recorded"
+grep -q 'unverified docs-phase source mutation' /tmp/ws8b/out.txt \
+  && fail "docs-boundary: unverified source mutation reached the branch tip" \
+  || pass "docs-boundary: unverified source mutation discarded"
+[ ! -e /tmp/ws8b/README.md ] \
+  && pass "docs-boundary: the entire untrusted docs delta was discarded" \
+  || fail "docs-boundary: part of the rejected docs delta survived"
+[ "$(cd /tmp/ws8b && git log -1 --format=%s)" = "Task T-3: implementation (verified on attempt 1)" ] \
+  && pass "docs-boundary: branch tip is the verified implementation commit" \
+  || fail "docs-boundary: branch tip moved past the verified implementation"
+
+# 8c. Even an allowed Markdown-only delta must survive a final authoritative verification.
+new_ws /tmp/ws8c; run_ep /tmp/ws8c /tmp/stub-docs-breakverify.sh
+cp /tmp/ws8c/.run/status.json /out/e8c-docs-reverify.json 2>/dev/null
+[ "$RC" = 0 ] && pass "docs-reverify: verified implementation still exits 0" \
+  || fail "docs-reverify: rc=$RC"
+grep -q '"docsPhaseError".*final verification' /out/e8c-docs-reverify.json \
+  && pass "docs-reverify: failed final verification recorded" \
+  || fail "docs-reverify: failure not recorded"
+[ ! -e /tmp/ws8c/README.md ] \
+  && pass "docs-reverify: failing Markdown delta discarded" \
+  || fail "docs-reverify: failing Markdown delta survived"
+grep -q '"acceptance": "pass"' /tmp/ws8c/.run/verify.json \
+  && pass "docs-reverify: original passing verifier evidence restored" \
+  || fail "docs-reverify: failed docs evidence replaced the successful result"
 
 # 9. Rate limit with reset time (T10): exit 20, reset recorded, zero attempts consumed.
 new_ws /tmp/ws9; run_ep /tmp/ws9 /tmp/stub-ratelimit.sh

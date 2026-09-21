@@ -14,24 +14,39 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const { loadConfig, loadToken } = require('./config');
+const { loadConfig, loadProviderCredential, missingCredentialDiagnostic } = require('./config');
+const { credentialNameFor, providerFor } = require('./agent-provider');
 const { startRun } = require('./log');
 const { preflight, networkDown } = require('./preflight');
 const { release: releaseLock } = require('./lock');
 const {
-  readyQueue, queueSummary, claim, exportIssue, finish, outcomeFor, attemptNotes,
+  readyQueue, claim, exportIssue, finish, outcomeFor, attemptNotes,
+  undispatchableRow, logQueueRead, logUndispatched,
+  queueExitCode,
 } = require('./queue');
 const { prepare, hasCommits, collectArtifacts, discard } = require('./workspace');
 const { runTask } = require('./container');
+const codexAuth = require('./codex-auth');
 const { createPauseGate } = require('./pause');
+const { createFeedSource, fixedSource, ENDINGS } = require('./feed');
 const { fileMemoryNotes, shouldFileMemory } = require('./memory');
-const { publish } = require('./publish');
+const { withSection } = require('./supervisor');
+const { publish, PR_ELIGIBLE_OUTCOMES } = require('./publish');
+const { successfulArtifactFailure } = require('./artifact-schema');
+const { commandFor } = require('./host-shell');
+const { runSync, timeoutFor, failureText } = require('./process');
 const { writeManifest, writeReport } = require('./report');
+const writeProtection = require('../scripts/write-protection-policy');
+// Git-authoritative executable modes (DESIGN.md §4.4, repo-3ec). On the managed mode-untrusted
+// path the verifier materialized the candidate and bound its evidence to the tree; the host must
+// then require that binding rather than treat its absence as "nothing to check".
+const { fileModeUntrusted } = require('../pipeline/materialize.js');
 
 // Diff size on the branch — the report's final tie-breaker (§4.9).
-function diffLines(dir, forkPoint) {
-  const r = require('child_process').spawnSync('git', ['diff', '--shortstat', `${forkPoint}..HEAD`],
-    { cwd: dir, encoding: 'utf8' });
+function diffLines(cfg, dir, forkPoint) {
+  const r = runSync('git', ['diff', '--shortstat', `${forkPoint}..HEAD`], {
+    cfg, kind: 'git', cwd: dir, label: 'git diff summary',
+  });
   const m = /(\d+) insertion[^,]*(?:, (\d+) deletion)?/.exec(r.stdout || '');
   if (!m) return 0;
   return Number(m[1] || 0) + Number(m[2] || 0);
@@ -39,13 +54,118 @@ function diffLines(dir, forkPoint) {
 
 const REPO_ROOT = path.join(__dirname, '..');
 
+// Git-authoritative executable modes (DESIGN.md §4.4, repo-3ec). Verification of a
+// mode-untrusted candidate binds its evidence to the exact tree it judged (content + Git modes),
+// written to .run/verified-tree by the verifier. Before a verified-success outcome publishes,
+// the host confirms the tree that will be pushed still matches that binding: a post-verification
+// amend that changed the candidate's content OR its Git modes yields a different tree id, so the
+// prior pass is stale and its verified-success outcome and PR are refused.
+//
+// Correction 2 — fail closed when the binding is REQUIRED. On the managed mode-untrusted path
+// (core.filemode=false when the host prepared it, or still false at publication), the binding is not
+// optional: a verified success that lost it — missing, malformed, unreadable, or an
+// uncheckable/failed comparison — must NOT stay publishable, or a mode-untrusted verification
+// could publish changed content/modes with its binding quietly gone. So on that path a broken
+// binding is refused, not skipped. On a faithful worktree (core.filemode trusted) nothing was
+// materialized, no binding is expected, and an absent one legitimately means "not applicable" —
+// which keeps ordinary runs and the legacy/test interfaces unchanged. Returns a diagnostic
+// string when stale or when a required binding is broken, or null when there is nothing to
+// enforce. `dir` is the workspace whose tree will be published.
+// The explicit execution-stub interface predates tree bindings and can synthesize successful
+// artifacts without an issue suite. Admit only that legacy shape, proved absent at the immutable
+// fork point before external execution. A failed lookup or a real suite never grants an exception.
+function legacyArtifactStub(dir, forkPoint, issueId, cfg) {
+  if (!process.env.PIPELINE_EXEC_STUB || !/^[0-9a-f]{40,64}$/.test(forkPoint || '')) return false;
+  const r = runSync('git', ['--no-replace-objects', '--literal-pathspecs', 'ls-tree', '-z',
+    forkPoint, '--', `tests/acceptance/${issueId}`], {
+    cfg, kind: 'git', cwd: dir, label: 'git inspect legacy stub issue suite',
+  });
+  return r.status === 0 && !r.error && !r.timedOut && !r.signal && r.stdout === '';
+}
+
+function staleEvidence(dir, forkPoint, cfg, preparedBindingRequired = false, legacyStub = false) {
+  // The host captures the original requirement before external execution. A later config
+  // change cannot downgrade it; current untrusted state still requires evidence as before.
+  const bindingRequired = preparedBindingRequired || fileModeUntrusted(dir);
+  let recorded;
+  try { recorded = fs.readFileSync(path.join(dir, '.run', 'verified-tree'), 'utf8').trim(); }
+  catch (e) {
+    // The captured legacy interface permits an absent binding only; malformed, unreadable or
+    // stale evidence that does exist still follows the normal checks. Direct callers stay strict.
+    if (legacyStub && e && e.code === 'ENOENT') return null;
+    if (bindingRequired) {
+      return 'verified evidence binding is required on this mode-untrusted candidate but could '
+        + `not be read (${e && e.message ? e.message : e}) — refusing the verified-success `
+        + 'outcome and PR';
+    }
+    return null;
+  }
+  if (!/^[0-9a-f]{40,64}$/.test(recorded)) {
+    if (bindingRequired) {
+      return 'verified evidence binding is required on this mode-untrusted candidate but is '
+        + `malformed (${recorded ? recorded.slice(0, 24) : 'empty'}) — refusing the `
+        + 'verified-success outcome and PR';
+    }
+    return null;
+  }
+  const r = runSync('git', ['rev-parse', 'HEAD^{tree}'], {
+    cfg, kind: 'git', cwd: dir, label: 'git rev-parse candidate tree',
+  });
+  const current = String(r.stdout || '').trim();
+  if (r.status !== 0 || !/^[0-9a-f]{40,64}$/.test(current)) {
+    return `verified evidence binding could not be checked: ${failureText(r, 'git rev-parse HEAD^{tree} failed')}`;
+  }
+  if (current !== recorded) {
+    return 'verified evidence is stale: the publishable candidate changed after verification '
+      + `(verified tree ${recorded.slice(0, 12)}, current ${current.slice(0, 12)}) — `
+      + 'refusing the verified-success outcome and PR';
+  }
+  return null;
+}
+
 function parseArgs(argv) {
   const out = { config: null, dryRun: false };
   for (let i = 2; i < argv.length; i++) {
     if (argv[i] === '--config') out.config = argv[++i];
     else if (argv[i] === '--dry-run') out.dryRun = true;
+    else if (argv[i] === '--implementation-reference' || argv[i] === '--implementation-reference-hash') {
+      const key = argv[i] === '--implementation-reference' ? 'implementationReference' : 'implementationReferenceHash';
+      if (out[key] || !argv[i + 1] || argv[i + 1].startsWith('--')) throw new Error(`${argv[i]} requires one value`);
+      out[key] = argv[++i];
+    }
   }
+  if (!!out.implementationReference !== !!out.implementationReferenceHash) throw new Error('implementation reference requires both artifact path and explicit hash');
   return out;
+}
+
+// The successful-preflight ownership boundary. Network teardown is attempted first and
+// lock release lives in its `finally`, so a thrown or timed-out `down` can never strand the
+// project lock. The caller puts its whole post-preflight body inside a separate try/finally;
+// unexpected task, report, queue or publication failures therefore take this same path.
+function cleanupOwnedLifecycle(cfg, repoRoot, log, traceId, deps = {}) {
+  const down = deps.networkDown || networkDown;
+  // A supervisor child owns the network it started and nothing else: the target lease belongs
+  // to its parent, and `lockOwned: false` is preflight saying so. Releasing there would free a
+  // lease this process never took. Absent means owned, so every existing caller is unchanged.
+  const unlock = deps.lockOwned === false
+    ? () => {}
+    : (deps.releaseLock || releaseLock);
+  let error = null;
+  try {
+    const result = down(repoRoot, cfg);
+    if (result && result.ok === false) {
+      error = `network teardown failed: ${String(result.output || '').trim() || 'no diagnostic'}`;
+    }
+  } catch (e) {
+    error = `network teardown threw: ${e && e.message ? e.message : e}`;
+  } finally {
+    try { unlock(repoRoot, cfg.targetRepoPath, deps.ownership); } catch (e) {
+      const lockError = `project lock release threw: ${e && e.message ? e.message : e}`;
+      error = error ? `${error}; ${lockError}` : lockError;
+    }
+  }
+  if (error && log) log.error(traceId, error);
+  return { ok: !error, error };
 }
 
 // Placeholder task execution until T13/T14 land. PIPELINE_EXEC_STUB names a script
@@ -54,7 +174,12 @@ function parseArgs(argv) {
 // One task container (§4.10). PIPELINE_EXEC_STUB replaces the container with a local
 // script — used by the runner's own test suites to exercise outcome paths cheaply;
 // real runs always take the docker path.
-async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClockMinutes) {
+async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClockMinutes, docsScope) {
+  // repo-062: the host transports the documentation scope to the container. A preserve scope
+  // tells the entrypoint to skip the docs model and docs worktree; every other value (and the
+  // absence of one) leaves the normal docs phase running. Set explicitly and stripped otherwise
+  // so an ambient value cannot silently prohibit documentation on an unrelated task.
+  const docsScopeEnv = docsScope && docsScope.documentation === 'preserve' ? 'preserve' : null;
   const stub = process.env.PIPELINE_EXEC_STUB;
   if (stub) {
     // Asynchronous on purpose (§7): spawnSync here would serialise every stubbed task and
@@ -64,61 +189,194 @@ async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClo
     // because the existing Docker suites depend on both. Output is discarded rather than
     // piped: spawnSync's pipes were never read either, and an unread pipe would now block
     // a chatty stub instead of quietly filling a buffer nobody looks at.
-    const status = await new Promise((resolve) => {
-      const child = require('child_process').spawn('bash', [stub], {
+    const completed = await new Promise((resolve) => {
+      const stubEnv = { ...process.env, ISSUE_ID: issue.id, TASK_DIR: taskDir, WORKSPACE: ws.dir, RUN_DIR: path.join(ws.dir, '.run') };
+      if (docsScopeEnv) stubEnv.PIPELINE_DOCS_SCOPE = docsScopeEnv; else delete stubEnv.PIPELINE_DOCS_SCOPE;
+      const child = require('child_process').spawn(commandFor(cfg), [stub], {
         cwd: ws.dir,
         stdio: ['ignore', 'ignore', 'ignore'],
-        env: { ...process.env, ISSUE_ID: issue.id, TASK_DIR: taskDir, WORKSPACE: ws.dir, RUN_DIR: path.join(ws.dir, '.run') },
+        env: stubEnv,
       });
-      child.on('error', () => resolve(null));      // same shape spawnSync reported: no status
-      child.on('close', (code) => resolve(code));  // null when a signal killed it
+      let finished = false;
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        try { child.kill('SIGKILL'); } catch { /* close/error settles the result */ }
+      }, timeoutFor(cfg, 'lifecycle'));
+      const settle = (code) => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        resolve({ code, timedOut });
+      };
+      child.on('error', () => settle(null));      // same shape spawnSync reported: no status
+      child.on('close', (code) => settle(code));  // null when a signal killed it
     });
-    log.info(traceId, `exec stub exited ${status}`);
-    return { exitCode: status === 124 ? 'killed' : status };
+    log.info(traceId, `exec stub exited ${completed.timedOut ? 'timeout' : completed.code}`);
+    return { exitCode: completed.timedOut || completed.code === 124 ? 'killed' : completed.code };
   }
   // Container names must be unique across relaunches (§4.7 resume).
   const attempt = (executeTask.counter = (executeTask.counter || 0) + 1);
-  return runTask(cfg, {
-    containerName: `task-${issue.id}-${log.runId}-${attempt}`.replace(/[^A-Za-z0-9_.-]/g, '-'),
-    workspaceDir: ws.dir,
-    pipelineDir: path.join(REPO_ROOT, 'pipeline'),
-    issueId: issue.id,
-    taskDir,
-    token,
-    wallClockMinutes: wallClockMinutes || cfg.wallClockMinutes,
-  }, log, traceId);
+  const launch = async (laneContext) => {
+    const authCache = laneContext && laneContext.authCache;
+    return runTask(cfg, {
+      containerName: `task-${issue.id}-${log.runId}-${attempt}`.replace(/[^A-Za-z0-9_.-]/g, '-'),
+      workspaceDir: ws.dir,
+      pipelineDir: path.join(REPO_ROOT, 'pipeline'),
+      issueId: issue.id,
+      taskDir,
+      docsScope: docsScopeEnv,
+      ...(authCache ? {} : {
+        credential: { name: credentialNameFor(providerFor(cfg)), value: token },
+      }),
+      wallClockMinutes: wallClockMinutes || cfg.wallClockMinutes,
+      authCache,
+    }, log, traceId);
+  };
+  if (providerFor(cfg) === 'codex' && cfg.codexAuth === 'chatgpt') {
+    try {
+      if (cfg.codexLanePool) {
+        return await cfg.codexLanePool.run({ id: issue.id, stage: 'implementation', credential: true }, launch);
+      }
+      const authCache = await Promise.resolve(codexAuth.stageTaskCache({ cacheRoot: cfg.codexAuthCacheRoot, taskId: issue.id, wait: true }));
+      try { return await launch({ authCache }); }
+      finally { await Promise.resolve(codexAuth.releaseTaskCache(authCache)); }
+    } catch (error) {
+      // Boundary exceptions resolve as task-local data so neither a direct caller nor the
+      // shared worker drain can be rejected. Never copy exception text or fields: provider
+      // errors can carry refresh-token evidence.
+      const code = error && typeof error.code === 'string' && /^[A-Za-z0-9_.-]{1,80}$/.test(error.code)
+        ? error.code : 'credential-lane-boundary';
+      return { exitCode: null, laneBoundaryError: code };
+    }
+  }
+  return launch(null);
 }
 
 // ---- the bounded worker pool (§7, §4.12) ------------------------------------------
-// ONE runner process working N tasks of one project at once, never N runner processes:
-// the sole-Beads-writer rule (§4.10) and claim-based double-pick prevention survive only
-// inside a single process. Several runners, one per project, are a different thing and
-// already shipped (change-log row `repo-jur`).
+// ONE runner process working N tasks of one project at once. The host-global target lock is
+// the sole-writer boundary; atomic Beads claims are the final compare-and-set if a stale queue
+// row is ever observed by another actor. Several runners, one per project, are a different
+// thing and already shipped (change-log row `repo-jur`).
 //
-// `issues` is the ready queue in ready-queue order; `taskFn(issue)` is the runner's own
-// per-task body; at most `concurrency` of those calls are in flight at once. The resolved
-// array is INDEX-ALIGNED WITH `issues` — ready-queue order, never completion order — so a
-// task that finishes first does not overtake its neighbours in the manifest.
+// `source` is either the ready queue as a plain ARRAY — the historic contract, and still
+// what every existing caller passes — or a live source from `runner/feed.js` that re-reads
+// the queue while the run is in flight (§4.12, change-log row `live-queue-feed`).
+// `taskFn(issue)` is the runner's own per-task body; at most `concurrency` of those calls
+// are in flight at once. The resolved array is INDEX-ALIGNED WITH DISPATCH ORDER, so a task
+// that finishes first does not overtake its neighbours in the manifest. For an array those
+// are the same thing — the cursor hands items out in ready-queue order — which is why
+// wrapping an array in `fixedSource` changes no existing behaviour and no existing result.
 //
-// N fixed workers pulling from a shared cursor, rather than a promise-set watched with
-// Promise.race: nothing here needs to know which task finished, only that a slot opened,
-// and the cursor is what keeps starts in ready-queue order at any depth.
-async function drainQueue(issues, taskFn, concurrency) {
-  const queue = Array.from(issues || []);
+// N fixed workers pulling from a shared source, rather than a promise-set watched with
+// Promise.race: nothing here needs to know which task finished, only that a slot opened.
+// A worker asking for work IS the free-slot signal a live source polls on, so the shape
+// chosen for ordering turns out to be the shape feeding needs.
+async function drainQueue(source, taskFn, concurrency) {
+  const live = source && !Array.isArray(source) && typeof source.next === 'function';
+  const src = live ? source : fixedSource(source);
   const n = Number.isInteger(concurrency) && concurrency > 0 ? concurrency : 1;
-  const results = new Array(queue.length);
-  let cursor = 0;
+  const results = [];
   const worker = async () => {
     for (;;) {
-      const i = cursor++;
-      if (i >= queue.length) return;
-      results[i] = await taskFn(queue[i], i);
+      const item = await src.next();
+      if (!item) return;
+      results[item.index] = await taskFn(item.issue, item.index);
     }
   };
+  // A live source has no length to bound the pool by — the whole point is that more work
+  // may arrive — so the pool is `concurrency` wide and the source decides when to stop
+  // feeding it. A fixed source still starts no more workers than it has items.
+  const width = live ? n : Math.min(n, Array.isArray(source) ? source.length : 0);
   const workers = [];
-  for (let i = 0; i < Math.min(n, queue.length); i++) workers.push(worker());
+  for (let i = 0; i < width; i++) workers.push(worker());
   await Promise.all(workers);
-  return results;
+  // Dispatch indices are dense — the source hands them out sequentially — but a worker whose
+  // body resolved `undefined` leaves a hole that `Array.from` normalises away, so callers see
+  // a real list at every index rather than a sparse array they have to know about.
+  return Array.from(results);
+}
+
+// ---- the two ledger-only task facts (§4.12, §5; change-log row `repo-3xw`) --------------
+// Neither has a prose form, and that is the point: `run.log` already tells a human how the
+// task ended, and nothing it could say would let a reader ask "did the last two attempts fail
+// the same set of checks?" without re-parsing a verifier log it may no longer have. So these
+// go to the ledger only — `log.event()`, `msg: null`, never echoed — and `run.log` stays
+// byte-identical for the human reading it.
+
+// WHICH checks failed, from `scripts/sweep-assertions.js`: the one file that owns this repo's
+// assertion-line vocabulary. Importing it rather than re-parsing here is the whole reason
+// `failingChecks` was added there — a second parser would drift the first time a suite's
+// output changed, and the drift would be a name list that is non-empty, well-formed and stale.
+const { failingChecks } = require('../scripts/sweep-assertions');
+
+// THREE ANSWERS, and they are three different facts:
+//   [ ]   — nothing failed;
+//   [...] — these failed;
+//   null  — nothing is known either way.
+// Collapsing the third onto the first is the "non-empty, well-formed and false" shape this
+// repo keeps paying for: a reader comparing attempt sets would score two attempts that
+// recorded nothing as having failed identically.
+//
+// TWO ways to know the set is empty, and only one of them needs text. Where the attempt left
+// verifier output, the names come from parsing it. Where it left none but the verifier called
+// it a PASS, the set is empty by definition — the frozen suite ran and every check in it
+// passed — and answering `null` there would be a small lie about a fact the run does know.
+// `null` is reserved for the case that is genuinely unknown: an attempt that FAILED and whose
+// output did not survive (a killed container leaves a half-written verify.json, which
+// `collectArtifacts` drops on purpose), where the run knows something failed and not what.
+function checksFor(attempt, text) {
+  if (typeof text === 'string') return failingChecks(text);
+  if (attempt && attempt.verifierResult === 'pass') return [];
+  return null;
+}
+
+// The THIRD argument of `info`/`error` has always been absent-safe — a log object that ignores
+// it still works, which is what lets four other suites hand `runOneTask` a bare
+// `{info, error}` stand-in. `event()` is a different shape and cannot be ignored the same way:
+// calling a method that is not there THROWS, from inside the task body, after the container
+// has run and before the outcome is written. So both emitters ask for the writer first.
+// This is not a fail-safe swallow of an error — its ABSENCE is checked, never its failure —
+// and it costs a real run nothing, because the real `runner/log.js` always has it.
+const hasLedger = (log) => !!log && typeof log.event === 'function';
+
+function logAttempts(log, tr, issueId, status, verify) {
+  if (!hasLedger(log)) return;
+  const attempts = (status && Array.isArray(status.attempts)) ? status.attempts : [];
+  attempts.forEach((a, i) => {
+    // Only a FAILING attempt records feedback — `pipeline/entrypoint.sh` writes it from that
+    // attempt's verify.json when the verifier exits 1, and a pass has nothing to feed back.
+    // `verify.json` itself survives for the LAST attempt only, because each attempt
+    // overwrites it, so its output may stand in for the final attempt and no other.
+    const feedback = a && typeof a.feedback === 'string' ? a.feedback : null;
+    const final = i === attempts.length - 1;
+    const text = feedback !== null ? feedback
+      : (final && verify && typeof verify.acceptanceOutput === 'string' ? verify.acceptanceOutput : null);
+    log.event(tr, 'attempt.finished', {
+      // Carried in `data` as well as in the envelope: the envelope's `issueId` is derived from
+      // the trace, and a reader extracting attempt rows should not have to know that rule.
+      issueId,
+      number: Number.isInteger(a && a.number) ? a.number : null,
+      verifierResult: (a && typeof a.verifierResult === 'string') ? a.verifierResult : null,
+      failingChecks: checksFor(a, text),
+    });
+  });
+}
+
+// §3.7's "this spec is wrong" channel, one event per entry, VERBATIM — never summarised and
+// never counted, because the text is the whole content of a concern. Non-strings are skipped
+// rather than coerced: `pipeline/status.js` bounds this channel on the way in, but the status
+// file is not schema-validated here, and `String(x)` on a stray object would file `[object
+// Object]` as a concern a human then has to go and disprove (repo-iok-note-2's lesson).
+// Evidence only, exactly like every other surface this channel reaches: it cannot change an
+// outcome (§3.5).
+function logConcerns(log, tr, status) {
+  if (!hasLedger(log)) return;
+  const concerns = (status && Array.isArray(status.specConcerns)) ? status.specConcerns : [];
+  for (const text of concerns) {
+    if (typeof text !== 'string') continue;
+    log.event(tr, 'concern.raised', { text });
+  }
 }
 
 // One task, start to finish: claim, export, workspace, container (with pause/resume),
@@ -130,7 +388,49 @@ async function drainQueue(issues, taskFn, concurrency) {
 // `gate` is the RUN-level rate-limit park (§7), built once in main() and shared by every
 // task: this function asks it for admission before it starts and reports its own limits
 // into it, but never owns one.
-async function runOneTask(cfg, issue, log, token, gate) {
+// The two host-global critical sections (§3.10), as the task body sees them. `withSection` is
+// a straight passthrough when `cfg.childAdmission` is null, so a standalone run — which holds
+// the whole target already — behaves exactly as it always has. Under a supervisor, two
+// authorized workers may be live at once, and these are the two things that still may not
+// overlap: one Beads write with another, and one integration publication with another. A
+// section that cannot be entered within its bound becomes the caller's own ordinary failure,
+// never a write performed outside the section.
+function beadsWrite(cfg, fn, onBlocked) {
+  try { return withSection(cfg.childAdmission, 'beads-write', fn); }
+  catch (e) { return onBlocked(e && e.message ? e.message : String(e)); }
+}
+function integrationPublish(cfg, fn, onBlocked) {
+  try { return withSection(cfg.childAdmission, 'integration-publish', fn); }
+  catch (e) { return onBlocked(e && e.message ? e.message : String(e)); }
+}
+
+function laneBoundaryFailure(cfg, issue, log, tr, ws, pauses, activeMs, ownership, error) {
+  const code = error && typeof error.code === 'string' && /^[A-Za-z0-9_.-]{1,80}$/.test(error.code)
+    ? error.code : 'credential-lane-boundary';
+  const reason = `task execution boundary failed (${code})`;
+  log.error(tr, reason);
+  const failedOutcome = { status: 'failed', beads: null };
+  const settled = beadsWrite(cfg, () => finish(cfg, issue.id, failedOutcome,
+    [`run ${log.runId}: ${reason}`], ownership),
+  (why) => ({ ok: false, transition: null, error: why }));
+  const completionError = settled.ok ? null : `Beads completion incomplete: ${settled.error}`;
+  log.error(tr, 'task finished: exit unavailable -> failed' +
+    ' (issue stays in_progress)', {
+    event: 'task.finished',
+    data: { exitCode: null, outcome: 'failed', beads: null },
+  });
+  log.info(tr, `workspace kept at ${ws.dir}`);
+  return {
+    issueId: issue.id, title: issue.title || '', outcome: 'failed', exitCode: null,
+    branch: ws.branch, pushed: false, prUrl: null, attempts: 0, pauses,
+    activeSeconds: Math.round(activeMs / 1000), diffLines: 0,
+    attemptNotes: [`run ${log.runId}: ${reason}`],
+    error: [reason, completionError].filter(Boolean).join('; '),
+    recoveryWorkspace: ws.dir,
+  };
+}
+
+async function runOneTask(cfg, issue, log, token, gate, ownership, implementationReference = null) {
   const tr = log.trace(issue.id);
   const taskDir = log.taskDir(issue.id);
 
@@ -143,7 +443,8 @@ async function runOneTask(cfg, issue, log, token, gate) {
   // A refused task still resolves a row rather than null: main()'s .filter(Boolean) would
   // otherwise erase it from run.json entirely — a silent hole after an unattended run.
   if (!(await gate.admit(issue.id))) {
-    log.error(tr, 'refused: the run-level rate-limit pause cap has fired; nothing launched, issue stays open');
+    log.error(tr, 'refused: the run-level rate-limit pause cap has fired; nothing launched, issue stays open',
+      { event: 'task.refused', data: {} });
     return {
       issueId: issue.id,
       title: issue.title || '',
@@ -152,34 +453,68 @@ async function runOneTask(cfg, issue, log, token, gate) {
     };
   }
 
-  log.info(tr, `starting task (priority ${issue.priority ?? 2}): ${issue.title || ''}`);
+  // One expression, two records: the ledger's `priority` is the number the line printed,
+  // never a second reading of `issue`, so the twin cannot disagree with its own message.
+  const priority = issue.priority ?? 2;
+  const title = issue.title || '';
+  log.info(tr, `starting task (priority ${priority}): ${title}`,
+    { event: 'task.started', data: { priority, title } });
 
-  if (!claim(cfg, issue.id)) {
-    log.error(tr, 'could not mark the issue in_progress; skipping');
+  const claimed = beadsWrite(cfg, () => claim(cfg, issue.id, ownership), (why) => {
+    log.error(tr, `could not enter the Beads-write section to claim the issue: ${why}`);
+    return false;
+  });
+  if (!claimed) {
+    log.error(tr, 'could not atomically claim the issue for this run; skipping');
     return null;
+  }
+  if (ownership && ownership.recordError) {
+    log.error(tr, `claim ownership mirror could not be updated (${ownership.recordError}); `
+      + 'the global owner token is retained for recovery');
+    delete ownership.recordError;
   }
   const exported = exportIssue(cfg, issue.id);
   if (!exported.ok) {
     log.error(tr, `could not export the issue: ${exported.error}`);
-    finish(cfg, issue.id, { status: 'failed', beads: 'blocked' },
-      [`run ${log.runId}: could not export issue spec — ${exported.error}`]);
-    return { issueId: issue.id, outcome: 'failed' };
+    const settled = beadsWrite(cfg, () => finish(cfg, issue.id, { status: 'failed', beads: 'blocked' },
+      [`run ${log.runId}: could not export issue spec — ${exported.error}`], ownership),
+    (why) => ({ ok: false, transition: null, error: why }));
+    if (!settled.ok) log.error(tr, `could not record export failure in Beads: ${settled.error}`);
+    return {
+      issueId: issue.id,
+      outcome: 'failed',
+      ...(!settled.ok ? { error: settled.error } : {}),
+    };
   }
   fs.writeFileSync(path.join(taskDir, 'issue.md'), exported.markdown);
+  // Host-owned documentation-scope snapshot, read from canonical exported issue data (repo-062).
+  // It is transported into the container (docs skip) and into publication (Markdown-surface
+  // backstop) from HERE; a container-editable issue file or environment artifact cannot relax it.
+  const docsScopeSnapshot = exported.scope || null;
+  const docsProhibited = !!docsScopeSnapshot && docsScopeSnapshot.documentation === 'preserve';
 
   // ---- per-task workspace: fresh clone, task branch, issue mounted (§4.2, T13) ----
-  // Synchronous (spawnSync: git clone), so it blocks the other workers for its few
-  // seconds. Deliberate (§7): against container times measured in tens of minutes it is a
-  // rounding error, and making it async would widen this into four more runner files. The
-  // visible consequence is that a wall-clock kill timer can fire a few seconds late while
-  // another worker is cloning. Same for publish() below (git push, gh pr create).
-  const ws = prepare(cfg, issue.id, exported.markdown, log, tr);
+  // Clone remains synchronous and therefore serialises this orchestration thread briefly,
+  // but every Git call is bounded. Active container deadlines do not share this event loop:
+  // runner/deadline-watchdog.js owns each clock and bounded Docker kill independently.
+  const ws = prepare(cfg, issue.id, exported.markdown, log, tr, implementationReference);
   if (!ws.ok) {
     log.error(tr, `workspace preparation failed: ${ws.reason}`);
-    finish(cfg, issue.id, { status: 'failed', beads: 'blocked' },
-      [`run ${log.runId}: workspace preparation failed — ${ws.reason}`]);
-    return { issueId: issue.id, outcome: 'failed' };
+    const settled = beadsWrite(cfg, () => finish(cfg, issue.id, { status: 'failed', beads: 'blocked' },
+      [`run ${log.runId}: workspace preparation failed — ${ws.reason}`], ownership),
+    (why) => ({ ok: false, transition: null, error: why }));
+    if (!settled.ok) log.error(tr, `could not record workspace failure in Beads: ${settled.error}`);
+    return {
+      issueId: issue.id,
+      outcome: 'failed',
+      ...(!settled.ok ? { error: settled.error } : {}),
+    };
   }
+
+  // Capture mode trust while this is still the host-prepared workspace. Keep this host-owned
+  // fact across every execution/relaunch: .git/config is mutable after the worker starts.
+  const preparedBindingRequired = fileModeUntrusted(ws.dir);
+  const preparedLegacyStub = legacyArtifactStub(ws.dir, ws.forkPoint, issue.id, cfg);
 
   // ---- run the task, pausing and resuming across usage windows (§4.7) ----
   // Active time accumulates across relaunches; paused time never counts (§4.6).
@@ -195,21 +530,37 @@ async function runOneTask(cfg, issue, log, token, gate) {
     if (remainingMinutes <= 0) {
       log.error(tr, 'active wall-clock budget exhausted across relaunches');
       exec = { exitCode: 'killed', killed: true, durationMs: 0 };
-      artifacts = collectArtifacts(ws.dir, taskDir);
+      artifacts = collectArtifacts(ws.dir, taskDir, issue.id);
       break;
     }
-    exec = await executeTask(cfg, issue, taskDir, log, tr, ws, token, remainingMinutes);
+    try {
+      exec = await executeTask(cfg, issue, taskDir, log, tr, ws, token, remainingMinutes, docsScopeSnapshot);
+    } catch (error) {
+      return laneBoundaryFailure(cfg, issue, log, tr, ws, pauses, activeMs, ownership, error);
+    }
+    if (exec && exec.laneBoundaryError) {
+      return laneBoundaryFailure(cfg, issue, log, tr, ws, pauses, activeMs, ownership,
+        { code: exec.laneBoundaryError });
+    }
     activeMs += exec.durationMs || 0;
     if (exec.durationMs !== undefined) {
       log.info(tr, `container ran ${Math.round(exec.durationMs / 1000)}s` +
-        `${exec.killed ? ' (killed at budget)' : ''}; active total ${Math.round(activeMs / 1000)}s`);
+        `${exec.killed ? ' (killed at budget)' : ''}; active total ${Math.round(activeMs / 1000)}s`, {
+        event: 'container.ran',
+        data: {
+          seconds: Math.round(exec.durationMs / 1000),
+          killed: !!exec.killed,
+          activeSeconds: Math.round(activeMs / 1000),
+        },
+      });
     }
-    artifacts = collectArtifacts(ws.dir, taskDir);
+    artifacts = collectArtifacts(ws.dir, taskDir, issue.id);
 
     if (exec.exitCode !== 20) break;                       // not a rate limit — done
 
     pauses += 1;
-    log.info(tr, `rate limit hit (pause ${pauses}) — parking the task; issue stays in_progress`);
+    log.info(tr, `rate limit hit (pause ${pauses}) — parking the task; issue stays in_progress`,
+      { event: 'task.rateLimited', data: { pause: pauses } });
     // The park is RUN-LEVEL (§7): the FIRST exit 20 of the run opens one shared wait, on
     // that task's reported reset time, and every later reporter — this one included —
     // joins it rather than sleeping against the same window on its own. Joining never
@@ -221,25 +572,85 @@ async function runOneTask(cfg, issue, log, token, gate) {
       log.error(tr, `giving up on the pause: ${waited.reason}`);
       break;                                               // stays exit 20 -> paused
     }
-    log.info(tr, 'relaunching in a fresh container against the same workspace (attempt counter carries over)');
+    log.info(tr, 'relaunching in a fresh container against the same workspace (attempt counter carries over)',
+      { event: 'task.relaunched', data: {} });
   }
   if (pauses) log.info(tr, `task resumed across ${pauses} usage-window pause(s)`);
-  const outcome = outcomeFor(exec.exitCode, artifacts.verify);
-  const commits = hasCommits(ws.dir, ws.forkPoint);
-  log.info(tr, `branch ${ws.branch}: ${commits ? 'has commits (push candidate)' : 'no commits (nothing to push)'}`);
+
+  // ---- the two ledger-only facts (§4.12, §5; change-log row `repo-3xw`) ----------------
+  // AFTER the relaunch loop, once, from the COLLECTED status file — never inside it. A parked
+  // task collects its status on every relaunch, and emitting there would write attempt 1
+  // twice for a task that paused once and three times for one that paused twice: a ledger
+  // whose attempt count depends on how the subscription window happened to fall.
+  logAttempts(log, tr, issue.id, artifacts.status, artifacts.verify);
+  logConcerns(log, tr, artifacts.status);
+
+  // Exit 0 is only a success claim. The host accepts it as done/partial after both
+  // container artifacts validate against their checked-in schemas, belong to this issue,
+  // and the authoritative acceptance verdict is exactly pass. Invalid raw bytes remain in
+  // the run directory as evidence but cannot close an issue or reach a PR body.
+  const artifactError = successfulArtifactFailure(exec.exitCode, artifacts.contracts);
+  if (artifactError) log.error(tr, artifactError);
+  let outcome = artifactError
+    ? { status: 'failed', beads: 'blocked' }
+    : outcomeFor(exec.exitCode, artifacts.verify);
+  let commits = false;
+  let commitCheckError = null;
+  try {
+    commits = hasCommits(ws.dir, ws.forkPoint, cfg);
+    log.info(tr, `branch ${ws.branch}: ${commits ? 'has commits (push candidate)' : 'no commits (nothing to push)'}`);
+  } catch (e) {
+    commitCheckError = `publication precheck incomplete: ${e && e.message ? e.message : e}`;
+    log.error(tr, `${commitCheckError}; workspace retained and Beads stays in_progress`);
+  }
+
+  // Stale-evidence gate (§4.4, repo-3ec). A verified pass is only publishable while it still
+  // describes the candidate on the branch. Checked only when a verified-success outcome would
+  // publish something — a mode-untrusted verification wrote the binding, a later amend may have
+  // invalidated it. The branch may still be pushed as recoverable evidence; only the
+  // verified-success outcome and its PR are withdrawn.
+  let staleError = null;
+  if (!artifactError && !commitCheckError && commits && PR_ELIGIBLE_OUTCOMES.has(outcome.status)) {
+    staleError = staleEvidence(ws.dir, ws.forkPoint, cfg, preparedBindingRequired, preparedLegacyStub);
+    if (staleError) {
+      log.error(tr, staleError);
+      outcome = { status: 'failed', beads: 'blocked' };
+    }
+  }
 
   // ---- memory out-channel (§3.6): file the agent's proposed notes, host as sole
   // Beads writer. Which outcomes qualify is memory.js's rule, not the runner's —
   // shouldFileMemory() states it once, where a Docker-free test can reach it.
   // Non-fatal by construction: it never throws and never touches the outcome.
   if (shouldFileMemory(outcome.status)) {
-    const mem = fileMemoryNotes(cfg, issue.id, artifacts.status);
+    const mem = beadsWrite(cfg, () => fileMemoryNotes(cfg, issue.id, artifacts.status),
+      (why) => ({ filed: 0, errors: [why] }));
     if (mem.filed) log.info(tr, `memory: filed ${mem.filed} note(s) via bd remember`);
     for (const err of mem.errors) log.error(tr, `memory: could not file a note — ${err}`);
   }
 
+  // repo-062: a documentation-prohibited task ran implementation and its verifier but never the
+  // docs model or docs worktree. Record that intentional omission as a bounded, explicit line in
+  // the existing run log — deliberately free of any error/publication vocabulary so it is never
+  // read as a docs failure or the later publication result. The "verified implementation summary
+  // is retained" clause is a claim about the WORK and so is made only for an authoritatively
+  // successful verification (real acceptance pass, no invalid-artifact failure, a done/partial
+  // outcome). A failed, stuck or invalid-artifact outcome gets the neutral omission description
+  // instead, because there is no verified summary to retain (repo-062 review correction 6).
+  if (docsProhibited) {
+    const verifiedSuccess = !artifactError
+      && !!artifacts.verify && artifacts.verify.acceptance === 'pass'
+      && (outcome.status === 'done' || outcome.status === 'partial');
+    log.info(tr, verifiedSuccess
+      ? 'documentation phase intentionally omitted for this preserve-documentation task; '
+        + 'the verified implementation summary is retained'
+      : 'documentation phase intentionally omitted for this preserve-documentation task');
+  }
+
   // ---- publish: push what exists, PR what passed (§4.5, T16) ----
-  const published = publish(cfg, {
+  const published = commitCheckError ? {
+    ok: false, pushed: false, branch: ws.branch, prUrl: null, error: commitCheckError,
+  } : integrationPublish(cfg, () => publish(cfg, {
     ws,
     outcome,
     hasCommits: commits,
@@ -248,16 +659,53 @@ async function runOneTask(cfg, issue, log, token, gate) {
     verify: artifacts.verify,
     issue,
     runId: log.runId,
-  }, log, tr);
+    // The host-owned documentation-scope snapshot (repo-062): publish refuses a protected
+    // Markdown-surface delta and renders the intentional-omission PR note from it.
+    scope: docsScopeSnapshot,
+    // Host-only exact-value discriminator. publish/credential-scan never logs its value.
+    secrets: [token],
+  }, log, tr), (why) => ({
+    ok: false, pushed: false, branch: ws.branch, prUrl: null, error: why,
+  }));
 
   const notes = attemptNotes(log.runId, outcome, artifacts.status, ws.memoryCount);
+  if (artifactError) notes.push(artifactError);
   if (published.prUrl) notes.push(`PR: ${published.prUrl}`);
   else if (published.pushed) notes.push(`branch pushed for review: ${ws.branch} (no PR — ${outcome.status})`);
-  finish(cfg, issue.id, outcome, notes);
+  // Publication and Beads are one settlement boundary. A push/PR failure never reaches a
+  // terminal Beads transition; a Beads failure never authorises deletion of the only
+  // recoverable workspace. Both remain visible as the task's original execution outcome
+  // plus a completion error instead of being relabelled as a verifier failure.
+  let completionError = null;
+  let settled;
+  if (!published.ok) {
+    completionError = `publication incomplete: ${published.error || 'unknown publication failure'}`;
+    notes.push(`completion pending: ${completionError}; recover from workspace ${ws.dir}`);
+    settled = beadsWrite(cfg, () => finish(cfg, issue.id, { ...outcome, beads: null }, notes, ownership),
+      (why) => ({ ok: false, transition: null, error: why }));
+    if (!settled.ok) completionError += `; ${settled.error}`;
+  } else {
+    settled = beadsWrite(cfg, () => finish(cfg, issue.id, outcome, notes, ownership),
+      (why) => ({ ok: false, transition: null, error: why }));
+    if (!settled.ok) completionError = `Beads completion incomplete: ${settled.error}`;
+  }
 
-  log.info(tr, `task finished: exit ${exec.exitCode} -> ${outcome.status}` +
-    (outcome.beads ? ` (issue ${outcome.beads})` : ' (issue stays in_progress)'));
+  const appliedBeads = completionError ? null : (outcome.beads || null);
+  const finishedMessage = `task finished: exit ${exec.exitCode} -> ${outcome.status}` +
+    (completionError
+      ? ` (completion pending; issue stays in_progress; workspace kept at ${ws.dir})`
+      : (outcome.beads ? ` (issue ${outcome.beads})` : ' (issue stays in_progress)'));
+  const finishedMeta = {
+    event: 'task.finished',
+    // `beads` is null rather than absent when the issue stays in_progress: "no Beads
+    // transition" is a fact about this task, and a missing key would make it read as a
+    // ledger written before the field existed.
+    data: { exitCode: exec.exitCode, outcome: outcome.status, beads: appliedBeads },
+  };
+  if (completionError) log.error(tr, finishedMessage, finishedMeta);
+  else log.info(tr, finishedMessage, finishedMeta);
   const v = artifacts.verify;
+  const rowError = [artifactError, staleError, completionError].filter(Boolean).join('; ') || null;
   const row = {
     issueId: issue.id,
     title: issue.title || '',
@@ -269,7 +717,7 @@ async function runOneTask(cfg, issue, log, token, gate) {
     attempts: ((artifacts.status && artifacts.status.attempts) || []).length,
     pauses,
     activeSeconds: Math.round(activeMs / 1000),
-    diffLines: diffLines(ws.dir, ws.forkPoint),
+    diffLines: diffLines(cfg, ws.dir, ws.forkPoint),
     ...(artifacts.status && artifacts.status.changeSummary ? { changeSummary: artifacts.status.changeSummary } : {}),
     ...(artifacts.status && artifacts.status.model ? { model: artifacts.status.model } : {}),
     ...(v ? {
@@ -280,6 +728,13 @@ async function runOneTask(cfg, issue, log, token, gate) {
       },
     } : {}),
     ...(artifacts.status && artifacts.status.stuckState ? { stuckState: artifacts.status.stuckState } : {}),
+    // §4.3: the docs phase is non-fatal after a verified implementation, so its failure
+    // qualifies this row's outcome and never changes it. Copied explicitly rather than left
+    // in the container's status file, because the manifest is what the report and the PR
+    // body are rendered from — a docs failure that reaches neither settles as an
+    // unqualified `done` and reads exactly like a task that needed no documentation.
+    ...(artifacts.status && artifacts.status.docsPhaseError
+      ? { docsPhaseError: artifacts.status.docsPhaseError } : {}),
     // §3.7: the agent's "this spec is wrong" channel. Carried onto the manifest so the
     // report and the PR body can surface it — evidence only, and deliberately NOT part of
     // `scrutinyKey`, because a concern that could reorder the report would be a gate (§3.5).
@@ -287,9 +742,12 @@ async function runOneTask(cfg, issue, log, token, gate) {
       && artifacts.status.specConcerns.length
       ? { specConcerns: artifacts.status.specConcerns } : {}),
     attemptNotes: notes,
+    ...(rowError ? { error: rowError } : {}),
+    ...(completionError ? { recoveryWorkspace: ws.dir } : {}),
   };
 
-  if (process.env.PIPELINE_KEEP_WORKSPACE) log.info(tr, `workspace kept at ${ws.dir}`);
+  if (completionError) log.error(tr, `completion is recoverable; workspace kept at ${ws.dir}`);
+  else if (process.env.PIPELINE_KEEP_WORKSPACE) log.info(tr, `workspace kept at ${ws.dir}`);
   else discard(ws.dir);
   return row;
 }
@@ -305,72 +763,212 @@ async function main() {
     process.exit(2);
   }
 
+  // Explicit command-line input only: validate before credentials, network, or model startup.
+  const implementationReference = args.implementationReference
+    ? require('./implementation-reference').load(args.implementationReference, args.implementationReferenceHash, cfg)
+    : null;
+
   const log = startRun(REPO_ROOT, process.env.RUN_ID);
   const startedAt = new Date().toISOString();
   const t = `${log.runId}/preflight`;
   log.info(t, `run started (config: ${cfg.configPath})`);
-  log.info(t, `target: ${cfg.targetRepoPath} -> ${cfg.targetRepoRemote}`);
+  log.info(t, `target: ${cfg.targetRepoPath} -> ${cfg.targetRepoRemote}`,
+    { event: 'run.target', data: { url: cfg.targetRepoRemote } });
 
-  const token = loadToken(REPO_ROOT);
-  if (!token) {
-    log.error(t, 'no CLAUDE_CODE_OAUTH_TOKEN (.env.pipeline or environment) — tasks cannot authenticate');
+  // The SELECTED provider's credential, and only that one (§6). There is no cross-provider
+  // fallback: a Codex run with no CODEX_API_KEY is refused here, before a lock, a worktree,
+  // a Beads claim, a network or a container exists, rather than failing at the model
+  // endpoint once all of them do. With no provider selected this is exactly the historical
+  // Claude token load and the historical diagnostic.
+  const managedChatgpt = providerFor(cfg) === 'codex' && cfg.codexAuth === 'chatgpt';
+  const credential = managedChatgpt ? null : loadProviderCredential(REPO_ROOT, cfg.provider);
+  if (!credential && !managedChatgpt) {
+    log.error(t, missingCredentialDiagnostic(cfg.provider));
     process.exit(2);
   }
-  log.info(t, 'subscription token loaded');
+  const token = credential ? credential.value : "";
+  if (credential) log.info(t, `subscription token loaded (${credential.name})`);
 
-  const pre = preflight(cfg, REPO_ROOT, log);
-  if (!pre.ok) {
-    log.error(t, `PREFLIGHT FAILED — no tasks launched: ${pre.reason}`);
-    // A run refused by the project lock started nothing (§4.12): the lock is the first
-    // gate, so there is no network of ours to tear down — and tearing one down here would
-    // be acting on plumbing that belongs to the run that holds the lock. Every other
-    // preflight failure has already released the lock itself.
-    if (!pre.locked) networkDown(REPO_ROOT, cfg);
-    process.exit(1);
-  }
-  // The lock is ours from here to process exit. Registered once, at the point it becomes
-  // true, so every later way out — the queue-read abort below, an unexpected throw, the
-  // normal end — leaves the project free for the next run rather than a stale lock for it
-  // to take over (§4.12). Best effort by construction: a process killed outright runs no
-  // handler, which is exactly the case takeover exists for.
-  process.on('exit', () => {
-    try { releaseLock(REPO_ROOT, cfg.targetRepoPath); } catch { /* never mask the real exit */ }
-  });
-  log.info(t, `preflight passed${pre.recovered.length ? ` (recovered: ${pre.recovered.join(', ')})` : ''}`);
-
-  if (args.dryRun) {
-    log.info(t, 'dry run: stopping before the task loop');
-    networkDown(REPO_ROOT, cfg);
-    log.info(t, `run finished; artifacts in ${log.dir}`);
+  // The write-protection backstop (change-log row `repo-324`). Ahead of preflight on purpose:
+  // it holds no lock and creates no network, so a refusal here has nothing to compensate for.
+  // A dispatch clones and mutates the integration checkout, and hand-made edits to protected
+  // paths sitting in it are edits the pipeline never agreed to carry — so they stop the run
+  // and are reported by name, never tidied away.
+  const admitted = writeProtection.admit(cfg.targetRepoPath, {});
+  if (!admitted.admit) {
+    log.error(t, 'ADMISSION REFUSED — no tasks launched: the integration checkout carries '
+      + `changes to protected paths with no provenance (${admitted.refusals.map((r) => r.path).join(', ')})`);
+    for (const line of writeProtection.admissionRefusal(admitted, { label: admitted.target })) {
+      log.error(t, line);
+    }
+    process.exitCode = 1;
     return;
   }
+
+  const pre = preflight(cfg, REPO_ROOT, log);
+  const resolvedPre = await Promise.resolve(pre);
+  if (!resolvedPre.ok) {
+    log.error(t, `PREFLIGHT FAILED — no tasks launched: ${resolvedPre.reason}`);
+    // preflight owns compensation for every unsuccessful path after acquiring the lock.
+    // In particular, an `up` script may create half the plumbing and then fail; its own
+    // finally attempts `down` before releasing. A lock refusal never owned either resource.
+    process.exitCode = 1;
+    return;
+  }
+  // The network and lock are ours from here to process exit. The ordinary path below uses
+  // a finally; this synchronous exit handler is the last resort for code that calls
+  // process.exit directly. A process killed outright runs neither, which is exactly the
+  // case stale-lock takeover exists for.
+  // A supervisor child's implementation authority travels on the config, so every Beads write
+  // and every publication below can name the section it must be alone inside. Null for a
+  // standalone run, where the target lock already makes that true.
+  cfg.childAdmission = resolvedPre.childAdmission || null;
+  if (managedChatgpt && Array.isArray(cfg.codexAuthLanes)) {
+    cfg.codexLanePool = codexAuth.createLanePool({ lanes: cfg.codexAuthLanes });
+  }
+  const releaseOnExit = () => {
+    try { networkDown(REPO_ROOT, cfg); } catch { /* process exit: best effort only */ }
+    finally {
+      if (resolvedPre.lockOwned !== false) {
+        try { releaseLock(REPO_ROOT, cfg.targetRepoPath, resolvedPre.ownership); } catch { /* never mask the real exit */ }
+      }
+    }
+  };
+  process.on('exit', releaseOnExit);
+  log.info(t, `preflight passed${resolvedPre.recovered.length ? ` (recovered: ${resolvedPre.recovered.join(', ')})` : ''}`);
+
+  let completed = false;
+  let cleanup = { ok: true };
+  try {
+    completed = await (async () => {
+      if (args.dryRun) {
+        log.info(t, 'dry run: stopping before the task loop');
+        return true;
+      }
 
   // ---- the task loop (§4.12): drain the ready queue, one container per task ----
   const q = readyQueue(cfg);
   if (!q.ok) {
-    log.error(t, `cannot read the Beads ready queue: ${q.error}`);
-    networkDown(REPO_ROOT, cfg);
-    process.exit(1);
+    // Two systems, two channels (§4.12). The discriminator is the `cause` FIELD, never the
+    // wording: a fetch failure logged as "cannot read the Beads ready queue" sends a person
+    // to the wrong system entirely, and the queue is unreadable for want of git, not bd.
+    if (q.cause === 'git') {
+      log.error(t, 'cannot check which tasks are frozen, so none can be dispatched: ' +
+        `${q.error}`);
+    } else {
+      log.error(t, `cannot read the Beads ready queue: ${q.error}`);
+    }
+    process.exitCode = 1;
+    return false;
   }
-  log.info(t, queueSummary(q.issues, q.skipped));
+  if (implementationReference) require('./implementation-reference').selectQueue(implementationReference, q);
+  // The summary line and its structured twin, from ONE call (change-log row `repo-3xw`).
+  // `queueSummary` is no longer called here: two call sites would be two chances for the
+  // prose and the event to describe different queues.
+  logQueueRead(log, q);
 
   // Every task is the same body; `concurrency` (default 1) decides how many of them are
-  // in flight at once, and the drain hands back one row per queued issue in READY-QUEUE
-  // ORDER — so the manifest reads the same at any depth. A row is null only where the
-  // issue could not be claimed and nothing ran.
+  // in flight at once, and the drain hands back one row per DISPATCHED issue in dispatch
+  // order — so the manifest reads the same at any depth. A row is null only where the issue
+  // could not be claimed and nothing ran.
   //
   // ONE park for the whole run (§7). A usage limit belongs to the subscription window, not
   // to a task, so the gate holds the single shared wait and the single run-level cycle cap
   // that every task in this drain reports into and waits behind.
   const gate = createPauseGate(cfg, log, { token });
-  const drained = await drainQueue(q.issues, (issue) => runOneTask(cfg, issue, log, token, gate), cfg.concurrency);
+
+  // The source the pool pulls from (§4.12, change-log row `live-queue-feed`). With
+  // `feedIdleGraceMinutes` at its default of 0 this is a fixed roster and the run behaves
+  // exactly as it did before feeding existed: read once, drain, close out.
+  const source = createFeedSource(q.issues, {
+    poll: () => readyQueue(cfg),
+    concurrency: cfg.concurrency,
+    idleGraceMs: cfg.feedIdleGraceMinutes * 60000,
+    pollMs: cfg.feedPollSeconds * 1000,
+    // The STARTUP roster's refusals, seeded here rather than left to the first poll. A
+    // non-fed run never polls at all, so without this the source's refusal map stays empty
+    // for the whole run and `source.undispatchable()` below hands back nothing: the manifest
+    // gets no row, the report reads "0 task(s): none", and a queue that was WHOLLY refused
+    // becomes indistinguishable from a queue nobody filled. Refusals stay live exactly as
+    // before — a poll still replaces this map wholesale.
+    undispatchable: q.undispatchable,
+    // The sentinel is per RUN and lives beside that run's artifacts, so stopping a fed run
+    // is `touch runs/<runId>/stop` from anywhere — no signal, no pid, and no killing a
+    // process that is holding containers. Workers finish what they hold; nothing new starts.
+    stopFile: path.join(log.dir, 'stop'),
+    // Once the §7 run-level cap has fired, every further task is refused before it launches
+    // and stays `open`. A fed run that kept polling would sit idle handing out work nothing
+    // can start, so the fired cap closes the feed instead.
+    shouldStop: () => gate.exhausted,
+    log,
+  });
+  if (source.fed) {
+    log.info(t, `live queue feed: ON — re-reading the ready queue while the run is in flight; `
+      + `closing after ${cfg.feedIdleGraceMinutes} idle minute(s), or when ${path.join(log.dir, 'stop')} appears`,
+    { event: 'feed.on', data: {} });
+  }
+
+  const drained = await drainQueue(
+    source,
+    (issue) => runOneTask(cfg, issue, log, token, gate, resolvedPre.ownership, implementationReference),
+    cfg.concurrency
+  );
   const results = drained.filter(Boolean);
+
+  // Recovery is an exclusive lane operation and begins only after every worker has
+  // settled. It is attempted once before any shared report or lifecycle cleanup.
+  if (cfg.codexLanePool && typeof cfg.codexLanePool.recover === 'function') {
+    try { await cfg.codexLanePool.recover(); }
+    catch { log.error(t, 'credential lane recovery remained incomplete'); }
+  }
+
+  // §4.12's second admission rule refused these before `claim()`, so Beads is untouched and
+  // they stay `open` for a freeze session. They never enter drainQueue — the rows are
+  // MANUFACTURED here, from the only place that information still exists, because a refused
+  // task that produced no row is indistinguishable, after exactly the unattended run where
+  // nobody watched it happen, from a task nobody queued.
+  //
+  // Read from the SOURCE and after the drain, never from the startup read: under feeding a
+  // refusal is a wait, not a verdict, so a task refused at 14:05 whose suite was pushed at
+  // 14:20 ran and has a PR. Reporting it as undispatchable would be a lie about a task the
+  // reviewer can see succeeded.
+  const stillRefused = source.undispatchable();
+  const refusedRows = stillRefused.map((u) => undispatchableRow(u.issue, u.reason, log.runId, u.refusal));
+  for (const u of stillRefused) logUndispatched(log, u);
 
   if (gate.waits) {
     log.info(t, `run-level rate-limit park: ${gate.waits} shared wait(s), ${gate.cycles} cycle(s) spent` +
       `${gate.exhausted ? ' — the run-level pause cap fired; refused tasks stay open for the next run' : ''}`);
   }
-  log.info(t, `queue drained: ${results.map((r) => `${r.issueId}=${r.outcome}`).join(', ') || '(nothing ran)'}`);
+  if (source.fed) {
+    // `ending` is normalised the way the manifest below normalises it, so the ledger and
+    // run.json give a later reader the same vocabulary for how the run ended.
+    log.info(t, `live queue feed: ${source.polls()} re-read(s) of the ready queue; run ended: ${source.ending()}`,
+      { event: 'feed.closed', data: { polls: source.polls(), ending: source.ending() || ENDINGS.DRAINED } });
+  }
+  // The refusals are named here too. "queue drained: (nothing ran)" against a queue that was
+  // wholly refused is true and reads like an empty queue — the closing line is where an
+  // operator skimming the log stops.
+  log.info(t, `queue drained: ${[...results, ...refusedRows].map((r) => `${r.issueId}=${r.outcome}`).join(', ') || '(nothing ran)'}`);
+
+  // §4.12's exit codes, through the pure function rather than an inline comparison here: this
+  // sits behind the token load and the Docker preflight, so a condition written inline is one no
+  // Docker-free test can ever reach — the reason `queueSummary` was lifted out of `main()` too.
+  const queueCounts = {
+    ready: results.length + stillRefused.length,
+    dispatched: results.length,
+    refused: stillRefused.length,
+  };
+  const queueExit = queueExitCode(queueCounts.dispatched, queueCounts.refused);
+  // NO NEW LEDGER EVENT. `queue.read` already carries the ready, skipped and refused populations
+  // and the manifest now carries the counts, so an event here would be a third statement of one
+  // fact — and a vocabulary entry every later reader has to learn in order to ignore it. This line
+  // exists for the person watching the log; the exit code is what a script reads.
+  if (queueExit && !process.exitCode) {
+    log.error(t, `run dispatched nothing: ${queueCounts.refused} candidate(s) were all refused — `
+      + 'ask before launching with `node scripts/freeze.js status --config <config>`');
+    process.exitCode = queueExit;
+  }
 
   // ---- manifest + report (§4.9, §4.12) ----
   const { manifest } = writeManifest(log.dir, {
@@ -381,13 +979,45 @@ async function main() {
     // The CONFIGURED (or defaulted) setting, not the observed peak in flight: what the run
     // was allowed to do is the thing a later reader needs to interpret its wall clock.
     concurrency: cfg.concurrency,
-    tasks: results,
+    // §4.12's third admission rule, as this run applied it. Recorded because it changes which
+    // tasks were ELIGIBLE: a run with it on dispatched suites whose green side has never been
+    // seen, and a later reader comparing two runs of the same queue has no other way to know
+    // that the queues were judged by different rules.
+    allowHalfProven: cfg.allowHalfProven,
+    // Recorded whether or not it was on, so a later reader can tell "this run did not feed"
+    // from "this manifest predates feeding" — the same reason `concurrency` is written even
+    // when it is 1. `ending` is the fact the log line alone would lose: a run that stopped
+    // because someone touched the sentinel and one that ran out of work look identical in
+    // the outcome table.
+    feed: {
+      enabled: !!source.fed,
+      idleGraceMinutes: cfg.feedIdleGraceMinutes,
+      polls: source.polls(),
+      ending: source.ending() || ENDINGS.DRAINED,
+    },
+    // What the run decided about its own queue, as numbers rather than prose (change-log row
+    // `refused-exit-design`). This belongs in the durable manifest, after the drain has computed
+    // the counts; passing it to createFeedSource read `queueCounts` before initialization and the
+    // source did not consume that option in any case.
+    queue: queueCounts,
+    tasks: [...results, ...refusedRows],
   });
   const reportFile = writeReport(log.dir, manifest);
   log.info(t, `run report: ${reportFile}`);
-
-  networkDown(REPO_ROOT, cfg);
-  log.info(t, `run finished; artifacts in ${log.dir}`);
+      return true;
+    })();
+  } finally {
+    cleanup = cleanupOwnedLifecycle(cfg, REPO_ROOT, log, t,
+      { ownership: resolvedPre.ownership, lockOwned: resolvedPre.lockOwned });
+    process.removeListener('exit', releaseOnExit);
+  }
+  if (!cleanup.ok) {
+    completed = false;
+    if (!process.exitCode) process.exitCode = 3;
+  }
+  if (completed) {
+    log.info(t, `run finished; artifacts in ${log.dir}`, { event: 'run.finished', data: { dir: log.dir } });
+  }
 }
 
 // Guarded, so `require('runner/run.js')` runs NOTHING and the scheduler above is reachable
@@ -408,4 +1038,15 @@ if (require.main === module) {
 // gh, the container — is behind a seam (PIPELINE_BD_CMD, targetRepoRemote, PIPELINE_GH_CMD,
 // PIPELINE_EXEC_STUB), so "a refused task never touches Beads" and "an exit-20 task reports
 // to the gate exactly once" are both provable without Docker.
-module.exports = { drainQueue, executeTask, runOneTask };
+// `logAttempts` and `logConcerns` are exported for the third time on the same reasoning: the
+// trichotomy they decide — `[]` vs a list vs `null` — turns on shapes a fixture RUN can only
+// reach one of at a time (a container writes one status file per task), and the answer that
+// matters most is the one for an attempt whose output did not survive. Driven directly, a
+// planted status object reaches all of them in a few lines and none of them needs a clone.
+module.exports = {
+  drainQueue, executeTask, runOneTask, logAttempts, logConcerns, cleanupOwnedLifecycle,
+  // Exported for repo-3ec correction-2 regression coverage (tests/integration/mode-review.js):
+  // the fail-closed verified-evidence binding check is a production decision worth exercising
+  // directly, independent of the full runOneTask publication path the frozen suite already drives.
+  staleEvidence, legacyArtifactStub, parseArgs,
+};

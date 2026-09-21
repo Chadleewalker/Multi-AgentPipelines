@@ -112,19 +112,28 @@ const RULES = [
   },
   {
     name: 'no absolute paths outside the standard toolchain',
-    re: /(?<![A-Za-z])[A-Za-z]:[\\/]{1,2}(?!Program Files[\\/]{1,2}Git\b)[A-Za-z0-9._ -]+[\\/]{1,2}[A-Za-z0-9._ -]+/g,
+    re: /(?<![A-Za-z])[A-Za-z]:[\\/]{1,2}[A-Za-z0-9._ -]+[\\/]{1,2}[A-Za-z0-9._ -]+/g,
     // What leaks is a *specific* layout — real directory names off a real drive. Docs and
     // templates legitimately need to show the shape of a path, and they signal that with a
     // placeholder segment (`path/to`, a literal `...`, an angle-bracket slot) or by rooting
     // the example in a generic scratch directory. Those carry no information about any
     // machine, so allowing them is what keeps this rule specific enough to stay on.
-    allow: (m) => /[\\/](path[\\/]to|\.\.\.|tmp)[\\/]?/i.test(m) || /[<>]/.test(m),
+    allow: (m) => /[\\/]{1,2}(path[\\/]{1,2}to|\.\.\.|tmp)(?:[\\/]{1,2})?/i.test(m) || /[<>]/.test(m)
+      || /^[A-Za-z]:[\\/]{1,2}(?:Windows[\\/]{1,2}System32|Program Files[\\/]{1,2}(?:Git|nodejs|Docker|GitHub CLI))\b/i.test(m),
   },
   {
     name: 'no real email addresses',
     re: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g,
-    allow: (m) => /@(test\.local|example\.(com|org|net|test|invalid)|localhost)$/i.test(m)
-      || /^noreply@anthropic\.com$/i.test(m),
+    allow: (m, context) => {
+      if (/@(test\.local|example\.(com|org|net|test|invalid)|localhost)$/i.test(m)
+        || /^noreply@anthropic\.com$/i.test(m)) return true;
+      const before = context.text.slice(Math.max(0, context.index - 100), context.index);
+      const after = context.text.slice(context.index + m.length, context.index + m.length + 1);
+      // These are transport authorities, not mailbox addresses: scp-style Git SSH and
+      // URL userinfo. Require their delimiter/context so prose mail at the same host still fires.
+      return (after === ':' && /^git@github\.com$/i.test(m))
+        || (after === '/' && /(?:https?|ssh):\/\/[^\s/]*$/i.test(before));
+    },
   },
   {
     name: 'no credential-shaped strings',
@@ -140,7 +149,7 @@ for (const rule of RULES) {
     rule.re.lastIndex = 0;
     let m;
     while ((m = rule.re.exec(text)) !== null) {
-      if (rule.allow(m[0])) continue;
+      if (rule.allow(m[0], { rel, text, index: m.index })) continue;
       const line = text.slice(0, m.index).split('\n').length;
       hits.push(`${rel}:${line} ${snip(m[0])}`);
       if (hits.length > 8) break;

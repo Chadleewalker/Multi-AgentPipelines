@@ -14,8 +14,8 @@
       "enum": ["pass", "fail", "tampered", "error"]
     },
     "regressions": {
-      "description": "The project suite's verdict - recorded evidence, never the gate. 'absent' = no regressionCommand in the frozen config.",
-      "enum": ["pass", "fail", "absent"]
+      "description": "The project suite's verdict - recorded evidence, never the gate. 'absent' = no regressionCommand in the frozen config. 'error' = the run was killed before reaching a verdict (output cap, timeout, signal) and so has no opinion either way - distinct from 'fail', which would downgrade a passing task to partial on a harness fault, and from 'absent', which would hide it (change-log row `verify-nobuffer`).",
+      "enum": ["pass", "fail", "absent", "error"]
     },
     "tamperedPaths": {
       "description": "Frozen paths that differ from the fork point (present iff acceptance=tampered).",
@@ -29,7 +29,7 @@
     },
     "regressionOutput": { "type": "string" },
     "error": {
-      "description": "Present iff acceptance=error (missing ISSUE_ID, unreadable frozen config).",
+      "description": "Present iff acceptance=error: missing ISSUE_ID, unreadable frozen config, or an acceptance run killed before it reached a verdict (output cap, timeout, signal - change-log row `verify-nobuffer`).",
       "type": "string"
     }
   }

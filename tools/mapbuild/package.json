@@ -1,0 +1,9 @@
+{
+  "name": "pipeline-mapbuild",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Host-only dev tool: renders the mermaid blocks in docs/pipeline-map.html to inline SVG. Nothing in the pipeline itself depends on this — the runner, verifier and report generator stay dependency-free (CLAUDE.md, 'Node for everything').",
+  "devDependencies": {
+    "@mermaid-js/mermaid-cli": "^11.4.2"
+  }
+}
