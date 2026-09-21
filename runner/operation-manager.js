@@ -479,6 +479,23 @@ function createHostOperationManager(options = {}) {
       throw new Error('operation manager: injected crash after authority persistence');
     }
 
+    // The owning supervisor must durably publish the replacement identity before the child
+    // can redeem its grant.  This callback is synchronous by design: returning is the
+    // admission barrier.  A failed journal write becomes explicit not-spawned attention and
+    // releases the feed slot; it never falls through to spawn.
+    if (kind === 'implementation' && typeof input.onLaunchIntent === 'function') {
+      try { input.onLaunchIntent(publicRecord(record)); }
+      catch (e) {
+        const failed = { ...record, state: 'attention', childIdentity: 'not-spawned',
+          attention: 'parent could not durably record implementation launch intent',
+          launchError: (e && e.message) || String(e), observedAt: new Date().toISOString() };
+        persist(failed);
+        releaseFeedSlot(failed);
+        return { ok: false, error: `operation manager: launch intent publication failed: ${failed.launchError}`,
+          operation: publicRecord(failed) };
+      }
+    }
+
     const childEnv = { ...env, PIPELINE_CHILD_AUTHORITY: authorityPath };
     for (const name of PROVIDER_CREDENTIALS) delete childEnv[name];
     if (kind === 'preparation') childEnv.PREPARATION_RUNS_DIR = preparationRoot;
@@ -600,6 +617,7 @@ function createHostOperationManager(options = {}) {
         issues: prior.issues,
         authorConcurrency: prior.authorConcurrency,
         grant: input.grant,
+        onLaunchIntent: input.onLaunchIntent,
       }, retryPrior);
     } finally {
       releaseTransition(retryPath, transition.token);
@@ -756,6 +774,11 @@ function createHostOperationManager(options = {}) {
       }
       if (!knowledge || knowledge.ok !== true || typeof knowledge.settled !== 'boolean') {
         return { ok: false, error: `operation manager: settlement remains uncertain${knowledge && knowledge.error ? `: ${knowledge.error}` : ''}` };
+      }
+      if (knowledge.settled && knowledge.outcome && knowledge.outcome !== 'complete') {
+        return { ok: false,
+          error: `operation manager: grant was settled as ${knowledge.outcome}, not complete`,
+          operation: publicRecord(current) };
       }
       if (knowledge.settled) {
         current = { ...current, state: 'completed', attention: null,

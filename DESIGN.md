@@ -1085,6 +1085,14 @@ Every retry snapshots the prior operation, exit, attention, settlement, authorit
 evidence. Settlement intent has its own exclusive marker: an uncertain result forbids retry
 until the parent record proves whether the original grant settled, after which reconciliation
 either completes it or retries only that same settlement. Child exit alone never proves success.
+The proposal supervisor, rather than an operator calling the operation manager directly, owns
+an explicitly approved implementation retry. It releases the failed predecessor, grants the
+replacement from the current live lease, and fsyncs the replacement operation/run identity
+after host launch intent but before the child can redeem authority. Replaying that handoff
+cannot dispatch another child. An explicit reclaim carries each unsettled grant's sealed
+original-parent lineage through any number of dead supervisors; admission and settlement
+require an exact nonce plus original-parent match in the current live lease. Serialized former
+leases are evidence, never capabilities, and cannot settle work after ownership changes.
 
 **The production proposal supervisor is a durable poller, not an operator-driven
 tick.** `runner/proposal-supervisor.js` acquires the parent lease before its unattended
