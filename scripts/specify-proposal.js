@@ -24,7 +24,7 @@ const MAX_ITEM = 4096;
 const MAX_ITEMS = 64;
 const MAX_DESIGN_CANDIDATES = 1024;
 const MAX_DESIGN_CANDIDATE_BYTES = 128 * 1024;
-const MAX_DESIGN_FILES = 128;
+const MAX_DESIGN_FILES = 256;
 const MAX_DESIGN_TREE_BYTES = 256 * 1024;
 const MAX_DESIGN_FILE_BYTES = 1024 * 1024;
 const HASH_RE = /^sha256:[0-9a-f]{64}$/;
@@ -87,10 +87,13 @@ function validDesignReferenceCandidates(value) {
   if (!Array.isArray(value) || value.length === 0 || value.length > MAX_DESIGN_CANDIDATES
       || Buffer.byteLength(JSON.stringify(value), 'utf8') > MAX_DESIGN_CANDIDATE_BYTES) return false;
   const seen = new Set();
+  const designFiles = new Set();
   for (const candidate of value) {
     if (!boundedString(candidate, 1024) || !DESIGN_REFERENCE_RE.test(candidate)
         || seen.has(candidate)) return false;
     seen.add(candidate);
+    designFiles.add(candidate.slice(0, candidate.indexOf('#')));
+    if (designFiles.size > MAX_DESIGN_FILES) return false;
   }
   return true;
 }
