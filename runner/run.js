@@ -25,7 +25,7 @@ const { prepare, hasCommits, collectArtifacts, discard } = require('./workspace'
 const { runTask } = require('./container');
 const { createPauseGate } = require('./pause');
 const { fileMemoryNotes, shouldFileMemory } = require('./memory');
-const { checkScope, admitScope, readScopePolicy } = require('./scope');
+const { checkScope, admitScope, readScopeConfig } = require('./scope');
 const { publish } = require('./publish');
 const { writeManifest, writeReport } = require('./report');
 
@@ -193,7 +193,34 @@ async function runOneTask(cfg, issue, log, token, gate) {
   // launching one would burn a usage window to reach the same block. The path DIFF is still
   // checked after the agent runs (the gate further below); this is only the half knowable
   // up front. A block here pushes nothing, opens no PR, and keeps the clone for review. ----
-  const scopePolicy = readScopePolicy(ws.dir, ws.forkPoint);
+  // The fork-point config is read FIRST, and its unreadability is itself a block (§4.5,
+  // repo-cl11): a pipeline.config.json that cannot be read or parsed as a config object is
+  // never silently treated as "optional scope" — that would let a malformed frozen config
+  // disable the gate. A valid legacy config with no scopePolicy still reads as optional.
+  const scopeCfg = readScopeConfig(ws.dir, ws.forkPoint);
+  if (!scopeCfg.ok) {
+    const blocked = { status: 'failed', beads: 'blocked' };
+    log.error(tr, `file-scope gate refused the task before any agent work: ${scopeCfg.reason} — the fork-point config could not be trusted, so scope was not assumed optional; nothing launched, nothing pushed, no PR (§4.5)`);
+    const notes = [`run ${log.runId}: BLOCKED before agent work — ${scopeCfg.reason}`];
+    finish(cfg, issue.id, blocked, notes);
+    if (process.env.PIPELINE_KEEP_WORKSPACE) log.info(tr, `workspace kept at ${ws.dir}`);
+    else discard(ws.dir);
+    return {
+      issueId: issue.id,
+      title: issue.title || '',
+      outcome: blocked.status,
+      branch: ws.branch,
+      pushed: false,
+      prUrl: null,
+      attempts: 0,
+      pauses: 0,
+      activeSeconds: 0,
+      diffLines: 0,
+      scope: { ok: false, disallowedPaths: [], reason: scopeCfg.reason },
+      attemptNotes: notes,
+    };
+  }
+  const scopePolicy = scopeCfg.policy;
   const admission = admitScope({ issue: { description: exported.markdown }, policy: scopePolicy });
   if (!admission.ok) {
     const blocked = { status: 'failed', beads: 'blocked' };
@@ -271,11 +298,13 @@ async function runOneTask(cfg, issue, log, token, gate) {
   // `Allowed implementation files:` list, and even a legacy target enforces a list when
   // one is present. A violation is a narrow exception to "push WIP on failure" (§4.5):
   // local evidence is kept and the run report names the offending paths, but the
-  // unauthorized bytes are pushed nowhere and the issue is blocked. Only meaningful when
-  // there is something to publish. ----
-  const scope = commits
-    ? checkScope({ dir: ws.dir, forkPoint: ws.forkPoint, issue: { description: exported.markdown }, policy: scopePolicy })
-    : { ok: true, disallowedPaths: [] };
+  // unauthorized bytes are pushed nowhere and the issue is blocked. Run even with ZERO
+  // commits (§4.5, repo-cl11): an out-of-scope change left uncommitted in the worktree —
+  // `git status` sees it though `git diff <fork> HEAD` does not — must still block, so an
+  // agent cannot smuggle an unauthorized edit past the gate simply by not committing it. A
+  // genuinely clean zero-commit branch reports no changed paths and passes exactly as
+  // before, keeping the existing clean zero-commit result. ----
+  const scope = checkScope({ dir: ws.dir, forkPoint: ws.forkPoint, issue: { description: exported.markdown }, policy: scopePolicy });
   if (!scope.ok) {
     outcome = { status: 'failed', beads: 'blocked' };
     log.error(tr, `file-scope gate blocked the branch (${scopePolicy} policy): ${scope.reason || (scope.disallowedPaths || []).join(', ')} — nothing pushed, no PR (§4.5)`);

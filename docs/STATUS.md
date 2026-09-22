@@ -1019,6 +1019,37 @@ Frozen suite `tests/acceptance/repo-cl10/` (`verifier-fork.js`, `scope-integrity
 blank-entry, git-fail-closed and exact-filename cases. `docs/pipeline-diagram.md` updated to
 draw the build gate, the post-docs re-verify, and the two-checkpoint host file-scope gate.
 
+## The last two V1 scope gaps, closed (`repo-cl11`, 2026-09-22)
+
+Review of the `repo-cl9`/`repo-cl10` gates found two remaining holes, both the same
+fail-*open* shape the earlier rounds kept turning up. `repo-cl11` closes them within the same
+approved file list (`runner/scope.js`, `runner/run.js`, `tests/unit/scope.test.js`,
+`DESIGN.md`, `docs/STATUS.md`); Safe V1 and Deep End main are untouched (a local temporary
+Git remote only).
+
+- **Unreadable fork-point config read as optional → block before agent work.**
+  `readScopePolicy` swallowed a `git show` failure or a `JSON.parse` error and returned
+  `optional`, so a fork-point `pipeline.config.json` that could not be read or parsed
+  **silently disabled** the file-scope gate — a malformed config that fails open is not a
+  gate (hard rule 2). `runner/scope.js` gains `readScopeConfig(dir, forkPoint)`, which reports
+  `{ ok:false, reason }` for a config that cannot be read or parsed as a config object;
+  `run.js` blocks the task on it **before any agent work**, the same fail-closed shape as an
+  invalid allowed-list. `readScopePolicy` now routes through it and still reads a valid legacy
+  config with no `scopePolicy` as `optional`, so legacy targets are unchanged.
+- **Zero-commit worktree bypass → final gate runs unconditionally.** The final check ran only
+  `if (commits)`, so an out-of-scope change left **uncommitted** in the worktree after a
+  passing agent stub sailed straight through — `git status` sees it though `<fork>..HEAD` does
+  not, so an agent could smuggle an unauthorized edit past the gate simply by not running
+  `git commit`. `run.js` now runs `checkScope` unconditionally; the block names the file,
+  pushes nothing, opens no PR, and retains the local workspace for review, exactly as the
+  committed case already did. A genuinely clean zero-commit branch still reports no changed
+  paths and passes, keeping the existing clean zero-commit result and `regressionCommand`
+  evidence semantics.
+
+Frozen suite `tests/acceptance/repo-cl11/` (`host-final-gaps.js`), which drives both edges
+through the real `runOneTask`; `runner/scope.js` exports `readScopeConfig` and
+`tests/unit/scope.test.js` is unchanged and still green.
+
 ## What's next
 
 **The queue drained again on 2026-07-26**, after `repo-4l8` (the epic filter, planned and

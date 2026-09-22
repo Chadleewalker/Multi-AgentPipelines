@@ -125,18 +125,41 @@ function changedPaths(dir, forkPoint) {
   return [...set];
 }
 
-// The scope policy, read from the FORK-POINT pipeline.config.json (never the working
-// tree — the same discipline the verifier uses so the gate cannot be widened in-run).
-// 'required' when the frozen config opts in; 'optional' (legacy) otherwise.
-function readScopePolicy(dir, forkPoint) {
+// The FORK-POINT pipeline.config.json, read like the verifier reads its config — from the
+// trusted fork commit, never the working tree, so an in-run edit cannot widen the gate.
+// Returns:
+//   { ok:false, reason }                a config that could not be READ or PARSED as a
+//                                       valid config object — the caller must FAIL CLOSED
+//                                       (repo-cl11): treating this as "optional" would let a
+//                                       malformed frozen config silently disable the gate.
+//   { ok:true, policy:'required' }      the config opts in.
+//   { ok:true, policy:'optional' }      a valid legacy config with no scopePolicy — legacy
+//                                       targets stay optional (repo-cl11).
+function readScopeConfig(dir, forkPoint) {
   const r = git(dir, ['show', `${forkPoint}:pipeline.config.json`]);
-  if (r.status === 0) {
-    try {
-      const cfg = JSON.parse(r.stdout);
-      if (cfg && cfg.scopePolicy === 'required') return 'required';
-    } catch { /* an unreadable frozen config falls back to legacy */ }
+  if (r.status !== 0) {
+    return { ok: false, reason: 'the fork-point pipeline.config.json could not be read' };
   }
-  return 'optional';
+  let cfg;
+  try {
+    cfg = JSON.parse(r.stdout);
+  } catch (e) {
+    return { ok: false, reason: `the fork-point pipeline.config.json is not valid JSON: ${(e && e.message) || 'parse error'}` };
+  }
+  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) {
+    return { ok: false, reason: 'the fork-point pipeline.config.json is not a config object' };
+  }
+  return { ok: true, policy: cfg.scopePolicy === 'required' ? 'required' : 'optional' };
+}
+
+// The scope policy alone: 'required' when the frozen config opts in; 'optional' otherwise.
+// A config that cannot be read or parsed reports 'optional' here — the runner blocks such a
+// target up front via readScopeConfig() (repo-cl11), so this string is only ever consulted
+// for a config already known valid; the unit contract (a legacy target reads 'optional')
+// is unchanged.
+function readScopePolicy(dir, forkPoint) {
+  const c = readScopeConfig(dir, forkPoint);
+  return c.ok ? c.policy : 'optional';
 }
 
 // The gate itself. `policy` is passed explicitly (the frozen acceptance test drives it
@@ -207,4 +230,4 @@ function admitScope({ issue, policy }) {
   return { ok: true, allowedPaths: list.paths };
 }
 
-module.exports = { checkScope, admitScope, readScopePolicy, parseAllowedList, isSafeRepoPath, changedPaths };
+module.exports = { checkScope, admitScope, readScopeConfig, readScopePolicy, parseAllowedList, isSafeRepoPath, changedPaths };
