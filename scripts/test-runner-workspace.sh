@@ -22,6 +22,10 @@ REMOTE="$TMP/remote.git"; git init -q --bare -b main "$REMOTE"
 TGT="$TMP/target"; git clone -q "$REMOTE" "$TGT"; cd "$TGT"
 git config user.email t@test.local && git config user.name tester
 mkdir -p tests/acceptance/x && echo "frozen" > tests/acceptance/x/t.sh
+# A valid legacy pipeline.config.json committed at the fork point (§4.5, repo-cl11): the
+# fail-closed scope gate reads it from the fork commit and blocks any target whose config
+# it cannot parse as an object. No scopePolicy -> a legacy target stays scope-optional.
+printf '{"verifyCommand":"sh tools/run-acceptance.sh","frozenPaths":["tests/acceptance/x"],"dependencies":{}}\n' > pipeline.config.json
 echo "orig" > file.txt && git add -A && git commit -qm "planning: frozen tests" && git push -q origin main
 TGTW="$TGT"; REMOTEW="$REMOTE"
 if command -v cygpath >/dev/null 2>&1; then TGTW="$(cygpath -m "$TGT")"; REMOTEW="$(cygpath -m "$REMOTE")"; fi
@@ -108,8 +112,8 @@ WS1=$(echo "$OUT" | grep -o "workspace kept at .*" | head -1 | sed 's/workspace 
 BADCFG="$TMP/bad.json"
 printf '{"targetRepoPath":"%s","targetRepoRemote":"%s/nope.git","image":"pipeline-base:local"}\n' "$TGTW" "$REMOTEW" > "$BADCFG"
 I3=$(bdq create "unclonable" -d x --acceptance ok --design "design-ref: 4.2" -p 0 --silent)
-# tee to stderr streams the run live; stdout still captured, pipefail preserves RC.
-OUT=$(set -o pipefail; PIPELINE_EXEC_STUB="$TMP/stub-work.sh" RUN_ID=t13-badremote node runner/run.js --config "$BADCFG" 2>&1 | tee /dev/stderr); RC=$?
+# Capture stdout+stderr directly; no /dev/stderr device (absent on the Windows host).
+OUT=$(PIPELINE_EXEC_STUB="$TMP/stub-work.sh" RUN_ID=t13-badremote node runner/run.js --config "$BADCFG" 2>&1); RC=$?
 echo "$OUT" | grep -q "workspace preparation failed" && pass "clone failure reported per task" || fail "clone failure not handled"
 [ "$RC" = 0 ] && pass "run continues after a task-level clone failure" || fail "run aborted on task failure (rc=$RC)"
 

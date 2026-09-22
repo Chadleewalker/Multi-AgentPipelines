@@ -99,7 +99,7 @@ grep -q "TAMPERED — frozen tests were modified" "$REP" && pass "tampered label
 grep -q "STUCK — bailed after 3 attempts" "$REP" && pass "stuck labelled" || fail "stuck label missing"
 grep -q "PR: https://example.test/pr/3" "$REP" && pass "PR links shown where a PR exists" || fail "PR link missing"
 grep -q "PR: none — review the branch directly" "$REP" && pass "pushed-but-unPR'd branches flagged for direct review" || fail "branch-only review note missing"
-grep -q "not pushed — no commits" "$REP" && pass "empty branch marked not pushed" || fail "no-commit note missing"
+grep -q "not pushed — file-scope violation" "$REP" && pass "scope-blocked branch names the file-scope block, not 'no commits'" || fail "scope-block branch reason missing"
 grep -q "bailed after 3 failed verification attempts" "$REP" && pass "stuck state surfaced" || fail "stuck state missing"
 grep -q "Rate-limit pauses: 1" "$REP" && pass "rate-limit pauses reported" || fail "pause count missing"
 grep -q "6 task(s)" "$REP" && pass "summary counts tasks" || fail "summary missing"
