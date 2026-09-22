@@ -20,12 +20,16 @@ MSYS_NO_PATHCONV=1 docker run --rm \
   -v "$ROOTW:/pipeline-repo:ro" -v "$OUTW:/out" "$IMAGE" \
   bash /pipeline-repo/scripts/entrypoint-checks.sh || FAIL=1
 
-# Every scenario's status.json conforms to the frozen schema (4.11).
+# Every scenario's status.json conforms to the frozen schema (4.11). The docs-build
+# scenario also emits a verifier artifact (a verify.json copied to e13-docsbuild.json);
+# it is validated against verify.schema.json below, so it is excluded here — validating a
+# verify.json against the status schema would wrongly red the suite on Windows.
 AJV=(npx.cmd --yes -p ajv-formats -p ajv-cli ajv -c ajv-formats)
 command -v npx.cmd >/dev/null 2>&1 || AJV=(npx --yes -p ajv-formats -p ajv-cli ajv -c ajv-formats)
 N=0
 for f in "$OUT"/*.json; do
   [ -e "$f" ] || continue
+  [ "$(basename "$f")" = "e13-docsbuild.json" ] && continue
   N=$((N + 1))
   if "${AJV[@]}" validate --spec=draft2020 -s "$ROOT/schemas/status.schema.json" -d "$f" >/dev/null 2>&1; then
     echo "PASS  schema: $(basename "$f") validates"
@@ -35,6 +39,18 @@ for f in "$OUT"/*.json; do
 done
 [ "$N" -ge 8 ] && echo "PASS  all $N scenario status files schema-checked" \
                || { echo "FAIL  expected >=8 status files, found $N"; FAIL=1; }
+
+# The docs-build verifier artifact validates against the verifier schema, not status (4.11).
+VERIFYART="$OUT/e13-docsbuild.json"
+if [ -e "$VERIFYART" ]; then
+  if "${AJV[@]}" validate --spec=draft2020 -s "$ROOT/schemas/verify.schema.json" -d "$VERIFYART" >/dev/null 2>&1; then
+    echo "PASS  schema: e13-docsbuild.json validates against verify.schema.json"
+  else
+    echo "FAIL  schema: e13-docsbuild.json does not validate against verify.schema.json"; FAIL=1
+  fi
+else
+  echo "FAIL  verifier artifact e13-docsbuild.json missing"; FAIL=1
+fi
 
 # 4.3: default agent command is headless claude with permissions bypassed; the
 # override seam is the PIPELINE_AGENT_CMD env var.

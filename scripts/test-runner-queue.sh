@@ -21,6 +21,10 @@ echo "== T12 checks =="
 REMOTE="$TMP/remote.git"; git init -q --bare -b main "$REMOTE"
 TGT="$TMP/target"; git clone -q "$REMOTE" "$TGT"; cd "$TGT"
 git config user.email t@test.local && git config user.name tester
+# A valid legacy pipeline.config.json committed at the fork point (§4.5, repo-cl11): the
+# fail-closed scope gate reads it from the fork commit and blocks any target whose config
+# it cannot read or parse as an object. No scopePolicy -> a legacy target stays scope-optional.
+printf '{"verifyCommand":"sh tools/run-tests.sh","frozenPaths":["tools/run-tests.sh"],"dependencies":{}}\n' > pipeline.config.json
 echo x > f.txt && git add -A && git commit -qm init && git push -q origin main
 TGTW="$TGT"; REMOTEW="$REMOTE"
 if command -v cygpath >/dev/null 2>&1; then TGTW="$(cygpath -m "$TGT")"; REMOTEW="$(cygpath -m "$REMOTE")"; fi
@@ -71,12 +75,13 @@ printf '{"issueId":"%s","attempts":[],"rateLimitResetAt":"%s"}\n' "$ISSUE_ID" "$
 exit 20
 EOF
 
-# tee to stderr streams the run live to the terminal; stdout is still captured for the
-# assertions, and pipefail keeps the runner's exit code from being masked by tee's.
-# This suite in particular must never run silent: when its pause scenario regressed it
-# looped forever, and with no streamed output the only symptom was a suite that appeared
-# to hang — the relaunch spam was visible solely in a run log recovered afterwards.
-runq() { ( set -o pipefail; PIPELINE_EXEC_STUB="$1" RUN_ID="$2" node runner/run.js --config "$CFG" 2>&1 | tee /dev/stderr ); }
+# Capture stdout+stderr through a pipe to a per-run log under $TMP; no /dev/stderr device
+# (absent on the Windows host). pipefail keeps the runner's exit code from being masked by
+# tee's, so runq's status stays the runner's. This suite in particular must never run silent:
+# when its pause scenario regressed it looped forever, and the only durable symptom was the
+# relaunch spam recovered from a run log afterwards — "$TMP/<run>.log" is that log, and
+# maxPauseCycles now bounds the loop so it can no longer hang.
+runq() { ( set -o pipefail; PIPELINE_EXEC_STUB="$1" RUN_ID="$2" node runner/run.js --config "$CFG" 2>&1 | tee "$TMP/$2.log" ); }
 st() { bdq show "$1" --json | grep '"status"' | head -1; }
 
 # 1. Ordering: priority first (0,1,3), FIFO within ties; blocked task excluded.
