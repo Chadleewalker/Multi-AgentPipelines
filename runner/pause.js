@@ -12,6 +12,7 @@
 'use strict';
 const { spawnSync } = require('child_process');
 const { DEFAULTS } = require('./config');
+const { runCommand } = require('./host-shell');
 
 const MINUTE = 60 * 1000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -23,7 +24,7 @@ function probeHost(token) {
   // the real CLI call so suites can exercise the probe path without burning the window.
   const stub = process.env.PIPELINE_PROBE_CMD;
   const r = stub
-    ? spawnSync('sh', ['-c', stub], { encoding: 'utf8', timeout: 2 * MINUTE })
+    ? runCommand(stub, { timeout: 2 * MINUTE })
     : spawnSync('claude', ['-p', 'ok', '--max-turns', '1'], {
       encoding: 'utf8',
       timeout: 2 * MINUTE,

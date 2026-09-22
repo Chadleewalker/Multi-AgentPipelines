@@ -29,6 +29,7 @@ const { checkScope, admitScope, readScopeConfig } = require('./scope');
 const { publish } = require('./publish');
 const { writeManifest, writeReport } = require('./report');
 const { admitGuard, checkInstallation, refusalMessage } = require('./guard-admission');
+const { spawnScript } = require('./host-shell');
 
 // Diff size on the branch — the report's final tie-breaker (§4.9).
 function diffLines(dir, forkPoint) {
@@ -61,17 +62,20 @@ async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClo
   if (stub) {
     // Asynchronous on purpose (§7): spawnSync here would serialise every stubbed task and
     // make the worker pool unobservable to exactly the Docker-free suites that prove it.
-    // The invocation stays `bash <stub>` — an explicit interpreter, so a stub script never
+    // The invocation uses an explicit host Bash, so a stub script never
     // fails with EFTYPE on the Windows host — and the environment contract is unchanged,
     // because the existing Docker suites depend on both. Output is discarded rather than
     // piped: spawnSync's pipes were never read either, and an unread pipe would now block
     // a chatty stub instead of quietly filling a buffer nobody looks at.
     const status = await new Promise((resolve) => {
-      const child = require('child_process').spawn('bash', [stub], {
-        cwd: ws.dir,
-        stdio: ['ignore', 'ignore', 'ignore'],
-        env: { ...process.env, ISSUE_ID: issue.id, TASK_DIR: taskDir, WORKSPACE: ws.dir, RUN_DIR: path.join(ws.dir, '.run') },
-      });
+      let child;
+      try {
+        child = spawnScript(stub, [], {
+          cwd: ws.dir,
+          stdio: ['ignore', 'ignore', 'ignore'],
+          env: { ...process.env, ISSUE_ID: issue.id, TASK_DIR: taskDir, WORKSPACE: ws.dir, RUN_DIR: path.join(ws.dir, '.run') },
+        });
+      } catch { resolve(null); return; }
       child.on('error', () => resolve(null));      // same shape spawnSync reported: no status
       child.on('close', (code) => resolve(code));  // null when a signal killed it
     });

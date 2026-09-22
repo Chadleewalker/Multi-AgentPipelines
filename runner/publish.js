@@ -7,6 +7,7 @@
 // verified success (exit 0 — "done" and "partial" alike, with partial flagged).
 'use strict';
 const { spawnSync } = require('child_process');
+const { runCommand } = require('./host-shell');
 
 const git = (dir, args) => spawnSync('git', args, { cwd: dir, encoding: 'utf8' });
 
@@ -105,7 +106,7 @@ function openPr(dir, { branch, title, body, baseBranch, log, traceId }) {
   const base = baseBranch || 'main';
   const args = ['pr', 'create', '--base', base, '--head', branch, '--title', title, '--body', body];
   const r = ghCmd
-    ? spawnSync('sh', ['-c', ghCmd], {
+    ? runCommand(ghCmd, {
       cwd: dir,
       encoding: 'utf8',
       env: { ...process.env, PR_BRANCH: branch, PR_TITLE: title, PR_BODY: body },

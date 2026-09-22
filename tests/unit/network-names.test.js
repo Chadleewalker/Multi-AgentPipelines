@@ -32,6 +32,7 @@ const { spawnSync } = require('child_process');
 const ROOT = path.resolve(__dirname, '..', '..');
 const { loadConfig, deriveNames } = require(path.join(ROOT, 'runner', 'config.js'));
 const preflight = require(path.join(ROOT, 'runner', 'preflight.js'));
+const hostShell = require(path.join(ROOT, 'runner', 'host-shell.js'));
 
 let failed = 0;
 function check(name, cond) {
@@ -138,8 +139,19 @@ check('a present-but-empty network is rejected by name',
 // ---- what the runner hands the scripts ---------------------------------------------
 // A fake repo root whose scripts record the environment they were handed. preflight runs
 // them through `bash`, exactly as it runs the real ones.
-const fakeRoot = path.join(tmp, 'fakeroot');
+const fakeRoot = path.join(tmp, 'fake root with spaces');
 fs.mkdirSync(path.join(fakeRoot, 'scripts'), { recursive: true });
+let selectedBash = '';
+try { selectedBash = hostShell.bashExecutable(); } catch { /* asserted below */ }
+check('the host shell resolves Bash', !!selectedBash);
+check('Windows uses Git Bash instead of the WSL launcher',
+  process.platform !== 'win32' || (!!selectedBash && !/[\\/]Windows[\\/]System32[\\/]bash\.exe$/i.test(selectedBash)));
+const command = hostShell.runCommand('printf host-shell-ok');
+check('host shell command seams work from a native Node process',
+  command.status === 0 && command.stdout === 'host-shell-ok');
+check('Windows script paths use forward slashes without losing spaces',
+  process.platform !== 'win32' || hostShell.scriptArg(path.join(fakeRoot, 'scripts', 'pipeline-net.sh'))
+    === path.join(fakeRoot, 'scripts', 'pipeline-net.sh').replace(/\\/g, '/'));
 const netRecord = path.join(tmp, 'net-record.txt');
 const egressRecord = path.join(tmp, 'egress-record.txt');
 function writeRecorder(name, record) {

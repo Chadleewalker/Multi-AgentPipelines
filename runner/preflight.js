@@ -11,6 +11,7 @@ const path = require('path');
 const { bd, bdJson } = require('./bd');
 const { deriveNames } = require('./config');
 const { acquire, release } = require('./lock');
+const { runScript } = require('./host-shell');
 
 // The historical shared pair, which is what a config with no project segment gets.
 // Asked for by name rather than spelled out again, so the two files cannot drift.
@@ -57,18 +58,18 @@ function networkUp(repoRoot, cfg, log, traceId) {
     log.info(traceId, `task network ${cfg.network} + proxy sidecar ${cfg.proxyName} (${cfg.proxyUrl}) coming up`
       + (shared ? ' — the shared default pair (this config names no project segment), so a second run on it would collide' : ''));
   }
-  const r = sh('bash', [path.join(repoRoot, 'scripts', 'pipeline-net.sh'), 'up'], { env });
+  const r = runScript(path.join(repoRoot, 'scripts', 'pipeline-net.sh'), ['up'], { env });
   return { ok: r.status === 0, output: (r.stdout || '') + (r.stderr || '') };
 }
 
 function networkDown(repoRoot, cfg) {
-  sh('bash', [path.join(repoRoot, 'scripts', 'pipeline-net.sh'), 'down'], { env: netEnv(cfg) });
+  runScript(path.join(repoRoot, 'scripts', 'pipeline-net.sh'), ['down'], { env: netEnv(cfg) });
 }
 
 function egressCheck(repoRoot, cfg) {
   // Aimed at the same network, proxy and port the tasks will use — a gate that passes
   // against a different network proves nothing about this run.
-  const r = sh('bash', [path.join(repoRoot, 'scripts', 'egress-check.sh')], { env: netEnv(cfg) });
+  const r = runScript(path.join(repoRoot, 'scripts', 'egress-check.sh'), [], { env: netEnv(cfg) });
   return { ok: r.status === 0, output: (r.stdout || '') + (r.stderr || '') };
 }
 
