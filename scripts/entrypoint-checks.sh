@@ -168,6 +168,24 @@ grep -q '"changeSummary": "Created out.txt' /out/e7-docs.json \
 (cd /tmp/ws7 && git show --stat HEAD | grep -q README.md) \
   && pass "docs: README update committed" || fail "docs: README not committed"
 
+# 7a. The generated docs prompt must honor an exact task allowlist. This was
+# missed by the generic README/docs instruction: verification passed, then the
+# docs agent edited an unlisted docs path and the host correctly scope-blocked
+# the entire branch. Assert the prompt the agent actually receives, not source
+# comments or a separate copy of the wording.
+new_ws /tmp/ws7scope
+printf '## Description\nCreate out.txt containing the word done.\n\n## Constraints\nAllowed implementation files: out.txt.\n' > .run/issue.md
+run_ep /tmp/ws7scope /tmp/stub-ok.sh
+[ "$RC" = 0 ] && pass "docs-scope: entrypoint exits 0" || fail "docs-scope: rc=$RC"
+grep -qF 'Allowed implementation files: out.txt.' /tmp/ws7scope/.run/prompt-docs.md \
+  && pass "docs-scope: actual task allowlist reaches docs prompt" || fail "docs-scope: task allowlist missing"
+grep -qF 'Treat that list as the complete edit boundary in this phase:' /tmp/ws7scope/.run/prompt-docs.md \
+  && pass "docs-scope: docs prompt binds edits to task allowlist" || fail "docs-scope: edit boundary missing"
+grep -qF 'NEVER create, edit, move, or delete a path outside it, even README or docs/.' /tmp/ws7scope/.run/prompt-docs.md \
+  && pass "docs-scope: generic docs names cannot widen the allowlist" || fail "docs-scope: generic docs exception remains"
+grep -qF 'If the list has no documentation file, make no file edits in this phase.' /tmp/ws7scope/.run/prompt-docs.md \
+  && pass "docs-scope: no listed doc means summary-only phase" || fail "docs-scope: no-doc instruction missing"
+
 # 8. Docs phase errors after verified success (T9): non-fatal, exit stays 0.
 new_ws /tmp/ws8; run_ep /tmp/ws8 /tmp/stub-docsfail.sh
 cp /tmp/ws8/.run/status.json /out/e8-docsfail.json 2>/dev/null

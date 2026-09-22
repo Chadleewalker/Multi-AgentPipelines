@@ -156,7 +156,12 @@ while :; do
       # ---- docs phase (§4.3, T9): one agent invocation, non-fatal after success ----
       {
         echo "Verification for task $ISSUE_ID just passed. Two jobs:"
-        echo "1. Update any in-repo documentation affected by the change (README, docs/)."
+        echo "1. If the task spec's Constraints has an Allowed implementation files: list,"
+        echo "   update affected in-repo docs only when their exact paths appear in it."
+        echo "   Treat that list as the complete edit boundary in this phase:"
+        echo "   NEVER create, edit, move, or delete a path outside it, even README or docs/."
+        echo "   If the list has no documentation file, make no file edits in this phase."
+        echo "   If the task has no such list, update affected in-repo docs as usual."
         echo "   NEVER touch tests/acceptance/ or any frozen path."
         echo "2. Your final output must be ONLY a concise change summary (2-4 sentences)"
         echo "   of what the implementation changed - it becomes the PR body."
