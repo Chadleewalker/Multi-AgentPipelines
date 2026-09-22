@@ -76,12 +76,17 @@ exit 20
 EOF
 
 # Capture stdout+stderr through a pipe to a per-run log under $TMP; no /dev/stderr device
-# (absent on the Windows host). pipefail keeps the runner's exit code from being masked by
-# tee's, so runq's status stays the runner's. This suite in particular must never run silent:
-# when its pause scenario regressed it looped forever, and the only durable symptom was the
-# relaunch spam recovered from a run log afterwards — "$TMP/<run>.log" is that log, and
-# maxPauseCycles now bounds the loop so it can no longer hang.
-runq() { ( set -o pipefail; PIPELINE_EXEC_STUB="$1" RUN_ID="$2" node runner/run.js --config "$CFG" 2>&1 | tee "$TMP/$2.log" ); }
+# (absent on the Windows host), so the live copy goes to fd 2 through a process
+# substitution, which Git Bash resolves to a /dev/fd path it can open. tee fans the merged
+# stream three ways at once: its own stdout (what $(runq ...) captures), the per-run log,
+# and >(cat >&2) so progress streams live to the terminal even from inside command
+# substitution — a caller that captures stdout still sees the runner work rather than a
+# silent hang. pipefail keeps the runner's exit code from being masked by tee's, so runq's
+# status stays the runner's. This suite in particular must never run silent: when its pause
+# scenario regressed it looped forever, and the only durable symptom was the relaunch spam
+# recovered from a run log afterwards — "$TMP/<run>.log" is that log, and maxPauseCycles now
+# bounds the loop so it can no longer hang.
+runq() { ( set -o pipefail; PIPELINE_EXEC_STUB="$1" RUN_ID="$2" node runner/run.js --config "$CFG" 2>&1 | tee "$TMP/$2.log" >(cat >&2) ); }
 st() { bdq show "$1" --json | grep '"status"' | head -1; }
 
 # 1. Ordering: priority first (0,1,3), FIFO within ties; blocked task excluded.
