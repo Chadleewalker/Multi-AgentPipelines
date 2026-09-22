@@ -55,6 +55,8 @@ function chooseBranch(cloneDir, issueId) {
 // Prepare one task's workspace. Returns {ok, dir, branch, forkPoint} or {ok:false,reason}.
 function prepare(cfg, issueId, issueMarkdown, log, traceId) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `pipeline-${issueId}-`));
+  let ready = false;
+  try {
 
   // Fresh clone from the remote every task (§4.2): canonical main, no stale local state.
   // Force LF: this workspace exists only to be bind-mounted into a Linux container, and
@@ -111,13 +113,35 @@ function prepare(cfg, issueId, issueMarkdown, log, traceId) {
   log.info(traceId, `workspace ready: ${dir} on ${branch} (fork point ${forkPoint.slice(0, 8)})`);
   // memoryCount travels with the workspace so the attempt log can record what went IN
   // as well as what came OUT; null means the export failed rather than found nothing.
+  ready = true;
   return { ok: true, dir, branch, forkPoint, defaultBranch, memoryCount: mem.ok ? mem.count : null };
+  } catch (e) {
+    return { ok: false, reason: `workspace setup failed: ${e.message}` };
+  } finally {
+    if (!ready) {
+      const removed = discard(dir);
+      if (!removed.ok) log.error(traceId, `workspace cleanup failed at ${dir}: ${removed.error}`);
+    }
+  }
 }
 
 // Does the branch have commits beyond the fork point? (§4.5: push only what exists.)
 function hasCommits(dir, forkPoint) {
   const r = git(dir, ['rev-list', '--count', `${forkPoint}..HEAD`]);
   return r.status === 0 && Number((r.stdout || '0').trim()) > 0;
+}
+
+// A failed push or an uncommitted edit can make this clone the only copy of task work.
+// A Git read failure is also a reason to keep it until a human can inspect it.
+function recoveryReason(dir, forkPoint, pushed) {
+  const status = git(dir, ['status', '--porcelain=v1', '--untracked-files=all']);
+  if (status.status !== 0) return 'Git status could not be read';
+  if ((status.stdout || '').trim()) return 'uncommitted changes';
+  if (pushed) return null;
+  const commits = git(dir, ['rev-list', '--count', `${forkPoint}..HEAD`]);
+  if (commits.status !== 0) return 'commit history could not be read';
+  if (Number((commits.stdout || '0').trim()) > 0) return 'unpushed commits';
+  return null;
 }
 
 // Collect the container's contract artifacts into the run log folder (§4.12) before
@@ -148,10 +172,11 @@ function collectArtifacts(dir, taskDir) {
 
 function discard(dir) {
   try {
-    fs.rmSync(dir, { recursive: true, force: true });
-  } catch {
-    /* Windows can hold locks briefly; the temp dir is disposable either way */
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
   }
 }
 
-module.exports = { prepare, chooseBranch, hasCommits, collectArtifacts, discard };
+module.exports = { prepare, chooseBranch, hasCommits, recoveryReason, collectArtifacts, discard };

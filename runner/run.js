@@ -21,7 +21,7 @@ const { release: releaseLock } = require('./lock');
 const {
   readyQueue, queueSummary, claim, exportIssue, finish, outcomeFor, attemptNotes,
 } = require('./queue');
-const { prepare, hasCommits, collectArtifacts, discard } = require('./workspace');
+const { prepare, hasCommits, recoveryReason, collectArtifacts, discard } = require('./workspace');
 const { runTask } = require('./container');
 const { createPauseGate } = require('./pause');
 const { fileMemoryNotes, shouldFileMemory } = require('./memory');
@@ -184,6 +184,10 @@ async function runOneTask(cfg, issue, log, token, gate) {
       [`run ${log.runId}: workspace preparation failed — ${ws.reason}`]);
     return { issueId: issue.id, outcome: 'failed' };
   }
+  let keepWorkspace = Boolean(process.env.PIPELINE_KEEP_WORKSPACE);
+  let keepReason = '';
+  let branchPushed = false;
+  try {
 
   // ---- early file-scope admission (§4.5, repo-cl10): the LIST REQUIREMENT is checked
   // BEFORE any agent work. The policy is read from the FORK-POINT config (never the
@@ -203,8 +207,6 @@ async function runOneTask(cfg, issue, log, token, gate) {
     log.error(tr, `file-scope gate refused the task before any agent work: ${scopeCfg.reason} — the fork-point config could not be trusted, so scope was not assumed optional; nothing launched, nothing pushed, no PR (§4.5)`);
     const notes = [`run ${log.runId}: BLOCKED before agent work — ${scopeCfg.reason}`];
     finish(cfg, issue.id, blocked, notes);
-    if (process.env.PIPELINE_KEEP_WORKSPACE) log.info(tr, `workspace kept at ${ws.dir}`);
-    else discard(ws.dir);
     return {
       issueId: issue.id,
       title: issue.title || '',
@@ -227,8 +229,6 @@ async function runOneTask(cfg, issue, log, token, gate) {
     log.error(tr, `file-scope gate refused the task before any agent work (${scopePolicy} policy): ${admission.reason} — nothing launched, nothing pushed, no PR (§4.5)`);
     const notes = [`run ${log.runId}: BLOCKED by the file-scope gate before agent work — ${admission.reason}`];
     finish(cfg, issue.id, blocked, notes);
-    if (process.env.PIPELINE_KEEP_WORKSPACE) log.info(tr, `workspace kept at ${ws.dir}`);
-    else discard(ws.dir);
     return {
       issueId: issue.id,
       title: issue.title || '',
@@ -306,6 +306,8 @@ async function runOneTask(cfg, issue, log, token, gate) {
   // before, keeping the existing clean zero-commit result. ----
   const scope = checkScope({ dir: ws.dir, forkPoint: ws.forkPoint, issue: { description: exported.markdown }, policy: scopePolicy });
   if (!scope.ok) {
+    keepWorkspace = true;
+    keepReason = ' (file-scope block — retained for review)';
     outcome = { status: 'failed', beads: 'blocked' };
     log.error(tr, `file-scope gate blocked the branch (${scopePolicy} policy): ${scope.reason || (scope.disallowedPaths || []).join(', ')} — nothing pushed, no PR (§4.5)`);
   }
@@ -335,6 +337,7 @@ async function runOneTask(cfg, issue, log, token, gate) {
       runId: log.runId,
     }, log, tr)
     : { pushed: false, branch: ws.branch, prUrl: null };
+  branchPushed = published.pushed;
 
   const notes = attemptNotes(log.runId, outcome, artifacts.status, ws.memoryCount);
   if (!scope.ok) {
@@ -387,13 +390,26 @@ async function runOneTask(cfg, issue, log, token, gate) {
     attemptNotes: notes,
   };
 
-  // A file-scope block keeps a reviewable local workspace (§4.5, repo-cl10): the
-  // unauthorized commit is retained on the local branch for a human to inspect even though
-  // nothing was pushed. Every other outcome discards the throwaway clone as before.
-  if (process.env.PIPELINE_KEEP_WORKSPACE || !scope.ok) {
-    log.info(tr, `workspace kept at ${ws.dir}${!scope.ok ? ' (file-scope block — retained for review)' : ''}`);
-  } else discard(ws.dir);
   return row;
+  } finally {
+    // A file-scope block retains its local evidence. Every completed or interrupted task
+    // otherwise disposes its clone, including paths that throw before the normal return.
+    // Retain the clone when it still holds the only copy of committed or uncommitted work.
+    if (!keepWorkspace) {
+      const reason = recoveryReason(ws.dir, ws.forkPoint, branchPushed);
+      if (reason) {
+        keepWorkspace = true;
+        keepReason = ` (${reason} — retained for recovery)`;
+      }
+    }
+    if (keepWorkspace) {
+      log.info(tr, `workspace kept at ${ws.dir}${keepReason}`);
+    } else {
+      const removed = discard(ws.dir);
+      if (removed.ok) log.info(tr, `workspace removed: ${ws.dir}`);
+      else log.error(tr, `workspace cleanup failed at ${ws.dir}: ${removed.error}`);
+    }
+  }
 }
 
 async function main() {

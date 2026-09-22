@@ -1192,12 +1192,12 @@ design's central bet, and it is the first day it paid out repeatedly.
 
 ## Test suites
 
-All but fourteen drive real Docker and share one network, so they must never run concurrently
+All but fifteen drive real Docker and share one network, so they must never run concurrently
 (`test-runner-memory.sh`, `test-changelog.sh`, `test-sanitize.sh`,
 `test-agent-hooks.sh`, `test-network-names.sh`, `test-lock.sh`,
 `test-sweep-hygiene.sh`, `test-concurrency.sh`, `test-pause-gate.sh`,
 `test-sweep-assertions.sh`, `test-trace.sh`, `test-verdict.sh`, `test-audit-runs.sh` and
-`test-scope-gate.sh` are the exceptions —
+`test-scope-gate.sh` and `test-workspace-cleanup.sh` are the exceptions —
 see below; they need neither).
 **`scripts/test-all.sh` is the sweep** — it holds a lock, runs every suite sequentially,
 kills one that hangs (`--timeout`, default 900s), **reclaims what each suite leaked after
@@ -1236,8 +1236,9 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-audit-runs.sh` | the run-history audit (change-log row `repo-73k`) — the three-bucket corpus taxonomy, `startedAt` joins, the `specConcerns` channel keys, nearest-rank quantiles, and the pure-reader contract checked by content hash |
 | `scripts/test-verifier.sh` (also) | the required build gate (change-log row `repo-cl9`) — build fail forces exit 1, a clean build passes, a worktree buildCommand edit is ignored, and a frozen build helper edit is tampering |
 | `scripts/test-scope-gate.sh` | the final file-scope gate (change-log row `repo-cl9`) — exact-list acceptance, malformed/unsafe/absent lists failing closed, committed/untracked/deleted/renamed out-of-scope paths named, and `readScopePolicy` reading the fork-point config |
+| `scripts/test-workspace-cleanup.sh` | runner clone cleanup on setup failure, task completion, and error; explicit keep behavior; PR verifier task and fork-point worktree cleanup |
 
-**`scripts/test-runner-memory.sh` is one of the fourteen suites that need no Docker**
+**`scripts/test-runner-memory.sh` is one of the fifteen suites that need no Docker**
 (repo-dhp): it
 drives both §3.6 memory channels plus the `shouldFileMemory` outcome gate through the
 `PIPELINE_BD_CMD` seam, so it runs anywhere — including inside a task container, where

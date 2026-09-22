@@ -27,6 +27,7 @@ BRANCH="${2:?usage: verify-pr.sh <repo-dir> <branch> [<acceptance-dir>]}"
 ACCEPT="${3:-}"
 
 cd "$REPO" 2>/dev/null || { echo "verify-pr: cannot cd to $REPO" >&2; exit 2; }
+REPO="$(pwd -P)"
 
 DEFAULT_BRANCH="$(node -e "
   try { const c = require('./pipeline.config.json'); process.stdout.write(c.defaultBranch || 'main'); }
@@ -36,8 +37,30 @@ DEFAULT_BRANCH="$(node -e "
 echo "verify-pr: $BRANCH -> $DEFAULT_BRANCH  (in $REPO)"
 git fetch -q origin "$BRANCH" || { echo "verify-pr: cannot fetch $BRANCH" >&2; exit 2; }
 
-WT="$(mktemp -d 2>/dev/null || echo "${TMPDIR:-/tmp}/verify-pr-$$")"
-rm -rf "$WT"
+WT=""
+BASE_WT=""
+BASE_WT_READY=0
+cleanup_worktrees() {
+  local path failed=0
+  for path in "$BASE_WT" "$WT"; do
+    [ -n "$path" ] || continue
+    if git -C "$REPO" worktree remove --force "$path" >/dev/null 2>&1 \
+      || rmdir "$path" >/dev/null 2>&1; then
+      if [ "$path" = "$BASE_WT" ]; then BASE_WT=""; BASE_WT_READY=0; fi
+      [ "$path" = "$WT" ] && WT=""
+    else
+      echo "verify-pr: could not remove temporary worktree $path" >&2
+      failed=1
+    fi
+  done
+  rm -f /tmp/vp-accept.$$ /tmp/vp-sib.$$ /tmp/vp-reg.$$
+  return "$failed"
+}
+trap 'cleanup_worktrees' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+WT="$(mktemp -d)" || { echo "verify-pr: cannot create temporary directory" >&2; exit 2; }
 git worktree add -q --detach "$WT" "origin/$BRANCH" || { echo "verify-pr: cannot create worktree" >&2; exit 2; }
 
 STATUS=0
@@ -96,16 +119,19 @@ fi
 #         `docs/STATUS.md` defect-10 family). So when a sibling fails, we re-run it at the
 #         FORK POINT and only call it a regression if it passed there.
 BASE="$(git merge-base "origin/$DEFAULT_BRANCH" "origin/$BRANCH" 2>/dev/null)"
-BASE_WT=""
 base_worktree() {
-  [ -n "$BASE_WT" ] && { echo "$BASE_WT"; return 0; }
+  [ -n "$BASE_WT" ] && [ "$BASE_WT_READY" = 1 ] && return 0
+  [ -n "$BASE_WT" ] && return 1
   [ -n "$BASE" ] || return 1
-  BASE_WT="$(mktemp -d 2>/dev/null || echo "${TMPDIR:-/tmp}/verify-pr-base-$$")"
-  rm -rf "$BASE_WT"
-  git -C "$REPO" worktree add -q --detach "$BASE_WT" "$BASE" 2>/dev/null || { BASE_WT=""; return 1; }
+  BASE_WT="$(mktemp -d)" || { BASE_WT=""; return 1; }
+  if ! git -C "$REPO" worktree add -q --detach "$BASE_WT" "$BASE" 2>/dev/null; then
+    if rmdir "$BASE_WT" >/dev/null 2>&1; then BASE_WT=""; fi
+    return 1
+  fi
+  BASE_WT_READY=1
   [ -d "$BASE_WT/node_modules" ] || [ ! -d "$REPO/node_modules" ] \
     || ln -sfn "$REPO/node_modules" "$BASE_WT/node_modules"
-  echo "$BASE_WT"
+  return 0
 }
 
 for d in tests/acceptance/*/; do
@@ -117,7 +143,7 @@ for d in tests/acceptance/*/; do
   if sh tools/run-acceptance.sh "$d" >/tmp/vp-sib.$$ 2>&1; then
     pass "sibling acceptance $d still passes"
   else
-    BW="$(base_worktree)" || BW=""
+    if base_worktree; then BW="$BASE_WT"; else BW=""; fi
     if [ -z "$BW" ]; then
       # No baseline means we cannot tell a regression from a pre-existing failure. Say so,
       # and fail — an unknown is never a pass.
@@ -141,7 +167,7 @@ if [ -f tools/run-regressions.sh ]; then
   if sh tools/run-regressions.sh >/tmp/vp-reg.$$ 2>&1; then
     pass "regressions pass"
   else
-    BW="$(base_worktree)" || BW=""
+    if base_worktree; then BW="$BASE_WT"; else BW=""; fi
     if [ -z "$BW" ]; then
       fail "regressions FAIL, and the fork point could not be checked out to compare"
       tail -20 /tmp/vp-reg.$$ | sed 's/^/        /'
@@ -157,16 +183,12 @@ if [ -f tools/run-regressions.sh ]; then
   rm -f /tmp/vp-reg.$$
 fi
 
-# The fork-point worktree, if one was created for the comparisons above.
-[ -n "$BASE_WT" ] && { git -C "$REPO" worktree remove --force "$BASE_WT" >/dev/null 2>&1; git -C "$REPO" worktree prune >/dev/null 2>&1; }
-
 # --- 5. Diff shape, reported not judged. A human should look at anything surprising.
 cd "$REPO" || true
 echo "  --    diff shape:"
 git diff --stat "origin/$DEFAULT_BRANCH...origin/$BRANCH" | tail -12 | sed 's/^/        /'
 
-git worktree remove --force "$WT" >/dev/null 2>&1
-git worktree prune >/dev/null 2>&1
+cleanup_worktrees || STATUS=2
 
 if [ "$STATUS" = "0" ]; then
   echo "verify-pr: CLEAN — safe to merge"

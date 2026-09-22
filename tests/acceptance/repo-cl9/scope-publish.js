@@ -11,7 +11,7 @@ const root = path.resolve(__dirname, '../../..');
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'v1-scope-publish-'));
 const remote = path.join(temp, 'remote.git');
 const target = path.join(temp, 'target');
-const runId = `repo-cl9-scope-${process.pid}`;
+const runId = `repo-cl9-scope-${require('crypto').randomBytes(16).toString('hex')}`;
 const runDir = path.join(root, 'runs', runId);
 function git(cwd, ...args) {
   const r = spawnSync('git', args, { cwd, encoding: 'utf8' });
@@ -73,6 +73,26 @@ process.exit(0);\n`);
   }
 }
 main().finally(() => {
-  fs.rmSync(temp, { recursive: true, force: true });
-  fs.rmSync(runDir, { recursive: true, force: true });
+  try {
+    // A scope block intentionally retains its clone so a real reviewer can inspect
+    // it. This fixture has completed that inspection; reclaim only its logged clone.
+    const logFile = path.join(runDir, 'run.log');
+    if (fs.existsSync(logFile)) {
+      const logText = fs.readFileSync(logFile, 'utf8');
+      const marker = `[${runId}/repo-cl9] workspace ready: `;
+      const line = logText.split(/\r?\n/).find((entry) => entry.includes(marker));
+      const match = line && /^(.+?) on task\/repo-cl9\b/.exec(line.slice(line.indexOf(marker) + marker.length));
+      if (match) {
+        const workspace = path.resolve(match[1]);
+        const tempRoot = path.resolve(os.tmpdir());
+        assert.strictEqual(path.dirname(workspace), tempRoot, 'unexpected workspace parent');
+        assert.ok(path.basename(workspace).startsWith('pipeline-repo-cl9-'),
+          'unexpected workspace name');
+        fs.rmSync(workspace, { recursive: true, force: true });
+      }
+    }
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+    fs.rmSync(runDir, { recursive: true, force: true });
+  }
 }).catch((e) => { console.error(e); process.exitCode = 1; });

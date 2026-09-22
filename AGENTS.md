@@ -127,3 +127,11 @@ bd prime                # Refresh Beads context
 
 **Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
 <!-- END BEADS CODEX SETUP -->
+
+## Worktree lifecycle
+
+Record each temporary Git worktree created for a task. At task completion, save any
+uncommitted work that must survive, remove worktrees owned by that task with
+`git worktree remove`, and verify `git worktree list` contains only intended checkouts.
+Never remove a primary checkout or another task's worktree. If a workspace is retained
+for debugging or a file-scope block, record its path and reason; remove it after review.

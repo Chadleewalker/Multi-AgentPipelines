@@ -9,10 +9,69 @@
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d)"
+SUITE_TAG="$(node -e "process.stdout.write(require('crypto').randomBytes(16).toString('hex'))")"
+[ -n "$SUITE_TAG" ] || { echo "FAIL  could not create a unique suite ID" >&2; exit 2; }
+RUN_BASIC="t13-basic-$SUITE_TAG"
+RUN_NOWORK="t13-nowork-$SUITE_TAG"
+RUN_COLLISION="t13-collision-$SUITE_TAG"
+RUN_BADREMOTE="t13-badremote-$SUITE_TAG"
 FAIL=0
 pass() { echo "PASS  $1"; }
 fail() { echo "FAIL  $1"; FAIL=1; }
-cleanup() { bash "$ROOT/scripts/pipeline-net.sh" down >/dev/null 2>&1; rm -rf "$TMP" "$ROOT/runs/t13-"*; }
+cleanup() {
+  local rc=$?
+  bash "$ROOT/scripts/pipeline-net.sh" down >/dev/null 2>&1
+  # KEEP_WORKSPACE is enabled for the assertions below. Reclaim only clones named in
+  # this suite's run logs, after confirming each is a task clone in the OS temp root.
+  node - "$ROOT/runs" "$RUN_BASIC" "$RUN_NOWORK" "$RUN_COLLISION" \
+    "$RUN_BADREMOTE" <<'NODE'
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const tempRoot = path.resolve(os.tmpdir());
+const runsRoot = path.resolve(process.argv[2]);
+for (const runId of process.argv.slice(3)) {
+  const runDir = path.resolve(runsRoot, runId);
+  if (!/^t13-(?:basic|nowork|collision|badremote)-[A-Za-z0-9._-]+$/.test(runId)
+      || path.dirname(runDir) !== runsRoot) {
+    console.error(`refusing to remove unexpected run directory: ${runDir}`);
+    process.exitCode = 1;
+    continue;
+  }
+  const logFile = path.join(runDir, 'run.log');
+  if (fs.existsSync(logFile)) {
+    for (const line of fs.readFileSync(logFile, 'utf8').split(/\r?\n/)) {
+      const marker = `[${runId}/`;
+      const markerAt = line.indexOf(marker);
+      if (markerAt < 0) continue;
+      const match = /^([^\]]+)\] workspace ready: (.+?) on task\//.exec(line.slice(markerAt + marker.length));
+      if (!match) continue;
+      const dir = path.resolve(match[2]);
+      if (path.dirname(dir) !== tempRoot || !path.basename(dir).startsWith(`pipeline-${match[1]}-`)) {
+        console.error(`refusing to remove unexpected workspace: ${dir}`);
+        process.exitCode = 1;
+        continue;
+      }
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+      } catch (error) {
+        console.error(`could not remove suite workspace ${dir}: ${error.message}`);
+        process.exitCode = 1;
+      }
+    }
+  }
+  try {
+    fs.rmSync(runDir, { recursive: true, force: true });
+  } catch (error) {
+    console.error(`could not remove suite run ${runDir}: ${error.message}`);
+    process.exitCode = 1;
+  }
+}
+NODE
+  [ "$?" -eq 0 ] || rc=1
+  rm -rf "$TMP"
+  exit "$rc"
+}
 trap cleanup EXIT
 
 echo "== T13 checks =="
@@ -56,7 +115,7 @@ I1=$(bdq create "first task" -d x --acceptance ok --design "design-ref: 4.2" -p 
 run() { PIPELINE_EXEC_STUB="$1" RUN_ID="$2" PIPELINE_KEEP_WORKSPACE=1 node runner/run.js --config "$CFG" 2>&1; }
 
 # 1. Fresh clone from the remote, branch task/<id> off canonical main.
-OUT=$(run "$TMP/stub-work.sh" t13-basic)
+OUT=$(run "$TMP/stub-work.sh" "$RUN_BASIC")
 echo "$OUT" | grep -q "workspace ready:" && pass "workspace prepared per task" || fail "no workspace: $(echo "$OUT" | tail -3)"
 echo "$OUT" | grep -q "on task/$I1 " && pass "branch named task/<issue-id>" || fail "branch naming wrong"
 WS=$(echo "$OUT" | grep -o "workspace kept at .*" | head -1 | sed 's/workspace kept at //')
@@ -80,7 +139,7 @@ grep -q "^\.run/$" "$WS/.git/info/exclude" && pass ".run/ added to git exclude" 
 echo "$OUT" | grep -q "has commits (push candidate)" && pass "commits detected on the branch" || fail "commit detection failed"
 
 # 6. Artifacts collected into the run folder before discard.
-TD="$ROOT/runs/t13-basic/tasks/$I1"
+TD="$ROOT/runs/$RUN_BASIC/tasks/$I1"
 [ -f "$TD/status.json" ] && [ -f "$TD/verify.json" ] \
   && pass "status.json + verify.json collected into the run folder" || fail "artifacts not collected"
 grep -q '"acceptance": "pass"' "$TD/verify.json" 2>/dev/null || grep -q '"acceptance":"pass"' "$TD/verify.json" \
@@ -91,14 +150,14 @@ echo "$OUT" | grep -q "exit 0 -> done" && pass "outcome derived from collected v
 
 # 8. No-commit task: nothing to push.
 I2=$(bdq create "no-work task" -d x --acceptance ok --design "design-ref: 4.6" -p 0 --silent)
-OUT=$(run "$TMP/stub-nowork.sh" t13-nowork)
+OUT=$(run "$TMP/stub-nowork.sh" "$RUN_NOWORK")
 echo "$OUT" | grep -q "no commits (nothing to push)" && pass "empty branch reported as nothing to push" || fail "empty-branch detection failed"
 
 # 9. Branch collision: an existing remote branch forces -r2, never a force-push.
 git -C "$TMP" clone -q "$REMOTE" "$TMP/pusher" 2>/dev/null
 (cd "$TMP/pusher" && git checkout -q -b "task/$I2" origin/main && git commit -q --allow-empty -m "earlier attempt" && git push -q origin "task/$I2")
 I2B=$(bdq update "$I2" --status open >/dev/null; echo "$I2")
-OUT=$(run "$TMP/stub-work.sh" t13-collision)
+OUT=$(run "$TMP/stub-work.sh" "$RUN_COLLISION")
 echo "$OUT" | grep -q "using task/$I2-r2" && pass "remote branch collision -> -r2 suffix" || fail "collision handling failed"
 grep -rqE "push[^\n]*(--force|-f\b)|force-with-lease" "$ROOT/runner/" \
   && fail "runner can force-push" || pass "runner never force-pushes (earlier attempts preserved)"
@@ -113,7 +172,7 @@ BADCFG="$TMP/bad.json"
 printf '{"targetRepoPath":"%s","targetRepoRemote":"%s/nope.git","image":"pipeline-base:local"}\n' "$TGTW" "$REMOTEW" > "$BADCFG"
 I3=$(bdq create "unclonable" -d x --acceptance ok --design "design-ref: 4.2" -p 0 --silent)
 # Capture stdout+stderr directly; no /dev/stderr device (absent on the Windows host).
-OUT=$(PIPELINE_EXEC_STUB="$TMP/stub-work.sh" RUN_ID=t13-badremote node runner/run.js --config "$BADCFG" 2>&1); RC=$?
+OUT=$(PIPELINE_EXEC_STUB="$TMP/stub-work.sh" RUN_ID="$RUN_BADREMOTE" node runner/run.js --config "$BADCFG" 2>&1); RC=$?
 echo "$OUT" | grep -q "workspace preparation failed" && pass "clone failure reported per task" || fail "clone failure not handled"
 [ "$RC" = 0 ] && pass "run continues after a task-level clone failure" || fail "run aborted on task failure (rc=$RC)"
 

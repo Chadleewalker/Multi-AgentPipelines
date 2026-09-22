@@ -4,6 +4,14 @@ A pipeline that works through a queue of development tasks autonomously, each in
 locked-down Docker container, and hands back pull requests plus a run report. The user
 approves intent before a run and reviews results after; nothing in between is interactive.
 
+## Worktree lifecycle
+
+Record each temporary Git worktree created for a task. At task completion, save any
+uncommitted work that must survive, remove worktrees owned by that task with
+`git worktree remove`, and verify `git worktree list` contains only intended checkouts.
+Never remove a primary checkout or another task's worktree. If a workspace is retained
+for debugging or a file-scope block, record its path and reason; remove it after review.
+
 ## Read these first, in this order
 
 | File | What it is |
@@ -87,7 +95,7 @@ bash scripts/e2e.sh            # add --keep to leave branches and PRs up for ins
 bash scripts/test-verifier.sh
 bash scripts/test-runner-container.sh
 
-# the thirteen suites that need no Docker — seconds, safe to run anywhere, even in a container
+# the fifteen suites that need no Docker — seconds, safe to run anywhere, even in a container
 bash scripts/test-runner-memory.sh
 bash scripts/test-changelog.sh     # DESIGN.md §12 row identity (CHANGELOG_FILE re-aims it)
 bash scripts/test-sanitize.sh      # publication hygiene (SANITIZE_FIXTURE_DIR re-aims it)
@@ -101,6 +109,8 @@ bash scripts/test-sweep-assertions.sh # the sweep's PASSED column — both vocab
 bash scripts/test-trace.sh         # the traceability ledger — spec-to-code refs, report and backfill (change-log row `trace-ledger`)
 bash scripts/test-verdict.sh       # the review verdict recorder — which run a verdict lands in, and what refuses (change-log row `repo-1ie`)
 bash scripts/test-audit-runs.sh    # the run-history audit — buckets, joins, channels, quantiles, and that it writes nothing (change-log row `repo-73k`)
+bash scripts/test-scope-gate.sh    # the host file-scope gate
+bash scripts/test-workspace-cleanup.sh # runner clones and verifier worktrees are removed
 ```
 
 Reading the corpus itself is `node scripts/audit-runs.js` — a pure reader that prints one
