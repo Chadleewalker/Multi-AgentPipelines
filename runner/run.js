@@ -25,6 +25,7 @@ const { prepare, hasCommits, collectArtifacts, discard } = require('./workspace'
 const { runTask } = require('./container');
 const { createPauseGate } = require('./pause');
 const { fileMemoryNotes, shouldFileMemory } = require('./memory');
+const { checkScope, readScopePolicy } = require('./scope');
 const { publish } = require('./publish');
 const { writeManifest, writeReport } = require('./report');
 
@@ -224,9 +225,26 @@ async function runOneTask(cfg, issue, log, token, gate) {
     log.info(tr, 'relaunching in a fresh container against the same workspace (attempt counter carries over)');
   }
   if (pauses) log.info(tr, `task resumed across ${pauses} usage-window pause(s)`);
-  const outcome = outcomeFor(exec.exitCode, artifacts.verify);
+  let outcome = outcomeFor(exec.exitCode, artifacts.verify);
   const commits = hasCommits(ws.dir, ws.forkPoint);
   log.info(tr, `branch ${ws.branch}: ${commits ? 'has commits (push candidate)' : 'no commits (nothing to push)'}`);
+
+  // ---- final file-scope gate (§4.5, repo-cl9): the HOST decides whether the branch may
+  // leave the machine. The policy is read from the FORK-POINT config (never the worktree,
+  // so an in-run edit cannot widen it); a `required` target needs one valid, safe
+  // `Allowed implementation files:` list, and even a legacy target enforces a list when
+  // one is present. A violation is a narrow exception to "push WIP on failure" (§4.5):
+  // local evidence is kept and the run report names the offending paths, but the
+  // unauthorized bytes are pushed nowhere and the issue is blocked. Only meaningful when
+  // there is something to publish. ----
+  const scopePolicy = readScopePolicy(ws.dir, ws.forkPoint);
+  const scope = commits
+    ? checkScope({ dir: ws.dir, forkPoint: ws.forkPoint, issue: { description: exported.markdown }, policy: scopePolicy })
+    : { ok: true, disallowedPaths: [] };
+  if (!scope.ok) {
+    outcome = { status: 'failed', beads: 'blocked' };
+    log.error(tr, `file-scope gate blocked the branch (${scopePolicy} policy): ${scope.reason || (scope.disallowedPaths || []).join(', ')} — nothing pushed, no PR (§4.5)`);
+  }
 
   // ---- memory out-channel (§3.6): file the agent's proposed notes, host as sole
   // Beads writer. Which outcomes qualify is memory.js's rule, not the runner's —
@@ -238,20 +256,29 @@ async function runOneTask(cfg, issue, log, token, gate) {
     for (const err of mem.errors) log.error(tr, `memory: could not file a note — ${err}`);
   }
 
-  // ---- publish: push what exists, PR what passed (§4.5, T16) ----
-  const published = publish(cfg, {
-    ws,
-    outcome,
-    hasCommits: commits,
-    issueMarkdown: exported.markdown,
-    status: artifacts.status,
-    verify: artifacts.verify,
-    issue,
-    runId: log.runId,
-  }, log, tr);
+  // ---- publish: push what exists, PR what passed (§4.5, T16) — but a scope violation
+  // publishes NOTHING (§4.5, repo-cl9). The evidence stays local; only the run report and
+  // the Beads note carry the offending paths off the machine. ----
+  const published = scope.ok
+    ? publish(cfg, {
+      ws,
+      outcome,
+      hasCommits: commits,
+      issueMarkdown: exported.markdown,
+      status: artifacts.status,
+      verify: artifacts.verify,
+      issue,
+      runId: log.runId,
+    }, log, tr)
+    : { pushed: false, branch: ws.branch, prUrl: null };
 
   const notes = attemptNotes(log.runId, outcome, artifacts.status, ws.memoryCount);
-  if (published.prUrl) notes.push(`PR: ${published.prUrl}`);
+  if (!scope.ok) {
+    const detail = scope.disallowedPaths.length
+      ? `unauthorized paths NOT pushed: ${scope.disallowedPaths.join(', ')}`
+      : (scope.reason || 'the required file-scope list is missing or unsafe');
+    notes.push(`run ${log.runId}: BLOCKED by the file-scope gate — ${detail}`);
+  } else if (published.prUrl) notes.push(`PR: ${published.prUrl}`);
   else if (published.pushed) notes.push(`branch pushed for review: ${ws.branch} (no PR — ${outcome.status})`);
   finish(cfg, issue.id, outcome, notes);
 
@@ -275,11 +302,18 @@ async function runOneTask(cfg, issue, log, token, gate) {
     ...(v ? {
       verification: {
         acceptance: v.acceptance,
+        // §4.4 (repo-cl9): the required build gate's verdict, carried so the report can
+        // display build evidence. Omitted when the target declares no buildCommand.
+        ...(v.build && v.build !== 'absent' ? { build: v.build } : {}),
         regressions: v.regressions,
         ...(v.acceptanceOutput ? { evidence: String(v.acceptanceOutput).slice(-1500) } : {}),
+        ...(v.build === 'fail' && v.buildOutput ? { buildEvidence: String(v.buildOutput).slice(-1500) } : {}),
       },
     } : {}),
     ...(artifacts.status && artifacts.status.stuckState ? { stuckState: artifacts.status.stuckState } : {}),
+    // §4.5 (repo-cl9): the file-scope gate's verdict, carried onto the manifest so the run
+    // report can name the offending paths. Present only when the gate blocked the branch.
+    ...(!scope.ok ? { scope: { ok: false, disallowedPaths: scope.disallowedPaths, ...(scope.reason ? { reason: scope.reason } : {}) } } : {}),
     // §3.7: the agent's "this spec is wrong" channel. Carried onto the manifest so the
     // report and the PR body can surface it — evidence only, and deliberately NOT part of
     // `scrutinyKey`, because a concern that could reorder the report would be a gate (§3.5).

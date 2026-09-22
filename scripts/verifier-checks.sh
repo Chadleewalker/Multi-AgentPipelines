@@ -96,5 +96,54 @@ run T-1 /tmp/fx2 s8-noreg
 WORKSPACE=/tmp/fx node /pipeline-repo/pipeline/verify.js >/dev/null 2>&1
 [ $? = 4 ] && pass "missing ISSUE_ID: exit 4 (error)" || fail "missing ISSUE_ID"
 
+# 9b. No buildCommand in the frozen config -> build: absent (legacy targets unchanged).
+#     (s1-pass.json is fixture /tmp/fx, which declares no buildCommand — repo-cl9.)
+grep -q '"build": "absent"' /out/s1-pass.json \
+  && pass "no buildCommand: recorded as absent" || fail "build-absent (legacy target changed)"
+
+# --- Build gate (repo-cl9): buildCommand in the FROZEN config is a REQUIRED gate. A
+#     passing acceptance suite can sit atop a broken production build (Deep End PR #62),
+#     so a build failure must force exit 1, and neither a worktree edit to the command nor
+#     to a frozen helper it runs can weaken it. tools/build.sh passes iff compile.ok exists.
+mkbuild() {
+  rm -rf /tmp/fxb; mkdir -p /tmp/fxb; cd /tmp/fxb
+  git init -q -b main . && git config user.email t@test.local && git config user.name tester
+  printf '%s\n' '{"verifyCommand":"sh tools/run-tests.sh","buildCommand":"sh tools/build.sh","frozenPaths":["tools/run-tests.sh","tools/build.sh"],"dependencies":{}}' > pipeline.config.json
+  mkdir -p tools tests/acceptance/T-1
+  printf '#!/bin/sh\nfor f in "$1"*.sh; do sh "$f" || exit 1; done\n' > tools/run-tests.sh
+  printf '#!/bin/sh\ntest -f compile.ok\n' > tools/build.sh
+  printf '#!/bin/sh\nexit 0\n' > tests/acceptance/T-1/test.sh
+  git add -A && git commit -qm "planning: frozen tests + build" >/dev/null
+  git checkout -qb task/test
+}
+mkbuild
+
+# 10. Acceptance passes but the build fails -> exit 1, build fail (cannot mask).
+run T-1 /tmp/fxb s10-buildfail
+[ "$RC" = 1 ] && grep -q '"acceptance": "pass"' /out/s10-buildfail.json \
+              && grep -q '"build": "fail"' /out/s10-buildfail.json \
+  && pass "build-gate: passing acceptance cannot mask a failing build" || fail "build-fail (rc=$RC)"
+
+# 11. A clean build -> exit 0, build pass.
+echo ok > /tmp/fxb/compile.ok
+run T-1 /tmp/fxb s11-buildpass
+[ "$RC" = 0 ] && grep -q '"build": "pass"' /out/s11-buildpass.json \
+  && pass "build-gate: a clean build permits success" || fail "build-pass (rc=$RC)"
+
+# 12. Worktree config edited to a trivial buildCommand -> IGNORED (fork-point governs).
+rm /tmp/fxb/compile.ok
+printf '%s\n' '{"verifyCommand":"sh tools/run-tests.sh","buildCommand":"true","frozenPaths":["tools/run-tests.sh","tools/build.sh"],"dependencies":{}}' > /tmp/fxb/pipeline.config.json
+run T-1 /tmp/fxb s12-buildcfg
+[ "$RC" = 1 ] && grep -q '"build": "fail"' /out/s12-buildcfg.json \
+  && pass "build-gate: worktree config cannot weaken the frozen build command" || fail "build-cfg (rc=$RC)"
+(cd /tmp/fxb && git checkout -q -- pipeline.config.json)
+
+# 13. frozenPaths build helper edited -> tampered, build never run.
+printf '#!/bin/sh\nexit 0\n' > /tmp/fxb/tools/build.sh
+run T-1 /tmp/fxb s13-buildtamper
+[ "$RC" = 3 ] && grep -q 'tools/build.sh' /out/s13-buildtamper.json \
+  && pass "build-gate: editing a frozen build helper is tampering" || fail "build-tamper (rc=$RC)"
+(cd /tmp/fxb && git checkout -q -- tools/)
+
 if [ "$FAIL" -eq 0 ]; then echo "== ALL IN-CONTAINER T7 CHECKS PASSED =="; else echo "== T7 CHECKS FAILED =="; fi
 exit "$FAIL"

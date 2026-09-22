@@ -55,6 +55,9 @@ function buildPrBody({ issueMarkdown, status, verify, outcome, branch, runId }) 
   lines.push('');
   if (verify) {
     lines.push(`- Acceptance tests: **${verify.acceptance}**`);
+    // §4.4 (repo-cl9): the required build gate. Shown only when the target ran one — a
+    // legacy target with no buildCommand keeps its previous, build-free evidence block.
+    if (verify.build && verify.build !== 'absent') lines.push(`- Build: **${verify.build}**`);
     lines.push(`- Regression suite: **${verify.regressions}**`);
     if (verify.acceptanceOutput) {
       lines.push('');
@@ -62,6 +65,16 @@ function buildPrBody({ issueMarkdown, status, verify, outcome, branch, runId }) 
       lines.push('');
       lines.push('```');
       lines.push(String(verify.acceptanceOutput).slice(-3000).trim());
+      lines.push('```');
+      lines.push('');
+      lines.push('</details>');
+    }
+    if (verify.build === 'fail' && verify.buildOutput) {
+      lines.push('');
+      lines.push('<details><summary>Build output</summary>');
+      lines.push('');
+      lines.push('```');
+      lines.push(String(verify.buildOutput).slice(-3000).trim());
       lines.push('```');
       lines.push('');
       lines.push('</details>');

@@ -144,9 +144,17 @@ coverage that matters is of the area about to be tasked out, not of the whole sy
       - `verifyCommand` — how the verifier runs one task's acceptance tests (invoked
         as `<verifyCommand> tests/acceptance/<issue-id>/`).
       - `regressionCommand` (optional) — the project's standard suite, if one exists.
+      - `buildCommand` (optional) — the production build. A **required gate** (§4.4,
+        change-log row `repo-cl9`): a failing build cannot return success, unlike the
+        evidence-only `regressionCommand`. Put anything it runs from the repo (a build
+        script, a frozen tsconfig) in `frozenPaths` so a task cannot weaken its own gate.
+      - `scopePolicy` (optional, `"required"`) — opt in to the host's final file-scope
+        gate (§4.5, change-log row `repo-cl9`). When set, every task must carry one safe,
+        explicit `Allowed implementation files:` list in its Constraints and only those
+        paths may change on its branch; an out-of-scope branch is published nowhere.
       - `defaultBranch` (required whenever it isn't `main`).
-      - `frozenPaths` (optional) — anything `verifyCommand` executes from the repo
-        (helper scripts, runner configs) beyond `tests/acceptance/`.
+      - `frozenPaths` (optional) — anything `verifyCommand` or `buildCommand` executes from
+        the repo (helper scripts, build scripts, runner configs) beyond `tests/acceptance/`.
       - `dependencies` — package lists keyed by package manager
         (e.g. `{"npm": ["express@^4.19.2"]}`). Never install commands.
 

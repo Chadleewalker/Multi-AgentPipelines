@@ -11,11 +11,16 @@
 //   2. Tamper check: diff tests/acceptance/ + config.frozenPaths against the fork
 //      point; untracked additions count. Any difference → "tampered", tests not run.
 //   3. Run `<verifyCommand> tests/acceptance/<ISSUE_ID>/` — the authoritative gate.
-//   4. Run regressionCommand when present — recorded evidence only, never the gate.
-//   5. Write /workspace/.run/verify.json (schema: schemas/verify.schema.json).
+//   4. Run buildCommand when present — a REQUIRED gate (§4.4, repo-cl9): acceptance may
+//      pass while the production build is broken (Deep End PR #62), so a failed build
+//      cannot return success. Read from the frozen config, so a worktree edit to the
+//      command (or to a frozen helper it runs) cannot weaken it.
+//   5. Run regressionCommand when present — recorded evidence only, never the gate.
+//   6. Write /workspace/.run/verify.json (schema: schemas/verify.schema.json).
 //
 // Exit codes (the entrypoint maps these to its §4.11 codes):
-//   0 = acceptance pass   1 = acceptance fail   3 = tampered   4 = config/internal error
+//   0 = acceptance pass AND build pass/absent   1 = acceptance fail OR build fail
+//   3 = tampered   4 = config/internal error
 'use strict';
 const { execSync, spawnSync } = require('child_process');
 const fs = require('fs');
@@ -37,6 +42,7 @@ const result = {
   timestamp: new Date().toISOString(),
   acceptance: 'error',
   regressions: 'absent',
+  build: 'absent',
 };
 if (!result.issueId) {
   result.error = 'ISSUE_ID environment variable not set';
@@ -92,6 +98,18 @@ const acc = spawnSync('sh', ['-c', `${config.verifyCommand} ${testDir}`],
 result.acceptance = acc.status === 0 ? 'pass' : 'fail';
 result.acceptanceOutput = TAIL((acc.stdout || '') + (acc.stderr || ''), 4000);
 
+// --- Build run: a REQUIRED gate (§4.4, repo-cl9). Runs from the FROZEN buildCommand,
+// so a worktree edit to the command is ignored (a frozen helper it runs is covered by
+// the tamper check above). A failed build cannot mask itself behind a passing acceptance
+// suite — its output is captured so the next coding attempt sees it. Absent buildCommand
+// keeps every legacy target's behaviour unchanged: build stays 'absent'. ---
+if (config.buildCommand) {
+  const bld = spawnSync('sh', ['-c', config.buildCommand],
+    { cwd: WS, encoding: 'utf8', timeout: 15 * 60 * 1000 });
+  result.build = bld.status === 0 ? 'pass' : 'fail';
+  result.buildOutput = TAIL((bld.stdout || '') + (bld.stderr || ''), 4000);
+}
+
 // --- Regression run: evidence only (§4.4) — result never changes the exit code. ---
 if (config.regressionCommand) {
   const reg = spawnSync('sh', ['-c', config.regressionCommand],
@@ -100,4 +118,6 @@ if (config.regressionCommand) {
   result.regressionOutput = TAIL((reg.stdout || '') + (reg.stderr || ''), 2000);
 }
 
-writeResult(result, result.acceptance === 'pass' ? 0 : 1);
+// The gate is the CONJUNCTION of the two required checks: acceptance is authoritative,
+// and a present build must also pass. Regressions never enter here — evidence only.
+writeResult(result, result.acceptance === 'pass' && result.build !== 'fail' ? 0 : 1);

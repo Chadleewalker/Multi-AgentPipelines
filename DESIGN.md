@@ -254,6 +254,16 @@ fields:
 - `regressionCommand` (optional) — the project's standard test suite. Its *presence* is
   what "a standard suite exists" means; there is no auto-detection. See 4.4 for how its
   result is used.
+- `buildCommand` (optional) — the project's production build. Unlike `regressionCommand`
+  it is a **required gate, not evidence** (repo-cl9): when present, the verifier runs it
+  after acceptance and a failing build cannot return success (4.4). Absent, nothing
+  changes. Anything it executes from the repo (a build script, a frozen tsconfig) belongs
+  in `frozenPaths` so a task cannot weaken the gate that judges it.
+- `scopePolicy` (optional, `"required"`) — opt in to the host's final file-scope gate
+  (4.5, repo-cl9). When `"required"`, a task must carry one safe, explicit `Allowed
+  implementation files:` list and only those paths may change on its branch; an
+  out-of-scope branch is published nowhere. Absent (the legacy default), a valid list is
+  still enforced when a task happens to carry one, but its absence is not an error.
 - `defaultBranch` (optional) — the project's integration branch. Real repositories are
   `master` as often as `main`, so the pipeline never assumes: this value wins, else the
   runner asks the remote for its HEAD, else `main`. It is what task branches fork from,
@@ -453,13 +463,17 @@ source of truth.
 3. **Inside the container, agents are ephemeral headless invocations** (`claude -p`,
    run with permissions bypassed — acceptable *only* because the container has a closed
    network, a disposable filesystem, and no credentials) in a fixed sequence driven by the
-   entrypoint script: **code → verify → (retry, up to the attempt cap — default 3) → docs → commit**.
+   entrypoint script: **code → verify → (retry, up to the attempt cap — default 3) → docs → re-verify → commit**.
    The agent command is read from the `PIPELINE_AGENT_CMD` environment variable,
    defaulting to the headless `claude -p` invocation when unset — this is the deliberate
    test seam that lets the E2E pass substitute deterministic stubs (see section 7). The docs phase is one agent invocation
    that writes the change summary into the status file and updates in-repo docs the change
    affects; if the docs phase itself errors after verification has passed, the success
-   stands (docs failure is logged, never fatal). Phases of a task are scaffolding, not an
+   stands (docs failure is logged, never fatal). **The docs phase can change source, tests,
+   config or a build input after the passing verify, so the final branch is verified once
+   more** (repo-cl9): the same frozen verifier, and a re-verify that comes back tampered or
+   failed revokes the earlier pass — an earlier verifier result never certifies later edits.
+   Phases of a task are scaffolding, not an
    LLM decision. No leader agent inside. **Agent output is a contract artifact, so it is
    read structurally, never scraped.** When the entrypoint owns the invocation (no
    `PIPELINE_AGENT_CMD`) both agent phases request `--output-format json`, and the
@@ -491,7 +505,14 @@ source of truth.
    it `git diff`s **all of `tests/acceptance/` plus the config's `frozenPaths`** (every
    frozen test and frozen helper, not just this issue's directory — during a run none of
    them may change, and untracked additions count) against the fork point (3.1); any
-   difference is the dedicated "tampered" outcome. When
+   difference is the dedicated "tampered" outcome. When a **`buildCommand`** is present in
+   the frozen config it runs that too, but as a **second required gate, not evidence**
+   (repo-cl9): acceptance can pass while a production build is broken (Deep End PR #62), so
+   the verifier exits non-zero when either the acceptance suite or the build fails, and a
+   `build: fail` cannot return success. The command is read from the fork-point config like
+   everything else here, so a worktree edit to it is ignored, and a frozen helper it runs
+   is covered by the tamper diff — a target cannot weaken its own build gate in-run.
+   Targets that declare no `buildCommand` are unchanged (`build: absent`). When
    `regressionCommand` is present it runs that too, as **recorded evidence, not a gate**:
    acceptance tests decide pass/fail, and a passing task with failing regressions is
    reported as "partial," never "done." The verifier writes machine-readable results to
@@ -509,9 +530,21 @@ source of truth.
    opened for **every exit-0 task — "done" and "partial" alike** (a partial PR is flagged
    with its failing regression evidence and sorts to the top of the report); stuck,
    tampered, and failed branches are linked from the run report and the issue instead.
+   **The host checks explicit file scope before it publishes anything** (repo-cl9). A
+   target may set `scopePolicy: "required"` in its fork-point config; a task then needs one
+   safe, explicit `Allowed implementation files:` list in its Constraints, and the host
+   compares the final branch to its fork commit — committed, uncommitted, untracked,
+   deleted and renamed paths alike — so only the listed files may have changed. A missing
+   or unsafe required list, or a change outside the list, is an **out-of-scope** result: a
+   narrow exception to "push everything that exists" — the local commits are kept as
+   evidence and the run report names the offending paths, but the unauthorized bytes are
+   pushed **nowhere**, no PR is opened, and the issue is blocked. A target with no required
+   policy still enforces a valid list when one is present (legacy tasks that carry none stay
+   usable). The scope decision is `runner/scope.js` — deterministic host scaffolding, no LLM.
    The container holds no git credentials (a test asserts `git push` from inside fails).
    The PR body is assembled by the host from the issue spec, the change summary in the
-   status file, and `verify.json` — nothing parses free-form agent prose.
+   status file, and `verify.json` (including the build gate's verdict) — nothing parses
+   free-form agent prose.
 6. **Budgets and hard exits — time and attempts, not money.** Two budgets only: max
    **active** wall-clock per task (host-enforced, default 4 hours, pause time excluded —
    see next item) and a per-task verify-attempt cap — default 3, tunable per run via `maxAttempts` in `run.config.json`, forwarded to the container as `PIPELINE_MAX_ATTEMPTS` (entrypoint-enforced, counted in the
@@ -621,15 +654,25 @@ source of truth.
 
     | Outcome | Exit code | Report status | Beads status after | Branch pushed? | PR? |
     |---|---|---|---|---|---|
-    | Acceptance pass, regressions pass or absent | 0 | done | closed | yes | yes |
-    | Acceptance pass, regressions fail | 0 | partial | closed | yes | yes, flagged |
+    | Acceptance pass, build pass/absent, regressions pass or absent | 0 | done | closed | yes | yes |
+    | Acceptance pass, build pass/absent, regressions fail | 0 | partial | closed | yes | yes, flagged |
+    | Acceptance fail, or required build fail | 1 | (retried; stuck at the cap) | — | — | — |
     | Bailed at the attempt cap (default 3) | 10 | stuck | blocked | yes (WIP) | no |
     | Test tampering detected | 11 | tampered | blocked | yes (WIP) | no |
+    | Docs-phase re-verify broke the build/acceptance | 30 | failed | blocked | yes (WIP) | no |
     | Usage limit hit | 20 | paused (transient) | in-progress (runner parks it) | not yet | not yet |
     | Internal error | 30 | failed | blocked | if commits exist | no |
     | Wall-clock kill (host `docker kill`, no exit code) | — | failed, timeout noted | blocked | if commits exist | no |
+    | Out-of-scope final branch (host file-scope gate) | 0/1/… → overridden | failed | blocked | **no** | no |
 
-    The runner distinguishes done from partial by reading `verify.json`. The runner sets
+    The runner distinguishes done from partial by reading `verify.json`. The required build
+    gate is part of the exit-0 condition, not a separate row the runner interprets: the
+    verifier already folds `build: fail` into exit 1 (4.4), so a broken build reaches the
+    runner as an ordinary failed attempt and, unfixed, bails "stuck" at the cap. The
+    **file-scope gate is the one host-side outcome override** (4.5, repo-cl9): whatever exit
+    code the container produced, an out-of-scope final branch is forced to `failed`/blocked
+    and — uniquely among failure outcomes — is **not** pushed, because the point of the gate
+    is that the unauthorized bytes never leave the machine. The runner sets
     an issue in-progress when its task starts; **blocked** is what takes failed work out
     of the ready queue (it needs a human decision in review — fix the spec, fix the doc,
     or drop it), so the run loop can never re-pick a failed issue. Timeout kills treat
@@ -1120,3 +1163,4 @@ version (`Status: READY v1.0`). The *document* still has a version; its *rows* n
 | 2026-08-04 | run-audit | §5 gains the **run-history audit**, promoted from the `docs/IDEAS.md` audit-the-corpus entry by doing what that entry prescribed first: a hand pass over the full corpus (134 run directories, 103 task records). The pass answered the entry's own open question — the gap is *reading*, and reading is deterministic joining, not judgment — so the audit is `scripts/audit-runs.js`: deterministic, host-only, self-contained, output under the git-ignored `runs/` only, never a gate (exit 0 on findings), no LLM. It joins `verdict.json` (change-log row `review-verdict`) so a merged and a rejected green run are different rows. Declared here at planning time; the implementing task adds its own row when it ships | the corpus pass found four repeated patterns no single-run reading had surfaced — sibling-frozen-test partials across a batch, an infra-killed task hand-retried three times in five minutes, a run window with no recorded model, and a pause counter that has never fired — and every one fell out of joining structured fields. The pass also mis-keyed `specConcerns` as `concerns` and reported a 43-use channel as never used, which is the argument for freezing the tool: an LLM reader would add hallucination risk to a measurement, and a throwaway script already produced the plausible-and-wrong number defect 8 warns about. The entry's counter-argument (aggregation, not another author) won on the evidence |
 | 2026-08-05 | repo-73k | the run-history audit **ships**: `scripts/audit-runs.js` walks the runs root and prints one markdown report — the three-bucket corpus taxonomy (real run, preflight dir, other, each named with its kind, all reconciling against the raw total), preflight reasons grouped from the last ERROR line with its timestamp and tag stripped, per-target outcomes, the attempts/pauses/models tallies, repeated issueIds, partial forensics from `verify.json`, channel usage (`specConcerns`, `memoryNotes`, verdict coverage and the done-but-rejected join) and nearest-rank distributions. Three properties are frozen rather than assumed: it is a **pure reader** (a recursive content-hash snapshot of the runs root, the script directory and a dedicated empty cwd is identical afterwards), it is **never a gate** (exit 0 on any readable tree; non-zero only for a usage error), and its output is **deterministic to the byte**. `AUDIT_RUNS_DIR` re-aims the root, default `<script dir>/../runs`, never the cwd. Covered forever by `scripts/test-audit-runs.sh` over `tests/unit/audit-runs.test.js` — the thirteenth Docker-free suite | the row above declared the tool at planning time; this is the shipping half. What the frozen suite adds beyond ‘it runs’ is the discriminating fixture in each place a reader can be plausible and wrong: a decoy `concerns` array beside the real `specConcerns` (the misread that reported a 43-use channel as never used would print a different number), a sample set whose p95 differs between nearest-rank and interpolation (the interpolated figure is one no run ever produced, and float noise is what would break byte-determinism), a CRLF `run.log` that must group with its LF twin, an undated `run.json` that must sort oldest against a runId order and an mtime that both say otherwise, and structural checks that every `require` is a node built-in — the script is meant to be copied, and that property decays with nothing behavioural to see it |
 | 2026-08-10 | host-setup-checklist | added `SETUP.md` — the once-per-**person, per-machine** checklist, standing to §6 as `ONBOARDING.md` stands to §3.4. Tools with the reason each is needed and the version pins that matter (`bd` matched to the image's 1.1.0, Git Bash never WSL, one Claude subscription and token **per person**, since a run spends the token-holder's own usage window and a parked run is that person's window closing); then the clone-local steps that a fresh clone does not carry — `.env.pipeline`, `scripts/install-hooks.sh`, retrieving the Beads database, the base-image build and its verification; then a proving pass (fast suites, the full sweep, `e2e.sh` marked optional for anyone who will only *use* the pipeline, since it needs a fixture repo of their own); then the pointers to `ONBOARDING.md`, the per-project config naming rule, and `.sanitize-denylist`. It carries the three checks that catch a silently-wrong setup rather than a loud one: a non-empty `bd memories`, the low-assertion-count signature of a missing token, and never sweeping while a run is live. `README.md` gains the pointer and lists `ONBOARDING.md` in its layout table, which it had never named | the project was documented for its author and for agents, and had no entry point for a second **human**: `README.md`'s quick start assumes the tools are installed and the queue is present, `ONBOARDING.md` opens after both. Every step here is one that has already cost time on the reference host — the two machine-local memories on this project are both fresh-clone failures (a clone with no Beads database, and six runner suites going red for a missing token while printing realistic assertion failures), and STATUS defect 11 is a sweep reclaiming a live run's container. Those are exactly the failures a new person cannot diagnose, because each is plausible and wrong rather than absent, and the person seeing it has no baseline for what working looks like. Kept as prose in one file rather than as a script: the install half cannot be automated across machines anyway, and a wrapper that drifts from this file is the failure the `adoption-assessment` row already records for `ONBOARDING.md`. **Supersedes and deletes the `docs/team-setup.md` draft**, which answered the same question for the same reader: two setup documents for one audience is worse than either alone, and these two disagreed on something load-bearing — the draft told a new person they could skip installing host `bd` because the runner falls back to the image's copy. It does, and `runner/bd.js` records what that costs: one container per `bd` call, deadlocks against suites driving their own containers, killed at the 900s cap, erroring nowhere because the fallback is fail-safe. It would also strand them at B4, which needs host `bd` to fetch the issue database at all — the empty-queue failure this repo has already had once. Salvaged from the draft into `SETUP.md`: the "what you're signing up for" framing of the two interactive moments, an accounts prerequisite section, clickable installer links, the `git config --global` step, the note that Docker Desktop's own WSL plumbing is fine (the Git-Bash rule is about which terminal you type in), that onboarding is Claude Code driving rather than a checklist worked by hand, and the first-week reading order. Not salvaged: the draft's claim that `e2e.sh` proves a machine ready in five minutes, which omits the fixture repo C3 requires. `C2` also drops its "allow an hour or two" for the measured figure — 32 suites green in 8:09 on 2026-08-03 — since an hour-long sweep is suites hanging, not working, and a new person cannot tell those apart without the number |
+| 2026-09-22 | repo-cl9 | **two V1 safety gates ship** — an optional **required build gate** and a host **final file-scope gate** (§3.4, §4.3, §4.4, §4.5, §4.11). (1) A target may declare `buildCommand` in its fork-point config; `pipeline/verify.js` runs it after acceptance as a **second required gate, not evidence** — `build` (`pass`/`fail`/`absent`) joins `verify.json`, a `fail` forces exit 1 so a passing acceptance suite can never mask a broken production build, and the build output is fed into the next attempt's feedback. It is read from the frozen config and a frozen helper it runs is covered by the tamper diff, so a worktree edit cannot weaken it. (2) The entrypoint verifies the branch **once more after the docs phase** (`code → verify → retry → docs → re-verify → commit`): a docs-phase change to source, tests, config or a build input cannot inherit the earlier pass — a re-verify that comes back tampered (exit 11) or failed (exit 30) revokes it. (3) `runner/scope.js` is the host's final file-scope gate: with `scopePolicy: "required"` a task needs one safe, explicit `Allowed implementation files:` list and only those exact paths may change on the branch (committed, uncommitted, untracked, deleted, renamed — a missing/duplicate/unsafe list fails closed); an out-of-scope branch is the one **host outcome override** — forced to `failed`/blocked, local commits kept as evidence, offending paths named in the run report and the Beads note, and **pushed nowhere, no PR**. Legacy targets are unchanged: no `buildCommand` → `build: absent`; no `scopePolicy` → a list is still enforced when present but its absence is not an error. Schemas gain `build`/`buildOutput` (`verify.schema.json`) and `scope` plus `verification.build`/`buildEvidence` (`run.schema.json`); the PR body and run report display the build verdict and name a scope violation. Frozen suite `tests/acceptance/repo-cl9/` (`test.js`, `post-doc.js`, `scope-publish.js`); Docker-free `scripts/test-scope-gate.sh` / `tests/unit/scope.test.js` (the fourteenth) keeps the gate covered once the acceptance directory stops being re-run, and the build/docs-build scenarios are added to `verifier-checks.sh` / `entrypoint-checks.sh` | Deep End PR #62: a splash task passed V1 acceptance while its production TypeScript build was broken, and V1 then let its documentation phase commit a file outside the task's explicit allowed-file list and published the PR anyway. Both are the same shape — a gate that runs at the wrong moment or does not exist — and both are the plausible-and-wrong failure this repo keeps paying for: green, well-formed, and false. The build check is a *required* gate rather than evidence because "acceptance passed" and "the thing builds" are different questions and only the first was being asked; the re-verify exists because the docs phase runs *after* the gate that would catch it; and the scope gate is the host's, not the container's, because the whole point is that the machine decides what may leave it — a design reference naming a file is not permission to edit it, so the list is structured and explicit or the task fails closed |

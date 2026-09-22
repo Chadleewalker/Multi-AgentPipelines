@@ -28,13 +28,16 @@ const tasks = [
     // §3.7 on a FIRST-TRY DONE on purpose: that outcome sorts last, so this is the place a
     // concern is most likely to go unread. The first one ever raised in a real run was here.
     specConcerns: ["the frozen test asks for two contradictory things", "the fixture path is wrong"],
-    verification: { acceptance: "pass", regressions: "pass" }, attemptNotes: ["run x: outcome done"] },
+    // repo-cl9: the required build gate ran and passed — the report must display it.
+    verification: { acceptance: "pass", build: "pass", regressions: "pass" }, attemptNotes: ["run x: outcome done"] },
   { issueId: "i-retry", title: "passed on retry", outcome: "done", exitCode: 0, branch: "task/i-retry",
     pushed: true, prUrl: "https://example.test/pr/2", attempts: 3, pauses: 1, activeSeconds: 90,
     diffLines: 40, changeSummary: "Fixed it eventually.",
     verification: { acceptance: "pass", regressions: "absent" }, attemptNotes: ["run x: outcome done"] },
   { issueId: "i-fail", title: "internal error", outcome: "failed", exitCode: 30, branch: "task/i-fail",
     pushed: false, prUrl: null, attempts: 0, pauses: 0, activeSeconds: 3, diffLines: 0,
+    // repo-cl9: a branch blocked by the file-scope gate — nothing pushed, offending path named.
+    scope: { ok: false, disallowedPaths: ["docs/secret.md"], reason: "changed path(s) outside the allowed list: docs/secret.md" },
     error: "container died", attemptNotes: ["run x: outcome failed"] },
   { issueId: "i-part", title: "regressions broke", outcome: "partial", exitCode: 0, branch: "task/i-part",
     pushed: true, prUrl: "https://example.test/pr/3", attempts: 1, pauses: 0, activeSeconds: 20,
@@ -101,6 +104,12 @@ grep -q "bailed after 3 failed verification attempts" "$REP" && pass "stuck stat
 grep -q "Rate-limit pauses: 1" "$REP" && pass "rate-limit pauses reported" || fail "pause count missing"
 grep -q "6 task(s)" "$REP" && pass "summary counts tasks" || fail "summary missing"
 
+# 5a-cl9. Build evidence and the file-scope block reach the report (repo-cl9).
+grep -q "Build: \*\*pass\*\*" "$REP" && pass "report displays the build gate verdict" || fail "build evidence missing from report"
+grep -q "File-scope violation — nothing pushed" "$REP" \
+  && grep -q "docs/secret.md" "$REP" \
+  && pass "report names the offending path of a scope-blocked branch" || fail "scope violation missing from report"
+
 # 5b. Spec concerns reach the report (§3.7). Until this existed the host-side half of the
 # channel was unbuilt and a concern reached only the status file — the agent could say "this
 # spec is wrong" and no artifact a reviewer opens would carry it.
@@ -137,6 +146,15 @@ if (body.indexOf("Spec concern") > body.indexOf("## Change summary")) fail("PR b
 else console.log("PASS  PR body puts the concern above the change summary");
 if (/Spec concern/.test(clean)) fail("PR body invents a concern section when there are none");
 else console.log("PASS  no concern section when none were raised");
+// repo-cl9: the PR body displays the required build gate verdict when one ran, and shows
+// nothing extra for a legacy target that declared no buildCommand.
+const built = buildPrBody({ issueMarkdown: "# spec", branch: "task/i-b", runId: "t17-synth",
+  outcome: { status: "done" }, verify: { acceptance: "pass", build: "pass", regressions: "pass" },
+  status: { changeSummary: "Added the widget." } });
+if (!/- Build: \*\*pass\*\*/.test(built)) fail("PR body omits the build gate verdict");
+else console.log("PASS  PR body displays the build gate verdict");
+if (/Build/.test(clean)) fail("PR body invents a build line for a target with no buildCommand");
+else console.log("PASS  no build line when the target ran no build");
 ' "$ROOT" || FAIL=1
 
 # 5d. A task with no concerns gains no section at all (the common case stays unchanged).

@@ -107,11 +107,20 @@ function renderReport(manifest) {
     L.push('');
     if (t.verification) {
       L.push(`- Acceptance: **${t.verification.acceptance || 'n/a'}**`);
+      // §4.4 (repo-cl9): the required build gate's verdict, shown only when one ran.
+      if (t.verification.build) L.push(`- Build: **${t.verification.build}**`);
       L.push(`- Regressions: **${t.verification.regressions || 'n/a'}**`);
       if (t.verification.evidence) {
         L.push('');
         L.push('```');
         L.push(String(t.verification.evidence).trim());
+        L.push('```');
+      }
+      if (t.verification.buildEvidence) {
+        L.push('');
+        L.push('_Build output:_');
+        L.push('```');
+        L.push(String(t.verification.buildEvidence).trim());
         L.push('```');
       }
     } else {
@@ -123,6 +132,21 @@ function renderReport(manifest) {
       L.push('**Stuck state**');
       L.push('');
       L.push(t.stuckState.trim());
+      L.push('');
+    }
+    // §4.5 (repo-cl9): a branch blocked by the file-scope gate. The offending paths are
+    // named here — the branch was NOT pushed, so this report is where a reviewer learns
+    // what left scope and why nothing reached the remote.
+    if (t.scope && t.scope.ok === false) {
+      L.push('**File-scope violation — nothing pushed**');
+      L.push('');
+      L.push(t.scope.reason
+        ? t.scope.reason.trim()
+        : `changed paths outside the allowed list: ${(t.scope.disallowedPaths || []).join(', ')}`);
+      if (t.scope.disallowedPaths && t.scope.disallowedPaths.length) {
+        L.push('');
+        for (const p of t.scope.disallowedPaths) L.push(`- \`${p}\``);
+      }
       L.push('');
     }
     if (t.attemptNotes && t.attemptNotes.length) {

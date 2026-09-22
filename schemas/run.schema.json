@@ -55,8 +55,16 @@
             "additionalProperties": false,
             "properties": {
               "acceptance": { "enum": ["pass", "fail", "tampered", "error"] },
+              "build": {
+                "description": "The required build gate's verdict (repo-cl9). Omitted when the target declares no buildCommand.",
+                "enum": ["pass", "fail"]
+              },
               "regressions": { "enum": ["pass", "fail", "absent"] },
-              "evidence": { "type": "string" }
+              "evidence": { "type": "string" },
+              "buildEvidence": {
+                "description": "Tail of the build output, carried only when build=fail (repo-cl9).",
+                "type": "string"
+              }
             }
           },
           "attemptNotes": {
@@ -64,6 +72,17 @@
             "items": { "type": "string" }
           },
           "stuckState": { "type": "string" },
+          "scope": {
+            "description": "Final file-scope gate verdict (DESIGN.md 4.5, repo-cl9). Present only when the gate BLOCKED the branch: the named paths changed outside the task's allowed list (or the required list was missing/unsafe), so nothing was pushed and no PR was opened. Evidence for the run report; a blocked branch's local commits are retained but never published.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["ok", "disallowedPaths"],
+            "properties": {
+              "ok": { "type": "boolean" },
+              "disallowedPaths": { "type": "array", "items": { "type": "string" } },
+              "reason": { "type": "string" }
+            }
+          },
           "specConcerns": {
             "description": "Verbatim copy of the container's status-file specConcerns (DESIGN.md 3.7), carried so the report and PR body can surface them. Same bounds as status.schema.json. Evidence only (3.5): present or absent, it never affects outcome or scrutiny order.",
             "type": "array",

@@ -210,6 +210,50 @@ cp /tmp/ws12/.run/status.json /out/e12-badcap.json 2>/dev/null
 [ "$RC" = 10 ] && [ "$(grep -c '"verifierResult": "fail"' /out/e12-badcap.json)" = 3 ] \
   && pass "max-attempts: invalid value falls back to 3" || fail "max-attempts: fallback broken (rc=$RC)"
 
+# 13. Docs phase breaks a required build after an initial pass (repo-cl9): the FINAL
+#     re-verification catches it — non-zero exit, no successful PR, verify.json build=fail.
+#     An earlier verifier pass cannot certify what the docs phase edited afterwards.
+mkdir -p /tmp/srcb && cd /tmp/srcb
+git init -q -b main . && git config user.email t@test.local && git config user.name tester
+cat > pipeline.config.json <<'EOF'
+{"verifyCommand":"sh tools/run-tests.sh","buildCommand":"sh tools/build.sh","frozenPaths":["tools/run-tests.sh","tools/build.sh"],"dependencies":{}}
+EOF
+mkdir -p tools tests/acceptance/T-3
+cat > tools/run-tests.sh <<'EOF'
+#!/bin/sh
+for f in "$1"*.sh; do sh "$f" || exit 1; done
+EOF
+cat > tools/build.sh <<'EOF'
+#!/bin/sh
+test -f compile.ok
+EOF
+printf '#!/bin/sh\nexit 0\n' > tests/acceptance/T-3/test.sh
+echo ok > compile.ok
+git add -A && git commit -qm "planning: build fixture" >/dev/null
+# Implementation phase is a no-op (the build already passes); the docs phase deletes the
+# build input, so the final re-verify must fail. The docs prompt is the one that says
+# "Verification for task ... just passed".
+cat > /tmp/stub-docsbuild.sh <<'EOF'
+PROMPT=$(cat)
+case "$PROMPT" in
+  *"Verification for task"*) rm -f compile.ok; printf 'Docs touched a build input.' ;;
+  *) : ;;
+esac
+EOF
+rm -rf /tmp/wsb; git clone -q /tmp/srcb /tmp/wsb; cd /tmp/wsb; git checkout -qb task/T-3
+mkdir -p .run
+printf '## Description\nNo-op; the docs phase breaks the build.\n' > .run/issue.md
+WORKSPACE=/tmp/wsb ISSUE_ID=T-3 PIPELINE_AGENT_CMD="sh /tmp/stub-docsbuild.sh" PIPELINE_MAX_ATTEMPTS=1 \
+  bash "$PIPELINE_DIR/entrypoint.sh" >/dev/null 2>&1
+RC=$?
+cp /tmp/wsb/.run/verify.json /out/e13-docsbuild.json 2>/dev/null
+[ "$RC" != 0 ] && pass "docs-build: non-zero exit when the docs phase breaks the build" || fail "docs-build: rc=$RC (should be non-zero)"
+grep -q '"build": "fail"' /out/e13-docsbuild.json \
+  && pass "docs-build: the final verify.json shows build fail" || fail "docs-build: build not fail"
+cp /tmp/wsb/.run/status.json /out/e13-docsbuild-status.json 2>/dev/null
+grep -q '"docsPhaseError"' /out/e13-docsbuild-status.json 2>/dev/null \
+  && pass "docs-build: revoked pass recorded in docsPhaseError" || fail "docs-build: revocation not recorded"
+
 # 6. main is untouched by every scenario.
 MAIN_AFTER=$(cd /tmp/src && git rev-parse main)
 [ "$MAIN_BEFORE" = "$MAIN_AFTER" ] && pass "main untouched across all scenarios" \

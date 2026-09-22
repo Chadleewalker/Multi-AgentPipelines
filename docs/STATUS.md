@@ -4,7 +4,7 @@ Where the build actually is. Update this when something changes — it is the fi
 session reads to pick up the thread, and unlike a machine-local memory folder it travels
 with the repo.
 
-_Last updated: 2026-08-04_
+_Last updated: 2026-09-22_
 
 ## Where things stand
 
@@ -942,6 +942,45 @@ none of them yet shows the verdict being written down; `docs/pipeline-diagram.md
 task docs phases *do* keep current, has the node. Nothing else is outstanding: the recorder
 needs no Docker, no network and no target repo.
 
+## V1 required build and file-scope gates (`repo-cl9`, 2026-09-22)
+
+Two gates land together, both motivated by **Deep End PR #62** — a splash task that passed
+V1 acceptance while its production TypeScript build was broken, after which V1's docs phase
+committed a file outside the task's allowed list and published the PR anyway. Both are the
+plausible-and-wrong failure this repo keeps paying for: green, well-formed, and false.
+
+- **The build gate is required, not evidence.** A target may declare `buildCommand` in its
+  fork-point `pipeline.config.json`; `pipeline/verify.js` runs it after acceptance and
+  folds `build: fail` into exit 1, so a passing acceptance suite cannot mask a broken
+  build. It is read from the frozen config, and a frozen helper it runs (a build script, a
+  tsconfig) is covered by the tamper diff — the gate cannot be weakened in-run. Legacy
+  targets with no `buildCommand` are unchanged (`build: absent`). Contrast
+  `regressionCommand`, which stays evidence-only (partial, never a fail).
+- **The final branch is re-verified after the docs phase.** The sequence is now `code →
+  verify → retry → docs → re-verify → commit`. The docs phase runs *after* the gate that
+  would catch it, so a docs-phase change to source, tests, config or a build input is
+  caught by the second verify: tampered → exit 11, build/acceptance broken → exit 30. An
+  earlier pass never certifies later edits.
+- **The host checks file scope before it publishes anything.** `runner/scope.js`: with
+  `scopePolicy: "required"` a task needs one safe, explicit `Allowed implementation files:`
+  list and only those exact paths may change on the branch (committed, uncommitted,
+  untracked, deleted, renamed; a missing/duplicate/unsafe list fails closed). An
+  out-of-scope branch is the **one host-side outcome override** — forced to `failed`,
+  blocked, its offending paths named in the report and the Beads note, and **pushed
+  nowhere, no PR**. This is the narrow exception to "push every branch that has commits":
+  the whole point is that the unauthorized bytes never leave the machine. A design
+  reference naming a file is *not* edit permission — the list is structured and explicit or
+  the task fails closed.
+
+Frozen suite `tests/acceptance/repo-cl9/` (`test.js`, `post-doc.js`, `scope-publish.js`).
+The gate keeps its coverage after the acceptance directory stops being re-run via the
+fourteenth Docker-free suite, `scripts/test-scope-gate.sh` / `tests/unit/scope.test.js`,
+and the build/docs-build scenarios added to `verifier-checks.sh` / `entrypoint-checks.sh`.
+Two things a merge owes that no frozen test can carry: run the host Docker suites
+(`test-verifier.sh`, `test-entrypoint.sh`, `test-runner-publish.sh`, `test-report.sh`) —
+they need Docker and, for the ajv schema step, network — and, when Deep End opts in, freeze
+its real `pnpm build` and TypeScript config at the task fork point.
+
 ## What's next
 
 **The queue drained again on 2026-07-26**, after `repo-4l8` (the epic filter, planned and
@@ -1084,11 +1123,12 @@ design's central bet, and it is the first day it paid out repeatedly.
 
 ## Test suites
 
-All but twelve drive real Docker and share one network, so they must never run concurrently
+All but fourteen drive real Docker and share one network, so they must never run concurrently
 (`test-runner-memory.sh`, `test-changelog.sh`, `test-sanitize.sh`,
 `test-agent-hooks.sh`, `test-network-names.sh`, `test-lock.sh`,
 `test-sweep-hygiene.sh`, `test-concurrency.sh`, `test-pause-gate.sh`,
-`test-sweep-assertions.sh`, `test-trace.sh`, `test-verdict.sh` and `test-audit-runs.sh` are the exceptions —
+`test-sweep-assertions.sh`, `test-trace.sh`, `test-verdict.sh`, `test-audit-runs.sh` and
+`test-scope-gate.sh` are the exceptions —
 see below; they need neither).
 **`scripts/test-all.sh` is the sweep** — it holds a lock, runs every suite sequentially,
 kills one that hangs (`--timeout`, default 900s), **reclaims what each suite leaked after
@@ -1125,8 +1165,10 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-trace.sh` | the traceability ledger (change-log row `trace-ledger`) — checkbox/ref parsing on both line endings, the three report lists, and backfill that recovers the ticking commit through later prose edits and refuses to guess |
 | `scripts/test-verdict.sh` | the review verdict recorder (change-log row `repo-1ie`) — which run a verdict lands in, what counts as PR-bearing, every refusal writing nothing, and the recorder staying self-contained |
 | `scripts/test-audit-runs.sh` | the run-history audit (change-log row `repo-73k`) — the three-bucket corpus taxonomy, `startedAt` joins, the `specConcerns` channel keys, nearest-rank quantiles, and the pure-reader contract checked by content hash |
+| `scripts/test-verifier.sh` (also) | the required build gate (change-log row `repo-cl9`) — build fail forces exit 1, a clean build passes, a worktree buildCommand edit is ignored, and a frozen build helper edit is tampering |
+| `scripts/test-scope-gate.sh` | the final file-scope gate (change-log row `repo-cl9`) — exact-list acceptance, malformed/unsafe/absent lists failing closed, committed/untracked/deleted/renamed out-of-scope paths named, and `readScopePolicy` reading the fork-point config |
 
-**`scripts/test-runner-memory.sh` is one of the twelve suites that need no Docker**
+**`scripts/test-runner-memory.sh` is one of the fourteen suites that need no Docker**
 (repo-dhp): it
 drives both §3.6 memory channels plus the `shouldFileMemory` outcome gate through the
 `PIPELINE_BD_CMD` seam, so it runs anywhere — including inside a task container, where
@@ -1385,6 +1427,23 @@ type-7 interpolation (816, a number no run ever produced) — interpolation is w
 quietly break byte-determinism. It also pins the structural constraints no behaviour can
 see: every `require` target a node built-in, no `child_process`, no `fs` write API, because
 the script is meant to be copied and that property decays silently.
+
+**`scripts/test-scope-gate.sh` is the fourteenth** (change-log row `repo-cl9`): it covers
+`runner/scope.js`, the host's final file-scope gate of §4.5. It needs node and git only —
+every case builds a throwaway git repository under the OS temp directory and drives the
+real `checkScope` / `readScopePolicy` against it, so it reads neither this repo's tree nor a
+live remote. It exists because the frozen acceptance directory `tests/acceptance/repo-cl9/`
+is an artifact of a finished task and is never re-run, while the gate keeps changing
+underneath it. Where it goes past the frozen suite, on purpose: the malformed lists the
+frozen test does not exercise (empty, duplicate, absolute, drive-rooted), a **committed**
+out-of-scope change (the frozen runner path commits but its unit cases are all uncommitted,
+so the two changed-path sources must union), a **deletion** of a non-listed file (the git-mv
+case only deletes a *listed* file), and that `readScopePolicy` reads the **fork-point**
+config so a worktree edit to `scopePolicy` cannot widen the gate. Its changed-path detection
+is CRLF-safe by construction — a commit-to-commit `git diff` for committed changes (blob to
+blob, immune to autocrlf) unioned with `git status --porcelain` for the rest (which compares
+through git's own eol filters), never a worktree `git diff` that reports every file on a
+CRLF checkout (§3.6 CRLF rule).
 
 **A full sweep ran** after the five dogfood/queue PRs merged to `main`: all 18
 suites green, including `e2e.sh` (32 assertions, real PR opened and cleaned up). Two were

@@ -2,9 +2,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "verify.schema.json",
   "title": "Verifier result file (/workspace/.run/verify.json)",
-  "description": "Written by pipeline/verify.js (owner: the verifier task, T7 - DESIGN.md 4.4). Frozen input to the runner (done-vs-partial decision, PR body) and the report generator. The runner maps: acceptance=pass + regressions in {pass, absent} -> done; acceptance=pass + regressions=fail -> partial (4.11).",
+  "description": "Written by pipeline/verify.js (owner: the verifier task, T7 - DESIGN.md 4.4). Frozen input to the runner (done-vs-partial decision, PR body) and the report generator. The runner maps: acceptance=pass + build in {pass, absent} + regressions in {pass, absent} -> done; acceptance=pass + build in {pass, absent} + regressions=fail -> partial (4.11). A build=fail cannot return success - the verifier exits 1 (repo-cl9).",
   "type": "object",
-  "required": ["issueId", "timestamp", "acceptance", "regressions"],
+  "required": ["issueId", "timestamp", "acceptance", "regressions", "build"],
   "additionalProperties": false,
   "properties": {
     "issueId": { "type": "string" },
@@ -12,6 +12,10 @@
     "acceptance": {
       "description": "The authoritative gate: the frozen acceptance tests' verdict.",
       "enum": ["pass", "fail", "tampered", "error"]
+    },
+    "build": {
+      "description": "The optional required build gate's verdict (repo-cl9, DESIGN.md 4.4). Runs the frozen config's buildCommand after acceptance; a 'fail' forces the verifier to exit 1 even when acceptance passed. 'absent' = no buildCommand in the frozen config (every legacy target).",
+      "enum": ["pass", "fail", "absent"]
     },
     "regressions": {
       "description": "The project suite's verdict - recorded evidence, never the gate. 'absent' = no regressionCommand in the frozen config.",
@@ -25,6 +29,10 @@
     },
     "acceptanceOutput": {
       "description": "Tail of the acceptance run's output - the feedback fed into the next coding attempt and the PR's verification evidence.",
+      "type": "string"
+    },
+    "buildOutput": {
+      "description": "Tail of the build run's output (present iff buildCommand ran). Carried into the next coding attempt's feedback when build=fail, and shown as PR/report build evidence (repo-cl9).",
       "type": "string"
     },
     "regressionOutput": { "type": "string" },

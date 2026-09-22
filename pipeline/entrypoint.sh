@@ -180,9 +180,41 @@ while :; do
       else
         node "$PIPE/status.js" set docsPhaseError "docs agent failed (see docs-out.txt / docs-err.txt); success stands"
       fi
-      exit 0 ;;
+      # ---- final re-verification (§4.3, repo-cl9): the docs phase can change source,
+      # tests, config or build inputs after the passing verify above, so the FINAL branch
+      # is verified again — an earlier pass never certifies later edits. The gate is the
+      # frozen verifier, unchanged: acceptance + the required build, both from the
+      # fork-point config. Whatever the docs phase committed is already on the branch, so
+      # this reads the real final tree. ----
+      node "$PIPE/verify.js"
+      FRC=$?
+      case "$FRC" in
+        0) exit 0 ;;                                   # docs left the branch verifiable
+        3)
+          # A frozen path changed during the docs phase. Recorded via docsPhaseError, not
+          # `append tampered`: the pass that reached this branch may already be the third
+          # attempt, and appending a fourth would breach status.schema.json's maxItems (3).
+          # The exit code (11 -> tampered) carries the outcome; the attempts[] array does not.
+          node "$PIPE/status.js" set docsPhaseError "docs phase modified a frozen path; the final re-verification reports tampered (see verify.json), and the earlier pass was revoked"
+          git add -A
+          git commit -qm "WIP: task $ISSUE_ID failed - docs phase modified a frozen path" || true
+          exit 11 ;;
+        1)
+          # The docs phase broke acceptance or the required build. The earlier pass is
+          # revoked; the broken final tree is already committed as evidence.
+          node "$PIPE/status.js" set docsPhaseError "docs phase changed the tree and the final re-verification failed (see verify.json); the earlier pass was revoked"
+          git add -A
+          git commit -qm "WIP: task $ISSUE_ID failed - docs phase broke the final verification" || true
+          exit 30 ;;
+        *)
+          node "$PIPE/status.js" set docsPhaseError "final re-verification hit an internal error (rc=$FRC)"
+          die30 "final re-verification internal error (rc=$FRC)" ;;
+      esac ;;
     1)
-      node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('$RUN/verify.json','utf8')).acceptanceOutput||'')" > "$RUN/feedback.txt"
+      # Feedback for the next attempt: the acceptance output, plus the build output when
+      # the required build gate is what failed (§4.4, repo-cl9) — a broken build is
+      # invisible in a passing acceptance run, so its output must reach the next attempt.
+      node -e "const v=JSON.parse(require('fs').readFileSync('$RUN/verify.json','utf8')); let o=v.acceptanceOutput||''; if(v.build==='fail'){o+=(o?'\n\n':'')+'REQUIRED BUILD FAILED:\n'+(v.buildOutput||'');} process.stdout.write(o);" > "$RUN/feedback.txt"
       node "$PIPE/status.js" append fail "$RUN/feedback.txt"
       # Boundary commit (§4.3, T9): each attempt's state survives a later kill.
       git add -A

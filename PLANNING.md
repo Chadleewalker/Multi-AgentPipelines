@@ -21,7 +21,10 @@ redo:
 - The target repo has a GitHub remote and `pipeline.config.json` in its root (§3.4):
   `verifyCommand`, optional `regressionCommand`, optional `defaultBranch` (record it if
   the repo's integration branch isn't `main` — e.g. the shadow-trial project uses `master`), optional
-  `frozenPaths`, and `dependencies`.
+  `frozenPaths`, optional `buildCommand` (a **required** build gate — §4.4, change-log row
+  `repo-cl9` — not evidence like `regressionCommand`; anything it runs from the repo belongs
+  in `frozenPaths`), optional `scopePolicy: "required"` (the host's file-scope gate — §4.5),
+  and `dependencies`.
 - A thin per-project Dockerfile sits beside it, `FROM` the pinned base image (§6).
 - Beads is initialized in the host working copy (`bd init`; see `beads/issue-template.md`).
 - The base image is built (`docker/base/`, checks: `scripts/test-base-image.sh`).
@@ -74,7 +77,13 @@ cost is one context switch per spec and no tooling.
 
 The five fields:
 - **Description** — what this task delivers, plain English.
-- **Constraints** — what the implementation must not do or must respect.
+- **Constraints** — what the implementation must not do or must respect. **When the target
+  sets `scopePolicy: "required"` (§4.5, change-log row `repo-cl9`), this section must carry
+  exactly one line naming the files the task may change — `Allowed implementation files: a,
+  b, c.` — with safe, in-repo, non-duplicate paths. The host compares the final branch to
+  its fork commit and publishes nothing if any other path changed, so an incomplete or
+  wrong list strands the task. A path named in the design reference is context, never
+  permission — list it here or the task cannot touch it.**
 - **Acceptance criteria** — the "Done means" list: 3–6 concrete, machine-checkable
   outcomes. Each must be verifiable by a script or test with no human judgment
   ("`verify.sh` exits 0 and the branch exists", never "works well").
