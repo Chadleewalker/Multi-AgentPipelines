@@ -1148,6 +1148,13 @@ design's central bet, and it is the first day it paid out repeatedly.
 
 **Known gaps, deliberately deferred:**
 
+- **Codex desktop plugin-backed writes bypass the installed PreToolUse hook on this
+  host** (`repo-2yy`). A fresh native Codex CLI canary denied a protected source write,
+  but the desktop `functions.exec` path and a new desktop subagent wrote scratch source
+  files without hook delivery. The guard doctor verifies installed bytes, configuration
+  and direct bridge behavior; it does not certify every client tool route. Use the V1
+  acceptance-author launcher and runner for protected target writes while that gap is
+  investigated.
 - **`docs/pipeline-map.html` has no guard, and that is the real difference between the two
   diagram documents.** Both are kept, deliberately (decided 2026-07-26): they serve
   different readers — `docs/pipeline-diagram.md` shows structure to someone about to
@@ -1192,12 +1199,15 @@ design's central bet, and it is the first day it paid out repeatedly.
 
 ## Test suites
 
-All but fifteen drive real Docker and share one network, so they must never run concurrently
+All but twenty drive real Docker and share one network, so they must never run concurrently
 (`test-runner-memory.sh`, `test-changelog.sh`, `test-sanitize.sh`,
 `test-agent-hooks.sh`, `test-network-names.sh`, `test-lock.sh`,
 `test-sweep-hygiene.sh`, `test-concurrency.sh`, `test-pause-gate.sh`,
 `test-sweep-assertions.sh`, `test-trace.sh`, `test-verdict.sh`, `test-audit-runs.sh` and
-`test-scope-gate.sh` and `test-workspace-cleanup.sh` are the exceptions —
+`test-scope-gate.sh`, `test-workspace-cleanup.sh`,
+`test-write-protection-policy.sh`, `test-write-protection-host.sh`,
+`test-write-protection-onboarding.sh`, `test-author-acceptance.sh`, and
+`test-guard-admission.sh` are the exceptions —
 see below; they need neither).
 **`scripts/test-all.sh` is the sweep** — it holds a lock, runs every suite sequentially,
 kills one that hangs (`--timeout`, default 900s), **reclaims what each suite leaked after
@@ -1237,8 +1247,13 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-verifier.sh` (also) | the required build gate (change-log row `repo-cl9`) — build fail forces exit 1, a clean build passes, a worktree buildCommand edit is ignored, and a frozen build helper edit is tampering |
 | `scripts/test-scope-gate.sh` | the final file-scope gate (change-log row `repo-cl9`) — exact-list acceptance, malformed/unsafe/absent lists failing closed, committed/untracked/deleted/renamed out-of-scope paths named, and `readScopePolicy` reading the fork-point config |
 | `scripts/test-workspace-cleanup.sh` | runner clone cleanup on setup failure, task completion, and error; explicit keep behavior; PR verifier task and fork-point worktree cleanup |
+| `scripts/test-write-protection-policy.sh` | scoped test-author leases, path and command classification, and protected-checkout admission |
+| `scripts/test-write-protection-host.sh` | Claude and Codex hook installation, direct bridge checks, doctor and rollback |
+| `scripts/test-write-protection-onboarding.sh` | fresh protected-target onboarding and allowed/denied host write canaries |
+| `scripts/test-author-acceptance.sh` | pinned-model restricted authoring, single-suite audit, and lease revocation |
+| `scripts/test-guard-admission.sh` | freeze and runner fail-closed admission before agent work or publication |
 
-**`scripts/test-runner-memory.sh` is one of the fifteen suites that need no Docker**
+**`scripts/test-runner-memory.sh` is one of the twenty suites that need no Docker**
 (repo-dhp): it
 drives both §3.6 memory channels plus the `shouldFileMemory` outcome gate through the
 `PIPELINE_BD_CMD` seam, so it runs anywhere — including inside a task container, where

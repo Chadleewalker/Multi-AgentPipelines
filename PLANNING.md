@@ -196,6 +196,30 @@ Claude writes the tests **now, before any code exists**, from the spec alone (§
 - "Tests" means machine-checkable evidence broadly: unit tests, build-succeeds, a command
   producing expected output on sample input, a smoke check hitting an endpoint.
 
+Use the V1 test-author entrypoint for host-side Claude writes. First install and check the
+pipeline-owned host guard once on this machine (`node scripts/write-protection.js install`,
+then `node scripts/write-protection.js doctor --json`). Prepare a clean target worktree at
+the intended integration fork point and a UTF-8 brief containing the issue's description,
+constraints and acceptance criteria. From this pipeline repo, run:
+
+```bash
+node scripts/author-acceptance.js <issue-id> \
+  --config run.config.<project>.json \
+  --worktree <clean-target-worktree> \
+  --prompt-file <issue-brief.txt>
+```
+
+The entrypoint requires the pinned model from the run config, grants a short-lived lease
+for only that issue's acceptance directory, launches Claude with file reading and editing
+tools only, audits the worktree before and after, and revokes the lease when Claude exits.
+It does not freeze, commit, or queue the issue. A denied or incomplete author session is a
+failed step 3: inspect the guard doctor and suite rather than disabling the guard. Other
+host agents must use a verified guard path before writing to an onboarded target. A live
+Codex CLI canary covers its native tools only; plugin-backed tools in the desktop task
+may bypass PreToolUse. Until that path has its own proven enforcement, use this author
+entrypoint for acceptance writes and the runner for implementation, not direct desktop
+tool writes to the target.
+
 ### 4. Coverage check, then prove the tests can fail
 Pair them up (§3.2): every acceptance criterion names the test that proves it; every test
 names the criterion it serves. **An orphan on either side is a spec bug** — fix the spec

@@ -95,7 +95,7 @@ bash scripts/e2e.sh            # add --keep to leave branches and PRs up for ins
 bash scripts/test-verifier.sh
 bash scripts/test-runner-container.sh
 
-# the fifteen suites that need no Docker — seconds, safe to run anywhere, even in a container
+# the twenty suites that need no Docker — seconds, safe to run anywhere, even in a container
 bash scripts/test-runner-memory.sh
 bash scripts/test-changelog.sh     # DESIGN.md §12 row identity (CHANGELOG_FILE re-aims it)
 bash scripts/test-sanitize.sh      # publication hygiene (SANITIZE_FIXTURE_DIR re-aims it)
@@ -111,6 +111,11 @@ bash scripts/test-verdict.sh       # the review verdict recorder — which run a
 bash scripts/test-audit-runs.sh    # the run-history audit — buckets, joins, channels, quantiles, and that it writes nothing (change-log row `repo-73k`)
 bash scripts/test-scope-gate.sh    # the host file-scope gate
 bash scripts/test-workspace-cleanup.sh # runner clones and verifier worktrees are removed
+bash scripts/test-write-protection-policy.sh # issue-scoped host write policy and admission classification
+bash scripts/test-write-protection-host.sh # Claude and Codex hook installation, doctor and rollback
+bash scripts/test-write-protection-onboarding.sh # fresh guarded target onboarding and write canaries
+bash scripts/test-author-acceptance.sh # restricted acceptance author and lease lifecycle
+bash scripts/test-guard-admission.sh # freeze and runner admission refuse unsafe targets
 ```
 
 Reading the corpus itself is `node scripts/audit-runs.js` — a pure reader that prints one

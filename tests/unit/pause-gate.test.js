@@ -38,6 +38,17 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
+// The execution seam deliberately invokes `bash <stub>`. On Windows, system32's WSL
+// launcher can win PATH and cannot consume the Windows temp paths used by this fixture.
+if (process.platform === 'win32') {
+  const gitExec = spawnSync('git', ['--exec-path'], { encoding: 'utf8' });
+  const gitBin = gitExec.status === 0
+    ? path.resolve(gitExec.stdout.trim(), '../../..', 'bin') : '';
+  if (gitBin && fs.existsSync(path.join(gitBin, 'bash.exe'))) {
+    process.env.PATH = `${gitBin}${path.delimiter}${process.env.PATH || ''}`;
+  }
+}
+
 const ROOT = path.resolve(__dirname, '..', '..');
 let failed = 0;
 function check(name, cond) {
@@ -486,7 +497,8 @@ async function parkedTask() {
   };
   let threw = null;
   let row = null;
-  try { row = await runmod.runOneTask(cfg, { id: 'parked-1', title: 't', priority: 1 }, log, 'tok', gate); }
+  try { row = await runmod.runOneTask(cfg, { id: 'parked-1', title: 't', priority: 1 }, log, 'tok', gate,
+    { guardInstallation: () => ({ ok: true }), guardAdmission: () => ({ ok: true }) }); }
   catch (e) { threw = e; }
 
   check('runOneTask runs against an injected gate without throwing', threw === null);

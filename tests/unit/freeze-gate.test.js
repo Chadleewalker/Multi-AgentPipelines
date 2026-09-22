@@ -15,11 +15,13 @@
 // that only ever sees genuine-red is a gate whose two interesting verdicts — green, and
 // can't-tell — have never executed, and those are the two that carry the design.
 //
-// Run from Git Bash:  node tests/unit/freeze-gate.test.js
+// Git for Windows supplies sh for the CLI integration cases. Include its bin directory
+// explicitly because PowerShell and service hosts often omit it from PATH.
 'use strict';
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { spawnSync } = require('child_process');
 const {
   verdictFor, guardCount, withEmptyControlDir, resolveControl, CONTROL_DIR, main,
 } = require('../../scripts/freeze-gate.js');
@@ -30,6 +32,15 @@ const fail = (n, why) => { console.log(`FAIL  ${n}${why ? ` — ${why}` : ''}`);
 const check = (n, cond, why) => { (cond ? pass : (x) => fail(x, why))(n); return cond; };
 
 const ok = (status) => ({ status, signal: null, stdout: '', stderr: '', error: null });
+
+if (process.platform === 'win32') {
+  const gitExec = spawnSync('git', ['--exec-path'], { encoding: 'utf8' });
+  const gitBin = gitExec.status === 0
+    ? path.resolve(gitExec.stdout.trim(), '../../..', 'bin') : '';
+  if (gitBin && fs.existsSync(path.join(gitBin, 'sh.exe'))) {
+    process.env.PATH = `${gitBin}${path.delimiter}${process.env.PATH || ''}`;
+  }
+}
 
 // --- the decision table -------------------------------------------------------------------
 
@@ -198,7 +209,11 @@ const silence = () => {
   console.log = () => {}; console.error = () => {};
   return () => { console.log = o; console.error = e; };
 };
-const runMain = (args) => { const restore = silence(); try { return main(args); } finally { restore(); } };
+// Admission has its own behavioral suite. These fixtures exercise the verifier decision
+// table without depending on the developer's installed client hooks or Git worktree.
+const runMain = (args) => { const restore = silence(); try {
+  return main(args, { guardAdmission: () => ({ ok: true }) });
+} finally { restore(); } };
 
 const ARGS = ['--repo', tmpRepo, '--tests', 'tests/acceptance/demo/'];
 check('CLI exits 0 when the tests are genuinely red', runMain(ARGS) === 0);

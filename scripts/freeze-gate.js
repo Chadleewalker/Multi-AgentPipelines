@@ -68,6 +68,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { admitGuard, issueForTests, refusalMessage } = require('../runner/guard-admission');
 
 // The guard marker. Case-insensitive so a draft is not failed on capitalisation; explicit
 // either way, because the whole point of the exemption is that it is visible.
@@ -224,7 +225,7 @@ function guardCount(specText) {
 
 // --- CLI --------------------------------------------------------------------------------------
 
-function main(argv) {
+function main(argv, deps = {}) {
   let repo = null; let tests = null; let spec = null; let controlArg = null; let timeoutMs = 600000;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -239,6 +240,12 @@ function main(argv) {
   if (!repo || !tests) { usage(); return 2; }
 
   const repoRoot = path.resolve(repo);
+  const issue = issueForTests(tests);
+  const admission = (deps.guardAdmission || admitGuard)(repoRoot, { issues: issue ? [issue] : [] });
+  if (!admission.ok) {
+    console.error(`freeze-gate: ${refusalMessage(admission)}`);
+    return 2;
+  }
   let verifyCommand;
   try {
     const cfg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'pipeline.config.json'), 'utf8'));
