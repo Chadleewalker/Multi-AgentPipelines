@@ -74,22 +74,38 @@ const scopeOf = (r, description = DESC, policy = 'required') =>
 
 try {
   // ---- parseAllowedList: the shapes that must fail closed ------------------------------
+  // The list is honoured ONLY inside the Constraints section (repo-cl10), so every fixture
+  // here wraps it in one; a bare line, or one under any other heading, is not a list.
+  const con = (body) => `## Constraints\n${body}\n`;
   assert.strictEqual(parseAllowedList('nothing here').present, false);
   ok('a description with no list is reported absent');
 
-  assert.deepStrictEqual(parseAllowedList('Allowed implementation files: a.js, b.md.').paths, ['a.js', 'b.md']);
+  assert.deepStrictEqual(parseAllowedList(con('Allowed implementation files: a.js, b.md.')).paths, ['a.js', 'b.md']);
   ok('a clean list parses and drops the trailing period');
 
-  assert.strictEqual(parseAllowedList('Allowed implementation files: .').ok, false);
+  // A list outside the Constraints section is NOT edit permission (§4.5, repo-cl10): a
+  // Summary that names files must not license changes to them.
+  assert.strictEqual(parseAllowedList('## Summary\nAllowed implementation files: a.js.\n\n## Constraints\nnone.\n').present, false);
+  ok('a list outside the Constraints section does not count');
+
+  // Two list lines are ambiguous, so they fail closed rather than picking one (repo-cl10).
+  assert.strictEqual(parseAllowedList(con('Allowed implementation files: a.js.\nAllowed implementation files: b.md.')).ok, false);
+  ok('duplicate list lines are rejected');
+
+  assert.strictEqual(parseAllowedList(con('Allowed implementation files: .')).ok, false);
   ok('an empty list is malformed');
 
-  assert.strictEqual(parseAllowedList('Allowed implementation files: a.js, a.js.').ok, false);
+  // A stray trailing comma leaves a blank entry — malformed, never silently dropped.
+  assert.strictEqual(parseAllowedList(con('Allowed implementation files: a.js, .')).ok, false);
+  ok('a blank comma-list entry is malformed');
+
+  assert.strictEqual(parseAllowedList(con('Allowed implementation files: a.js, a.js.')).ok, false);
   ok('a duplicate entry is malformed');
 
-  assert.strictEqual(parseAllowedList('Allowed implementation files: ../escape.txt.').ok, false);
+  assert.strictEqual(parseAllowedList(con('Allowed implementation files: ../escape.txt.')).ok, false);
   ok('a parent-traversal path is unsafe');
 
-  assert.strictEqual(parseAllowedList('Allowed implementation files: /etc/passwd.').ok, false);
+  assert.strictEqual(parseAllowedList(con('Allowed implementation files: /etc/passwd.')).ok, false);
   ok('an absolute path is unsafe');
 
   // isSafeRepoPath edge cases the parser leans on.
@@ -158,6 +174,30 @@ try {
     assert.strictEqual(res.ok, false);
     assert.ok(res.disallowedPaths.includes('src/sub/leak.ts'));
     ok('a nested untracked file is named and rejected');
+  }
+
+  // A git error must FAIL CLOSED (repo-cl10): an unreachable fork point is never an empty
+  // change set — the branch we cannot diff does not get to leave the machine.
+  {
+    const r = repo({ scopePolicy: 'required' });
+    const res = checkScope({ dir: r.dir, forkPoint: 'not-a-commit',
+      issue: { description: DESC }, policy: 'required' });
+    assert.strictEqual(res.ok, false);
+    assert.match(String(res.reason || ''), /git|fork|diff|commit/i);
+    ok('a git diff failure fails closed with a reason');
+  }
+
+  // An unusual filename (space + non-ASCII) is reported EXACTLY, never octal-escaped or
+  // C-quoted (repo-cl10) — the reviewer needs the real path to find the leak.
+  {
+    const r = repo({ scopePolicy: 'required' });
+    const unusual = 'notes/café Ω.md';
+    put(r.dir, unusual, 'leak\n');
+    const res = scopeOf(r);
+    assert.strictEqual(res.ok, false);
+    assert.ok(res.disallowedPaths.includes(unusual),
+      `exact filename not preserved: ${JSON.stringify(res.disallowedPaths)}`);
+    ok('an unusual filename is reported exactly');
   }
 
   // ---- readScopePolicy: fork-point config, never the worktree -------------------------

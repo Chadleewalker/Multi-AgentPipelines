@@ -61,18 +61,29 @@ the agent never judges its own work.
 flowchart TB
   S(["Container starts — fresh clone on a task branch"]) --> C1["Code phase<br/>headless agent, task spec on stdin"]
   C1 -->|"usage limit"| RL["exit 20 — pause, resume later<br/>no attempt consumed"]
-  C1 --> V{"Verifier<br/>tamper diff, then frozen tests"}
+  C1 --> V{"Verifier<br/>tamper diff · frozen tests · required build"}
   V -->|"frozen paths changed"| TA["exit 11 — tampered"]
-  V -->|"fail, attempts &lt; 3"| FB["Commit the attempt<br/>feed failure output forward"]
+  V -->|"acceptance or build fails, attempts &lt; 3"| FB["Commit the attempt<br/>feed failure + build output forward"]
   FB --> C1
-  V -->|"fail on the 3rd attempt"| ST["Commit WIP + stuck state<br/>exit 10 — stuck"]
-  V -->|"pass"| ADV["SLOT 3 — declared advisors<br/>inspect the finished change<br/>notes only, cannot fail the task"]
+  V -->|"fails on the 3rd attempt"| ST["Commit WIP + stuck state<br/>exit 10 — stuck"]
+  V -->|"acceptance + build pass"| ADV["SLOT 3 — declared advisors<br/>inspect the finished change<br/>notes only, cannot fail the task"]
   ADV --> DP["Docs phase<br/>writes the change summary"]
-  DP --> OK["exit 0 — verified"]
+  DP --> RV{"Re-verify after docs<br/>a docs-phase edit cannot inherit the earlier pass"}
+  RV -->|"tampered · failed"| REVK["exit 11 / 30 — pass revoked"]
+  RV -->|"still green"| OK["exit 0 — verified"]
 
   classDef specialist fill:#fdf4e3,stroke:#a86c17,stroke-width:1.5px,stroke-dasharray:5 3,color:#14181d
   class ADV specialist
 ```
+
+The verifier is **two required gates, not one** (§4.4, change-log rows `repo-cl9` and
+`repo-cl10`): frozen acceptance tests, then a target's optional `buildCommand` — a broken
+production build can no longer hide behind a passing acceptance suite. Both are read from
+the **host-pinned fork-point commit** (`PIPELINE_FORK_POINT`), never a ref the task can
+move, so an agent cannot redirect the freeze baseline at its own weaker config. The
+**re-verify after the docs phase** exists because that phase runs *after* the gate that
+would catch it: a docs-phase change to source, tests, config or a build input revokes the
+earlier pass rather than inheriting it.
 
 Slot 3 is the one that needs building, and the sockets are already in place: the
 `advisories` array exists in `status.schema.json` (typed, and documented as evidence
@@ -99,10 +110,13 @@ queue would fork along with the code.
 flowchart LR
   subgraph HOST["Host — the only writer"]
     G{"0 · Admit<br/>run-level pause gate"}
+    SA{"1a · Scope admission<br/>required list valid?"}
     A["1 · Claim<br/>status → in progress"]
     C["2 · Collect<br/>exit code + status.json"]
+    SC{"2b · File-scope gate<br/>fork-point diff vs allowed list"}
     D["3 · Finish<br/>append notes,<br/>then close or block"]
     R["Refused — never launched<br/>paused row, issue untouched"]
+    SB["Blocked — nothing pushed, no PR<br/>local branch kept as evidence"]
     Q[("Task list")]
   end
   subgraph CONT["Container — no queue access"]
@@ -110,11 +124,16 @@ flowchart LR
   end
   G -->|"window open"| A
   G -->|"run-level cap fired"| R
-  A --> B
+  A --> SA
+  SA -->|"missing · malformed · unsafe"| SB
+  SA -->|"valid or not required"| B
   B --> C
   C -->|"exit 20 — park the run"| G
   G -->|"window reopened — relaunch"| B
-  C --> D
+  C --> SC
+  SC -->|"in scope"| D
+  SC -->|"out of scope"| SB
+  SB --> D
   A -.->|"write"| Q
   D -.->|"write"| Q
 ```
@@ -128,6 +147,18 @@ whose window is genuinely closed exits 20 by itself and joins the same wait. It 
 launches and the queue is never touched, so its issue stays `open` for the next run rather
 than stranded `in_progress`. It still gets a `paused` row in the manifest, because a task
 missing from `run.json` after an unattended overnight run is a hole in the record.
+
+The **file-scope gate is the host's, and it runs twice** (§4.5, change-log rows `repo-cl9`
+and `repo-cl10`). Step 1a checks the *list requirement* **before any container launches**:
+a `required` target whose task carries no valid `Allowed implementation files:` list (missing,
+malformed, duplicate, or naming a path outside the tree) is blocked up front, so no usage
+window is spent reaching a verdict knowable in advance. Step 2b checks the *diff* after the
+container exits: only the exact listed paths may differ from the **host-pinned fork commit**
+(committed, uncommitted, untracked, deleted, or renamed — and a git error fails closed, never
+reads as "nothing changed"). An out-of-scope branch is the one host outcome override — forced
+to `failed`/blocked, **pushed nowhere**, its local commits kept for review and its offending
+paths named in the report. The list is honoured only inside the issue's `Constraints` section:
+a design reference that happens to name a file is not permission to edit it.
 
 The claim in step 1 is what stops a task being picked twice, and it is why a crashed run
 leaves issues stranded `in progress` — the next run's preflight sweeps those back to
@@ -236,11 +267,18 @@ place the closed-network policy would have to be revisited deliberately.
 | Usage limit hit | 20 | paused | stays in progress | not yet | not yet |
 | Internal error | 30 | failed | blocked | if commits exist | no |
 | Wall-clock kill | — | failed | blocked | if commits exist | no |
+| Out-of-scope branch (file-scope gate) | — | failed | blocked | **no — kept local as evidence** | no |
 
 The table is unchanged by the run-level park, deliberately — parking is *scheduling*, never
 *judgment*. A task the fired pause cap refused adds no outcome: it reports the existing
 `paused` status, and the only difference from the row above is that it never launched, so
 Beads is untouched and its issue stays `open` rather than in progress (§4.7).
+
+The last row is the **one place the host overrides the container's outcome** (§4.5): the
+task may have exited `0`, but if the branch changed paths outside its allowed list the host
+forces `failed`/blocked and withholds the push entirely — the sole exception to "push WIP on
+failure", because the unauthorized bytes must not reach the remote while the local branch is
+kept for review.
 
 `blocked` is what takes failed work out of the ready queue: it needs a human decision
 in review, so the loop can never re-pick it. **No advisor verdict appears in this table** —

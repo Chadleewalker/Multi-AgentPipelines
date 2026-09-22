@@ -16,7 +16,7 @@ const DOCKER_ENV = { ...process.env, MSYS_NO_PATHCONV: '1' };
 
 // The container's inputs are exactly these (§4.10) — nothing else crosses the boundary.
 function buildArgs(cfg, opts) {
-  const { containerName, workspaceDir, pipelineDir, issueId, token } = opts;
+  const { containerName, workspaceDir, pipelineDir, issueId, token, forkPoint } = opts;
   const args = [
     'run', '--rm',
     '--name', containerName,
@@ -31,6 +31,10 @@ function buildArgs(cfg, opts) {
     '-e', `HTTP_PROXY=${cfg.proxyUrl}`,
     '-e', 'NO_PROXY=localhost,127.0.0.1',
   ];
+  // The HOST-PINNED trusted fork SHA (repo-cl10). The verifier reads its config from this
+  // commit; passing it in stops a task redirecting the fork with a mutable defaultBranch,
+  // config edit, or an agent-created ref inside its own workspace (DESIGN.md §4.4).
+  if (forkPoint) args.push('-e', `PIPELINE_FORK_POINT=${forkPoint}`);
   // Token by name only: the value comes from the runner's environment, so it never
   // appears in an argument list, a log line, or an image layer (§6).
   if (token) args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN');

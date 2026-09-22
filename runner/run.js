@@ -25,7 +25,7 @@ const { prepare, hasCommits, collectArtifacts, discard } = require('./workspace'
 const { runTask } = require('./container');
 const { createPauseGate } = require('./pause');
 const { fileMemoryNotes, shouldFileMemory } = require('./memory');
-const { checkScope, readScopePolicy } = require('./scope');
+const { checkScope, admitScope, readScopePolicy } = require('./scope');
 const { publish } = require('./publish');
 const { writeManifest, writeReport } = require('./report');
 
@@ -86,6 +86,9 @@ async function executeTask(cfg, issue, taskDir, log, traceId, ws, token, wallClo
     issueId: issue.id,
     taskDir,
     token,
+    // The host-pinned trusted fork SHA (repo-cl10): the verifier reads its frozen config
+    // from this commit, never from a ref the task can move.
+    forkPoint: ws.forkPoint,
     wallClockMinutes: wallClockMinutes || cfg.wallClockMinutes,
   }, log, traceId);
 }
@@ -182,6 +185,39 @@ async function runOneTask(cfg, issue, log, token, gate) {
     return { issueId: issue.id, outcome: 'failed' };
   }
 
+  // ---- early file-scope admission (§4.5, repo-cl10): the LIST REQUIREMENT is checked
+  // BEFORE any agent work. The policy is read from the FORK-POINT config (never the
+  // worktree, so an in-run edit cannot widen it). A `required` target whose task carries a
+  // missing, malformed, duplicate or unsafe `Allowed implementation files:` list never
+  // launches a container — nothing an agent could do makes an invalid list valid, and
+  // launching one would burn a usage window to reach the same block. The path DIFF is still
+  // checked after the agent runs (the gate further below); this is only the half knowable
+  // up front. A block here pushes nothing, opens no PR, and keeps the clone for review. ----
+  const scopePolicy = readScopePolicy(ws.dir, ws.forkPoint);
+  const admission = admitScope({ issue: { description: exported.markdown }, policy: scopePolicy });
+  if (!admission.ok) {
+    const blocked = { status: 'failed', beads: 'blocked' };
+    log.error(tr, `file-scope gate refused the task before any agent work (${scopePolicy} policy): ${admission.reason} — nothing launched, nothing pushed, no PR (§4.5)`);
+    const notes = [`run ${log.runId}: BLOCKED by the file-scope gate before agent work — ${admission.reason}`];
+    finish(cfg, issue.id, blocked, notes);
+    if (process.env.PIPELINE_KEEP_WORKSPACE) log.info(tr, `workspace kept at ${ws.dir}`);
+    else discard(ws.dir);
+    return {
+      issueId: issue.id,
+      title: issue.title || '',
+      outcome: blocked.status,
+      branch: ws.branch,
+      pushed: false,
+      prUrl: null,
+      attempts: 0,
+      pauses: 0,
+      activeSeconds: 0,
+      diffLines: 0,
+      scope: { ok: false, disallowedPaths: [], reason: admission.reason },
+      attemptNotes: notes,
+    };
+  }
+
   // ---- run the task, pausing and resuming across usage windows (§4.7) ----
   // Active time accumulates across relaunches; paused time never counts (§4.6).
   let exec;
@@ -237,7 +273,6 @@ async function runOneTask(cfg, issue, log, token, gate) {
   // local evidence is kept and the run report names the offending paths, but the
   // unauthorized bytes are pushed nowhere and the issue is blocked. Only meaningful when
   // there is something to publish. ----
-  const scopePolicy = readScopePolicy(ws.dir, ws.forkPoint);
   const scope = commits
     ? checkScope({ dir: ws.dir, forkPoint: ws.forkPoint, issue: { description: exported.markdown }, policy: scopePolicy })
     : { ok: true, disallowedPaths: [] };
@@ -323,8 +358,12 @@ async function runOneTask(cfg, issue, log, token, gate) {
     attemptNotes: notes,
   };
 
-  if (process.env.PIPELINE_KEEP_WORKSPACE) log.info(tr, `workspace kept at ${ws.dir}`);
-  else discard(ws.dir);
+  // A file-scope block keeps a reviewable local workspace (§4.5, repo-cl10): the
+  // unauthorized commit is retained on the local branch for a human to inspect even though
+  // nothing was pushed. Every other outcome discards the throwaway clone as before.
+  if (process.env.PIPELINE_KEEP_WORKSPACE || !scope.ok) {
+    log.info(tr, `workspace kept at ${ws.dir}${!scope.ok ? ' (file-scope block — retained for review)' : ''}`);
+  } else discard(ws.dir);
   return row;
 }
 

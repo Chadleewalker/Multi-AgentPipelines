@@ -70,7 +70,18 @@ function renderReport(manifest) {
     if (t.title) L.push(`**${t.title}**`);
     L.push('');
     const facts = [];
-    if (t.branch) facts.push(`Branch: \`${t.branch}\`${t.pushed ? '' : ' (not pushed — no commits)'}`);
+    if (t.branch) {
+      // Why the branch was not pushed matters (repo-cl10): a scope-blocked branch DID have
+      // commits — they were withheld from the remote, not absent — so "no commits" would be
+      // a false explanation. Name the file-scope block instead; the section below has detail.
+      let note = '';
+      if (!t.pushed) {
+        note = (t.scope && t.scope.ok === false)
+          ? ' (not pushed — file-scope violation)'
+          : ' (not pushed — no commits)';
+      }
+      facts.push(`Branch: \`${t.branch}\`${note}`);
+    }
     if (t.prUrl) facts.push(`PR: ${t.prUrl}`);
     else if (t.pushed) facts.push('PR: none — review the branch directly');
     if (t.attempts !== undefined) facts.push(`Attempts: ${t.attempts}`);

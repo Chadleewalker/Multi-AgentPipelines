@@ -17,27 +17,64 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const git = (dir, args) => spawnSync('git', args, { cwd: dir, encoding: 'utf8' });
-function gitLines(dir, args) {
+
+// Run git and FAIL CLOSED (§4.5, repo-cl10): a non-zero status is an error to surface,
+// never a silently-empty result. Returns stdout on success; throws (marked .gitFailed) on
+// failure so the caller can turn "we could not diff the branch" into a scope block rather
+// than a false "nothing changed".
+function gitOrThrow(dir, args) {
   const r = git(dir, args);
-  if (r.status !== 0) return [];
-  // Guard line endings at the point of parsing (§3.6 CRLF rule): trim each cell.
-  return (r.stdout || '').split('\n').map((l) => l.replace(/\r$/, '')).filter(Boolean);
+  if (r.status !== 0) {
+    const e = new Error(`git ${args.join(' ')} failed against the fork point: ${(r.stderr || '').trim() || 'non-zero exit'}`);
+    e.gitFailed = true;
+    throw e;
+  }
+  return r.stdout || '';
 }
 
-// The allowed-files list, parsed out of the issue's Constraints. One structured line —
-// `Allowed implementation files: a/b.js, c/d.md.` — never a design reference (§4.5:
-// naming a file in the design is not permission to edit it). Returns:
-//   { present:false }                          no such line at all
+// The body of the issue's `Constraints` section, and ONLY that section (§4.5, repo-cl10).
+// The allowed list is honoured nowhere else: a Summary or a design reference that happens
+// to name files is not edit permission, so a list under any other heading does not count.
+// Returns the text between the `Constraints` heading and the next heading (or EOF), or ''.
+function constraintsSection(description) {
+  const lines = String(description || '').split('\n');
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^#{1,6}\s+Constraints\b/i.test(lines[i].trim())) { start = i + 1; break; }
+  }
+  if (start < 0) return '';
+  const body = [];
+  for (let i = start; i < lines.length; i++) {
+    if (/^#{1,6}\s+\S/.test(lines[i].trim())) break;    // the next heading ends the section
+    body.push(lines[i]);
+  }
+  return body.join('\n');
+}
+
+// The allowed-files list, parsed out of the issue's Constraints section. One structured
+// line — `Allowed implementation files: a/b.js, c/d.md.` — never a design reference (§4.5:
+// naming a file in the design is not permission to edit it), and never more than once
+// (repo-cl10: two lists are ambiguous, so they fail closed). Returns:
+//   { present:false }                          no such line in Constraints
 //   { present:true, ok:false, reason }         malformed / duplicate / unsafe
 //   { present:true, ok:true, paths:[...] }     a clean, safe, deduplicated list
 function parseAllowedList(description) {
-  const text = String(description || '');
-  const m = /Allowed implementation files:\s*(.+)/.exec(text);
-  if (!m) return { present: false };
-  // Strip a single trailing sentence period, then split the comma list.
-  const body = m[1].replace(/\r$/, '').trim().replace(/\.$/, '');
-  const paths = body.split(',').map((s) => s.trim()).filter(Boolean);
-  if (!paths.length) return { present: true, ok: false, reason: 'the allowed-files list is empty' };
+  const section = constraintsSection(description);
+  const listLines = section.split('\n')
+    .map((l) => l.replace(/\r$/, ''))
+    .filter((l) => /^\s*Allowed implementation files:/i.test(l));
+  if (listLines.length === 0) return { present: false };
+  if (listLines.length > 1) {
+    return { present: true, ok: false, reason: 'the allowed-files list appears on more than one line (duplicate lists)' };
+  }
+  const m = /Allowed implementation files:\s*(.*)$/i.exec(listLines[0]);
+  // Strip a single trailing sentence period, then split the comma list. A blank entry —
+  // e.g. a stray trailing comma — is malformed and must NOT be silently dropped (repo-cl10).
+  const body = (m ? m[1] : '').trim().replace(/\.\s*$/, '');
+  const paths = body.split(',').map((s) => s.trim());
+  if (!paths.length || paths.some((s) => s === '')) {
+    return { present: true, ok: false, reason: 'the allowed-files list is empty or has a blank entry' };
+  }
   if (new Set(paths).size !== paths.length) {
     return { present: true, ok: false, reason: 'the allowed-files list contains duplicates' };
   }
@@ -62,21 +99,27 @@ function isSafeRepoPath(p) {
 }
 
 // Every path that differs between the fork commit and the final branch — committed,
-// staged, unstaged, untracked, deleted, renamed. Two sources, each CRLF-safe:
+// staged, unstaged, untracked, deleted, renamed. Two sources, each CRLF-safe, and both
+// read with `-z` + `core.quotePath=false` so a filename with a space or a non-ASCII
+// character is preserved EXACTLY (repo-cl10) rather than octal-escaped or C-quoted:
 //   * `git diff --name-only <fork> HEAD` is blob-to-blob, immune to autocrlf (§3.6: a
 //     worktree diff on a CRLF checkout reports every file — a commit-to-commit diff does
 //     not).
 //   * `git status --porcelain` compares through git's own eol filters, so an unmodified
 //     file on a CRLF checkout is NOT reported. `--no-renames` splits a rename into its
 //     delete and add, so the (possibly out-of-scope) destination is named explicitly.
+// Either git call failing THROWS (via gitOrThrow) — a branch we cannot diff against its
+// fork point must not read as an empty change set (repo-cl10, fail closed).
 function changedPaths(dir, forkPoint) {
   const set = new Set();
-  for (const p of gitLines(dir, ['diff', '--name-only', '--no-renames', forkPoint, 'HEAD'])) set.add(p);
-  for (const line of gitLines(dir, ['status', '--porcelain', '--no-renames', '-uall'])) {
-    let p = line.slice(3).trim();
-    if (p.startsWith('"') && p.endsWith('"')) p = p.slice(1, -1);
-    const arrow = p.indexOf(' -> ');
-    if (arrow >= 0) p = p.slice(arrow + 4);
+  const diff = gitOrThrow(dir, ['-c', 'core.quotePath=false', 'diff', '--name-only', '--no-renames', '-z', forkPoint, 'HEAD']);
+  for (const p of diff.split('\0')) { if (p) set.add(p); }
+  const status = gitOrThrow(dir, ['-c', 'core.quotePath=false', 'status', '--porcelain', '--no-renames', '-uall', '-z']);
+  // -z porcelain records are NUL-separated `XY <path>` — two status chars, a space, then
+  // the exact path bytes (no quoting under -z). --no-renames means one path per record.
+  for (const rec of status.split('\0')) {
+    if (rec.length < 4) continue;                       // 'XY ' + at least one path char
+    const p = rec.slice(3);
     if (p) set.add(p);
   }
   return [...set];
@@ -120,7 +163,20 @@ function checkScope({ dir, forkPoint, issue, policy }) {
   }
 
   const allowed = new Set(list.paths);
-  const disallowedPaths = changedPaths(dir, forkPoint).filter((p) => !allowed.has(p)).sort();
+  let changed;
+  try {
+    changed = changedPaths(dir, forkPoint);
+  } catch (e) {
+    // Fail CLOSED (§4.5, repo-cl10): a git error is never an empty change set. A branch we
+    // cannot diff against its fork commit does not get to leave the machine.
+    return {
+      ok: false,
+      disallowedPaths: [],
+      allowedPaths: list.paths,
+      reason: `could not diff the branch against its fork commit: ${e.message}`,
+    };
+  }
+  const disallowedPaths = changed.filter((p) => !allowed.has(p)).sort();
   if (disallowedPaths.length) {
     return {
       ok: false,
@@ -132,4 +188,23 @@ function checkScope({ dir, forkPoint, issue, policy }) {
   return { ok: true, disallowedPaths: [], allowedPaths: list.paths };
 }
 
-module.exports = { checkScope, readScopePolicy, parseAllowedList, isSafeRepoPath, changedPaths };
+// Early admission (§4.5, repo-cl10): the list REQUIREMENT alone, checked BEFORE any agent
+// work. It validates only the list's presence and shape — never the diff, which does not
+// exist yet. A `required` target with a missing, malformed, duplicate or unsafe list is
+// refused before a container ever launches: there is nothing an agent could do to make an
+// invalid list valid, and launching one would burn a usage window to reach the same block.
+// A legacy (`optional`) target admits a task with no list, but still rejects an invalid one.
+// Returns { ok:true, allowedPaths? } or { ok:false, reason }.
+function admitScope({ issue, policy }) {
+  const list = parseAllowedList(issue && issue.description);
+  if (!list.present) {
+    if (policy === 'required') {
+      return { ok: false, reason: 'scopePolicy is required but the task has no "Allowed implementation files:" list' };
+    }
+    return { ok: true };                                 // legacy target, no list — nothing to admit
+  }
+  if (!list.ok) return { ok: false, reason: list.reason };
+  return { ok: true, allowedPaths: list.paths };
+}
+
+module.exports = { checkScope, admitScope, readScopePolicy, parseAllowedList, isSafeRepoPath, changedPaths };

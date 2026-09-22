@@ -981,6 +981,44 @@ Two things a merge owes that no frozen test can carry: run the host Docker suite
 they need Docker and, for the ajv schema step, network — and, when Deep End opts in, freeze
 its real `pnpm build` and TypeScript config at the task fork point.
 
+## Four reviewed gaps in the V1 gates, closed (`repo-cl10`, 2026-09-22)
+
+The first isolated `repo-cl9` run **passed its own frozen tests**, and independent review
+still found four defects in it — each green, plausible, and wrong, the failure family this
+repo keeps paying for. `repo-cl10` closes them within the same approved file list; Safe V1
+and Deep End main are untouched (a local temporary Git remote only).
+
+- **Mutable fork-point bypass → host-pinned SHA.** `verify.js` computed the freeze baseline
+  as `merge-base <defaultBranch> HEAD`, but `defaultBranch` and the refs it names come from
+  the task's *own* workspace — a task could commit a weaker config, branch it, and point the
+  fork at its own commit, reading a `buildCommand: true` past a build that should fail. The
+  host now pins the trusted fork: `runner/workspace.js`'s fork point rides in as
+  `PIPELINE_FORK_POINT` (`runner/container.js` arg list, passed from `run.js`), and
+  `verify.js` reads the frozen config from it, falling back to the mutable computation only
+  when the host supplied none. A verifier that recomputes its baseline from refs the judged
+  party controls is not judging it (hard rule 2).
+- **Late / permissive scope admission → early gate, `Constraints`-only.** The list
+  *requirement* was only checked after the container ran (a wasted usage window to reach a
+  block knowable up front), and `parseAllowedList` honoured a list anywhere in the
+  description and silently dropped blank comma entries. `runner/scope.js` gains `admitScope`,
+  called from `run.js` **before any container launches**; the list is honoured **only inside
+  the `Constraints` section** (a Summary or design-ref naming files is not edit permission);
+  two list lines fail closed as ambiguous; a blank entry is malformed, not dropped.
+- **Fail-open Git detection → fail closed + exact paths.** `changedPaths` returned an empty
+  set on any git error, so an un-diffable branch read as "nothing changed" — a fail-*open*
+  gate. It now throws and the gate blocks; both git reads use `-z` + `core.quotePath=false`
+  so a spaced or non-ASCII filename is reported **exactly**, never octal-escaped.
+- **Lost evidence on a scope block → retained + honest report.** A blocked branch is now
+  **kept locally for review** rather than discarded, and `runner/report.js` no longer calls
+  it "(not pushed — no commits)" when commits were *withheld* — it names the file-scope
+  violation. A report blaming "no commits" for a withheld push is the plausible-and-wrong
+  record again.
+
+Frozen suite `tests/acceptance/repo-cl10/` (`verifier-fork.js`, `scope-integrity.js`,
+`host-gates.js`); `tests/unit/scope.test.js` gains the outside-`Constraints`, duplicate-line,
+blank-entry, git-fail-closed and exact-filename cases. `docs/pipeline-diagram.md` updated to
+draw the build gate, the post-docs re-verify, and the two-checkpoint host file-scope gate.
+
 ## What's next
 
 **The queue drained again on 2026-07-26**, after `repo-4l8` (the epic filter, planned and

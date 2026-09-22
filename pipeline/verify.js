@@ -6,8 +6,12 @@
 // Runs inside the task container, mounted read-only at /pipeline (§4.10).
 //
 // Sequence:
-//   1. Read pipeline.config.json FROM THE FORK-POINT COMMIT (git merge-base main HEAD)
-//      — never from the working tree, which the coding agent can edit (v1.0.2).
+//   1. Read pipeline.config.json FROM THE FORK-POINT COMMIT — never from the working tree,
+//      which the coding agent can edit (v1.0.2). The fork point is the HOST-PINNED SHA in
+//      PIPELINE_FORK_POINT when present (repo-cl10): a task can change defaultBranch, the
+//      config, or add a ref in its own workspace, so recomputing `merge-base <branch> HEAD`
+//      from mutable refs is a bypass — the agent can point the fork at its own weaker
+//      commit. Only when the host did not pin one do we fall back to that computation.
 //   2. Tamper check: diff tests/acceptance/ + config.frozenPaths against the fork
 //      point; untracked additions count. Any difference → "tampered", tests not run.
 //   3. Run `<verifyCommand> tests/acceptance/<ISSUE_ID>/` — the authoritative gate.
@@ -68,7 +72,11 @@ function integrationBranch() {
 
 let forkPoint, config;
 try {
-  forkPoint = git(`merge-base ${integrationBranch()} HEAD`).trim();
+  // The host pins the trusted fork SHA (repo-cl10). Fall back to computing it from the
+  // integration branch only when it was not pinned — a mutable computation a task can
+  // redirect, so it is never used when the host has supplied the real one.
+  const pinned = (process.env.PIPELINE_FORK_POINT || '').trim();
+  forkPoint = pinned || git(`merge-base ${integrationBranch()} HEAD`).trim();
   config = JSON.parse(git(`show ${forkPoint}:pipeline.config.json`));
   if (!config.verifyCommand) throw new Error('verifyCommand missing from fork-point pipeline.config.json');
 } catch (e) {
