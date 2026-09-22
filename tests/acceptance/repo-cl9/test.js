@@ -26,7 +26,7 @@ function repo(name, config) {
   const dir = path.join(temp, name);
   fs.mkdirSync(dir);
   git(dir, 'init', '-q', '-b', 'main');
-  git(dir, 'config', 'user.email', 'test@example.local');
+  git(dir, 'config', 'user.email', 'test@example.com');
   git(dir, 'config', 'user.name', 'test');
   put(dir, 'pipeline.config.json', JSON.stringify(config));
   put(dir, 'tools/test.sh', '#!/bin/sh\nexit 0\n');

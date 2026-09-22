@@ -26,7 +26,7 @@ function put(dir, file, value) {
 async function main() {
   git(temp, 'init', '-q', '--bare', '-b', 'main', remote);
   git(temp, 'clone', '-q', remote, target);
-  git(target, 'config', 'user.email', 'test@example.local');
+  git(target, 'config', 'user.email', 'test@example.com');
   git(target, 'config', 'user.name', 'test');
   put(target, 'pipeline.config.json', JSON.stringify({ defaultBranch: 'main',
     verifyCommand: 'true', scopePolicy: 'required', dependencies: {} }));
@@ -47,7 +47,7 @@ if(cmd==='show') console.log(JSON.stringify({id:'repo-cl9',title:'scope fixture'
 else if(cmd==='memories') console.log('{}');
 process.exit(0);\n`);
   const stub = path.join(temp, 'task.sh');
-  fs.writeFileSync(stub, '#!/bin/sh\nset -e\nmkdir -p "$RUN_DIR"\nprintf "unauthorized\\n" > docs/decisions.md\ngit config user.email test@example.local\ngit config user.name test\ngit add -A\ngit commit -qm "docs changed"\nprintf \'{"issueId":"repo-cl9","attempts":[{"number":1,"verifierResult":"pass","timestamp":"2026-09-21T00:00:00Z"}]}\\n\' > "$RUN_DIR/status.json"\nprintf \'{"issueId":"repo-cl9","timestamp":"2026-09-21T00:00:00Z","acceptance":"pass","regressions":"absent"}\\n\' > "$RUN_DIR/verify.json"\n');
+  fs.writeFileSync(stub, '#!/bin/sh\nset -e\nmkdir -p "$RUN_DIR"\nprintf "unauthorized\\n" > docs/decisions.md\ngit config user.email test@example.com\ngit config user.name test\ngit add -A\ngit commit -qm "docs changed"\nprintf \'{"issueId":"repo-cl9","attempts":[{"number":1,"verifierResult":"pass","timestamp":"2026-09-21T00:00:00Z"}]}\\n\' > "$RUN_DIR/status.json"\nprintf \'{"issueId":"repo-cl9","timestamp":"2026-09-21T00:00:00Z","acceptance":"pass","regressions":"absent"}\\n\' > "$RUN_DIR/verify.json"\n');
   const old = { ...process.env };
   try {
     process.env.PIPELINE_BD_CMD = process.execPath;

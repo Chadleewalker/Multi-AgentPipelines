@@ -26,7 +26,7 @@ function shellPath(p) {
 try {
   fs.mkdirSync(dir);
   git('init', '-q', '-b', 'main');
-  git('config', 'user.email', 'test@example.local');
+  git('config', 'user.email', 'test@example.com');
   git('config', 'user.name', 'test');
   put('pipeline.config.json', JSON.stringify({ defaultBranch: 'main',
     verifyCommand: 'sh tools/test.sh', buildCommand: 'sh tools/build.sh',
