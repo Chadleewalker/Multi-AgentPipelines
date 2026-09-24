@@ -28,7 +28,6 @@ const { fileMemoryNotes, shouldFileMemory } = require('./memory');
 const { checkScope, admitScope, readScopeConfig } = require('./scope');
 const { publish } = require('./publish');
 const { writeManifest, writeReport } = require('./report');
-const { admitGuard, checkInstallation, refusalMessage } = require('./guard-admission');
 const { spawnScript } = require('./host-shell');
 
 // Diff size on the branch — the report's final tie-breaker (§4.9).
@@ -139,7 +138,7 @@ async function drainQueue(issues, taskFn, concurrency) {
 // `gate` is the RUN-level rate-limit park (§7), built once in main() and shared by every
 // task: this function asks it for admission before it starts and reports its own limits
 // into it, but never owns one.
-async function runOneTask(cfg, issue, log, token, gate, deps = {}) {
+async function runOneTask(cfg, issue, log, token, gate) {
   const tr = log.trace(issue.id);
   const taskDir = log.taskDir(issue.id);
 
@@ -162,16 +161,6 @@ async function runOneTask(cfg, issue, log, token, gate, deps = {}) {
   }
 
   log.info(tr, `starting task (priority ${issue.priority ?? 2}): ${issue.title || ''}`);
-
-  // Check the host before claim or clone; the primary checkout may intentionally carry
-  // unrelated user work. Target cleanliness is checked on the prepared task clone below.
-  const installation = (deps.guardInstallation || checkInstallation)();
-  if (!installation.ok) {
-    const reason = refusalMessage(installation);
-    log.error(tr, `${reason} Nothing claimed or prepared; the issue stays open.`);
-    return { issueId: issue.id, title: issue.title || '', outcome: 'failed', attempts: 0,
-      pushed: false, prUrl: null, error: reason, attemptNotes: [reason] };
-  }
 
   if (!claim(cfg, issue.id)) {
     log.error(tr, 'could not mark the issue in_progress; skipping');
@@ -203,17 +192,6 @@ async function runOneTask(cfg, issue, log, token, gate, deps = {}) {
   let keepReason = '';
   let branchPushed = false;
   try {
-
-  const guardAdmission = deps.guardAdmission || admitGuard;
-  const admitted = guardAdmission(ws.dir);
-  if (!admitted.ok) {
-    const notes = [`run ${log.runId}: BLOCKED before agent work — ${refusalMessage(admitted)}`];
-    log.error(tr, notes[0]);
-    finish(cfg, issue.id, { status: 'failed', beads: 'blocked' }, notes);
-    return { issueId: issue.id, title: issue.title || '', outcome: 'failed', branch: ws.branch,
-      pushed: false, prUrl: null, attempts: 0, pauses: 0, activeSeconds: 0,
-      diffLines: 0, error: refusalMessage(admitted), attemptNotes: notes };
-  }
 
   // ---- early file-scope admission (§4.5, repo-cl10): the LIST REQUIREMENT is checked
   // BEFORE any agent work. The policy is read from the FORK-POINT config (never the
@@ -311,16 +289,6 @@ async function runOneTask(cfg, issue, log, token, gate, deps = {}) {
       log.error(tr, `giving up on the pause: ${waited.reason}`);
       break;                                               // stays exit 20 -> paused
     }
-    const resumeGuard = (deps.guardInstallation || checkInstallation)();
-    if (!resumeGuard.ok) {
-      const reason = refusalMessage(resumeGuard);
-      const notes = [`run ${log.runId}: BLOCKED before relaunch — ${reason}`];
-      log.error(tr, notes[0]);
-      finish(cfg, issue.id, { status: 'failed', beads: 'blocked' }, notes);
-      return { issueId: issue.id, title: issue.title || '', outcome: 'failed', branch: ws.branch,
-        pushed: false, prUrl: null, pauses, activeSeconds: Math.round(activeMs / 1000),
-        error: reason, attemptNotes: notes };
-    }
     log.info(tr, 'relaunching in a fresh container against the same workspace (attempt counter carries over)');
   }
   if (pauses) log.info(tr, `task resumed across ${pauses} usage-window pause(s)`);
@@ -361,17 +329,7 @@ async function runOneTask(cfg, issue, log, token, gate, deps = {}) {
   // ---- publish: push what exists, PR what passed (§4.5, T16) — but a scope violation
   // publishes NOTHING (§4.5, repo-cl9). The evidence stays local; only the run report and
   // the Beads note carry the offending paths off the machine. ----
-  // Hook configuration can change while an agent runs. Reinspect immediately before
-  // publication. Legitimate product changes now belong to this task: the verifier and
-  // scope gate judge those, rather than the pre-authoring clean-checkout policy.
-  const publicationGuard = scope.ok ? (deps.guardInstallation || checkInstallation)() : { ok: true };
-  if (!publicationGuard.ok) {
-    keepWorkspace = true;
-    keepReason = ' (write-guard admission block — retained for review)';
-    outcome = { status: 'failed', beads: 'blocked' };
-    log.error(tr, `BLOCKED before publication — ${refusalMessage(publicationGuard)}`);
-  }
-  const published = scope.ok && publicationGuard.ok
+  const published = scope.ok
     ? publish(cfg, {
       ws,
       outcome,
@@ -386,7 +344,6 @@ async function runOneTask(cfg, issue, log, token, gate, deps = {}) {
   branchPushed = published.pushed;
 
   const notes = attemptNotes(log.runId, outcome, artifacts.status, ws.memoryCount);
-  if (!publicationGuard.ok) notes.push(`run ${log.runId}: BLOCKED before publication — ${refusalMessage(publicationGuard)}`);
   if (!scope.ok) {
     const detail = scope.disallowedPaths.length
       ? `unauthorized paths NOT pushed: ${scope.disallowedPaths.join(', ')}`
@@ -428,7 +385,6 @@ async function runOneTask(cfg, issue, log, token, gate, deps = {}) {
     // §4.5 (repo-cl9): the file-scope gate's verdict, carried onto the manifest so the run
     // report can name the offending paths. Present only when the gate blocked the branch.
     ...(!scope.ok ? { scope: { ok: false, disallowedPaths: scope.disallowedPaths, ...(scope.reason ? { reason: scope.reason } : {}) } } : {}),
-    ...(!publicationGuard.ok ? { error: refusalMessage(publicationGuard) } : {}),
     // §3.7: the agent's "this spec is wrong" channel. Carried onto the manifest so the
     // report and the PR body can surface it — evidence only, and deliberately NOT part of
     // `scrutinyKey`, because a concern that could reorder the report would be a gate (§3.5).

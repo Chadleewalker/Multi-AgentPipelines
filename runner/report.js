@@ -78,7 +78,7 @@ function renderReport(manifest) {
       if (!t.pushed) {
         note = (t.scope && t.scope.ok === false)
           ? ' (not pushed — file-scope violation)'
-          : t.error ? ' (not pushed — see error below)' : ' (not pushed — no commits)';
+          : ' (not pushed — no commits)';
       }
       facts.push(`Branch: \`${t.branch}\`${note}`);
     }

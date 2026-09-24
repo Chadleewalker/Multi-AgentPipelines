@@ -4,9 +4,19 @@ Where the build actually is. Update this when something changes — it is the fi
 session reads to pick up the thread, and unlike a machine-local memory folder it travels
 with the repo.
 
-_Last updated: 2026-09-22_
+_Last updated: 2026-09-24_
 
 ## Where things stand
+
+**V1 host-hook recovery (`repo-rmk`):** The pipeline-owned Claude and Codex write hooks
+introduced under `repo-42v` are retired as a V1 admission requirement. Their health
+check made the runner depend on host hooks that blocked its own controller, while Codex
+desktop tool delivery remained unproven (`repo-2yy`, now deferred). The existing V1
+controls remain: frozen acceptance tests, the sealed task container, the verifier and
+required build gate where configured, and the host file-scope gate. Existing hosts use
+`scripts/uninstall-write-protection.js` to back up settings and remove only those hook
+registrations. The separate Beads synchronization Git hooks in `SETUP.md` B3 remain
+required.
 
 **V1 is complete and proven end to end.** All 21 build tasks are done. `scripts/e2e.sh`
 drives three scenarios (success, bail, tamper) through the real runner, real containers,
@@ -1148,13 +1158,6 @@ design's central bet, and it is the first day it paid out repeatedly.
 
 **Known gaps, deliberately deferred:**
 
-- **Codex desktop plugin-backed writes bypass the installed PreToolUse hook on this
-  host** (`repo-2yy`). A fresh native Codex CLI canary denied a protected source write,
-  but the desktop `functions.exec` path and a new desktop subagent wrote scratch source
-  files without hook delivery. The guard doctor verifies installed bytes, configuration
-  and direct bridge behavior; it does not certify every client tool route. Use the V1
-  acceptance-author launcher and runner for protected target writes while that gap is
-  investigated.
 - **`docs/pipeline-map.html` has no guard, and that is the real difference between the two
   diagram documents.** Both are kept, deliberately (decided 2026-07-26): they serve
   different readers — `docs/pipeline-diagram.md` shows structure to someone about to
@@ -1199,15 +1202,13 @@ design's central bet, and it is the first day it paid out repeatedly.
 
 ## Test suites
 
-All but twenty drive real Docker and share one network, so they must never run concurrently
+All but sixteen drive real Docker and share one network, so they must never run concurrently
 (`test-runner-memory.sh`, `test-changelog.sh`, `test-sanitize.sh`,
 `test-agent-hooks.sh`, `test-network-names.sh`, `test-lock.sh`,
 `test-sweep-hygiene.sh`, `test-concurrency.sh`, `test-pause-gate.sh`,
 `test-sweep-assertions.sh`, `test-trace.sh`, `test-verdict.sh`, `test-audit-runs.sh` and
-`test-scope-gate.sh`, `test-workspace-cleanup.sh`,
-`test-write-protection-policy.sh`, `test-write-protection-host.sh`,
-`test-write-protection-onboarding.sh`, `test-author-acceptance.sh`, and
-`test-guard-admission.sh` are the exceptions —
+`test-scope-gate.sh`, `test-workspace-cleanup.sh`, and
+`test-uninstall-write-protection.sh` are the exceptions —
 see below; they need neither).
 **`scripts/test-all.sh` is the sweep** — it holds a lock, runs every suite sequentially,
 kills one that hangs (`--timeout`, default 900s), **reclaims what each suite leaked after
@@ -1247,13 +1248,9 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-verifier.sh` (also) | the required build gate (change-log row `repo-cl9`) — build fail forces exit 1, a clean build passes, a worktree buildCommand edit is ignored, and a frozen build helper edit is tampering |
 | `scripts/test-scope-gate.sh` | the final file-scope gate (change-log row `repo-cl9`) — exact-list acceptance, malformed/unsafe/absent lists failing closed, committed/untracked/deleted/renamed out-of-scope paths named, and `readScopePolicy` reading the fork-point config |
 | `scripts/test-workspace-cleanup.sh` | runner clone cleanup on setup failure, task completion, and error; explicit keep behavior; PR verifier task and fork-point worktree cleanup |
-| `scripts/test-write-protection-policy.sh` | scoped test-author leases, path and command classification, and protected-checkout admission |
-| `scripts/test-write-protection-host.sh` | Claude and Codex hook installation, direct bridge checks, doctor and rollback |
-| `scripts/test-write-protection-onboarding.sh` | fresh protected-target onboarding and allowed/denied host write canaries |
-| `scripts/test-author-acceptance.sh` | pinned-model restricted authoring, single-suite audit, and lease revocation |
-| `scripts/test-guard-admission.sh` | freeze and runner fail-closed admission before agent work or publication |
+| `scripts/test-uninstall-write-protection.sh` | retired host-hook removal preserves unrelated settings, backs up the exact before bytes, refuses ambiguous layouts and drift, and supports recovery |
 
-**`scripts/test-runner-memory.sh` is one of the twenty suites that need no Docker**
+**`scripts/test-runner-memory.sh` is one of the sixteen suites that need no Docker**
 (repo-dhp): it
 drives both §3.6 memory channels plus the `shouldFileMemory` outcome gate through the
 `PIPELINE_BD_CMD` seam, so it runs anywhere — including inside a task container, where

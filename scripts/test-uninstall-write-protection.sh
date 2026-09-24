@@ -3,4 +3,4 @@
 # SPDX-License-Identifier: Apache-2.0
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-node "$ROOT/tests/unit/write-protection-host.test.js"
+node "$ROOT/tests/unit/uninstall-write-protection.test.js"
