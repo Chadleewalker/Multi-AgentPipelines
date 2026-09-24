@@ -219,7 +219,7 @@ flowchart LR
   subgraph HOST["Your PC"]
     direction TB
     R["Runner — timers, budgets, kill switch"]
-    GH["git push + gh pr create"]
+    GH["git push + gh pr create / glab mr create"]
     BD[("Task list")]
   end
   subgraph NET["Sandbox — no route out"]

@@ -17,6 +17,7 @@ const DEFAULTS = {
   agentCommand: null,           // optional override -> PIPELINE_AGENT_CMD (§4.3 seam)
   bdTimeoutMs: 60000,           // §4.1 bound on every runner `bd` call (runner/bd.js)
   concurrency: 1,               // §7 how many task containers ONE runner works at once
+  forge: 'github',              // §6 which CLI opens the review request: gh (PR) or glab (MR)
   // "opus" is an alias the CLI resolves to the CURRENT latest Opus, so the pipeline
   // follows model releases without edits here. The entrypoint records the RESOLVED
   // id (e.g. claude-opus-5) in the status file, so provenance stays exact even
@@ -27,6 +28,9 @@ const DEFAULTS = {
 const REQUIRED = ['targetRepoPath', 'targetRepoRemote', 'image'];
 // The ceiling on §7's concurrency knob. See loadConfig for why it is a literal.
 const MAX_CONCURRENCY = 3;
+// §6, change-log row `gitlab-forge`. publish.js maps each to its CLI; the list is repeated
+// here so a typo fails at load, by name, instead of hours later at the first PR.
+const FORGES = ['github', 'gitlab'];
 
 // ---- per-project network + proxy names (§4.8, §4.12) -------------------------------
 // The task network and the proxy sidecar are per project, not per pipeline: two runner
@@ -118,6 +122,9 @@ function loadConfig(file) {
   if (raw.concurrency !== undefined
       && !(Number.isInteger(raw.concurrency) && raw.concurrency >= 1 && raw.concurrency <= MAX_CONCURRENCY)) {
     throw new Error(`run.config.json: 'concurrency' must be a whole number from 1 to ${MAX_CONCURRENCY}`);
+  }
+  if (raw.forge !== undefined && !FORGES.includes(raw.forge)) {
+    throw new Error(`run.config.json: 'forge' must be one of ${FORGES.join(', ')}`);
   }
   for (const k of ['network', 'proxyName']) {
     if (raw[k] !== undefined && (typeof raw[k] !== 'string' || !raw[k].trim())) {
