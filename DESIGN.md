@@ -451,7 +451,7 @@ source of truth.
    that fired — never a silent empty result, which would be the quiet degradation the
    bound exists to prevent.
 2. **One fresh container per task, repo supplied by the host.** For each Beads issue the
-   runner clones the target repo fresh **from the GitHub remote** (so every branch forks
+   runner clones the target repo fresh **from its canonical remote** (so every branch forks
    from the canonical `main`) into a per-task temp directory on the host, creates branch
    `task/<issue-id>`, and bind-mounts the clone read-write at `/workspace` in the
    container. If a branch of that name already exists on the remote (the issue was re-run
@@ -778,7 +778,7 @@ source of truth.
       same at depth 3 as at depth 1 and a fast task cannot overtake its neighbours. Append-on-
       completion would have been the natural implementation and is the bug this pins shut.
     - **The clone and the publish stay synchronous** (`spawnSync`: `git clone`, `git push`,
-      `gh pr create`), so they serialise across workers. Seconds against container times in
+      `gh pr create` / `glab mr create`), so they serialise across workers. Seconds against container times in
       tens of minutes, against widening the change into four more runner files; the visible
       cost is that a wall-clock kill timer can fire a few seconds late while another worker
       clones. Stated so it is not mistaken for a defect. The same reasoning is why `bd()`
@@ -944,14 +944,22 @@ argue here, not a fallback to reach for.
   environments — a machine whose repos live on a network share, or one already running a
   different container workflow — are a later port (see Phasing); nothing in V1 may
   hard-require one, but nothing is built for one yet either.
-- **Host prerequisites:** Docker Desktop, Git Bash, Node, the `gh` CLI (authenticated to
-  GitHub), `bd` (the runner is the sole Beads writer and runs it host-side — 4.12; until
+- **Host prerequisites:** Docker Desktop, Git Bash, Node, the forge CLI for each target's
+  remote — `gh` authenticated to GitHub, or `glab` authenticated to the GitLab host —
+  `bd` (the runner is the sole Beads writer and runs it host-side — 4.12; until
   it's installed, scripts fall back to running `bd` in the base image), and the Claude
   Code CLI with `CLAUDE_CODE_OAUTH_TOKEN` available on the host — the host itself makes
   the minimal rate-limit probe calls (4.7).
-- **Review happens as GitHub PRs.** Projects fed through the pipeline must have a GitHub
-  remote. (An environment with no PR host — repos on a network share, say — would need a
-  local-branch review mode. Out of scope for V1.)
+- **Review happens as pull requests on the project's forge — GitHub or GitLab.** Projects
+  fed through the pipeline must have a remote on one of the two. `forge` in the run config
+  (`"github"`, the default, or `"gitlab"`) picks the host-side CLI that opens the review
+  request: `gh pr create` or `glab mr create` (`runner/publish.js`). It is declared, never
+  inferred from the remote URL, because a self-hosted GitLab can live at any hostname.
+  Everything else is plain git with the host's credentials — clone, push, and the Beads
+  sync ref — and the container never talks to either forge, so the choice changes nothing
+  inside the sealed boundary. A merge request is a pull request for every purpose in this
+  document; "PR" below means either. (An environment with no PR host — repos on a network
+  share, say — would still need a local-branch review mode. Out of scope for V1.)
 - **Docker runs from Git Bash on the reference host**, not WSL (known issue: that machine's
   WSL distro has no Docker Desktop integration). The runner must not assume WSL either way.
 - **Auth:** `CLAUDE_CODE_OAUTH_TOKEN` is passed to containers as an environment variable
@@ -1069,7 +1077,7 @@ Machine specifics stay in an untracked local note, never in the repo.
   same repo is refused by name (4.12). What is still assumed is that all of them are on one
   machine: the lock lives in this repo's `runs/` directory, so it coordinates processes on
   the host and nothing beyond it.
-- Target projects are git repos with a GitHub remote; their test framework choices are
+- Target projects are git repos with a GitHub or GitLab remote (§6); their test framework choices are
   recorded in `pipeline.config.json` at planning time.
 - Beads (`bd`) is adopted as the work database from day one, even though V1 barely
   exercises it — it keeps the door open to richer orchestration later. Its native
@@ -1196,3 +1204,4 @@ version (`Status: READY v1.0`). The *document* still has a version; its *rows* n
 | 2026-09-22 | repo-ccf | Task clone preparation and execution now clean up on failed setup, normal completion, and thrown errors; debug and file-scope-block retention remain explicit. The host PR verifier cleans its task and fork-point worktrees on exit, and fixture suites clear clones they retained for assertions. Focused regressions cover both paths. | Completed tasks and tests left temporary checkouts on the PC: a baseline worktree path was lost through Bash command substitution, and retained test clones had no teardown. |
 | 2026-09-22 | repo-42v | V1 pipeline-first host write protection is repaired (§4.12): the pipeline-owned contract classifies protected paths; `scripts/author-acceptance.js` grants a controller-bound, short-lived lease for one issue suite to a restricted pinned-model Claude session; installed Claude and Codex bridges carry the request to policy; installation, doctor and rollback are explicit host operations. Freeze and runner preparation independently admit only a protected target whose protected paths are clean, and the runner rechecks installation before publication. Five Docker-free suites cover policy, host hooks, fresh onboarding, authoring and admission. The Codex desktop plugin-tool delivery gap remains separately tracked as `repo-2yy` and is not claimed as enforced. | The installed hook blocked legitimate V1 acceptance authoring while direct source edits were not reliably classified; adding an issue-scoped path and a host admission backstop repairs the standard pipeline workflow without a broad opt-out. |
 | 2026-09-24 | repo-rmk | Retire the `repo-42v` host write hooks and their V1 admission checks, returning acceptance authoring, freeze, and task execution to the pre-guard V1 path while retaining the later Windows shell and docs-phase file-scope fixes. A targeted uninstaller backs up user settings and removes only the pipeline-owned Claude and Codex hook registrations; Beads Git hooks remain. | The host guard was an additional development safeguard, not required to run V1. Its installation check made pipeline progress depend on the very hooks that blocked the controller, and Codex desktop hook delivery was not proven. Preserve V1's frozen tests, sealed task containers, verifier, and final file-scope gate while the separate host-guard design is deferred. |
+| 2026-09-24 | gitlab-forge | **Review requests can go to GitLab as well as GitHub** (§4.2, §6, §7 assumptions). A run config's new `forge` key — `"github"` (the default, so every existing config is unchanged) or `"gitlab"`, validated at load by `runner/config.js` — picks the host CLI `runner/publish.js` uses to open the review request: `gh pr create` or `glab mr create --source-branch … --target-branch … --yes`. The argv is built by a pure exported `prCommand(forge, …)`. The PR URL is now the **last http(s) URL** in the CLI's stdout (`extractPrUrl`) instead of its last line, because `glab` prints a summary before the link; and a CLI that exits 0 without printing a URL is recorded as `prError`, never as a success with an empty `prUrl`. The `PIPELINE_GH_CMD` seam serves both forges and now also receives `PR_CLI`. New Docker-free suite `scripts/test-forge.sh` / `tests/unit/forge.test.js`, including a case where the old last-line rule would record a summary line as the link. | The first project onboarded from a second machine lives on a self-hosted GitLab, and the only GitHub-specific code in the whole path was the one `gh pr create` call — clone, push and the Beads sync are plain git, and the container never touches a forge. Declared rather than inferred because a self-hosted GitLab's hostname says nothing about what it is. |
