@@ -17,7 +17,6 @@ const runNonce = path.basename(temp);
 const runDirs = [];
 const oldEnv = { ...process.env };
 const issueId = `cleanup-${process.pid}`;
-const bashSystem = spawnSync('bash', ['-lc', 'uname -s'], { encoding: 'utf8' });
 
 function git(cwd, ...args) {
   const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
@@ -40,22 +39,18 @@ function workspaceFromLog(log) {
   return dir;
 }
 
-async function task(name, stubBody, gate, keep = false, guardDeps = {}) {
+async function task(name, stubBody, gate, keep = false) {
   const stub = path.join(temp, `${name}.sh`);
   fs.writeFileSync(stub, `#!/bin/sh\n${stubBody}\n`);
-  const windowsTail = stub.slice(2).replace(/\\/g, '/');
-  process.env.PIPELINE_EXEC_STUB = process.platform === 'win32'
-    ? `${bashSystem.stdout.trim() === 'Linux' ? '/mnt' : ''}/${stub[0].toLowerCase()}${windowsTail}`
-    : stub;
+  // The host shell converts native Windows paths for Git Bash at dispatch time.
+  process.env.PIPELINE_EXEC_STUB = stub;
   if (keep) process.env.PIPELINE_KEEP_WORKSPACE = '1';
   else delete process.env.PIPELINE_KEEP_WORKSPACE;
   const log = startRun(root, `cleanup-${name}-${runNonce}`);
   runDirs.push(log.dir);
   const promise = runOneTask({ targetRepoPath: target, targetRepoRemote: remote,
     image: 'unused', wallClockMinutes: 2, concurrency: 1 },
-  { id: issueId, title: 'cleanup fixture' }, log, 'unused', gate, {
-    guardInstallation: () => ({ ok: true }), guardAdmission: () => ({ ok: true }), ...guardDeps,
-  });
+  { id: issueId, title: 'cleanup fixture' }, log, 'unused', gate);
   return { promise, log };
 }
 
@@ -90,68 +85,6 @@ process.exit(0);\n`);
   process.env.PIPELINE_BD_CMD = process.execPath;
   process.env.NODE_OPTIONS = `${oldEnv.NODE_OPTIONS || ''} --require "${preload.replace(/\\/g, '/')}"`.trim();
   process.env.V1_CLEANUP_ISSUE = issueId;
-
-  const beforeRefusal = workspaces();
-  const installationBlock = await task('installation-block', 'exit 0', { admit: async () => true }, false, {
-    guardInstallation: () => ({ ok: false, stage: 'installation', reason: 'stale guard fixture' }),
-  });
-  const installationRow = await installationBlock.promise;
-  assert.match(installationRow.error, /stale guard fixture/);
-  assert.deepStrictEqual(workspaces(), beforeRefusal, 'installation refusal prepared a workspace');
-  console.log('ok - stale installation refuses before preparation');
-
-  // Dirt in the primary checkout must not be the target of task admission.
-  fs.writeFileSync(path.join(target, 'user-owned.txt'), 'preserve me');
-  const dispatchBlock = await task('dispatch-block', 'touch "$TASK_DIR/agent-ran"\nexit 0',
-    { admit: async () => true }, false, {
-      guardAdmission: (dir) => {
-        assert.notStrictEqual(path.resolve(dir), path.resolve(target));
-        assert.strictEqual(git(dir, 'status', '--porcelain'), '');
-        return { ok: false, stage: 'target', reason: 'incomplete target protection fixture' };
-      },
-    });
-  const dispatchRow = await dispatchBlock.promise;
-  assert.strictEqual(dispatchRow.attempts, 0);
-  assert.match(dispatchRow.error, /incomplete target protection fixture/);
-  assert.strictEqual(fs.existsSync(path.join(dispatchBlock.log.taskDir(issueId), 'agent-ran')), false);
-  assert.strictEqual(fs.readFileSync(path.join(target, 'user-owned.txt'), 'utf8'), 'preserve me');
-  console.log('ok - dispatch admission checks the clean clone and refuses before agent execution');
-
-  let resumeHealthCalls = 0;
-  const resumeBlock = await task('resume-block', 'exit 20', {
-    admit: async () => true, reportLimit: async () => ({ resumed: true }),
-  }, false, {
-    guardInstallation: () => (++resumeHealthCalls === 1 ? { ok: true }
-      : { ok: false, stage: 'installation', reason: 'guard lost while paused' }),
-  });
-  const resumeRow = await resumeBlock.promise;
-  assert.match(resumeRow.error, /guard lost while paused/);
-  const resumeLog = fs.readFileSync(resumeBlock.log.logFile, 'utf8');
-  assert.strictEqual((resumeLog.match(/exec stub exited 20/g) || []).length, 1,
-    'the guard block must prevent a second dispatch');
-  assert.doesNotMatch(resumeLog, /relaunching in a fresh container/);
-  assert.strictEqual(resumeHealthCalls, 2);
-  console.log('ok - stale installation after a pause prevents relaunch');
-
-  let admissionCalls = 0;
-  const publicationBlock = await task('publication-block',
-    'git config user.name "Cleanup Test"\n'
-    + 'git config user.email "cleanup@example.com"\n'
-    + 'printf committed > finished.txt\n'
-    + 'git add finished.txt && git commit -qm "task work"\nexit 30',
-    { admit: async () => true }, false, {
-      guardInstallation: () => (++admissionCalls === 1 ? { ok: true }
-        : { ok: false, stage: 'installation', reason: 'installation changed during task' }),
-    });
-  const publicationRow = await publicationBlock.promise;
-  assert.strictEqual(admissionCalls, 2);
-  assert.strictEqual(publicationRow.pushed, false);
-  assert.match(publicationRow.error, /installation changed during task/);
-  assert.strictEqual(git(remote, 'for-each-ref', `refs/heads/task/${issueId}`), '');
-  const blockedDir = workspaceFromLog(publicationBlock.log);
-  assert.strictEqual(fs.existsSync(path.join(blockedDir, 'finished.txt')), true);
-  assert.strictEqual(discard(blockedDir).ok, true);
-  console.log('ok - changed guard refuses publication and retains committed evidence');
 
   const normal = await task('normal', 'exit 30', { admit: async () => true });
   const normalRow = await normal.promise;

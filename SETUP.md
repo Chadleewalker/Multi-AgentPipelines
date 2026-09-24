@@ -178,6 +178,12 @@ its issues that way once already.
 
 The hooks are installed on your machine only, never committed.
 
+These Git hooks synchronize the Beads queue. They are separate from the retired
+Claude/Codex `PreToolUse` write hooks installed by `repo-42v`. On a machine that received
+those write hooks, run `node scripts/uninstall-write-protection.js` to inspect the exact
+removal plan, then use its `--apply` option to back up current settings and remove only
+the pipeline-owned registrations. Keep the Beads Git hooks installed.
+
 ### B4. Get the task queue itself
 
 ```bash

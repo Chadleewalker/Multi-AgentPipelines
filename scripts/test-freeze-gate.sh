@@ -13,11 +13,6 @@
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 GATE="$ROOT/scripts/freeze-gate.js"
-# Explicit JS injection keeps verifier fixtures independent of host installation.
-# The production CLI exposes no flag or environment variable to waive admission.
-run_gate() {
-  node -e 'process.exit(require(process.argv[1]).main(process.argv.slice(2), {guardAdmission: () => ({ok: true})}));' "$GATE" "$@"
-}
 FAIL=0
 pass() { echo "PASS  $1"; }
 fail() { echo "FAIL  $1"; FAIL=1; }
@@ -54,23 +49,23 @@ printf '1. does a thing\n2. [guard] existing behaviour holds\n' > "$TMP/spec.md"
 NODE_Q="$(printf '%s' "${TMP}/stub.js")"
 export FREEZE_GATE_CMD="node \"$NODE_Q\""
 
-run_gate --repo "$TMP/repo" --tests tests/acceptance/demo/ >/dev/null 2>&1; RC1=$?
+node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ >/dev/null 2>&1; RC1=$?
 if [ "$RC1" -eq 0 ]; then pass "CLI exits 0 on genuinely red tests"; else fail "expected 0, got $RC1"; fi
 
-STUB_MODE=always-green run_gate --repo "$TMP/repo" --tests tests/acceptance/demo/ >/dev/null 2>&1; RC2=$?
+STUB_MODE=always-green node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ >/dev/null 2>&1; RC2=$?
 if [ "$RC2" -eq 1 ]; then pass "CLI exits 1 when the tests pass at the fork point"; else fail "expected 1, got $RC2"; fi
 
-STUB_MODE=always-red run_gate --repo "$TMP/repo" --tests tests/acceptance/demo/ >/dev/null 2>&1; RC3=$?
+STUB_MODE=always-red node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ >/dev/null 2>&1; RC3=$?
 if [ "$RC3" -eq 2 ]; then pass "CLI exits 2 when a broken harness cannot be told from red"; else fail "expected 2, got $RC3"; fi
 
 # The report has to say which state it is in and count guards, or the exit code is the only
 # output and a human cannot act on it.
-REPORT="$(run_gate --repo "$TMP/repo" --tests tests/acceptance/demo/ --spec "$TMP/spec.md" 2>&1)"
+REPORT="$(node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ --spec "$TMP/spec.md" 2>&1)"
 echo "$REPORT" | grep -q "RED:" && pass "report names the verdict" || fail "report does not name the verdict"
 echo "$REPORT" | grep -q "control run" && pass "report shows the control run" || fail "report hides the control run"
 echo "$REPORT" | grep -q "guards declared: 1" && pass "report counts declared guards" || fail "report does not count guards"
 
-GREEN_REPORT="$(STUB_MODE=always-green run_gate --repo "$TMP/repo" --tests tests/acceptance/demo/ 2>&1)"
+GREEN_REPORT="$(STUB_MODE=always-green node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ 2>&1)"
 echo "$GREEN_REPORT" | grep -qi "guard" && pass "the green verdict names the guard escape" || fail "green verdict does not mention guards"
 
 # Nothing is left in the target tree: this runs against a tree about to be committed and
@@ -83,7 +78,7 @@ fi
 
 # The control convention, through the CLI. With no fixture the report must ADMIT the
 # discriminator is weak rather than quietly proceeding on it.
-WEAK="$(STUB_MODE=always-red run_gate --repo "$TMP/repo" --tests tests/acceptance/demo/ 2>&1)"
+WEAK="$(STUB_MODE=always-red node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ 2>&1)"
 echo "$WEAK" | grep -q "NO control fixture" \
   && pass "the report admits when no control fixture exists" \
   || fail "a weak control is not announced in the report"
@@ -93,7 +88,7 @@ echo "$WEAK" | grep -q "_control" \
 
 mkdir -p "$TMP/repo/tests/acceptance/_control"
 echo 'process.exit(0);' > "$TMP/repo/tests/acceptance/_control/c.js"
-WITH="$(run_gate --repo "$TMP/repo" --tests tests/acceptance/demo/ 2>&1)"
+WITH="$(node "$GATE" --repo "$TMP/repo" --tests tests/acceptance/demo/ 2>&1)"
 echo "$WITH" | grep -q "one passing test" \
   && pass "a present _control fixture is used and named" \
   || fail "the _control fixture was not picked up"
@@ -104,7 +99,7 @@ echo "$WITH" | grep -q "one passing test" \
 # check and died on the first real runner, which is the whole reason this section exists.
 unset FREEZE_GATE_CMD
 REAL_RC=0
-run_gate --repo "$ROOT" --tests tests/acceptance/_control/ >/dev/null 2>&1 || REAL_RC=$?
+node "$GATE" --repo "$ROOT" --tests tests/acceptance/_control/ >/dev/null 2>&1 || REAL_RC=$?
 # _control passes by construction, so the gate must call it GREEN — exit 1.
 if [ "$REAL_RC" -eq 1 ]; then pass "real runner: a passing test directory is reported green"
 else fail "real runner: expected exit 1 for a green directory, got $REAL_RC"; fi
@@ -113,7 +108,7 @@ PROOF="$ROOT/tests/acceptance/_freeze-gate-selftest"
 mkdir -p "$PROOF"
 printf 'process.exit(1);\n' > "$PROOF/failing.js"
 RED_RC=0
-run_gate --repo "$ROOT" --tests tests/acceptance/_freeze-gate-selftest/ >/dev/null 2>&1 || RED_RC=$?
+node "$GATE" --repo "$ROOT" --tests tests/acceptance/_freeze-gate-selftest/ >/dev/null 2>&1 || RED_RC=$?
 rm -rf "$PROOF"
 if [ "$RED_RC" -eq 0 ]; then pass "real runner: a failing test directory is reported red"
 else fail "real runner: expected exit 0 for genuine red, got $RED_RC"; fi

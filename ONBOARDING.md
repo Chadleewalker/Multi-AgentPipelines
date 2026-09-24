@@ -267,24 +267,12 @@ Copy this section in (adjust nothing but the project name):
       that once `sync.remote` is set. Hooks are deliberately **not** committed: this repo
       is a target of its own pipeline, and committed hooks would land in a task container
       that has neither `bd` nor network. Set `BD_SKIP_AUTO_PULL=1` to skip a pull once.
-- [ ] Install the V1 host write guard with `node scripts/write-protection.js install`,
-      then check `node scripts/write-protection.js doctor --json` on each host where an
-      agent will author acceptance tests. The installer preserves unrelated client hooks
-      and records a reversible backup. A new host agent must use the verified
-      `scripts/author-acceptance.js` path in PLANNING.md step 3 for issue-scoped writes;
-      configured hook entries alone do not prove a client has activated them, so run a
-      client write/deny canary before treating another client as a guarded writer.
-      A Codex CLI canary does not establish coverage for desktop plugin-backed file and
-      shell tools; those require their own live canary and enforcement before use on a
-      protected target.
 
 ### 9. Final sanity pass
 - [ ] `pipeline.config.json` present and complete; `defaultBranch` correct.
 - [ ] `tests/acceptance/` committed and pushed on the integration branch.
 - [ ] Per-project image exists (`docker images`).
 - [ ] `bd ready` runs against the working copy.
-- [ ] `node scripts/write-protection.js doctor --json` reports healthy installed hooks,
-      and a live client canary has confirmed the intended write and denial paths.
 - [ ] `CLAUDE.md` carries the container section; no rival container-workflow section,
       no hooks.
 - [ ] Everything committed and pushed — the container clones from the **remote**

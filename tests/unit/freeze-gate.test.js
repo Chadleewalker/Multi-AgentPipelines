@@ -209,11 +209,7 @@ const silence = () => {
   console.log = () => {}; console.error = () => {};
   return () => { console.log = o; console.error = e; };
 };
-// Admission has its own behavioral suite. These fixtures exercise the verifier decision
-// table without depending on the developer's installed client hooks or Git worktree.
-const runMain = (args) => { const restore = silence(); try {
-  return main(args, { guardAdmission: () => ({ ok: true }) });
-} finally { restore(); } };
+const runMain = (args) => { const restore = silence(); try { return main(args); } finally { restore(); } };
 
 const ARGS = ['--repo', tmpRepo, '--tests', 'tests/acceptance/demo/'];
 check('CLI exits 0 when the tests are genuinely red', runMain(ARGS) === 0);
