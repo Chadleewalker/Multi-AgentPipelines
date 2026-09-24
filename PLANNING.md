@@ -18,7 +18,8 @@ Two rules frame everything below (§2, §3.3):
 These are done by the onboarding checklist — `ONBOARDING.md` in this repo. Verify, don't
 redo:
 
-- The target repo has a GitHub remote and `pipeline.config.json` in its root (§3.4):
+- The target repo has a GitHub or GitLab remote (on GitLab, the run config carries
+  `"forge": "gitlab"` — ONBOARDING.md step 1) and `pipeline.config.json` in its root (§3.4):
   `verifyCommand`, optional `regressionCommand`, optional `defaultBranch` (record it if
   the repo's integration branch isn't `main` — e.g. the shadow-trial project uses `master`), optional
   `frozenPaths`, optional `buildCommand` (a **required** build gate — §4.4, change-log row
