@@ -32,7 +32,9 @@ function probeHost(token) {
     });
   const out = `${r.stdout || ''}${r.stderr || ''}`;
   if (r.status === 0) return { open: true };
-  if (/usage limit|rate.?limit/i.test(out)) return { open: false };
+  // Same signals as pipeline/entrypoint.sh's detection: the phrases, plus the JSON
+  // api_error_status 429 ("session limit" is the current CLI's wording).
+  if (/usage limit|rate.?limit|session limit|"api_error_status": ?429/i.test(out)) return { open: false };
   // Anything else (CLI missing, network hiccup) must not spin forever: treat as open
   // and let the relaunched container discover the truth.
   return { open: true, note: (out.split('\n')[0] || 'probe inconclusive').trim() };

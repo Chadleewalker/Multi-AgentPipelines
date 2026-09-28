@@ -119,7 +119,11 @@ while :; do
   } > "$RUN/prompt-$N.md"
   if ! sh -c "$AGENT_CMD $AGENT_FORMAT" < "$RUN/prompt-$N.md" > "$RUN/agent-$N.log" 2>&1; then
     # ---- rate-limit detection (§4.7, T10): a pause, never a failed attempt ----
-    if grep -qiE 'usage limit|rate.?limit' "$RUN/agent-$N.log"; then
+    # The CLI's wording changes: 'usage limit reached|<epoch>' in old versions, "You've hit
+    # your session limit · resets 7:20pm (UTC)" in current ones, which the old pattern missed
+    # and so failed every remaining task. The JSON result's api_error_status 429 is the
+    # wording-proof signal; the phrases stay for plain-text output.
+    if grep -qiE 'usage limit|rate.?limit|session limit|"api_error_status": ?429' "$RUN/agent-$N.log"; then
       EPOCH=$(grep -oiE 'usage limit reached\|[0-9]+' "$RUN/agent-$N.log" | grep -oE '[0-9]+$' | head -1)
       if [ -n "${EPOCH:-}" ]; then
         RESET=$(node -e "console.log(new Date($EPOCH*1000).toISOString())")
