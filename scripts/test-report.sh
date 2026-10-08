@@ -63,12 +63,14 @@ MAN="$TMP/run.json"; REP="$TMP/report.md"
 [ -f "$REP" ] && pass "report.md written" || { fail "no report"; exit 1; }
 
 # 1. Manifest conforms to its schema (the frozen contract the report reads).
-AJV=(npx.cmd --yes -p ajv-formats -p ajv-cli ajv -c ajv-formats)
-command -v npx.cmd >/dev/null 2>&1 || AJV=(npx --yes -p ajv-formats -p ajv-cli ajv -c ajv-formats)
-if "${AJV[@]}" validate --spec=draft2020 -s "$ROOT/schemas/run.schema.json" -d "$MAN" >/dev/null 2>&1; then
+# Order matters: Git Bash's npx.cmd launcher breaks absolute paths containing spaces.
+# Prefer the quoted-argument Bash npx wrapper (change-log row `repo-34h`).
+AJV=(npx --yes -p ajv-formats -p ajv-cli ajv -c ajv-formats)
+command -v npx >/dev/null 2>&1 || AJV=(npx.cmd --yes -p ajv-formats -p ajv-cli ajv -c ajv-formats)
+if "${AJV[@]}" validate --spec=draft2020 -s "$ROOT/schemas/run.schema.json" -d "$MAN"; then
   pass "manifest validates against run.schema.json"
 else
-  fail "manifest fails its own schema"
+  fail "manifest schema validation failed (see AJV output above)"
 fi
 
 # 2. Scrutiny ordering: tampered > stuck > partial > failed > done-with-retries > done-first-try.

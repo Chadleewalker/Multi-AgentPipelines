@@ -24,17 +24,19 @@ MSYS_NO_PATHCONV=1 docker run --rm \
 # scenario also emits a verifier artifact (a verify.json copied to e13-docsbuild.json);
 # it is validated against verify.schema.json below, so it is excluded here — validating a
 # verify.json against the status schema would wrongly red the suite on Windows.
-AJV=(npx.cmd --yes -p ajv-formats -p ajv-cli ajv -c ajv-formats)
-command -v npx.cmd >/dev/null 2>&1 || AJV=(npx --yes -p ajv-formats -p ajv-cli ajv -c ajv-formats)
+# Order matters: Git Bash's npx.cmd launcher breaks absolute paths containing spaces.
+# Prefer the quoted-argument Bash npx wrapper (change-log row `repo-34h`).
+AJV=(npx --yes -p ajv-formats -p ajv-cli ajv -c ajv-formats)
+command -v npx >/dev/null 2>&1 || AJV=(npx.cmd --yes -p ajv-formats -p ajv-cli ajv -c ajv-formats)
 N=0
 for f in "$OUT"/*.json; do
   [ -e "$f" ] || continue
   [ "$(basename "$f")" = "e13-docsbuild.json" ] && continue
   N=$((N + 1))
-  if "${AJV[@]}" validate --spec=draft2020 -s "$ROOT/schemas/status.schema.json" -d "$f" >/dev/null 2>&1; then
+  if "${AJV[@]}" validate --spec=draft2020 -s "$ROOT/schemas/status.schema.json" -d "$f"; then
     echo "PASS  schema: $(basename "$f") validates"
   else
-    echo "FAIL  schema: $(basename "$f") does not validate"; FAIL=1
+    echo "FAIL  schema: $(basename "$f") validation failed (see AJV output above)"; FAIL=1
   fi
 done
 [ "$N" -ge 8 ] && echo "PASS  all $N scenario status files schema-checked" \
@@ -43,10 +45,10 @@ done
 # The docs-build verifier artifact validates against the verifier schema, not status (4.11).
 VERIFYART="$OUT/e13-docsbuild.json"
 if [ -e "$VERIFYART" ]; then
-  if "${AJV[@]}" validate --spec=draft2020 -s "$ROOT/schemas/verify.schema.json" -d "$VERIFYART" >/dev/null 2>&1; then
+  if "${AJV[@]}" validate --spec=draft2020 -s "$ROOT/schemas/verify.schema.json" -d "$VERIFYART"; then
     echo "PASS  schema: e13-docsbuild.json validates against verify.schema.json"
   else
-    echo "FAIL  schema: e13-docsbuild.json does not validate against verify.schema.json"; FAIL=1
+    echo "FAIL  schema: e13-docsbuild.json validation failed (see AJV output above)"; FAIL=1
   fi
 else
   echo "FAIL  verifier artifact e13-docsbuild.json missing"; FAIL=1

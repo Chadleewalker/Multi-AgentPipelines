@@ -21,16 +21,18 @@ MSYS_NO_PATHCONV=1 docker run --rm \
   bash /pipeline-repo/scripts/verifier-checks.sh || FAIL=1
 
 # Schema validation of every scenario result (schema owned by this task - 4.11/4.4).
-AJV=(npx.cmd --yes -p ajv-formats -p ajv-cli ajv -c ajv-formats)
-command -v npx.cmd >/dev/null 2>&1 || AJV=(npx --yes -p ajv-formats -p ajv-cli ajv -c ajv-formats)
+# Order matters: Git Bash's npx.cmd launcher breaks absolute paths containing spaces.
+# Prefer the quoted-argument Bash npx wrapper (change-log row `repo-34h`).
+AJV=(npx --yes -p ajv-formats -p ajv-cli ajv -c ajv-formats)
+command -v npx >/dev/null 2>&1 || AJV=(npx.cmd --yes -p ajv-formats -p ajv-cli ajv -c ajv-formats)
 N=0
 for f in "$OUT"/*.json; do
   [ -e "$f" ] || continue
   N=$((N + 1))
-  if "${AJV[@]}" validate --spec=draft2020 -s "$ROOT/schemas/verify.schema.json" -d "$f" >/dev/null 2>&1; then
+  if "${AJV[@]}" validate --spec=draft2020 -s "$ROOT/schemas/verify.schema.json" -d "$f"; then
     echo "PASS  schema: $(basename "$f") validates"
   else
-    echo "FAIL  schema: $(basename "$f") does not validate"; FAIL=1
+    echo "FAIL  schema: $(basename "$f") validation failed (see AJV output above)"; FAIL=1
   fi
 done
 [ "$N" -ge 8 ] && echo "PASS  all $N scenario results schema-checked" \

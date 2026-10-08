@@ -1225,7 +1225,7 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/e2e.sh` | the whole pipeline against the fixture repo, live GitHub |
 | `scripts/test-base-image.sh` | pinned image contents, no baked credentials |
 | `scripts/test-beads-roundtrip.sh` | the five spec fields, ready-queue semantics |
-| `scripts/test-status-schema.sh` | the status-file contract |
+| `scripts/test-status-schema.sh` | the status-file contract and offline coverage of all five AJV launcher blocks: npx preference, spaced arguments, visible diagnostics and genuine negative validation |
 | `scripts/test-egress.sh` / `test-egress-check.sh` | the allowlist and the pre-run gate |
 | `scripts/test-verifier.sh` | tamper detection, frozen config, regression evidence |
 | `scripts/test-entrypoint.sh` | the container loop, all exit codes |
