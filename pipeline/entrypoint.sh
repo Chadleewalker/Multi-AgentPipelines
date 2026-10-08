@@ -124,11 +124,15 @@ while :; do
     # and so failed every remaining task. The JSON result's api_error_status 429 is the
     # wording-proof signal; the phrases stay for plain-text output.
     if grep -qiE 'usage limit|rate.?limit|session limit|"api_error_status": ?429' "$RUN/agent-$N.log"; then
+      # A relaunch preserves status.json, including the last error's reset. Clear that
+      # field before reading this error so an absent/ambiguous time really uses probing.
+      node "$PIPE/status.js" set rateLimitResetAt || die30 "reset time clear failed"
       # Two reset-time formats. The legacy 'usage limit reached|<epoch>' is unambiguous, so
       # it wins when present. The current CLI instead prints a bare wall-clock time —
       # "You've hit your session limit · resets 7:20pm (UTC)" — with no date; resolveReset.js
-      # turns that into the NEXT UTC occurrence of that time. Either way the runner waits on
-      # the ISO result (pause.js waitPlan); absent, it falls back to probing (§4.7).
+      # uses it only when still ahead on today's UTC date. A time at/past now cannot prove
+      # tomorrow's date, so it falls back to probing (§4.7), including across midnight.
+      # The runner waits on an unambiguous ISO result (pause.js waitPlan).
       EPOCH=$(grep -oiE 'usage limit reached\|[0-9]+' "$RUN/agent-$N.log" | grep -oE '[0-9]+$' | head -1)
       if [ -n "${EPOCH:-}" ]; then
         RESET=$(node -e "console.log(new Date($EPOCH*1000).toISOString())")

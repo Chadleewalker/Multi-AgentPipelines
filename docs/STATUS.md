@@ -1240,7 +1240,7 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-lock.sh` | the per-project run lock — refusal, path identity, takeover, release |
 | `scripts/test-sweep-hygiene.sh` | sweep hygiene — what the sweep reclaims after a suite, what it must never touch, and that reclaiming changes no verdict |
 | `scripts/test-concurrency.sh` | the §7 `concurrency` knob — the bound, the worker pool, ready-queue result ordering, and the asynchronous execution seam |
-| `scripts/test-pause-gate.sh` | the §7 run-level rate-limit park — one shared wait, one run-level cycle cap, the three admission states, and a refused task that never touches Beads |
+| `scripts/test-pause-gate.sh` | the §7 run-level rate-limit park — one shared wait, one run-level cycle cap, the three admission states, a refused task that never touches Beads, and fixed-clock reset-message/relaunch regressions through the real entrypoint with offline stub agents |
 | `scripts/test-sweep-assertions.sh` | the sweep's `PASSED` column — both assertion vocabularies, one honest total from a log carrying both, and "could not tell" rendered apart from a zero |
 | `scripts/test-trace.sh` | the traceability ledger (change-log row `trace-ledger`) — checkbox/ref parsing on both line endings, the three report lists, and backfill that recovers the ticking commit through later prose edits and refuses to guess |
 | `scripts/test-verdict.sh` | the review verdict recorder (change-log row `repo-1ie`) — which run a verdict lands in, what counts as PR-bearing, every refusal writing nothing, and the recorder staying self-contained |

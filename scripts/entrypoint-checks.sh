@@ -215,9 +215,16 @@ grep -q '"rateLimitResetAt"' /out/e10-ratelimit-noreset.json \
   && fail "rate-limit-noreset: spurious reset time" || pass "rate-limit-noreset: no reset field"
 
 # 10b. Session-limit phrasing (current CLI): "resets 7:20pm (UTC)" -> an ISO reset time
-# resolved by resolveReset.js. The date is relative to run time, so assert the shape and
-# the 19:20 UTC wall-clock the phrase pins, not a fixed date.
-new_ws /tmp/ws10b; run_ep /tmp/ws10b /tmp/stub-ratelimit-session.sh
+# resolved by resolveReset.js. Freeze the clock before that time so this fixture also
+# passes after 19:20 UTC, when an undated elapsed reset correctly falls back to probing.
+cat > /tmp/reset-clock.js <<'EOF'
+const RealDate = Date;
+global.Date = class extends RealDate {
+  constructor(...args) { super(...(args.length ? args : ['2026-10-08T19:19:00Z'])); }
+  static now() { return RealDate.parse('2026-10-08T19:19:00Z'); }
+};
+EOF
+new_ws /tmp/ws10b; NODE_OPTIONS="--require /tmp/reset-clock.js" run_ep /tmp/ws10b /tmp/stub-ratelimit-session.sh
 cp /tmp/ws10b/.run/status.json /out/e10b-ratelimit-session.json 2>/dev/null
 [ "$RC" = 20 ] && pass "rate-limit-session: exit 20" || fail "rate-limit-session: rc=$RC"
 grep -qE '"rateLimitResetAt": "[0-9]{4}-[0-9]{2}-[0-9]{2}T19:20:00.000Z"' /out/e10b-ratelimit-session.json \

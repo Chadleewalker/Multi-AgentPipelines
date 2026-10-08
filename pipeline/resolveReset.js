@@ -4,7 +4,7 @@
 
 // Reset-time parser (§4.7). Reads an agent log on stdin and, when the current Claude
 // CLI reports a usage limit as a bare wall-clock time — "You've hit your session limit ·
-// resets 7:20pm (UTC)" — prints the NEXT UTC occurrence of that time as an ISO-8601
+// resets 7:20pm (UTC)" — prints a future time on today's UTC date as an ISO-8601
 // timestamp. entrypoint.sh feeds the result to `status.js set rateLimitResetAt`, which
 // the runner waits on (runner/pause.js waitPlan). Prints nothing when no time is found,
 // which is the signal to fall back to probing — so this must NEVER guess.
@@ -13,8 +13,9 @@
 //   * ONLY the "(UTC)"-qualified form is parsed. A time with no zone is ambiguous by up
 //     to 24h; reporting a wrong reset is worse than probing, so an un-zoned time yields
 //     nothing and the prober takes over.
-//   * No date is given, so the time resolves to today if still ahead of `now`, else
-//     tomorrow. A window that reopens "at 7:20pm" is always the soonest future 7:20pm.
+//   * No date is given. A time at or before `now` could be a just-elapsed reset or a
+//     reset tomorrow. Return nothing and probe rather than inventing a 24-hour wait.
+//     This also handles midnight resets: probing observes the window reopening.
 'use strict';
 
 // Exposed for tests: pure given (text, now). now is a Date; defaults to real time.
@@ -32,13 +33,11 @@ function resolveReset(text, now = new Date()) {
   if (meridiem === 'pm' && hour !== 12) hour += 12;
   if (meridiem === 'am' && hour === 12) hour = 0;
 
-  // Build the candidate at that UTC time on today's UTC date; roll to tomorrow if past.
+  // Trust only a future time on today's UTC date; the message cannot prove tomorrow.
   const candidate = new Date(Date.UTC(
     now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hour, minute, 0, 0,
   ));
-  if (candidate.getTime() <= now.getTime()) {
-    candidate.setUTCDate(candidate.getUTCDate() + 1);
-  }
+  if (candidate.getTime() <= now.getTime()) return null;
   return candidate.toISOString();
 }
 
