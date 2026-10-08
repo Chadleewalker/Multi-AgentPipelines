@@ -150,12 +150,14 @@ step "5. run report"
 REPORT="$ROOT/runs/$STAMP-tamper/report.md"
 [ -f "$REPORT" ] && pass "report.md generated" || fail "no report"
 [ -f "$ROOT/runs/$STAMP-tamper/run.json" ] && pass "run.json manifest generated" || fail "no manifest"
-AJV=(npx.cmd --yes -p ajv-formats -p ajv-cli ajv -c ajv-formats)
-command -v npx.cmd >/dev/null 2>&1 || AJV=(npx --yes -p ajv-formats -p ajv-cli ajv -c ajv-formats)
-if "${AJV[@]}" validate --spec=draft2020 -s "$ROOT/schemas/run.schema.json" -d "$ROOT/runs/$STAMP-tamper/run.json" >/dev/null 2>&1; then
+# Order matters: Git Bash's npx.cmd launcher breaks absolute paths containing spaces.
+# Prefer the quoted-argument Bash npx wrapper (change-log row `repo-34h`).
+AJV=(npx --yes -p ajv-formats -p ajv-cli ajv -c ajv-formats)
+command -v npx >/dev/null 2>&1 || AJV=(npx.cmd --yes -p ajv-formats -p ajv-cli ajv -c ajv-formats)
+if "${AJV[@]}" validate --spec=draft2020 -s "$ROOT/schemas/run.schema.json" -d "$ROOT/runs/$STAMP-tamper/run.json"; then
   pass "manifest validates against run.schema.json"
 else
-  fail "manifest fails its schema"
+  fail "manifest schema validation failed (see AJV output above)"
 fi
 grep -q "TAMPERED" "$REPORT" 2>/dev/null && pass "report labels the tampered outcome" || fail "report label missing"
 
