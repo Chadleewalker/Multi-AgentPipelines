@@ -16,6 +16,8 @@
 # loop with setImmediate and ordering is judged from an events array, because a park is a
 # thing that SLEEPS and a suite that measured it by elapsed time would either take a day or
 # flake on a loaded machine.
+# Reset-message boundaries and relaunch state are also checked by reset-time.test.js,
+# using a fixed clock and the real entrypoint with an offline stub agent.
 #
 # What it does NOT cover, on purpose: a real run at concurrency > 1 against a genuine usage
 # limit. That needs a daemon, an image, a Beads database and a closed subscription window,
@@ -57,6 +59,8 @@ if [ "$CHECKS" -ge 90 ]; then
 else
   fail "unit suite ran only $CHECKS checks (expected at least 90)"
 fi
+
+node "$ROOT/tests/unit/reset-time.test.js" || fail "reset-time regressions failed"
 
 # The suite works entirely in temp directories and starts no run, so it must not have
 # written a run folder into this repo — a stray runs/<id>/ is indistinguishable from a real

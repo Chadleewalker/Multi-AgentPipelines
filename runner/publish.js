@@ -99,25 +99,66 @@ function buildPrBody({ issueMarkdown, status, verify, outcome, branch, runId }) 
   return lines.join('\n');
 }
 
-// `gh` is the documented host tool (§6). PIPELINE_GH_CMD is a test seam so suites can
-// verify PR assembly against a local bare remote without touching a live GitHub.
-function openPr(dir, { branch, title, body, baseBranch, log, traceId }) {
+// The forge CLI that opens the review request (§6, change-log row `gitlab-forge`): `gh`
+// for GitHub (a pull request), `glab` for GitLab (a merge request). Chosen by run.config's
+// `forge`, never guessed from the remote URL — a self-hosted GitLab can live at any
+// hostname. Both CLIs run on the host with the host's credentials, exactly like the push.
+const FORGES = {
+  github: {
+    cli: 'gh',
+    args: ({ branch, title, body, base }) =>
+      ['pr', 'create', '--base', base, '--head', branch, '--title', title, '--body', body],
+  },
+  gitlab: {
+    cli: 'glab',
+    // --yes skips glab's interactive "submit?" prompt; the runner has no terminal.
+    args: ({ branch, title, body, base }) =>
+      ['mr', 'create', '--source-branch', branch, '--target-branch', base,
+        '--title', title, '--description', body, '--yes'],
+  },
+};
+
+// { cli, args } for one review request. Pure, so a Docker-free suite can pin the exact
+// argv each forge receives without either CLI installed.
+function prCommand(forge, { branch, title, body, baseBranch }) {
+  const f = FORGES[forge || 'github'];
+  if (!f) throw new Error(`unknown forge '${forge}'`);
+  return { cli: f.cli, args: f.args({ branch, title, body, base: baseBranch || 'main' }) };
+}
+
+// The review request's URL from the CLI's output. `gh` prints the URL as its last line;
+// `glab` prints a summary line and then the URL. Take the LAST http(s) URL in stdout, so
+// neither format — nor a CLI that adds a trailing notice — records prose as the link.
+// No URL at all is reported as a failure, never as an empty-but-ok result: the report and
+// the verdict recorder both key on prUrl, and a request nobody can find is not published.
+function extractPrUrl(stdout) {
+  const urls = String(stdout || '').match(/https?:\/\/\S+/g);
+  return urls ? urls[urls.length - 1] : null;
+}
+
+// PIPELINE_GH_CMD is a test seam — for either forge — so suites can verify PR assembly
+// against a local bare remote without touching a live GitHub or GitLab.
+function openPr(dir, { branch, title, body, baseBranch, forge, log, traceId }) {
   const ghCmd = process.env.PIPELINE_GH_CMD;
-  const base = baseBranch || 'main';
-  const args = ['pr', 'create', '--base', base, '--head', branch, '--title', title, '--body', body];
+  const { cli, args } = prCommand(forge, { branch, title, body, baseBranch });
   const r = ghCmd
     ? runCommand(ghCmd, {
       cwd: dir,
       encoding: 'utf8',
-      env: { ...process.env, PR_BRANCH: branch, PR_TITLE: title, PR_BODY: body },
+      env: { ...process.env, PR_BRANCH: branch, PR_TITLE: title, PR_BODY: body, PR_CLI: cli },
     })
-    : spawnSync('gh', args, { cwd: dir, encoding: 'utf8' });
+    : spawnSync(cli, args, { cwd: dir, encoding: 'utf8' });
   if (r.status !== 0) {
-    const err = ((r.stderr || '') + (r.stdout || '')).trim();
-    log.error(traceId, `PR creation failed for ${branch}: ${err}`);
+    const err = ((r.error && r.error.message) || (r.stderr || '') + (r.stdout || '')).trim();
+    log.error(traceId, `PR creation failed for ${branch} (${cli}): ${err}`);
     return { ok: false, error: err };
   }
-  const url = (r.stdout || '').trim().split('\n').pop();
+  const url = extractPrUrl(r.stdout);
+  if (!url) {
+    const err = `${cli} exited 0 but printed no URL: ${((r.stdout || '') + (r.stderr || '')).trim()}`;
+    log.error(traceId, `PR creation unconfirmed for ${branch}: ${err}`);
+    return { ok: false, error: err };
+  }
   log.info(traceId, `opened PR: ${url}`);
   return { ok: true, url };
 }
@@ -148,10 +189,12 @@ function publish(cfg, ctx, log, traceId) {
 
   const title = `${issue.id}: ${issue.title || 'pipeline task'}${outcome.status === 'partial' ? ' [PARTIAL]' : ''}`;
   const body = buildPrBody({ issueMarkdown, status, verify, outcome, branch: ws.branch, runId });
-  const pr = openPr(ws.dir, { branch: ws.branch, title, body, baseBranch: ws.defaultBranch, log, traceId });
+  const pr = openPr(ws.dir, {
+    branch: ws.branch, title, body, baseBranch: ws.defaultBranch, forge: cfg.forge, log, traceId,
+  });
   if (pr.ok) result.prUrl = pr.url;
   else result.prError = pr.error;
   return result;
 }
 
-module.exports = { publish, buildPrBody, pushBranch, openPr };
+module.exports = { publish, buildPrBody, pushBranch, openPr, prCommand, extractPrUrl, FORGES };

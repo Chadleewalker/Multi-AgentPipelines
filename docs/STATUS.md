@@ -1202,12 +1202,12 @@ design's central bet, and it is the first day it paid out repeatedly.
 
 ## Test suites
 
-All but sixteen drive real Docker and share one network, so they must never run concurrently
+All but seventeen drive real Docker and share one network, so they must never run concurrently
 (`test-runner-memory.sh`, `test-changelog.sh`, `test-sanitize.sh`,
 `test-agent-hooks.sh`, `test-network-names.sh`, `test-lock.sh`,
 `test-sweep-hygiene.sh`, `test-concurrency.sh`, `test-pause-gate.sh`,
 `test-sweep-assertions.sh`, `test-trace.sh`, `test-verdict.sh`, `test-audit-runs.sh` and
-`test-scope-gate.sh`, `test-workspace-cleanup.sh`, and
+`test-scope-gate.sh`, `test-workspace-cleanup.sh`, `test-forge.sh`, and
 `test-uninstall-write-protection.sh` are the exceptions —
 see below; they need neither).
 **`scripts/test-all.sh` is the sweep** — it holds a lock, runs every suite sequentially,
@@ -1240,17 +1240,18 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-lock.sh` | the per-project run lock — refusal, path identity, takeover, release |
 | `scripts/test-sweep-hygiene.sh` | sweep hygiene — what the sweep reclaims after a suite, what it must never touch, and that reclaiming changes no verdict |
 | `scripts/test-concurrency.sh` | the §7 `concurrency` knob — the bound, the worker pool, ready-queue result ordering, and the asynchronous execution seam |
-| `scripts/test-pause-gate.sh` | the §7 run-level rate-limit park — one shared wait, one run-level cycle cap, the three admission states, and a refused task that never touches Beads |
+| `scripts/test-pause-gate.sh` | the §7 run-level rate-limit park — one shared wait, one run-level cycle cap, the three admission states, a refused task that never touches Beads, and fixed-clock reset-message/relaunch regressions through the real entrypoint with offline stub agents |
 | `scripts/test-sweep-assertions.sh` | the sweep's `PASSED` column — both assertion vocabularies, one honest total from a log carrying both, and "could not tell" rendered apart from a zero |
 | `scripts/test-trace.sh` | the traceability ledger (change-log row `trace-ledger`) — checkbox/ref parsing on both line endings, the three report lists, and backfill that recovers the ticking commit through later prose edits and refuses to guess |
 | `scripts/test-verdict.sh` | the review verdict recorder (change-log row `repo-1ie`) — which run a verdict lands in, what counts as PR-bearing, every refusal writing nothing, and the recorder staying self-contained |
 | `scripts/test-audit-runs.sh` | the run-history audit (change-log row `repo-73k`) — the three-bucket corpus taxonomy, `startedAt` joins, the `specConcerns` channel keys, nearest-rank quantiles, and the pure-reader contract checked by content hash |
+| `scripts/test-forge.sh` | GitHub vs GitLab review requests (change-log row `gitlab-forge`) — each forge's exact argv, the default staying byte-identical `gh pr create`, the PR URL taken as the last URL in the CLI's output (not its last line), exit-0-without-URL and a missing CLI both recorded as errors, `publish()` routing by `cfg.forge`, and the config key rejected by name when misspelt |
 | `scripts/test-verifier.sh` (also) | the required build gate (change-log row `repo-cl9`) — build fail forces exit 1, a clean build passes, a worktree buildCommand edit is ignored, and a frozen build helper edit is tampering |
 | `scripts/test-scope-gate.sh` | the final file-scope gate (change-log row `repo-cl9`) — exact-list acceptance, malformed/unsafe/absent lists failing closed, committed/untracked/deleted/renamed out-of-scope paths named, and `readScopePolicy` reading the fork-point config |
 | `scripts/test-workspace-cleanup.sh` | runner clone cleanup on setup failure, task completion, and error; explicit keep behavior; PR verifier task and fork-point worktree cleanup |
 | `scripts/test-uninstall-write-protection.sh` | retired host-hook removal preserves unrelated settings, backs up the exact before bytes, refuses ambiguous layouts and drift, and supports recovery |
 
-**`scripts/test-runner-memory.sh` is one of the sixteen suites that need no Docker**
+**`scripts/test-runner-memory.sh` is one of the seventeen suites that need no Docker**
 (repo-dhp): it
 drives both §3.6 memory channels plus the `shouldFileMemory` outcome gate through the
 `PIPELINE_BD_CMD` seam, so it runs anywhere — including inside a task container, where

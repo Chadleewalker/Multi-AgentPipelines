@@ -50,8 +50,9 @@ Linux, expect to be the first, and say so before you start so someone can watch.
 - **A Claude account with a Pro or Max subscription** ([claude.ai](https://claude.ai)). The
   pipeline authenticates with a personal subscription token. See A7 for why it is one per
   person and never shared.
-- **A GitHub account with write access to the repositories you'll point it at.** Results
-  come back as pull requests; no repo access means no way to receive work.
+- **A GitHub or GitLab account with write access to the repositories you'll point it at.**
+  Results come back as pull requests (merge requests, on GitLab); no repo access means no
+  way to receive work.
 
 ### A2. Docker Desktop
 
@@ -102,6 +103,19 @@ gh auth login          # GitHub.com → HTTPS → login with a browser
 The pipeline hands work back as **pull requests**, and `gh` is what opens them. Log in as
 yourself — the PRs will carry your name, which is correct: you approved the task and you
 review the result.
+
+**If your projects live on GitLab** (gitlab.com or a self-hosted instance), install `glab`
+([gitlab.com/gitlab-org/cli](https://gitlab.com/gitlab-org/cli)) instead or as well, and
+log in to the host your repos are on:
+
+```bash
+glab auth login --hostname <your-gitlab-host>
+```
+
+Then set `"forge": "gitlab"` in that project's run config (Part D2); the runner opens a
+merge request with `glab` where it would have opened a pull request with `gh` (DESIGN.md
+§6, change-log row `gitlab-forge`). Everything else — clone, push, the task queue — is
+plain git and works the same on both.
 
 You also need push access to whatever repositories you will point the pipeline at.
 

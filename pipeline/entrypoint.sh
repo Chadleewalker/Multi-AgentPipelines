@@ -119,11 +119,29 @@ while :; do
   } > "$RUN/prompt-$N.md"
   if ! sh -c "$AGENT_CMD $AGENT_FORMAT" < "$RUN/prompt-$N.md" > "$RUN/agent-$N.log" 2>&1; then
     # ---- rate-limit detection (§4.7, T10): a pause, never a failed attempt ----
-    if grep -qiE 'usage limit|rate.?limit' "$RUN/agent-$N.log"; then
+    # The CLI's wording changes: 'usage limit reached|<epoch>' in old versions, "You've hit
+    # your session limit · resets 7:20pm (UTC)" in current ones, which the old pattern missed
+    # and so failed every remaining task. The JSON result's api_error_status 429 is the
+    # wording-proof signal; the phrases stay for plain-text output.
+    if grep -qiE 'usage limit|rate.?limit|session limit|"api_error_status": ?429' "$RUN/agent-$N.log"; then
+      # A relaunch preserves status.json, including the last error's reset. Clear that
+      # field before reading this error so an absent/ambiguous time really uses probing.
+      node "$PIPE/status.js" set rateLimitResetAt || die30 "reset time clear failed"
+      # Two reset-time formats. The legacy 'usage limit reached|<epoch>' is unambiguous, so
+      # it wins when present. The current CLI instead prints a bare wall-clock time —
+      # "You've hit your session limit · resets 7:20pm (UTC)" — with no date; resolveReset.js
+      # uses it only when still ahead on today's UTC date. A time at/past now cannot prove
+      # tomorrow's date, so it falls back to probing (§4.7), including across midnight.
+      # The runner waits on an unambiguous ISO result (pause.js waitPlan).
       EPOCH=$(grep -oiE 'usage limit reached\|[0-9]+' "$RUN/agent-$N.log" | grep -oE '[0-9]+$' | head -1)
       if [ -n "${EPOCH:-}" ]; then
         RESET=$(node -e "console.log(new Date($EPOCH*1000).toISOString())")
         node "$PIPE/status.js" set rateLimitResetAt "$RESET"
+      else
+        RESET=$(node "$PIPE/resolveReset.js" < "$RUN/agent-$N.log" 2>/dev/null || true)
+        if [ -n "${RESET:-}" ]; then
+          node "$PIPE/status.js" set rateLimitResetAt "$RESET"
+        fi
       fi
       exit 20   # runner parks the task; attempts[] untouched — interrupted ≠ failed
     fi

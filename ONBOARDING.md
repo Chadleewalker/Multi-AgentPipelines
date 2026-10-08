@@ -35,7 +35,7 @@ Four stages, in order. Each is interactive, each happens once except the last:
    number, which parallel agents cannot assign uniquely (§12). Small
    projects can live on the scaffold's `SPEC.md` alone and enter planning per-task —
    the doc layer is for work big enough to decompose.
-3. **Onboard** — the checklist below: GitHub remote, integration branch recorded,
+3. **Onboard** — the checklist below: GitHub or GitLab remote, integration branch recorded,
    frozen-test home, config, image, task database, container-aware `CLAUDE.md`. Once,
    ever.
 4. **Plan and run, forever** — every feature from here on is a PLANNING.md session and
@@ -103,9 +103,13 @@ coverage that matters is of the area about to be tasked out, not of the whole sy
 
 ## The Checklist
 
-### 1. Git and GitHub
-- [ ] The project is a git repo with a **GitHub remote** (§6 — review happens as PRs).
-      If there is no remote, create one with `gh repo create` — **ask the user first**.
+### 1. Git and the forge
+- [ ] The project is a git repo with a **GitHub or GitLab remote** (§6 — review happens as
+      pull requests; on GitLab, merge requests). If there is no remote, create one
+      (`gh repo create` / `glab repo create`) — **ask the user first**. On GitLab, record
+      `"forge": "gitlab"` in the run config in step 8 and make sure `glab` is logged in to
+      that host (`glab auth status`); without the key the runner uses `gh` and every review
+      request fails after the branch is pushed.
 - [ ] Determine the project's real **integration branch** — ask git
       (`git remote show origin` → HEAD branch), never assume. If it isn't `main`,
       it MUST be recorded as `defaultBranch` in step 3 (§3.4 — the shadow-trial project's `master`
@@ -234,7 +238,8 @@ Copy this section in (adjust nothing but the project name):
 
 ### 8. Pipeline-side wiring
 - [ ] Add `run.config.<project>.json` in this repo (copy `run.config.example.json`):
-      target repo path and remote, image name, wall-clock budget.
+      target repo path and remote, image name, wall-clock budget, and `forge` (`"github"`
+      or `"gitlab"`) when the remote is not on GitHub.
       These are **git-ignored** — they name a path on your disk and a remote that may be
       private, so only the example template is committed.
       **Name the file after the project, not `run.config.json`**: the task network and the

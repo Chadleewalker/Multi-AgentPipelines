@@ -95,7 +95,7 @@ bash scripts/e2e.sh            # add --keep to leave branches and PRs up for ins
 bash scripts/test-verifier.sh
 bash scripts/test-runner-container.sh
 
-# the sixteen suites that need no Docker — seconds, safe to run anywhere, even in a container
+# the seventeen suites that need no Docker — seconds, safe to run anywhere, even in a container
 bash scripts/test-runner-memory.sh
 bash scripts/test-changelog.sh     # DESIGN.md §12 row identity (CHANGELOG_FILE re-aims it)
 bash scripts/test-sanitize.sh      # publication hygiene (SANITIZE_FIXTURE_DIR re-aims it)
@@ -109,6 +109,7 @@ bash scripts/test-sweep-assertions.sh # the sweep's PASSED column — both vocab
 bash scripts/test-trace.sh         # the traceability ledger — spec-to-code refs, report and backfill (change-log row `trace-ledger`)
 bash scripts/test-verdict.sh       # the review verdict recorder — which run a verdict lands in, and what refuses (change-log row `repo-1ie`)
 bash scripts/test-audit-runs.sh    # the run-history audit — buckets, joins, channels, quantiles, and that it writes nothing (change-log row `repo-73k`)
+bash scripts/test-forge.sh         # GitHub vs GitLab review requests — argv, URL extraction, config (change-log row `gitlab-forge`)
 bash scripts/test-scope-gate.sh    # the host file-scope gate
 bash scripts/test-workspace-cleanup.sh # runner clones and verifier worktrees are removed
 bash scripts/test-uninstall-write-protection.sh # narrowly remove retired host hooks with backup and drift checks
@@ -327,6 +328,10 @@ the pipeline working on the pipeline's own code. The rules:
   tool prints is a set of NUMBERS about the corpus, and the way it fails is the way its
   hand-written ancestor failed — reading a `concerns` key that is really `specConcerns` and
   calling a 43-use channel unused, which is non-empty, well-formed and false.
+  And `sh scripts/test-forge.sh` (`tests/unit/forge.test.js`), which needs node and git
+  only: run it if you touch `runner/publish.js`'s PR step or `runner/config.js`'s `forge`
+  key, because the review request's URL is what the report and the verdict recorder key
+  on, and a summary line recorded as the link is well-formed and false.
   Any new Docker-free suite belongs beside them in
   `tests/unit/`, and its seam stub must be a `.js` file invoked through
   `process.execPath`, never a `#!/bin/sh` script: `spawnSync` without a shell fails such a

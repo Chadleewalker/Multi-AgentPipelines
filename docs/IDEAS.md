@@ -550,6 +550,22 @@ deterministic aggregation, not an agent. Read both before proposing a new agent.
   calls interleaving over one embedded Dolt database. Blocked on: nothing; `repo-teq` has
   merged. Related: §4.12 (the runner drains the ready queue), §7. 2026-07-31
 
+- **Let a run use a second agent provider (Kiro CLI) when the Claude subscription runs
+  out** — runs keep stopping at the subscription limit; a second provider, as the whole
+  run's agent or as a fallback that picks up waiting tasks while Claude is parked, would
+  stop losing nights to it. From the docs (not yet verified by hand): headless auth works
+  via a `KIRO_API_KEY` env var (pass it by name, as with the Claude token — never inline);
+  unattended tool use needs `--no-interactive` plus a trust flag or, better, a scoped agent
+  config (`allowedTools`); **undocumented**: any structured output for headless `chat`, the
+  limit message outside the TUI (the monthly-limit alert is documented as TUI-only), the
+  exit codes, and which hosts it contacts. Output matters less than it looks — pass/fail is
+  the verifier's, the change summary can come from `status.js`, the model from config — so
+  the real blocker is limit detection. First step is a hands-on spike outside the pipeline
+  (throwaway container, egress logged; never loosen the task container), then a planning
+  session. Hard rule 6 still holds if each container gets exactly one provider's key.
+  Also: confirm the licence allows unattended use. Related: §4.7 (rate limits), §4.8
+  (egress), hard rule 6. 2026-09-28
+
 ---
 
 ## Promoted

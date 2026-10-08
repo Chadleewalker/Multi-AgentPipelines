@@ -74,6 +74,11 @@ cat > /dev/null
 echo "Error: usage limit reached - try again later"
 exit 1
 EOF
+cat > /tmp/stub-ratelimit-session.sh <<'EOF'
+cat > /dev/null
+echo "You've hit your session limit · resets 7:20pm (UTC)"
+exit 1
+EOF
 
 new_ws() { # new_ws <dir> — fresh clone on a task branch with the issue mounted
   rm -rf "$1"; git clone -q /tmp/src "$1"; cd "$1"; git checkout -qb task/T-3
@@ -208,6 +213,23 @@ cp /tmp/ws10/.run/status.json /out/e10-ratelimit-noreset.json 2>/dev/null
 [ "$RC" = 20 ] && pass "rate-limit-noreset: exit 20" || fail "rate-limit-noreset: rc=$RC"
 grep -q '"rateLimitResetAt"' /out/e10-ratelimit-noreset.json \
   && fail "rate-limit-noreset: spurious reset time" || pass "rate-limit-noreset: no reset field"
+
+# 10b. Session-limit phrasing (current CLI): "resets 7:20pm (UTC)" -> an ISO reset time
+# resolved by resolveReset.js. Freeze the clock before that time so this fixture also
+# passes after 19:20 UTC, when an undated elapsed reset correctly falls back to probing.
+cat > /tmp/reset-clock.js <<'EOF'
+const RealDate = Date;
+global.Date = class extends RealDate {
+  constructor(...args) { super(...(args.length ? args : ['2026-10-08T19:19:00Z'])); }
+  static now() { return RealDate.parse('2026-10-08T19:19:00Z'); }
+};
+EOF
+new_ws /tmp/ws10b; NODE_OPTIONS="--require /tmp/reset-clock.js" run_ep /tmp/ws10b /tmp/stub-ratelimit-session.sh
+cp /tmp/ws10b/.run/status.json /out/e10b-ratelimit-session.json 2>/dev/null
+[ "$RC" = 20 ] && pass "rate-limit-session: exit 20" || fail "rate-limit-session: rc=$RC"
+grep -qE '"rateLimitResetAt": "[0-9]{4}-[0-9]{2}-[0-9]{2}T19:20:00.000Z"' /out/e10b-ratelimit-session.json \
+  && pass "rate-limit-session: reset time recorded (phrase parsed to 19:20 UTC)" \
+  || fail "rate-limit-session: reset missing or wrong time"
 
 # 11. Tunable attempt cap (§4.6): PIPELINE_MAX_ATTEMPTS=2 -> exactly 2 attempts, bail.
 new_ws /tmp/ws11

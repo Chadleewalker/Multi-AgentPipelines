@@ -12,6 +12,7 @@
 //                                          optional feedback from file, tail 2000)
 //   node status.js set <key> <value>       changeSummary | stuckState |
 //                                          rateLimitResetAt | docsPhaseError
+//                                          omit value to remove the key
 //   node status.js summary <file>          set changeSummary from a docs-phase log
 //                                          (envelope result if there is one, else the
 //                                          raw text; trimmed, tail 2000)
@@ -54,6 +55,8 @@ switch (cmd) {
     const allowed = ['changeSummary', 'stuckState', 'rateLimitResetAt', 'docsPhaseError', 'model'];
     if (!allowed.includes(args[0])) { console.error(`status.js: key '${args[0]}' not in schema`); process.exit(2); }
     const o = load();
+    // An omitted value is undefined, so JSON serialization removes this optional key.
+    // entrypoint uses this to discard a previous error's reset before parsing a new one.
     o[args[0]] = args[1];
     save(o);
     break;

@@ -1,6 +1,7 @@
 {
   "targetRepoPath": "C:/path/to/SomeProject",
   "targetRepoRemote": "https://github.com/you/some-project.git",
+  "forge": "github",
   "image": "pipeline-someproject:local",
   "proxyPort": 3128,
   "wallClockMinutes": 240,
