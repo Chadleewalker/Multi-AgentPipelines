@@ -11,6 +11,9 @@
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 IMAGE="${1:-pipeline-base:local}"
+NET="${PIPELINE_NET:-pipeline-net}"
+PROXY="${PIPELINE_PROXY:-pipeline-proxy}"
+PROXY_PORT="${PIPELINE_PROXY_PORT:-3128}"
 TMP="$(mktemp -d)"
 FAIL=0
 pass() { echo "PASS  $1"; }
@@ -36,10 +39,10 @@ bash "$ROOT/scripts/pipeline-net.sh" up >/dev/null || { fail "network up"; exit 
 # Exactly the runner's container configuration (§4.10).
 inc() { # inc <shell-command> -> runs inside a runner-shaped container
   MSYS_NO_PATHCONV=1 docker run --rm \
-    --network pipeline-net \
+    --network "$NET" \
     -v "$WSW:/workspace" -v "$PIPW:/pipeline:ro" -w /workspace \
     -e ISSUE_ID=iso -e WORKSPACE=/workspace -e PIPELINE_DIR=/pipeline \
-    -e HTTPS_PROXY=http://pipeline-proxy:3128 -e HTTP_PROXY=http://pipeline-proxy:3128 \
+    -e HTTPS_PROXY="http://$PROXY:$PROXY_PORT" -e HTTP_PROXY="http://$PROXY:$PROXY_PORT" \
     -e NO_PROXY=localhost,127.0.0.1 \
     -e CLAUDE_CODE_OAUTH_TOKEN=dummy-token \
     "$IMAGE" sh -c "$1" 2>&1

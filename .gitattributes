@@ -1,2 +1,4 @@
 # Shell scripts run inside Linux containers; never commit or check out CRLF blobs.
 *.sh text eol=lf
+# Docker COPY hashes these bytes. Windows worktrees must not change proxy contents.
+docker/proxy/* text eol=lf
