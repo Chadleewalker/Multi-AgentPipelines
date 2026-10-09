@@ -14,6 +14,7 @@
 # shared pair, which is what every test suite here uses.
 #   PIPELINE_NET=<network>  PIPELINE_PROXY=<sidecar>  PIPELINE_PROXY_PORT=<port>
 #   defaults:  pipeline-net (internal)      pipeline-proxy            3128
+#   PIPELINE_PROXY_IMAGE=<tag> selects an owned image for isolated verification.
 # Task containers join with:
 #   --network "$PIPELINE_NET" -e HTTPS_PROXY=http://$PIPELINE_PROXY:$PIPELINE_PROXY_PORT \
 #   -e HTTP_PROXY=... -e NO_PROXY=localhost,127.0.0.1
@@ -21,16 +22,14 @@ set -u
 NET="${PIPELINE_NET:-pipeline-net}"
 PROXY="${PIPELINE_PROXY:-pipeline-proxy}"
 PROXY_PORT="${PIPELINE_PROXY_PORT:-3128}"
-# The IMAGE stays shared: identical content for every project, so per-projecting the tag
-# would rebuild the same squid image once per project for nothing.
-IMG=pipeline-proxy:local
+# Production keeps the historical tag. Worktree tests must select an owned tag:
+# rebuilding a shared tag can replace its image, even with no container restart.
+IMG="${PIPELINE_PROXY_IMAGE:-pipeline-proxy:local}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BASE_IMG="${BASE_IMG:-pipeline-base:local}"
 
 up() {
-  # The build is the one shared step: same tag, same context, so two projects coming up at
-  # once either hit the cache or produce the same image. Nothing below touches a name this
-  # run was not given.
+  # Build and run the same selected tag; never retag the shared image as a side effect.
   docker build -q -t "$IMG" "$ROOT/docker/proxy" >/dev/null || { echo "proxy image build failed"; exit 1; }
   docker network inspect "$NET" >/dev/null 2>&1 || docker network create --internal "$NET" >/dev/null
   docker rm -f "$PROXY" >/dev/null 2>&1 || true

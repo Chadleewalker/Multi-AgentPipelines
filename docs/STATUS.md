@@ -4,9 +4,17 @@ Where the build actually is. Update this when something changes — it is the fi
 session reads to pick up the thread, and unlike a machine-local memory folder it travels
 with the repo.
 
-_Last updated: 2026-09-24_
+_Last updated: 2026-10-08_
 
 ## Where things stand
+
+**Harness follow-ups (`repo-v2x`, `repo-5am`):** e2e uses portable progress copying and
+rejects config, runner or copier failures before interpreting task outcomes. It selects
+owned Docker resources, refuses occupied names, and removes its generated proxy image
+tag at exit. `PIPELINE_PROXY_IMAGE` also supports explicit verification tags; production
+keeps its default. Proxy build inputs check out with LF on Windows. The offline
+`scripts/test-harness.sh` suite exercises these paths through the real shell functions.
+Live GitLab publication still requires a configured disposable project and authenticated CLI.
 
 **V1 host-hook recovery (`repo-rmk`):** The pipeline-owned Claude and Codex write hooks
 introduced under `repo-42v` are retired as a V1 admission requirement. Their health
@@ -1202,13 +1210,13 @@ design's central bet, and it is the first day it paid out repeatedly.
 
 ## Test suites
 
-All but seventeen drive real Docker and share one network, so they must never run concurrently
+All but eighteen drive real Docker and share one network, so they must never run concurrently
 (`test-runner-memory.sh`, `test-changelog.sh`, `test-sanitize.sh`,
 `test-agent-hooks.sh`, `test-network-names.sh`, `test-lock.sh`,
 `test-sweep-hygiene.sh`, `test-concurrency.sh`, `test-pause-gate.sh`,
 `test-sweep-assertions.sh`, `test-trace.sh`, `test-verdict.sh`, `test-audit-runs.sh` and
 `test-scope-gate.sh`, `test-workspace-cleanup.sh`, `test-forge.sh`, and
-`test-uninstall-write-protection.sh` are the exceptions —
+`test-uninstall-write-protection.sh` and `test-harness.sh` are the exceptions —
 see below; they need neither).
 **`scripts/test-all.sh` is the sweep** — it holds a lock, runs every suite sequentially,
 kills one that hangs (`--timeout`, default 900s), **reclaims what each suite leaked after
@@ -1237,6 +1245,7 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-sanitize.sh` | publication hygiene — no machine paths, emails, credentials or denylisted names in the tracked tree |
 | `scripts/test-agent-hooks.sh` | container hygiene — no tracked file configures an agent hook |
 | `scripts/test-network-names.sh` | per-project network and proxy names — derivation, and that they reach the scripts |
+| `scripts/test-harness.sh` | portable captured progress, explicit runner/copier failures, owned proxy image selection and cleanup, and refusal of occupied verification resources; offline Docker function recorder |
 | `scripts/test-lock.sh` | the per-project run lock — refusal, path identity, takeover, release |
 | `scripts/test-sweep-hygiene.sh` | sweep hygiene — what the sweep reclaims after a suite, what it must never touch, and that reclaiming changes no verdict |
 | `scripts/test-concurrency.sh` | the §7 `concurrency` knob — the bound, the worker pool, ready-queue result ordering, and the asynchronous execution seam |
@@ -1251,7 +1260,7 @@ editing the sweep. Flags: `--list`, `--only <substr>`, `--skip <substr>`, `--fai
 | `scripts/test-workspace-cleanup.sh` | runner clone cleanup on setup failure, task completion, and error; explicit keep behavior; PR verifier task and fork-point worktree cleanup |
 | `scripts/test-uninstall-write-protection.sh` | retired host-hook removal preserves unrelated settings, backs up the exact before bytes, refuses ambiguous layouts and drift, and supports recovery |
 
-**`scripts/test-runner-memory.sh` is one of the seventeen suites that need no Docker**
+**`scripts/test-runner-memory.sh` is one of the eighteen suites that need no Docker**
 (repo-dhp): it
 drives both §3.6 memory channels plus the `shouldFileMemory` outcome gate through the
 `PIPELINE_BD_CMD` seam, so it runs anywhere — including inside a task container, where

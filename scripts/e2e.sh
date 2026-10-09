@@ -45,6 +45,35 @@ issue_json() { bdq show "$1" --json; }
 
 S=$(sed -n 1p "$FIX/.fixture-ids"); B=$(sed -n 2p "$FIX/.fixture-ids"); T=$(sed -n 3p "$FIX/.fixture-ids")
 STAMP="e2e-$(date +%Y%m%d-%H%M%S)"
+# Verification owns its Docker names and image. Explicit caller overrides remain caller-owned.
+export PIPELINE_NET="${PIPELINE_NET:-$STAMP-$$-net}"
+export PIPELINE_PROXY="${PIPELINE_PROXY:-$STAMP-$$-proxy}"
+if docker network inspect "$PIPELINE_NET" >/dev/null 2>&1 || docker container inspect "$PIPELINE_PROXY" >/dev/null 2>&1; then
+  echo "FAIL  e2e requires unused network and proxy names" >&2
+  exit 1
+fi
+OWN_PROXY_IMAGE=0
+if [ -z "${PIPELINE_PROXY_IMAGE:-}" ]; then
+  export PIPELINE_PROXY_IMAGE="pipeline-proxy-$STAMP-$$:local"
+  if docker image inspect "$PIPELINE_PROXY_IMAGE" >/dev/null 2>&1; then
+    echo "FAIL  generated proxy image tag already exists: $PIPELINE_PROXY_IMAGE" >&2
+    exit 1
+  fi
+  OWN_PROXY_IMAGE=1
+fi
+cleanup_local() {
+  local result=$?
+  bash "$ROOT/scripts/pipeline-net.sh" down >/dev/null 2>&1 || result=1
+  rm -f "$ROOT/.e2e.config.json"
+  if [ "$OWN_PROXY_IMAGE" = 1 ] && docker image inspect "$PIPELINE_PROXY_IMAGE" >/dev/null 2>&1; then
+    docker image rm "$PIPELINE_PROXY_IMAGE" >/dev/null || {
+      echo "FAIL  could not remove owned proxy image $PIPELINE_PROXY_IMAGE" >&2
+      result=1
+    }
+  fi
+  exit "$result"
+}
+trap cleanup_local EXIT
 
 cleanup_remote() {
   cd "$FIX" || return
@@ -76,10 +105,23 @@ run_scenario() { # run_scenario <target-issue> <stub-name> <run-id>
     const fs = require("fs");
     const cfg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
     cfg.agentCommand = "sh /pipeline/stubs/" + process.argv[2];
+    cfg.network = process.env.PIPELINE_NET;
+    cfg.proxyName = process.env.PIPELINE_PROXY;
     fs.writeFileSync(process.argv[3], JSON.stringify(cfg, null, 2));
-  ' "$CFG" "$stub" "$tmpcfg"
-  # tee to stderr: streams live to the terminal, stdout still captured by the caller's $( ).
-  ( set -o pipefail; RUN_ID="$runid" node "$ROOT/runner/run.js" --config "$tmpcfg" 2>&1 | tee /dev/stderr )
+  ' "$CFG" "$stub" "$tmpcfg" || { echo "scenario config creation failed" >&2; return 1; }
+  # Stream progress to stderr while stdout remains captured by the caller's $( ).
+  (
+    RUN_ID="$runid" node "$ROOT/runner/run.js" --config "$tmpcfg" 2>&1 | node "$ROOT/scripts/stream-output.js"
+    codes=("${PIPESTATUS[@]}")
+    if [ "${codes[1]}" -ne 0 ]; then
+      echo "scenario progress copier failed (exit ${codes[1]})" >&2
+      exit 1
+    fi
+    if [ "${codes[0]}" -ne 0 ]; then
+      echo "scenario runner failed (exit ${codes[0]})" >&2
+      exit "${codes[0]}"
+    fi
+  )
 }
 
 echo "############################################################"
@@ -106,7 +148,7 @@ else
 fi
 
 step "2. SUCCESS scenario ($S) — expect exit 0, done, branch pushed, PR opened"
-OUT=$(run_scenario "$S" success.sh "$STAMP-success")
+OUT=$(run_scenario "$S" success.sh "$STAMP-success") || { fail "success scenario harness failed"; exit 1; }
 echo "$OUT" | grep -q "exit 0 -> done" && pass "exit 0 -> done" || fail "success outcome wrong: $(echo "$OUT" | grep -E 'exit ' | tail -2)"
 echo "$OUT" | grep -q "pushed task/$S" && pass "branch pushed to GitHub" || fail "branch not pushed"
 PRURL=$(echo "$OUT" | grep -o "opened PR: .*" | head -1 | sed 's/opened PR: //')
@@ -126,7 +168,7 @@ fi
 issue_json "$S" | grep -q "outcome done" && pass "attempt notes written back to the issue" || fail "no attempt notes"
 
 step "3. BAIL scenario ($B) — expect 3 attempts, exit 10, stuck, WIP pushed, no PR"
-OUT=$(run_scenario "$B" bail.sh "$STAMP-bail")
+OUT=$(run_scenario "$B" bail.sh "$STAMP-bail") || { fail "bail scenario harness failed"; exit 1; }
 echo "$OUT" | grep -q "exit 10 -> stuck" && pass "exit 10 -> stuck" || fail "bail outcome wrong: $(echo "$OUT" | grep -E 'exit ' | tail -2)"
 SJ="$ROOT/runs/$STAMP-bail/tasks/$B/status.json"
 [ "$(grep -c '"verifierResult": "fail"' "$SJ" 2>/dev/null)" = 3 ] && pass "exactly 3 attempts made" || fail "attempt count wrong"
@@ -138,7 +180,7 @@ echo "$OUT" | grep -q "no PR opened" && pass "no PR for a stuck task" || fail "P
 issue_json "$B" | grep -q "bailed after 3" && pass "stuck state recorded on the issue" || fail "stuck state missing"
 
 step "4. TAMPER scenario ($T) — expect verifier to catch it, exit 11, tampered, no PR"
-OUT=$(run_scenario "$T" tamper.sh "$STAMP-tamper")
+OUT=$(run_scenario "$T" tamper.sh "$STAMP-tamper") || { fail "tamper scenario harness failed"; exit 1; }
 echo "$OUT" | grep -q "exit 11 -> tampered" && pass "exit 11 -> tampered" || fail "tamper outcome wrong: $(echo "$OUT" | grep -E 'exit ' | tail -2)"
 VJ="$ROOT/runs/$STAMP-tamper/tasks/$T/verify.json"
 grep -q '"acceptance": "tampered"' "$VJ" 2>/dev/null && pass "verifier reported tampering" || fail "verifier verdict wrong"
