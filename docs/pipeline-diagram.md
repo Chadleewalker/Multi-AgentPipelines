@@ -185,7 +185,7 @@ which the steps above already know how to handle.
 stateDiagram-v2
   [*] --> open: planning creates the task
   open --> in_progress: runner claims it
-  in_progress --> closed: done or partial
+  in_progress --> closed: earned done or partial
   in_progress --> blocked: stuck · tampered · failed
   in_progress --> in_progress: rate limit — parked, then resumed
   open --> open: refused — the run-level pause cap had already fired
@@ -284,3 +284,21 @@ kept for review.
 in review, so the loop can never re-pick it. **No advisor verdict appears in this table** —
 that is the point. Advisory notes ride along in the PR body and the run report as
 evidence for you, and change none of these outcomes.
+
+
+### Host success evidence (2026-10-27)
+
+```mermaid
+flowchart LR
+  EXIT["Container exit0"] --> PROOF{"Latest attempt pass + acceptance pass<br/>no failed build + commits?"}
+  PROOF -->|"No"| BLOCK["failed / issue blocked<br/>log and note every missing proof"]
+  PROOF -->|"Yes"| SCOPE["Existing host file-scope gate"]
+  SCOPE -->|"Allowed"| REVIEW["Publish review request; close earned done/partial"]
+  SCOPE -->|"Blocked"| KEEP["No publication; keep local evidence"]
+```
+
+Task clones live under host-owned `workspaces/` (or its explicit override), not
+OS Temp. GitHub review bodies travel through private host temporary files outside
+the clone and are removed afterward. Existing GitLab transport is unchanged.
+The freeze and runtime verifier use64MiB capture with bounded recorded tails;
+raising the capture limit does not turn a failing suite/build into a pass.

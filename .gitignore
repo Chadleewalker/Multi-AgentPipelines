@@ -32,3 +32,6 @@ docs/user-profile.md
 .claude/hooks/
 .codex/hooks/
 .claude/settings.local.json
+
+# Host-owned per-task clones, outside OS temporary-directory cleanup.
+workspaces/

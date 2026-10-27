@@ -27,8 +27,8 @@ The pipeline's own code (runner, image, entrypoint, verifier, playbook, schemas)
 **this repository** (`Multi-AgentPipelines`). Target projects are normally separate
 repositories the pipeline operates on — with one sanctioned exception: this repository is
 itself onboarded as a target (dogfooding), so pipeline development tasks can run through
-the pipeline. Safe because each task works on a fresh clone of the remote in a temp
-directory, never the live checkout. Constraint: task containers cannot run Docker, so
+the pipeline. Safe because each task works on a fresh clone of the remote under host-owned `workspaces/`,
+never the live checkout or an OS temporary directory. Constraint: task containers cannot run Docker, so
 acceptance tests for self-tasks must be plain Node/shell checks; work only the Docker
 suites can verify stays interactive.
 
@@ -452,7 +452,7 @@ source of truth.
    bound exists to prevent.
 2. **One fresh container per task, repo supplied by the host.** For each Beads issue the
    runner clones the target repo fresh **from its canonical remote** (so every branch forks
-   from the canonical `main`) into a per-task temp directory on the host, creates branch
+   from the canonical `main`) into a per-task directory under the pipeline's git-ignored `workspaces/` on the host, creates branch
    `task/<issue-id>`, and bind-mounts the clone read-write at `/workspace` in the
    container. If a branch of that name already exists on the remote (the issue was re-run
    after a spec fix), the runner suffixes a run counter — `task/<issue-id>-r2`, `-r3` —
@@ -460,6 +460,9 @@ source of truth.
    git host (see network policy); its local commits land on the host filesystem and
    therefore survive container teardown. Fresh container + fresh clone every time;
    everything inside the container is disposable, so "kill the container" is always safe.
+   `PIPELINE_WORKSPACE_ROOT` may override that root; existing cleanup, explicit keep,
+   file-scope retention and recovery of uncommitted/unpushed work still apply.
+   This separates long-running task clones from external OS Temp cleanup.
 3. **Inside the container, agents are ephemeral headless invocations** (`claude -p`,
    run with permissions bypassed — acceptable *only* because the container has a closed
    network, a disposable filesystem, and no credentials) in a fixed sequence driven by the
@@ -554,6 +557,14 @@ source of truth.
    The PR body is assembled by the host from the issue spec, the change summary in the
    status file, and `verify.json` (including the build gate's verdict) — nothing parses
    free-form agent prose.
+   **GitHub body transport (`pr-body-file`).** The host writes the exact UTF-8 PR
+   description into a private temporary file outside the container-controlled clone,
+   passes `gh --body-file`, and removes the file after success/failure. A workspace
+   `.run` symlink cannot redirect this write. Test seams retain PR_BODY and gain
+   PR_BODY_FILE. Existing forge choice, URL confirmation, shell resolution and launch
+   diagnostics remain. GitLab retains its current inline-description contract; this
+   change does not claim to fix long GitLab descriptions or validate live GitLab.
+
 6. **Budgets and hard exits — time and attempts, not money.** Two budgets only: max
    **active** wall-clock per task (host-enforced, default 4 hours, pause time excluded —
    see next item) and a per-task verify-attempt cap — default 3, tunable per run via `maxAttempts` in `run.config.json`, forwarded to the container as `PIPELINE_MAX_ATTEMPTS` (entrypoint-enforced, counted in the
@@ -686,10 +697,21 @@ source of truth.
     gate is part of the exit-0 condition, not a separate row the runner interprets: the
     verifier already folds `build: fail` into exit 1 (4.4), so a broken build reaches the
     runner as an ordinary failed attempt and, unfixed, bails "stuck" at the cap. The
-    **file-scope gate is the one host-side outcome override** (4.5, repo-cl9): whatever exit
+    **file-scope gate is an independent host-side outcome override** (4.5, repo-cl9): whatever exit
     code the container produced, an out-of-scope final branch is forced to `failed`/blocked
     and — uniquely among failure outcomes — is **not** pushed, because the point of the gate
-    is that the unauthorized bytes never leave the machine. The runner sets
+    is that the unauthorized bytes never leave the machine.
+
+    **Earned success (owner-approved 2026-10-27, `done-earned`).** Before publication
+    or queue closure, done/partial additionally requires a collected status with a
+    passing latest attempt, collected acceptance `pass`, no explicit failed/errored
+    build evidence, and commits past the trusted fork point. Missing evidence becomes
+    failed/blocked with every gap in the log and issue notes. A verified zero-commit
+    run is therefore failed, not done; this supersedes the historical clean-zero-commit
+    result described in `repo-cl11` without changing that scope gate or frozen
+    `outcomeFor` table. Regressions still distinguish partial and do not revoke an
+    otherwise earned pass. WIP may be pushed under the existing scope/recovery rules,
+    but unearned success opens no PR. The runner sets
     an issue in-progress when its task starts; **blocked** is what takes failed work out
     of the ready queue (it needs a human decision in review — fix the spec, fix the doc,
     or drop it), so the run loop can never re-pick a failed issue. Timeout kills treat
@@ -1217,3 +1239,7 @@ version (`Status: READY v1.0`). The *document* still has a version; its *rows* n
 | 2026-10-08 | repo-34h | All five host AJV drivers prefer the Bash npx wrapper before npx.cmd, preserving absolute schema/data paths containing spaces. Validation diagnostics remain visible. The negative status example uses ajv test --invalid, whose success confirms actual schema rejection; launcher, schema and file-read errors fail the assertion. test-status-schema.sh also runs an offline launcher regression for all five drivers. | Under Git Bash, npx.cmd mangled spaced arguments and failed before AJV ran. Suppressed diagnostics looked like schema failures, and the negative example falsely passed on the same launcher failure. |
 | 2026-10-08 | repo-v2x | e2e progress is copied to stdout and stderr by a bounded Node stream instead of tee through a device path. Scenario config, runner and copier failures stop the harness before outcome assertions, with distinct diagnostics. test-harness.sh exercises the actual shell scenario under captured output and planted failures. | Git Bash could not open /dev/stderr during captured e2e runs. The caller ignored the pipeline status, so correct-looking outcome text could conceal a broken harness. |
 | 2026-10-08 | repo-5am | §4.8 allows PIPELINE_PROXY_IMAGE to select an owned verification tag while preserving the production default. Proxy Docker inputs are pinned to LF. e2e generates unused network, proxy and image names, passes them to isolation assertions and the runner, refuses occupied names, and removes only its generated image tag at exit. test-harness.sh uses a Docker function recorder to prove image selection, refusal and cleanup. | A worktree verification build replaced the shared proxy image tag; Windows checkout line endings also changed copied configuration bytes. Separate container and network names alone did not protect active projects from a shared image rebuild. |
+
+| 2026-10-27 | done-earned | Host done/partial requires latest passing attempt, acceptance pass, no explicit failed/error build and commits beyond the fork; missing proof is failed/blocked. `outcomeFor` and frozen tests stay byte-identical. Task clones use ignored workspaces/ with PIPELINE_WORKSPACE_ROOT; current recovery/cleanup remains. | An exit0 and missing/empty workspace evidence must not close an issue without deliverable work. Owner selected this main-based port. |
+| 2026-10-27 | pr-body-file | GitHub PR body uses an exact UTF-8 host-owned temporary file outside the untrusted clone, cleaned after publication; preserve URL/forge/launch diagnostics. GitLab behavior remains unchanged. | Large argv bodies exceed Windows command limits; writing through a container-controlled .run symlink would introduce a host write hazard. |
+| 2026-10-27 | freeze-gate-buffer | Freeze and runtime acceptance/build/regression captures explicitly allow64MiB; keep actual exit statuses, frozen/build gates and bounded output tails. | A noisy correct suite must not become indeterminate or fail solely at Node's default1MiB capture ceiling. |

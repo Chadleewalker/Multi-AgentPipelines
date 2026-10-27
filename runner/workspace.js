@@ -7,7 +7,6 @@
 // issue exported read-only for the container. The container never talks to a git host.
 'use strict';
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { exportMemory } = require('./memory');
@@ -52,9 +51,20 @@ function chooseBranch(cloneDir, issueId) {
   throw new Error(`no free branch name for ${base} (checked -r2..-r99)`);
 }
 
+// Where task workspaces live: the pipeline's own git-ignored `workspaces/`, beside `runs/`
+// — never os.tmpdir(). On the reference host something outside the pipeline sweeps %TEMP%
+// by age, and it deleted two bind-mounted workspaces mid-run (STATUS defect 15, change-log
+// row `done-earned`). PIPELINE_WORKSPACE_ROOT re-aims it, for a suite or a host that wants
+// them elsewhere.
+function workspaceRoot() {
+  return process.env.PIPELINE_WORKSPACE_ROOT || path.resolve(__dirname, '..', 'workspaces');
+}
+
 // Prepare one task's workspace. Returns {ok, dir, branch, forkPoint} or {ok:false,reason}.
 function prepare(cfg, issueId, issueMarkdown, log, traceId) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `pipeline-${issueId}-`));
+  const root = workspaceRoot();
+  fs.mkdirSync(root, { recursive: true });
+  const dir = fs.mkdtempSync(path.join(root, `pipeline-${issueId}-`));
   let ready = false;
   try {
 
@@ -179,4 +189,4 @@ function discard(dir) {
   }
 }
 
-module.exports = { prepare, chooseBranch, hasCommits, recoveryReason, collectArtifacts, discard };
+module.exports = { prepare, workspaceRoot, chooseBranch, hasCommits, recoveryReason, collectArtifacts, discard };

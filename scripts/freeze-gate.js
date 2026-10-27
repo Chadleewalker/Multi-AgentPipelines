@@ -87,6 +87,7 @@ function runVerify(repoRoot, verifyCommand, testDir, timeoutMs) {
     cwd: repoRoot,
     encoding: 'utf8',
     timeout: timeoutMs,
+    maxBuffer: 64 * 1024 * 1024, // Match the runtime capture ceiling; preserve exit status.
     // The verifier gives the suite a plain environment; inheriting this process's is the
     // closest available approximation and keeps GODOT_BIN-style host variables reachable.
     env: process.env,
