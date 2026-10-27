@@ -29,6 +29,32 @@ function outcomeFor(exitCode, verify) {
   return { ...base };
 }
 
+// A success is EARNED, not defaulted (§4.11, change-log row `done-earned`). outcomeFor
+// reads the exit code, and exit 0 is only the container saying it got to the end of its
+// script — a workspace that vanished under it lets every write after the verifier fail
+// non-fatally and still exit 0 (STATUS defect 15). So a done/partial must also show the
+// three things a real one always leaves: a recorded passing attempt, a collected
+// verify.json whose acceptance is `pass`, and commits past the fork point. Returns null
+// when the evidence is all there (or the outcome is not a success at all), else the
+// reason, which the runner turns into an internal error. Kept apart from outcomeFor so
+// that function's frozen contract over (exitCode, verify) does not move.
+function missingSuccessEvidence(outcome, { status, verify, hasCommits }) {
+  if (!outcome || (outcome.status !== 'done' && outcome.status !== 'partial')) return null;
+  const gaps = [];
+  const attempts = (status && Array.isArray(status.attempts)) ? status.attempts : null;
+  if (!status) gaps.push('no status.json was collected');
+  else if (!attempts || attempts.at(-1)?.verifierResult !== 'pass') {
+    gaps.push('status.json records no passing latest attempt');
+  }
+  if (!verify) gaps.push('no verify.json was collected');
+  else if (verify.acceptance !== 'pass') gaps.push(`verify.json acceptance is ${JSON.stringify(verify.acceptance)}, not "pass"`);
+  if (verify && verify.build && !['pass', 'absent'].includes(verify.build)) {
+    gaps.push(`verify.json build is ${JSON.stringify(verify.build)}, not pass/absent`);
+  }
+  if (!hasCommits) gaps.push('the branch has no commits past the fork point');
+  return gaps.length ? gaps.join('; ') : null;
+}
+
 // Types the runner never runs (§3.1, §4.12). A DENY-LIST, not an allow-list: bd also
 // has bug, feature, chore and decision, and the runner drains all of them. Admitting
 // only 'task' would make a legitimately-typed issue carrying a full spec vanish from
@@ -149,5 +175,5 @@ function attemptNotes(runId, outcome, status, memoryIn) {
 }
 
 module.exports = {
-  readyQueue, queueSummary, claim, exportIssue, finish, outcomeFor, attemptNotes, OUTCOMES,
+  readyQueue, queueSummary, claim, exportIssue, finish, outcomeFor, missingSuccessEvidence, attemptNotes, OUTCOMES,
 };

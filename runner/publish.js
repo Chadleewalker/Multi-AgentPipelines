@@ -6,6 +6,9 @@
 // has commits (so stuck/tampered/failed work survives for review); open a PR only for
 // verified success (exit 0 — "done" and "partial" alike, with partial flagged).
 'use strict';
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { spawnSync } = require('child_process');
 const { runCommand } = require('./host-shell');
 
@@ -106,8 +109,9 @@ function buildPrBody({ issueMarkdown, status, verify, outcome, branch, runId }) 
 const FORGES = {
   github: {
     cli: 'gh',
-    args: ({ branch, title, body, base }) =>
-      ['pr', 'create', '--base', base, '--head', branch, '--title', title, '--body', body],
+    args: ({ branch, title, body, bodyFile, base }) =>
+      ['pr', 'create', '--base', base, '--head', branch, '--title', title,
+        ...(bodyFile ? ['--body-file', bodyFile] : ['--body', body])],
   },
   gitlab: {
     cli: 'glab',
@@ -120,10 +124,10 @@ const FORGES = {
 
 // { cli, args } for one review request. Pure, so a Docker-free suite can pin the exact
 // argv each forge receives without either CLI installed.
-function prCommand(forge, { branch, title, body, baseBranch }) {
+function prCommand(forge, { branch, title, body, bodyFile, baseBranch }) {
   const f = FORGES[forge || 'github'];
   if (!f) throw new Error(`unknown forge '${forge}'`);
-  return { cli: f.cli, args: f.args({ branch, title, body, base: baseBranch || 'main' }) };
+  return { cli: f.cli, args: f.args({ branch, title, body, bodyFile, base: baseBranch || 'main' }) };
 }
 
 // The review request's URL from the CLI's output. `gh` prints the URL as its last line;
@@ -138,29 +142,49 @@ function extractPrUrl(stdout) {
 
 // PIPELINE_GH_CMD is a test seam — for either forge — so suites can verify PR assembly
 // against a local bare remote without touching a live GitHub or GitLab.
+// Keep the body outside the container-controlled clone: an agent can replace .run
+// with a symlink. A private host-created directory cannot redirect this host write.
+// GitHub uses --body-file; the existing GitLab command contract remains unchanged.
 function openPr(dir, { branch, title, body, baseBranch, forge, log, traceId }) {
   const ghCmd = process.env.PIPELINE_GH_CMD;
-  const { cli, args } = prCommand(forge, { branch, title, body, baseBranch });
-  const r = ghCmd
-    ? runCommand(ghCmd, {
-      cwd: dir,
-      encoding: 'utf8',
-      env: { ...process.env, PR_BRANCH: branch, PR_TITLE: title, PR_BODY: body, PR_CLI: cli },
-    })
-    : spawnSync(cli, args, { cwd: dir, encoding: 'utf8' });
-  if (r.status !== 0) {
-    const err = ((r.error && r.error.message) || (r.stderr || '') + (r.stdout || '')).trim();
-    log.error(traceId, `PR creation failed for ${branch} (${cli}): ${err}`);
+  let bodyDir;
+  try {
+    bodyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pipeline-pr-body-'));
+    const bodyFile = path.join(bodyDir, 'body.md');
+    fs.writeFileSync(bodyFile, body, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    const { cli, args } = prCommand(forge, { branch, title, body, bodyFile, baseBranch });
+    const r = ghCmd
+      ? runCommand(ghCmd, {
+        cwd: dir,
+        encoding: 'utf8',
+        env: { ...process.env, PR_BRANCH: branch, PR_TITLE: title, PR_BODY: body,
+          PR_BODY_FILE: bodyFile, PR_CLI: cli },
+      })
+      : spawnSync(cli, args, { cwd: dir, encoding: 'utf8' });
+    if (r.status !== 0) {
+      const err = ((r.error && r.error.message) || ((r.stderr || '') + (r.stdout || '')).trim()
+        || `exit ${r.status}, signal ${r.signal || 'none'}, with no output`).trim();
+      log.error(traceId, `PR creation failed for ${branch} (${cli}): ${err}`);
+      return { ok: false, error: err };
+    }
+    const url = extractPrUrl(r.stdout);
+    if (!url) {
+      const err = `${cli} exited 0 but printed no URL: ${((r.stdout || '') + (r.stderr || '')).trim()}`;
+      log.error(traceId, `PR creation unconfirmed for ${branch}: ${err}`);
+      return { ok: false, error: err };
+    }
+    log.info(traceId, `opened PR: ${url}`);
+    return { ok: true, url };
+  } catch (error) {
+    const err = `could not prepare review request: ${error.message}`;
+    log.error(traceId, `PR creation failed for ${branch}: ${err}`);
     return { ok: false, error: err };
+  } finally {
+    if (bodyDir) {
+      try { fs.rmSync(bodyDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
+      catch (error) { log.error(traceId, `PR body cleanup failed: ${bodyDir}: ${error.message}`); }
+    }
   }
-  const url = extractPrUrl(r.stdout);
-  if (!url) {
-    const err = `${cli} exited 0 but printed no URL: ${((r.stdout || '') + (r.stderr || '')).trim()}`;
-    log.error(traceId, `PR creation unconfirmed for ${branch}: ${err}`);
-    return { ok: false, error: err };
-  }
-  log.info(traceId, `opened PR: ${url}`);
-  return { ok: true, url };
 }
 
 // Full publish step for one finished task.

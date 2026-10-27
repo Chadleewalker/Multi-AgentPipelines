@@ -182,6 +182,9 @@ check('the control directory is cleaned up even when the callback throws', (() =
 const STUB = `
 const fs = require('fs'); const p = process.argv[2];
 const mode = process.env.STUB_MODE || 'honest';
+// A LOUD suite prints 1.2 MiB first — past spawnSync's 1 MiB default, the way vitest's DOM
+// dumps did (STATUS defect 13). writeSync, so none of it is lost to an early exit.
+if (process.env.STUB_LOUD) fs.writeSync(1, 'x'.repeat(1.2 * 1024 * 1024));
 if (mode === 'always-green') process.exit(0);
 if (mode === 'always-red') process.exit(4);
 let n = 0; try { n = fs.readdirSync(p).length; } catch { n = 0; }
@@ -220,6 +223,22 @@ check('CLI exits 1 when the tests pass at the fork point', runMain(ARGS) === 1);
 process.env.STUB_MODE = 'always-red';
 check('CLI exits 2 when red cannot be told from a broken harness', runMain(ARGS) === 2);
 delete process.env.STUB_MODE;
+
+// Defect 13 (change-log row `freeze-gate-buffer`): the gate passed no maxBuffer, so a suite
+// that printed more than 1 MiB came back ENOBUFS and the gate said INDETERMINATE about
+// tests that were correctly red. Read the two loud cases as a pair: red-and-loud proves
+// the ceiling is gone, green-and-loud proves it was not bought by reading every noisy
+// suite as red.
+process.env.STUB_LOUD = '1';
+check('a LOUD suite that is genuinely red still exits 0 (not indeterminate)', runMain(ARGS) === 0);
+process.env.STUB_MODE = 'always-green';
+check('a LOUD suite that passes at the fork point still exits 1', runMain(ARGS) === 1);
+delete process.env.STUB_MODE;
+delete process.env.STUB_LOUD;
+// At the source too: a behavioural check goes quiet the moment an edit drops the argument
+// and the fixtures happen to print less (defect 12's lesson).
+const gateSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'scripts', 'freeze-gate.js'), 'utf8');
+check('runVerify explicitly captures up to64MiB', /maxBuffer:\s*64 \* 1024 \* 1024/.test(gateSrc));
 
 check('CLI exits 2 on a missing test directory',
   runMain(['--repo', tmpRepo, '--tests', 'tests/acceptance/nope/']) === 2);

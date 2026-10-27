@@ -102,7 +102,7 @@ if (tampered.size > 0) {
 // --- Acceptance run: the authoritative gate. ---
 const testDir = `tests/acceptance/${result.issueId}/`;
 const acc = spawnSync('sh', ['-c', `${config.verifyCommand} ${testDir}`],
-  { cwd: WS, encoding: 'utf8', timeout: 15 * 60 * 1000 });
+  { cwd: WS, encoding: 'utf8', timeout: 15 * 60 * 1000, maxBuffer: 64 * 1024 * 1024 });
 result.acceptance = acc.status === 0 ? 'pass' : 'fail';
 result.acceptanceOutput = TAIL((acc.stdout || '') + (acc.stderr || ''), 4000);
 
@@ -113,7 +113,7 @@ result.acceptanceOutput = TAIL((acc.stdout || '') + (acc.stderr || ''), 4000);
 // keeps every legacy target's behaviour unchanged: build stays 'absent'. ---
 if (config.buildCommand) {
   const bld = spawnSync('sh', ['-c', config.buildCommand],
-    { cwd: WS, encoding: 'utf8', timeout: 15 * 60 * 1000 });
+    { cwd: WS, encoding: 'utf8', timeout: 15 * 60 * 1000, maxBuffer: 64 * 1024 * 1024 });
   result.build = bld.status === 0 ? 'pass' : 'fail';
   result.buildOutput = TAIL((bld.stdout || '') + (bld.stderr || ''), 4000);
 }
@@ -121,7 +121,7 @@ if (config.buildCommand) {
 // --- Regression run: evidence only (§4.4) — result never changes the exit code. ---
 if (config.regressionCommand) {
   const reg = spawnSync('sh', ['-c', config.regressionCommand],
-    { cwd: WS, encoding: 'utf8', timeout: 15 * 60 * 1000 });
+    { cwd: WS, encoding: 'utf8', timeout: 15 * 60 * 1000, maxBuffer: 64 * 1024 * 1024 });
   result.regressions = reg.status === 0 ? 'pass' : 'fail';
   result.regressionOutput = TAIL((reg.stdout || '') + (reg.stderr || ''), 2000);
 }

@@ -19,7 +19,7 @@ const { startRun } = require('./log');
 const { preflight, networkDown } = require('./preflight');
 const { release: releaseLock } = require('./lock');
 const {
-  readyQueue, queueSummary, claim, exportIssue, finish, outcomeFor, attemptNotes,
+  readyQueue, queueSummary, claim, exportIssue, finish, outcomeFor, missingSuccessEvidence, attemptNotes,
 } = require('./queue');
 const { prepare, hasCommits, recoveryReason, collectArtifacts, discard } = require('./workspace');
 const { runTask } = require('./container');
@@ -296,6 +296,18 @@ async function runOneTask(cfg, issue, log, token, gate) {
   const commits = hasCommits(ws.dir, ws.forkPoint);
   log.info(tr, `branch ${ws.branch}: ${commits ? 'has commits (push candidate)' : 'no commits (nothing to push)'}`);
 
+  // Exit 0 claims a success; the artifacts have to back it (change-log row `done-earned`).
+  // Without them it is an internal error — blocked for a human, never a closed issue that
+  // silently leaves the queue with no work behind it (STATUS defect 15).
+  const unearned = missingSuccessEvidence(outcome, {
+    status: artifacts.status, verify: artifacts.verify, hasCommits: commits,
+  });
+  if (unearned) {
+    log.error(tr, `exit ${exec.exitCode} claimed ${outcome.status} without the evidence for it ` +
+      `(${unearned}) — treated as an internal error`);
+    outcome = { status: 'failed', beads: 'blocked' };
+  }
+
   // ---- final file-scope gate (§4.5, repo-cl9): the HOST decides whether the branch may
   // leave the machine. The policy is read from the FORK-POINT config (never the worktree,
   // so an in-run edit cannot widen it); a `required` target needs one valid, safe
@@ -307,7 +319,7 @@ async function runOneTask(cfg, issue, log, token, gate) {
   // `git status` sees it though `git diff <fork> HEAD` does not — must still block, so an
   // agent cannot smuggle an unauthorized edit past the gate simply by not committing it. A
   // genuinely clean zero-commit branch reports no changed paths and passes exactly as
-  // before, keeping the existing clean zero-commit result. ----
+  // before, while the earned-success gate separately rejects a success with no commits. ----
   const scope = checkScope({ dir: ws.dir, forkPoint: ws.forkPoint, issue: { description: exported.markdown }, policy: scopePolicy });
   if (!scope.ok) {
     keepWorkspace = true;
@@ -344,6 +356,7 @@ async function runOneTask(cfg, issue, log, token, gate) {
   branchPushed = published.pushed;
 
   const notes = attemptNotes(log.runId, outcome, artifacts.status, ws.memoryCount);
+  if (unearned) notes.push(`exit ${exec.exitCode} without success evidence: ${unearned}`);
   if (!scope.ok) {
     const detail = scope.disallowedPaths.length
       ? `unauthorized paths NOT pushed: ${scope.disallowedPaths.join(', ')}`

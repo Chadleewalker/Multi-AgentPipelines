@@ -409,3 +409,23 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 - If a required sync or push is blocked, stop and report the exact command and error.
 <!-- END BEADS INTEGRATION -->
 
+
+
+## Reliability checks (selected main-based ports, 2026-10-27)
+
+Task clones default to git-ignored `workspaces/`, outside OS Temp.
+`PIPELINE_WORKSPACE_ROOT` may select another host-owned root. Existing explicit
+keep, file-scope-block retention and unpushed/uncommitted recovery still apply.
+Done/partial requires a passing latest attempt, acceptance proof and commits.
+
+Run the focused offline fixtures through Git Bash:
+
+```bash
+bash scripts/test-done-earned.sh
+bash scripts/test-pr-body.sh
+bash scripts/test-freeze-gate.sh
+bash scripts/test-verifier-buffer.sh
+```
+
+They use disposable synthetic repositories and substituted Beads/forge leaves.
+No live pipeline or forge publishing is covered by these checks.

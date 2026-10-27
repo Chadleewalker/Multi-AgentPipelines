@@ -25,8 +25,11 @@ function git(cwd, ...args) {
 }
 
 function workspaces() {
-  return fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith(`pipeline-${issueId}-`)).sort();
+  return fs.readdirSync(workspaceDir).filter((name) => name.startsWith(`pipeline-${issueId}-`)).sort();
 }
+const workspaceDir = path.join(temp, 'workspaces');
+fs.mkdirSync(workspaceDir);
+process.env.PIPELINE_WORKSPACE_ROOT = workspaceDir;
 const initialWorkspaces = new Set(workspaces());
 
 function workspaceFromLog(log) {
@@ -34,7 +37,7 @@ function workspaceFromLog(log) {
   const match = /workspace ready: (.+?) on task\//.exec(raw);
   assert.ok(match, 'workspace path missing from run log');
   const dir = path.resolve(match[1]);
-  assert.strictEqual(path.dirname(dir), path.resolve(os.tmpdir()));
+  assert.strictEqual(path.dirname(dir), path.resolve(workspaceDir));
   assert.ok(path.basename(dir).startsWith(`pipeline-${issueId}-`));
   return dir;
 }
@@ -139,7 +142,7 @@ main().catch((error) => {
   for (const dir of runDirs) fs.rmSync(dir, { recursive: true, force: true });
   for (const name of workspaces()) {
     if (initialWorkspaces.has(name)) continue;
-    const dir = path.join(os.tmpdir(), name);
+    const dir = path.join(workspaceDir, name);
     fs.rmSync(dir, { recursive: true, force: true });
   }
   fs.rmSync(temp, { recursive: true, force: true });

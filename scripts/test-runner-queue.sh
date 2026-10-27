@@ -47,18 +47,31 @@ printf '{"targetRepoPath":"%s","targetRepoRemote":"%s","image":"pipeline-base:lo
 
 # --- Stubs standing in for the container (T13/T14 will make these real) ---
 # Artifacts go where the container writes them: the workspace's .run/ (T13 collects).
+# The success and partial stubs also COMMIT, because a real verified pass always does and
+# the runner now refuses a done/partial without commits (change-log row `done-earned`). The
+# stub runs with the workspace as its cwd.
 cat > "$TMP/stub-success.sh" <<'EOF'
 mkdir -p "$RUN_DIR"
 printf '{"issueId":"%s","attempts":[{"number":1,"verifierResult":"pass","timestamp":"2026-07-25T12:00:00Z"}],"changeSummary":"did the thing"}\n' "$ISSUE_ID" > "$RUN_DIR/status.json"
 printf '{"issueId":"%s","timestamp":"2026-07-25T12:00:00Z","acceptance":"pass","regressions":"pass"}\n' "$ISSUE_ID" > "$RUN_DIR/verify.json"
+echo "$ISSUE_ID" > stub-work.txt && git add stub-work.txt && git -c user.email=t@example.invalid -c user.name=t commit -q -m "stub work"
 exit 0
 EOF
 cat > "$TMP/stub-partial.sh" <<'EOF'
 mkdir -p "$RUN_DIR"
 printf '{"issueId":"%s","attempts":[{"number":1,"verifierResult":"pass","timestamp":"2026-07-25T12:00:00Z"}]}\n' "$ISSUE_ID" > "$RUN_DIR/status.json"
 printf '{"issueId":"%s","timestamp":"2026-07-25T12:00:00Z","acceptance":"pass","regressions":"fail"}\n' "$ISSUE_ID" > "$RUN_DIR/verify.json"
+echo "$ISSUE_ID" > stub-work.txt && git add stub-work.txt && git -c user.email=t@example.invalid -c user.name=t commit -q -m "stub work"
 exit 0
 EOF
+# Commits mean a push (to the local bare remote) and a PR attempt, so gh is stubbed: a
+# suite must never reach a real git host. A .js through node, never a #!/bin/sh script.
+cat > "$TMP/gh-stub.js" <<'EOF'
+process.stdout.write('https://example.invalid/pr/1\n');
+EOF
+GH_STUB="$TMP/gh-stub.js"
+if command -v cygpath >/dev/null 2>&1; then GH_STUB="$(cygpath -m "$GH_STUB")"; fi
+export PIPELINE_GH_CMD="node \"$GH_STUB\""
 cat > "$TMP/stub-stuck.sh" <<'EOF'
 mkdir -p "$RUN_DIR"
 printf '{"issueId":"%s","attempts":[{"number":1,"verifierResult":"fail","timestamp":"2026-07-25T12:00:00Z"},{"number":2,"verifierResult":"fail","timestamp":"2026-07-25T12:05:00Z"},{"number":3,"verifierResult":"fail","timestamp":"2026-07-25T12:10:00Z"}],"stuckState":"bailed after 3"}\n' "$ISSUE_ID" > "$RUN_DIR/status.json"

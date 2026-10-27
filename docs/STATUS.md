@@ -4,9 +4,24 @@ Where the build actually is. Update this when something changes — it is the fi
 session reads to pick up the thread, and unlike a machine-local memory folder it travels
 with the repo.
 
-_Last updated: 2026-10-08_
+_Last updated: 2026-10-27_
 
 ## Where things stand
+
+
+**Selected reliability ports (`repo-1h0`, review candidate):** the owner chose current
+main as the base. The incoming older branch is preserved, not merged wholesale.
+Host done/partial now requires a passing latest attempt, acceptance proof, no
+explicit failed/error build, and commits; zero-commit success is failed/blocked.
+Task clones use ignored `workspaces/` with an optional root override while keeping
+current recovery/cleanup. GitHub PR bodies use an exact UTF-8 host temporary file
+outside the clone, preserving current forge/URL/launch diagnostics. GitLab's inline
+body behavior is unchanged. Freeze and runtime checks capture up to 64 MiB.
+Focused tests cover the three defects with synthetic/no-network leaves.
+Windows and Linux validation passed, including unchanged frozen host suites. The
+new fixtures reproduce the defects against the unchanged baseline. Full live
+model/egress, real forge publication and a real target pipeline were not tested.
+This candidate requires review before integration into canonical main.
 
 **Harness follow-ups (`repo-v2x`, `repo-5am`):** e2e uses portable progress copying and
 rejects config, runner or copier failures before interpreting task outcomes. It selects
