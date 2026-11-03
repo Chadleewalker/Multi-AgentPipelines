@@ -22,7 +22,7 @@ const {
   readyQueue, queueSummary, claim, exportIssue, finish, outcomeFor, missingSuccessEvidence, attemptNotes,
 } = require('./queue');
 const { prepare, hasCommits, recoveryReason, collectArtifacts, discard } = require('./workspace');
-const { runTask } = require('./container');
+const { runTask, inspectImageId } = require('./container');
 const { createPauseGate } = require('./pause');
 const { fileMemoryNotes, shouldFileMemory } = require('./memory');
 const { checkScope, admitScope, readScopeConfig } = require('./scope');
@@ -37,6 +37,23 @@ function diffLines(dir, forkPoint) {
   const m = /(\d+) insertion[^,]*(?:, (\d+) deletion)?/.exec(r.stdout || '');
   if (!m) return 0;
   return Number(m[1] || 0) + Number(m[2] || 0);
+}
+
+// The commit the container's final passing verification ran on (§4.3, §4.12, repo-xwx),
+// carried onto the manifest row for a target's own host-side check to read. Three things
+// have to hold, and all three are about trusting a value the CONTAINER wrote: the task
+// actually succeeded, the claim is a full sha, and it is the head of the branch that gets
+// pushed and reviewed — anything else is a sha describing a tree nobody will look at.
+// Evidence only: a null here changes no outcome, no push and no PR.
+const SHA40 = /^[0-9a-f]{40}$/;
+function verifiedCommitFor(dir, outcomeStatus, status) {
+  if (outcomeStatus !== 'done' && outcomeStatus !== 'partial') return null;
+  const claimed = status && status.verifiedCommit;
+  if (typeof claimed !== 'string' || !SHA40.test(claimed)) return null;
+  const r = require('child_process').spawnSync('git', ['rev-parse', 'HEAD'],
+    { cwd: dir, encoding: 'utf8' });
+  if (r.status !== 0) return null;
+  return String(r.stdout || '').trim() === claimed ? claimed : null;
 }
 
 const REPO_ROOT = path.join(__dirname, '..');
@@ -258,6 +275,10 @@ async function runOneTask(cfg, issue, log, token, gate) {
   // the manifest row reports. The wait-cycle count it used to carry alongside is a
   // different quantity and now lives on the run-level gate, once for the whole run (§7).
   let pauses = 0;
+  // §4.12 (repo-xwx): the image this launch runs. Read before EACH launch, so a relaunch
+  // after a rate-limit park records the image it actually used rather than one read once
+  // up front; the row carries the id read before the LAST launch. Evidence only.
+  let imageId = null;
   for (;;) {
     const remainingMinutes = cfg.wallClockMinutes - activeMs / 60000;
     if (remainingMinutes <= 0) {
@@ -266,6 +287,7 @@ async function runOneTask(cfg, issue, log, token, gate) {
       artifacts = collectArtifacts(ws.dir, taskDir);
       break;
     }
+    imageId = inspectImageId(cfg, log, tr);
     exec = await executeTask(cfg, issue, taskDir, log, tr, ws, token, remainingMinutes);
     activeMs += exec.durationMs || 0;
     if (exec.durationMs !== undefined) {
@@ -292,6 +314,12 @@ async function runOneTask(cfg, issue, log, token, gate) {
     log.info(tr, 'relaunching in a fresh container against the same workspace (attempt counter carries over)');
   }
   if (pauses) log.info(tr, `task resumed across ${pauses} usage-window pause(s)`);
+  // §4.3 (repo-xwx): the container skipped its own final re-verification because the docs
+  // phase left the certified tree untouched. Logged so the minutes it saved — and the fact
+  // that a second verification did NOT happen — are visible where a human already looks.
+  if (artifacts.status && artifacts.status.finalVerification === 'skipped-unchanged') {
+    log.info(tr, 'final re-verification skipped: the docs phase left the verified tree unchanged');
+  }
   let outcome = outcomeFor(exec.exitCode, artifacts.verify);
   const commits = hasCommits(ws.dir, ws.forkPoint);
   log.info(tr, `branch ${ws.branch}: ${commits ? 'has commits (push candidate)' : 'no commits (nothing to push)'}`);
@@ -369,6 +397,7 @@ async function runOneTask(cfg, issue, log, token, gate) {
   log.info(tr, `task finished: exit ${exec.exitCode} -> ${outcome.status}` +
     (outcome.beads ? ` (issue ${outcome.beads})` : ' (issue stays in_progress)'));
   const v = artifacts.verify;
+  const verifiedCommit = verifiedCommitFor(ws.dir, outcome.status, artifacts.status);
   const row = {
     issueId: issue.id,
     title: issue.title || '',
@@ -383,6 +412,10 @@ async function runOneTask(cfg, issue, log, token, gate) {
     diffLines: diffLines(ws.dir, ws.forkPoint),
     ...(artifacts.status && artifacts.status.changeSummary ? { changeSummary: artifacts.status.changeSummary } : {}),
     ...(artifacts.status && artifacts.status.model ? { model: artifacts.status.model } : {}),
+    // §4.3/§4.12 (repo-xwx): the two facts a finished task's record carries for a target's
+    // own host-side check. Both are evidence only — omitted rather than guessed.
+    ...(verifiedCommit ? { verifiedCommit } : {}),
+    ...(imageId ? { imageId } : {}),
     ...(v ? {
       verification: {
         acceptance: v.acceptance,

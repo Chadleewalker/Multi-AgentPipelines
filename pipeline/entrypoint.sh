@@ -171,6 +171,14 @@ while :; do
       node "$PIPE/status.js" append pass
       git add -A
       git commit -qm "Task $ISSUE_ID: implementation (verified on attempt $N)" || true
+      # ---- the certified state (§4.3, repo-xwx) ----
+      # HEAD and its tree, recorded straight after the commit that follows the passing
+      # verification. This IS the tree the verifier just certified. The final
+      # re-verification below is skipped only when the docs phase leaves both of these,
+      # and the working copy, exactly as they are here. Recorded with no `2>/dev/null`:
+      # a git failure here must be visible, and an empty value fails closed below.
+      PASS_HEAD=$(git rev-parse HEAD) || PASS_HEAD=""
+      PASS_TREE=$(git rev-parse "HEAD^{tree}") || PASS_TREE=""
       # ---- docs phase (§4.3, T9): one agent invocation, non-fatal after success ----
       {
         echo "Verification for task $ISSUE_ID just passed. Two jobs:"
@@ -203,16 +211,58 @@ while :; do
       else
         node "$PIPE/status.js" set docsPhaseError "docs agent failed (see docs-out.txt / docs-err.txt); success stands"
       fi
+      # ---- did the docs phase change anything? (§4.3, repo-xwx — amends repo-cl9) ----
+      # status.json sits in the agent-writable workspace, so anything the docs agent may
+      # have planted under these two keys is removed BEFORE the decision: a value an agent
+      # wrote must never survive a path that records none.
+      node "$PIPE/status.js" set verifiedCommit || die30 "status clear failed (verifiedCommit)"
+      node "$PIPE/status.js" set finalVerification || die30 "status clear failed (finalVerification)"
+      # The decision reads git and NOTHING else — never the docs agent's output, exit code
+      # or summary, each of which can claim edits it did not make and miss ones it did.
+      # Every branch fails CLOSED: a git call that errors, or answers with nothing, leaves
+      # SKIP_REVERIFY at 0 and re-verifies. An error must never read as "unchanged".
+      SKIP_REVERIFY=0
+      if [ -n "$PASS_HEAD" ] && [ -n "$PASS_TREE" ]; then
+        if NOW_DIRTY=$(git status --porcelain) && [ -z "$NOW_DIRTY" ] \
+          && NOW_HEAD=$(git rev-parse HEAD) && [ "$NOW_HEAD" = "$PASS_HEAD" ] \
+          && NOW_TREE=$(git rev-parse "HEAD^{tree}") && [ "$NOW_TREE" = "$PASS_TREE" ]; then
+          SKIP_REVERIFY=1
+        fi
+      fi
+      if [ "$SKIP_REVERIFY" = 1 ]; then
+        # Nothing new exists to verify: this is byte for byte the tree the verification
+        # above certified, so re-running the verifier would re-certify a certified tree.
+        # Verification is not weakened (hard rule 2) — the gate, its fork-point config and
+        # its frozen-path diff are untouched; it simply has no new input.
+        # Accepted residual risk (user, 2026-11-03): a file git IGNORES, created or edited
+        # by the docs phase, is invisible to `git status --porcelain` and so to this rule.
+        node "$PIPE/status.js" set finalVerification skipped-unchanged || die30 "status write failed (finalVerification)"
+        node "$PIPE/status.js" set verifiedCommit "$PASS_HEAD" || die30 "status write failed (verifiedCommit)"
+        echo "final re-verification skipped: the docs phase left the certified tree unchanged ($PASS_HEAD)"
+        exit 0
+      fi
       # ---- final re-verification (§4.3, repo-cl9): the docs phase can change source,
       # tests, config or build inputs after the passing verify above, so the FINAL branch
       # is verified again — an earlier pass never certifies later edits. The gate is the
       # frozen verifier, unchanged: acceptance + the required build, both from the
       # fork-point config. Whatever the docs phase committed is already on the branch, so
-      # this reads the real final tree. ----
+      # this reads the real final tree. Recorded before the call, so every path out of the
+      # case below — including die30 — reports that it ran. Nothing may come between the
+      # verifier and `FRC=$?`. ----
+      node "$PIPE/status.js" set finalVerification ran || die30 "status write failed (finalVerification)"
       node "$PIPE/verify.js"
       FRC=$?
       case "$FRC" in
-        0) exit 0 ;;                                   # docs left the branch verifiable
+        0)
+          # Docs left the branch verifiable. Name the commit the verification ran on — but
+          # only when the tree is clean, because a dirty tree means it ran on files no
+          # commit holds and no sha describes it. Evidence only: it changes no outcome.
+          FINAL_DIRTY=$(git status --porcelain) || FINAL_DIRTY="unreadable"
+          if [ -z "$FINAL_DIRTY" ]; then
+            FINAL_HEAD=$(git rev-parse HEAD) || FINAL_HEAD=""
+            [ -n "$FINAL_HEAD" ] && node "$PIPE/status.js" set verifiedCommit "$FINAL_HEAD"
+          fi
+          exit 0 ;;
         3)
           # A frozen path changed during the docs phase. Recorded via docsPhaseError, not
           # `append tampered`: the pass that reached this branch may already be the third

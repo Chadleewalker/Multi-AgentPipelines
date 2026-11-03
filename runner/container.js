@@ -9,10 +9,56 @@ const fs = require('fs');
 const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 const { toMountPath } = require('./bd');
+const { runCommand } = require('./host-shell');
 
 // Windows/Git Bash: Docker needs C:/... mount sources, and MSYS must not rewrite
 // container-side paths like /workspace into C:\Program Files\Git\workspace.
 const DOCKER_ENV = { ...process.env, MSYS_NO_PATHCONV: '1' };
+
+// ---- the image a launch actually ran (§4.12, repo-xwx) -------------------------------
+// Recorded on the manifest row so a target's own host-side check can tell whether a tree
+// the verifier already proved was proved against THIS image. Evidence only: every failure
+// here leaves the field off the row and changes nothing about the task.
+const IMAGE_ID = /^sha256:[0-9a-f]{64}$/;
+
+// `docker image inspect --format {{.Id}} <image>`. PIPELINE_DOCKER_CMD is a test seam,
+// run through the host shell exactly as PIPELINE_GH_CMD is (runner/publish.js); production
+// never sets it and spawns docker directly with MSYS_NO_PATHCONV, like every other runner
+// docker call. The env is built here rather than from the module-level DOCKER_ENV, which
+// snapshots process.env at require time and so cannot see a PATH a caller set afterwards.
+//
+// The answer is pinned by VALUE, not by presence: `docker image inspect` exits 0 while
+// printing prose for a missing object, and a CLI warning line ahead of a real id is
+// non-empty, well-formed and not an image id. Only a trimmed output that is exactly one
+// sha256 digest is recorded.
+function inspectImageId(cfg, log, traceId) {
+  const image = cfg && cfg.image;
+  if (!image) return null;
+  const seam = process.env.PIPELINE_DOCKER_CMD;
+  const r = seam
+    ? runCommand(`${seam} image inspect --format '{{.Id}}' ${image}`, { encoding: 'utf8' })
+    : (() => {
+      try {
+        return spawnSync('docker', ['image', 'inspect', '--format', '{{.Id}}', image],
+          { encoding: 'utf8', env: { ...process.env, MSYS_NO_PATHCONV: '1' } });
+      } catch (error) {
+        return { status: null, stdout: '', stderr: error.message, error };
+      }
+    })();
+  const out = String((r && r.stdout) || '').trim();
+  if (!r || r.status !== 0) {
+    const why = (((r && r.error && r.error.message) || String((r && r.stderr) || '').trim())
+      || `exit ${r ? r.status : 'none'} with no output`).trim();
+    log.error(traceId, `could not read the image id for ${image}: ${why} — the run record carries no imageId`);
+    return null;
+  }
+  if (!IMAGE_ID.test(out)) {
+    log.error(traceId, `\`docker image inspect\` did not answer with exactly one image id for ${image} `
+      + `(got ${JSON.stringify(out.slice(0, 200))}) — the run record carries no imageId`);
+    return null;
+  }
+  return out;
+}
 
 // The container's inputs are exactly these (§4.10) — nothing else crosses the boundary.
 function buildArgs(cfg, opts) {
@@ -88,4 +134,4 @@ function runTask(cfg, opts, log, traceId) {
   });
 }
 
-module.exports = { runTask, buildArgs };
+module.exports = { runTask, buildArgs, inspectImageId };

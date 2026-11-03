@@ -4,7 +4,7 @@ Where the build actually is. Update this when something changes — it is the fi
 session reads to pick up the thread, and unlike a machine-local memory folder it travels
 with the repo.
 
-_Last updated: 2026-10-27_
+_Last updated: 2026-11-03_
 
 ## Where things stand
 
@@ -993,7 +993,8 @@ plausible-and-wrong failure this repo keeps paying for: green, well-formed, and 
   verify → retry → docs → re-verify → commit`. The docs phase runs *after* the gate that
   would catch it, so a docs-phase change to source, tests, config or a build input is
   caught by the second verify: tampered → exit 11, build/acceptance broken → exit 30. An
-  earlier pass never certifies later edits.
+  earlier pass never certifies later edits. (Amended by change-log row `repo-xwx`, below:
+  the re-verify is skipped when the docs phase provably changed nothing.)
 - **The host checks file scope before it publishes anything.** `runner/scope.js`: with
   `scopePolicy: "required"` a task needs one safe, explicit `Allowed implementation files:`
   list and only those exact paths may change on the branch (committed, uncommitted,
@@ -1082,6 +1083,60 @@ Git remote only).
 Frozen suite `tests/acceptance/repo-cl11/` (`host-final-gaps.js`), which drives both edges
 through the real `runOneTask`; `runner/scope.js` exports `readScopeConfig` and
 `tests/unit/scope.test.js` is unchanged and still green.
+
+## The docs phase stops re-verifying a tree it did not touch (`repo-xwx`, 2026-11-03)
+
+`repo-cl9` added the second `verify.js` call unconditionally, and it was costing whole
+minutes for nothing. On five consecutive real tasks on 2026-11-03 the docs phase changed
+**no file**, and the stretch from the first pass to the end of the run still took 8, 8, 8,
+12 and 17 minutes — nearly all of it the verifier re-certifying a tree it had just
+certified. A task whose `Allowed implementation files:` list names no documentation file
+is explicitly told to make no edits in that phase, so "changed nothing" is the ordinary
+case.
+
+The rule is the narrowest one that is still true. `pipeline/entrypoint.sh` records `HEAD`
+and `HEAD^{tree}` straight after the commit that follows the passing verification, and
+skips the re-verify only when all three of these hold afterwards: `HEAD` unchanged,
+`HEAD^{tree}` unchanged, `git status --porcelain` empty. Everything else re-verifies with
+today's outcomes — a committed edit, an unstaged one, a staged one, an untracked file, a
+deletion, an empty commit, a failed docs phase that left work behind, and a
+documentation-only change (suites do read documentation; this repo's own change-log checks
+are one).
+
+Two properties are what make it a saving rather than a hole, and both have fixtures:
+
+- **It reads git and nothing else.** The docs agent's summary routinely claims edits it did
+  not make, and routinely says "No files were changed" while changing one. Its output, its
+  exit code and its summary play no part in the decision.
+- **It fails closed.** A git call in that decision which errors, or answers with nothing,
+  re-verifies. An error must never read as "unchanged" — that is how a gate gets switched
+  off by its own plumbing. The frozen suite proves it with a `git` shim first on `PATH`
+  that fails exactly one call, and checks the failure was actually consumed.
+
+Verification itself is untouched (hard rule 2): `pipeline/verify.js` is byte-identical to
+its fork-point blob, with a guard check that says so. **Accepted residual risk**, taken by
+the user on 2026-11-03 with no extra check: a file git *ignores*, if the docs phase creates
+or edits it, is invisible to `git status --porcelain` and therefore to this rule.
+
+Two facts now also ride on a finished task's manifest row, so a target's own host-side
+check can one day skip work this pipeline already proved: `verifiedCommit` (the commit the
+final passing verification ran on, carried only for `done`/`partial` and only when it is
+the branch head that was pushed) and `imageId` (`docker image inspect --format {{.Id}}`,
+read before **each** launch, the row carrying the id read before the last — so a
+rate-limit relaunch records the image it actually used). Both are **evidence only**: a
+failed or malformed read leaves the field off the row and changes nothing. The status file
+gains `finalVerification` (`skipped-unchanged` / `ran`) and `verifiedCommit`, both written
+through `pipeline/status.js`, and both cleared *before* the decision so a value the docs
+agent planted in the agent-writable `status.json` cannot survive a path that records none.
+
+Frozen suite `tests/acceptance/repo-xwx/` — `entrypoint-skip.js` (the real entrypoint and
+verifier under `bash`, stub agent, 176 checks), `runner-facts.js` (the real `runOneTask`
+through its seams, including the new `PIPELINE_DOCKER_CMD`), `verifier-unchanged.js` (the
+guard). What a merge still owes, because no frozen test can carry it: the host Docker
+suites (`scripts/test-entrypoint.sh`, `scripts/test-runner-*.sh`, or the whole sweep), and
+— after the first real run on the merged change — confirming that one manifest row's
+`imageId` equals `docker image inspect --format {{.Id}} <image>` for that run's image.
+That last one is the only end-to-end check of the production path.
 
 ## What's next
 
