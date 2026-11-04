@@ -51,6 +51,15 @@
       "description": "Set when the docs phase errored after a passed verify - non-fatal, success stands (4.3).",
       "type": "string"
     },
+    "finalVerification": {
+      "description": "What happened to the final re-verification after the docs phase (4.3, repo-xwx amending repo-cl9). 'skipped-unchanged' means the docs phase left HEAD, its tree and the working copy exactly as the passing verification certified them, so there was nothing new to verify; 'ran' means the verifier ran again, whatever its result. Written on every path that reached the docs phase, and absent on every path that did not.",
+      "enum": ["skipped-unchanged", "ran"]
+    },
+    "verifiedCommit": {
+      "description": "The commit the final passing verification ran on (4.3, repo-xwx). On a skip it is the commit made straight after the passing verification; after a re-verification that passed it is HEAD, and only when the working tree was clean at that moment - a verification that ran on uncommitted files has no commit to name, so the key is absent. Absent on every other exit. Evidence only: a target's own host-side check may read it, and nothing in this pipeline gates on it.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
     "model": {
       "description": "The model the agent phases ran on, pinned by the runner (4.3). Recorded so a run is reproducible and so review can tell what built a change.",
       "type": "string"

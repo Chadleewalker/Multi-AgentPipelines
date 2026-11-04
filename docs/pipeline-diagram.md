@@ -68,7 +68,9 @@ flowchart TB
   V -->|"fails on the 3rd attempt"| ST["Commit WIP + stuck state<br/>exit 10 — stuck"]
   V -->|"acceptance + build pass"| ADV["SLOT 3 — declared advisors<br/>inspect the finished change<br/>notes only, cannot fail the task"]
   ADV --> DP["Docs phase<br/>writes the change summary"]
-  DP --> RV{"Re-verify after docs<br/>a docs-phase edit cannot inherit the earlier pass"}
+  DP --> CH{"Did it change anything?<br/>HEAD · HEAD^{tree} · git status --porcelain<br/>git only — never the agent's report; any error re-verifies"}
+  CH -->|"nothing changed"| SK["exit 0 — verified<br/>final re-verification skipped"]
+  CH -->|"anything changed, or unprovable"| RV{"Re-verify after docs<br/>a docs-phase edit cannot inherit the earlier pass"}
   RV -->|"tampered · failed"| REVK["exit 11 / 30 — pass revoked"]
   RV -->|"still green"| OK["exit 0 — verified"]
 
@@ -83,7 +85,16 @@ the **host-pinned fork-point commit** (`PIPELINE_FORK_POINT`), never a ref the t
 move, so an agent cannot redirect the freeze baseline at its own weaker config. The
 **re-verify after the docs phase** exists because that phase runs *after* the gate that
 would catch it: a docs-phase change to source, tests, config or a build input revokes the
-earlier pass rather than inheriting it.
+earlier pass rather than inheriting it. It runs only when there is something new to verify
+(change-log row `repo-xwx`): the entrypoint records `HEAD` and `HEAD^{tree}` straight after
+the commit that follows the passing verification, and skips the second call only when all
+three of `HEAD`, `HEAD^{tree}` and an empty `git status --porcelain` still agree with it.
+That decision reads git and nothing else — the docs agent's own summary routinely claims
+edits it did not make — and it fails closed, so a git call that errors or answers with
+nothing re-verifies. Skipping is not a weaker gate: the verifier, its fork-point config and
+its frozen-path diff are unchanged, and the tree reaching them would be byte for byte the
+one they just certified. The accepted residual risk is a git-*ignored* file the docs phase
+touches, which `git status --porcelain` cannot see.
 
 Slot 3 is the one that needs building, and the sockets are already in place: the
 `advisories` array exists in `status.schema.json` (typed, and documented as evidence

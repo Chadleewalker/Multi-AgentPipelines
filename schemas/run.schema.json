@@ -50,6 +50,16 @@
           },
           "changeSummary": { "type": "string" },
           "model": { "description": "Model the agent phases ran on (4.3).", "type": "string" },
+          "verifiedCommit": {
+            "description": "The commit the task's final passing verification ran on (4.3, 4.12, repo-xwx), copied from the status file only when the task succeeded (done/partial) and the claimed sha is the branch head that was pushed and reviewed. Evidence only: it never changes an outcome, a push or a PR. Absent otherwise.",
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$"
+          },
+          "imageId": {
+            "description": "The image the task container ran, read with `docker image inspect --format {{.Id}} <image>` before the LAST container launch of the task (4.12, repo-xwx). Evidence only; absent when the read failed or did not answer with exactly one image id.",
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
           "verification": {
             "type": "object",
             "additionalProperties": false,

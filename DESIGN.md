@@ -476,6 +476,23 @@ source of truth.
    config or a build input after the passing verify, so the final branch is verified once
    more** (repo-cl9): the same frozen verifier, and a re-verify that comes back tampered or
    failed revokes the earlier pass — an earlier verifier result never certifies later edits.
+   **That second verification is skipped only when the docs phase provably changed nothing**
+   (repo-xwx): the entrypoint records `HEAD` and `HEAD^{tree}` straight after the commit
+   that follows the passing verification — that *is* the tree the verifier certified — and
+   skips the re-verify only when, after the docs phase, `HEAD` is unchanged, `HEAD^{tree}`
+   is unchanged, and `git status --porcelain` prints nothing. Anything else re-verifies
+   exactly as before: a committed edit, an uncommitted one, an untracked file, a deletion,
+   an empty commit, a failed docs phase that left work behind, and a documentation-only
+   change (some suites read documentation — this repo's own change-log checks do). This
+   does not weaken verification (hard rule 2): the verifier, its fork-point config and its
+   frozen-path diff are untouched, and the skip happens only when there is nothing new to
+   verify. Two properties make the rule trustworthy rather than merely fast. It reads **git
+   and nothing else** — never the docs agent's output, exit code or summary, each of which
+   can claim edits it did not make and miss ones it did. And it **fails closed**: a git call
+   in that decision which errors, or answers with nothing, re-verifies, because an error
+   must never read as "unchanged". The **accepted residual risk**, taken by the user on
+   2026-11-03 with no extra check: a file git *ignores*, if the docs phase creates or edits
+   it, is invisible to `git status --porcelain` and therefore to this rule.
    Phases of a task are scaffolding, not an
    LLM decision. No leader agent inside. **Agent output is a contract artifact, so it is
    read structurally, never scraped.** When the entrypoint owns the invocation (no
@@ -696,7 +713,11 @@ source of truth.
     The runner distinguishes done from partial by reading `verify.json`. The required build
     gate is part of the exit-0 condition, not a separate row the runner interprets: the
     verifier already folds `build: fail` into exit 1 (4.4), so a broken build reaches the
-    runner as an ordinary failed attempt and, unfixed, bails "stuck" at the cap. The
+    runner as an ordinary failed attempt and, unfixed, bails "stuck" at the cap. **No row
+    above changes when the final re-verification is skipped** (4.3, repo-xwx): a skip means
+    the docs phase left the certified tree untouched, so the task exits 0 on the first
+    verification's pass and lands in the same `done`/`partial` row it would have landed in
+    anyway — `finalVerification` records which of the two happened, and gates nothing. The
     **file-scope gate is an independent host-side outcome override** (4.5, repo-cl9): whatever exit
     code the container produced, an out-of-scope final branch is forced to `failed`/blocked
     and — uniquely among failure outcomes — is **not** pushed, because the point of the gate
@@ -718,7 +739,14 @@ source of truth.
     the status file as best-effort (it may be half-written). Alongside the codes, the
     entrypoint maintains `/workspace/.run/status.json` — attempt summaries (number,
     verifier result, timestamp), the docs-phase change summary, the resolved model id
-    (4.3), the rate-limit reset time when known, any proposed memory notes
+    (4.3), the rate-limit reset time when known, what happened to the final
+    re-verification (`finalVerification`: `skipped-unchanged` or `ran`, written on every
+    path that reached the docs phase) and the commit the final passing verification ran on
+    (`verifiedCommit`, a full 40-hex sha — the passing commit on a skip, `HEAD` after a
+    re-verification that passed on a clean tree, and absent otherwise, including after a
+    passing re-verification on a dirty tree, since a verification that ran on uncommitted
+    files has no commit to name; both 4.3, repo-xwx, and both **evidence only** — no
+    outcome in the table above reads either), any proposed memory notes
     (`memoryNotes`, 3.6), and any spec concerns the agent raised (`specConcerns`, 3.7 —
     evidence only, like `advisories`). The summary and the model id are the two artifacts the host
     reuses verbatim (PR body, manifest, report), so both are extracted deterministically
@@ -899,7 +927,17 @@ source of truth.
     machine) its state is not pushed anywhere. **The runner writes a per-run manifest**
     — `runs/<run-timestamp>/run.json`, schema `run.schema.json` checked into this repo,
     owned by the runner task — recording per task: issue id, branch, exit code (or
-    `killed`), the derived 4.11 outcome, attempt count, and PR URL if any. The report
+    `killed`), the derived 4.11 outcome, attempt count, and PR URL if any. Two further
+    facts ride on a row as **evidence only**, so a target's own host-side check can later
+    decide to skip work this pipeline already proved (repo-xwx): `verifiedCommit`, copied
+    from the status file only when the outcome is `done` or `partial`, the value is a full
+    40-hex sha, and it equals `git rev-parse HEAD` of the task workspace — the branch that
+    was pushed and reviewed; and `imageId`, read with `docker image inspect --format
+    {{.Id}} <image>` **before each container launch**, the row carrying the id read before
+    the *last* one, so a rate-limit relaunch records the image it actually used. Neither
+    can change an outcome, a push or a PR: a failed or malformed read is logged and leaves
+    the field off the row, and a claimed commit that is not the branch head is dropped
+    rather than recorded. The report
     generator reads the manifest (plus Beads + git) as a frozen input; Beads alone
     cannot reconstruct report statuses, since stuck/tampered/failed all map to blocked.
     Per-run logs, trace IDs, collected status files, the manifest, and the run report
@@ -1243,3 +1281,4 @@ version (`Status: READY v1.0`). The *document* still has a version; its *rows* n
 | 2026-10-27 | done-earned | Host done/partial requires latest passing attempt, acceptance pass, no explicit failed/error build and commits beyond the fork; missing proof is failed/blocked. `outcomeFor` and frozen tests stay byte-identical. Task clones use ignored workspaces/ with PIPELINE_WORKSPACE_ROOT; current recovery/cleanup remains. | An exit0 and missing/empty workspace evidence must not close an issue without deliverable work. Owner selected this main-based port. |
 | 2026-10-27 | pr-body-file | GitHub PR body uses an exact UTF-8 host-owned temporary file outside the untrusted clone, cleaned after publication; preserve URL/forge/launch diagnostics. GitLab behavior remains unchanged. | Large argv bodies exceed Windows command limits; writing through a container-controlled .run symlink would introduce a host write hazard. |
 | 2026-10-27 | freeze-gate-buffer | Freeze and runtime acceptance/build/regression captures explicitly allow64MiB; keep actual exit statuses, frozen/build gates and bounded output tails. | A noisy correct suite must not become indeterminate or fail solely at Node's default1MiB capture ceiling. |
+| 2026-11-03 | repo-xwx | **The final re-verification after the docs phase is skipped when that phase provably changed nothing** (§4.3, §4.11, §4.12) — amending `repo-cl9`, which added the re-verify unconditionally. `pipeline/entrypoint.sh` records `HEAD` and `HEAD^{tree}` straight after the commit that follows the passing verification, and skips the second `verify.js` call only when, after the docs phase, `HEAD` is unchanged, `HEAD^{tree}` is unchanged and `git status --porcelain` prints nothing; anything else re-verifies exactly as before, documentation-only edits included. The decision reads **git and nothing else** (never the docs agent's output, exit code or summary) and **fails closed** — a git call that errors or answers with nothing re-verifies. On a skip it prints `final re-verification skipped` into `container.log` and `runner/run.js` echoes one `log.info` line with the same text into the run log. The status file gains two keys, both written through `pipeline/status.js` and declared in `schemas/status.schema.json`: `finalVerification` (`skipped-unchanged` / `ran`, written on every path that reached the docs phase) and `verifiedCommit` (the passing commit on a skip; `HEAD` after a re-verification that passed on a clean tree; absent otherwise). Both keys are cleared *before* the decision, so a value the docs agent planted in the agent-writable `status.json` cannot survive a path that records none. `schemas/run.schema.json` gains two task-row fields and `runner/run.js` fills them as **evidence only**: `verifiedCommit`, carried only when the outcome is `done`/`partial`, the value is 40-hex, and it equals `git rev-parse HEAD` of the workspace; and `imageId` (`runner/container.js`'s `inspectImageId`, seam `PIPELINE_DOCKER_CMD`), read before **each** launch with the row carrying the id read before the last, recorded only when the trimmed output is exactly `sha256:<64 hex>`. `pipeline/verify.js` is untouched (hard rule 2). Frozen suite `tests/acceptance/repo-xwx/` (`entrypoint-skip.js` driving the real entrypoint and verifier under `bash` with a stub agent, `runner-facts.js` driving the real `runOneTask`, `verifier-unchanged.js` as the guard). **Accepted residual risk** (user, 2026-11-03, with no extra check): a file git *ignores*, if the docs phase creates or edits it, is not seen by the skip rule. | On five consecutive real tasks (2026-11-03) the docs phase changed no file, and the stretch from the first pass to the end of the run still cost 8, 8, 8, 12 and 17 minutes — almost all of it the second verification re-certifying a tree that had just been certified. A task whose `Allowed implementation files` list names no documentation file is told to make no edits in that phase, so "changed nothing" is the ordinary case, not the exception. The rule is deliberately the narrowest one that is still true: it skips only when there is nothing new to verify, which is why it compares trees rather than asking the agent, and why every uncertain answer re-verifies — an error that read as "unchanged" would be a gate silently switched off by its own plumbing, the failure shape this repo keeps paying for. The two recorded facts are the other half of the same saving, pushed one layer out: a target cannot decide to trust work this pipeline proved unless the record says which commit was proved and which image proved it, and both were previously nowhere. They are evidence and never a gate, so nothing downstream can fail because a `docker image inspect` did not answer. |

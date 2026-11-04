@@ -11,7 +11,8 @@
 //   node status.js append <result> [file]  add attempt (number auto, timestamp now,
 //                                          optional feedback from file, tail 2000)
 //   node status.js set <key> <value>       changeSummary | stuckState |
-//                                          rateLimitResetAt | docsPhaseError
+//                                          rateLimitResetAt | docsPhaseError |
+//                                          finalVerification | verifiedCommit
 //                                          omit value to remove the key
 //   node status.js summary <file>          set changeSummary from a docs-phase log
 //                                          (envelope result if there is one, else the
@@ -52,7 +53,10 @@ switch (cmd) {
     break;
   }
   case 'set': {
-    const allowed = ['changeSummary', 'stuckState', 'rateLimitResetAt', 'docsPhaseError', 'model'];
+    // §4.3 (repo-xwx): finalVerification / verifiedCommit are written here too, so every
+    // status-file key still has exactly one writer and one schema check.
+    const allowed = ['changeSummary', 'stuckState', 'rateLimitResetAt', 'docsPhaseError', 'model',
+      'finalVerification', 'verifiedCommit'];
     if (!allowed.includes(args[0])) { console.error(`status.js: key '${args[0]}' not in schema`); process.exit(2); }
     const o = load();
     // An omitted value is undefined, so JSON serialization removes this optional key.
